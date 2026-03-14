@@ -1,0 +1,38 @@
+#!/usr/bin/env sh
+# ==================================================================
+# Pre-commit hook: blocked-pattern scanner + Beads integration
+#
+# Scans staged diffs for patterns listed in .git/blocked-patterns.txt
+# (one pattern per line, blank lines and #-comments ignored).
+# That file lives inside .git/ so it is never tracked itself.
+# ==================================================================
+
+# --- Blocked-pattern scan ---
+PATTERNS_FILE="$(git rev-parse --git-dir)/blocked-patterns.txt"
+
+if [ -f "$PATTERNS_FILE" ]; then
+  while IFS= read -r pattern || [ -n "$pattern" ]; do
+    # Skip blank lines and comments
+    case "$pattern" in
+      ''|\#*) continue ;;
+    esac
+
+    if git diff --cached -S"$pattern" --name-only | grep -q .; then
+      echo "BLOCKED: Staged changes contain '$pattern'"
+      echo "Files:"
+      git diff --cached -S"$pattern" --name-only
+      echo ""
+      echo "Remove private references before committing to public repo."
+      exit 1
+    fi
+  done < "$PATTERNS_FILE"
+fi
+
+# --- BEGIN BEADS INTEGRATION v0.59.0 ---
+# This section is managed by beads. Do not remove these markers.
+if command -v bd >/dev/null 2>&1; then
+  export BD_GIT_HOOK=1
+  bd hooks run pre-commit "$@"
+  _bd_exit=$?; if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
+fi
+# --- END BEADS INTEGRATION v0.59.0 ---
