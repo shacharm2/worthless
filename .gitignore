@@ -1,0 +1,52 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+
+# Dependency directories
+node_modules/
+
+# Environment variables
+.env
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS specific
+.DS_Store
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
+
+# Editor/tool directories
+.cursor/
+.gemini/
+.kiro/
+.opencode/
+.qodo/
+opencode.json
+
+# Developer tooling (symlinked from private repo)
+CLAUDE.md
+AGENTS.md
+
+# Project management (local-only)
+.planning/
+ccpm/
+.claude/
+COMMANDS.md
+CONTEXT_ACCURACY.md
+LOCAL_MODE.md
+
+# Misc
+history.md
