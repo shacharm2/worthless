@@ -25,7 +25,7 @@ where = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
-[tool.ruff]
+[tool.ruff.lint]
 select = ["E", "F", "W", "TID"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
