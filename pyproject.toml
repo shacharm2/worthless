@@ -1,0 +1,32 @@
+[project]
+name = "worthless"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography>=46.0.5",
+    "aiosqlite>=0.22.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+select = ["E", "F", "W", "TID"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"random".msg = "Use the 'secrets' module for cryptographic randomness. The 'random' module is banned (CRYP-04)."

@@ -1,0 +1,87 @@
+"""Tests for XOR key splitting, HMAC commitment, and bytearray zeroing (CRYP-01 .. CRYP-03)."""
+
+import pytest
+
+from worthless.crypto.splitter import reconstruct_key, secure_key, split_key
+from worthless.crypto.types import SplitResult
+from worthless.exceptions import ShardTamperedError
+
+
+# --- CRYP-01: XOR round-trip ---
+
+
+def test_xor_roundtrip(sample_api_key: bytes) -> None:
+    """Splitting then XOR-ing shards back must yield the original key."""
+    result = split_key(sample_api_key)
+    reconstructed = bytes(a ^ b for a, b in zip(result.shard_a, result.shard_b))
+    assert reconstructed == sample_api_key
+
+
+def test_shard_length(sample_api_key: bytes) -> None:
+    """Both shards must be the same length as the input key."""
+    result = split_key(sample_api_key)
+    assert len(result.shard_a) == len(sample_api_key)
+    assert len(result.shard_b) == len(sample_api_key)
+
+
+def test_shards_differ_from_key(sample_api_key: bytes) -> None:
+    """Neither shard should equal the original key."""
+    result = split_key(sample_api_key)
+    assert result.shard_a != sample_api_key
+    assert result.shard_b != sample_api_key
+
+
+# --- CRYP-02: HMAC commitment ---
+
+
+def test_hmac_valid(sample_api_key: bytes) -> None:
+    """Reconstruction with untampered shards must succeed without error."""
+    result = split_key(sample_api_key)
+    key = reconstruct_key(result.shard_a, result.shard_b, result.commitment, result.nonce)
+    assert bytes(key) == sample_api_key
+
+
+def test_hmac_tampered_shard_a(sample_api_key: bytes) -> None:
+    """Flipping a byte in shard_a must cause ShardTamperedError."""
+    result = split_key(sample_api_key)
+    tampered = bytearray(result.shard_a)
+    tampered[0] ^= 0xFF
+    with pytest.raises(ShardTamperedError):
+        reconstruct_key(bytes(tampered), result.shard_b, result.commitment, result.nonce)
+
+
+def test_hmac_tampered_shard_b(sample_api_key: bytes) -> None:
+    """Flipping a byte in shard_b must cause ShardTamperedError."""
+    result = split_key(sample_api_key)
+    tampered = bytearray(result.shard_b)
+    tampered[0] ^= 0xFF
+    with pytest.raises(ShardTamperedError):
+        reconstruct_key(result.shard_a, bytes(tampered), result.commitment, result.nonce)
+
+
+# --- CRYP-03: Bytearray zeroing ---
+
+
+def test_reconstruct_returns_bytearray(sample_api_key: bytes) -> None:
+    """reconstruct_key must return a bytearray (mutable, so it can be zeroed)."""
+    result = split_key(sample_api_key)
+    key = reconstruct_key(result.shard_a, result.shard_b, result.commitment, result.nonce)
+    assert isinstance(key, bytearray)
+
+
+def test_bytearray_zeroed(sample_api_key: bytes) -> None:
+    """After exiting secure_key, the bytearray must be all zeros."""
+    result = split_key(sample_api_key)
+    key = reconstruct_key(result.shard_a, result.shard_b, result.commitment, result.nonce)
+    with secure_key(key) as k:
+        assert bytes(k) == sample_api_key  # still valid inside the block
+    assert all(b == 0 for b in key)
+
+
+# --- Edge cases ---
+
+
+def test_split_empty_key_raises() -> None:
+    """Splitting an empty key must raise ValueError."""
+    with pytest.raises(ValueError):
+        split_key(b"")
