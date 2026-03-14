@@ -85,3 +85,34 @@ def test_split_empty_key_raises() -> None:
     """Splitting an empty key must raise ValueError."""
     with pytest.raises(ValueError):
         split_key(b"")
+
+
+def test_reconstruct_length_mismatch() -> None:
+    """Mismatched shard lengths must raise ValueError, not silently truncate."""
+    result = split_key(b"sk-test-key-1234567890abcdef")
+    with pytest.raises(ValueError, match="Shard length mismatch"):
+        reconstruct_key(result.shard_a, result.shard_b[:5], result.commitment, result.nonce)
+
+
+def test_secure_key_rejects_non_bytearray() -> None:
+    """secure_key must reject non-bytearray inputs."""
+    with pytest.raises(TypeError, match="requires a bytearray"):
+        with secure_key(b"not-a-bytearray"):  # type: ignore[arg-type]
+            pass
+
+
+def test_bytearray_zeroed_on_exception(sample_api_key: bytes) -> None:
+    """secure_key must zero the buffer even when an exception is raised inside."""
+    result = split_key(sample_api_key)
+    key = reconstruct_key(result.shard_a, result.shard_b, result.commitment, result.nonce)
+    with pytest.raises(RuntimeError):
+        with secure_key(key):
+            raise RuntimeError("simulated error")
+    assert all(b == 0 for b in key)
+
+
+def test_roundtrip_with_long_key(sample_long_key: bytes) -> None:
+    """XOR roundtrip must work for longer keys (64 bytes)."""
+    result = split_key(sample_long_key)
+    key = reconstruct_key(result.shard_a, result.shard_b, result.commitment, result.nonce)
+    assert bytes(key) == sample_long_key

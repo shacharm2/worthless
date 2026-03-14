@@ -12,13 +12,10 @@ import hashlib
 import hmac
 import secrets
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Generator
+from typing import Generator
 
 from worthless.crypto.types import SplitResult
 from worthless.exceptions import ShardTamperedError
-
-if TYPE_CHECKING:
-    pass
 
 
 def split_key(api_key: bytes) -> SplitResult:
@@ -76,19 +73,31 @@ def reconstruct_key(
         A mutable bytearray containing the reconstructed key.
 
     Raises:
+        ValueError: If shard lengths do not match.
         ShardTamperedError: If the HMAC verification fails.
     """
+    if len(shard_a) != len(shard_b):
+        raise ValueError(
+            f"Shard length mismatch: shard_a={len(shard_a)}, shard_b={len(shard_b)}"
+        )
+
     # Reconstruct the key via XOR
     key = bytearray(a ^ b for a, b in zip(shard_a, shard_b))
 
-    # Verify HMAC commitment
-    expected = hmac.new(nonce, bytes(key), hashlib.sha256).digest()
-    if not hmac.compare_digest(expected, commitment):
-        # Zero the key material before raising
+    try:
+        # Verify HMAC commitment
+        expected = hmac.new(nonce, bytes(key), hashlib.sha256).digest()
+        if not hmac.compare_digest(expected, commitment):
+            raise ShardTamperedError(
+                "HMAC verification failed: shard data has been tampered with"
+            )
+    except ShardTamperedError:
         key[:] = b"\x00" * len(key)
-        raise ShardTamperedError(
-            "HMAC verification failed: shard data has been tampered with"
-        )
+        raise
+    except Exception:
+        # Zero key material on any unexpected error during verification
+        key[:] = b"\x00" * len(key)
+        raise
 
     return key
 
@@ -110,7 +119,12 @@ def secure_key(key_buf: bytearray) -> Generator[bytearray, None, None]:
 
     Yields:
         The same bytearray, for use within the block.
+
+    Raises:
+        TypeError: If key_buf is not a bytearray.
     """
+    if not isinstance(key_buf, bytearray):
+        raise TypeError(f"secure_key requires a bytearray, got {type(key_buf).__name__}")
     try:
         yield key_buf
     finally:
