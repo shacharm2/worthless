@@ -31,6 +31,20 @@ class OpenAIAdapter:
         return AdapterRequest(url=UPSTREAM_URL, headers=out_headers, body=body)
 
     async def relay_response(self, response: httpx.Response) -> AdapterResponse:
+        content_type = response.headers.get("content-type", "")
+        if "text/event-stream" in content_type:
+            return AdapterResponse(
+                status_code=response.status_code,
+                headers={
+                    "Content-Type": "text/event-stream; charset=utf-8",
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "Connection": "keep-alive",
+                },
+                body=b"",
+                is_streaming=True,
+                stream=response.aiter_bytes(),
+            )
         return AdapterResponse(
             status_code=response.status_code,
             headers=dict(response.headers),
