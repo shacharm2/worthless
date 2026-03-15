@@ -37,7 +37,7 @@ def split_key(api_key: bytes) -> SplitResult:
     mask = secrets.token_bytes(len(api_key))
 
     # XOR the key with the mask to produce shard_a
-    shard_a = bytes(a ^ b for a, b in zip(api_key, mask))
+    shard_a = bytearray(a ^ b for a, b in zip(api_key, mask))
     shard_b = mask
 
     # Create HMAC commitment over the original key
@@ -86,7 +86,7 @@ def reconstruct_key(
 
     try:
         # Verify HMAC commitment
-        expected = hmac.new(nonce, bytes(key), hashlib.sha256).digest()
+        expected = hmac.new(nonce, key, hashlib.sha256).digest()
         if not hmac.compare_digest(expected, commitment):
             raise ShardTamperedError(
                 "HMAC verification failed: shard data has been tampered with"
