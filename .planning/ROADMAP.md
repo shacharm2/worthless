@@ -99,7 +99,7 @@ Phases execute in numeric order. Phases 1 and 2 can be executed in parallel.
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Crypto Core and Storage | 0/2 | Not started | - |
-| 2. Provider Adapters | 0/2 | Not started | - |
+| 2. Provider Adapters | 1/2 | In progress | - |
 | 3. Proxy Service | 0/2 | Not started | - |
 | 4. CLI | 0/2 | Not started | - |
 | 5. Security Posture Documentation | 0/1 | Not started | - |
