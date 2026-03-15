@@ -38,7 +38,8 @@ node_modules/
 opencode.json
 
 # Developer tooling (symlinked from private repo)
-CLAUDE.md
+**/CLAUDE.md
+!/CLAUDE.md
 AGENTS.md
 
 # Project management (local-only)
@@ -48,6 +49,14 @@ ccpm/
 COMMANDS.md
 CONTEXT_ACCURACY.md
 LOCAL_MODE.md
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# uv
+uv.lock
 
 # Misc
 history.md

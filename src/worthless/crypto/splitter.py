@@ -34,15 +34,15 @@ def split_key(api_key: bytes) -> SplitResult:
         raise ValueError("Cannot split an empty key")
 
     # Generate a random mask (shard_b) using CSPRNG
-    mask = secrets.token_bytes(len(api_key))
+    mask = bytearray(secrets.token_bytes(len(api_key)))
 
     # XOR the key with the mask to produce shard_a
     shard_a = bytearray(a ^ b for a, b in zip(api_key, mask))
     shard_b = mask
 
     # Create HMAC commitment over the original key
-    nonce = secrets.token_bytes(32)
-    commitment = hmac.new(nonce, api_key, hashlib.sha256).digest()
+    nonce = bytearray(secrets.token_bytes(32))
+    commitment = bytearray(hmac.new(nonce, api_key, hashlib.sha256).digest())
 
     return SplitResult(
         shard_a=shard_a,

@@ -13,10 +13,10 @@ class SplitResult:
     of key material.
     """
 
-    shard_a: bytes
-    shard_b: bytes
-    commitment: bytes
-    nonce: bytes
+    shard_a: bytearray
+    shard_b: bytearray
+    commitment: bytearray
+    nonce: bytearray
 
     def __repr__(self) -> str:
         return (
