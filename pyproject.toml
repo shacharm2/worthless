@@ -27,8 +27,10 @@ test = [
     "syrupy",
 ]
 qa = [
+    "bandit",
+    "pip-audit",
     "schemathesis",
-    "semgrep",
+    "semgrep>=1.155.0",
     "mutmut",
 ]
 fuzz = [
