@@ -1,0 +1,1 @@
+"""Worthless encrypted shard storage."""
