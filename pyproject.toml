@@ -13,6 +13,26 @@ dev = [
     "pytest-asyncio",
     "ruff",
 ]
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-benchmark",
+    "pytest-console-scripts",
+    "pytest-cov",
+    "pytest-randomly",
+    "pytest-timeout",
+    "pytest-xdist",
+    "hypothesis",
+    "respx",
+    "syrupy",
+]
+qa = [
+    "schemathesis",
+    "mutmut",
+]
+fuzz = [
+    "atheris",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]
@@ -24,6 +44,20 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "--strict-config --strict-markers"
+markers = [
+    "benchmark: performance and latency regression checks",
+    "contract: schema-driven API and protocol checks",
+    "snapshot: request/response and stream shape snapshot checks",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["worthless"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "TID"]

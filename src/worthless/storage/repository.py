@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import aiosqlite
 from cryptography.fernet import Fernet
 
 from worthless.storage.schema import init_db
+
+
+class StoredShard(NamedTuple):
+    """Decrypted shard record returned by the repository."""
+
+    shard_b: bytes
+    commitment: bytes
+    nonce: bytes
+    provider: str
 
 
 class ShardRepository:
@@ -13,6 +24,8 @@ class ShardRepository:
 
     Each public method opens its own ``aiosqlite`` connection (simple PoC
     approach -- connection pooling is not needed at this stage).
+
+    .. todo:: Use a persistent connection or pool before production (STOR-01).
     """
 
     def __init__(self, db_path: str, fernet_key: bytes) -> None:
@@ -30,26 +43,23 @@ class ShardRepository:
     async def store(
         self,
         alias: str,
-        shard_b: bytes,
-        commitment: bytes,
-        nonce: bytes,
-        provider: str,
+        shard: StoredShard,
     ) -> None:
-        """Encrypt *shard_b* with Fernet and INSERT into the shards table.
+        """Encrypt *shard.shard_b* with Fernet and INSERT into the shards table.
 
         Raises ``aiosqlite.IntegrityError`` if *alias* already exists.
         """
-        shard_b_enc = self._fernet.encrypt(shard_b)
+        shard_b_enc = self._fernet.encrypt(shard.shard_b)
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 "INSERT INTO shards (key_alias, shard_b_enc, commitment, nonce, provider) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (alias, shard_b_enc, commitment, nonce, provider),
+                (alias, shard_b_enc, shard.commitment, shard.nonce, shard.provider),
             )
             await db.commit()
 
-    async def retrieve(self, alias: str) -> tuple[bytes, bytes, bytes, str] | None:
-        """Decrypt and return ``(shard_b, commitment, nonce, provider)`` or *None*."""
+    async def retrieve(self, alias: str) -> StoredShard | None:
+        """Decrypt and return a :class:`StoredShard` or *None*."""
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
@@ -61,7 +71,7 @@ class ShardRepository:
             if row is None:
                 return None
             shard_b = self._fernet.decrypt(row["shard_b_enc"])
-            return (shard_b, bytes(row["commitment"]), bytes(row["nonce"]), row["provider"])
+            return StoredShard(shard_b, bytes(row["commitment"]), bytes(row["nonce"]), row["provider"])
 
     async def list_keys(self) -> list[str]:
         """Return a list of all enrolled key aliases."""

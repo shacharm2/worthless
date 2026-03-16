@@ -6,6 +6,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from worthless.crypto import SplitResult, split_key
+from worthless.storage.repository import ShardRepository, StoredShard
 
 
 @pytest.fixture()
@@ -46,3 +47,21 @@ def fernet_key() -> bytes:
 def sample_split_result(sample_api_key: bytes) -> SplitResult:
     """A real SplitResult produced from the sample API key."""
     return split_key(sample_api_key)
+
+
+def stored_shard_from_split(sr: SplitResult, provider: str = "openai") -> StoredShard:
+    """Build a StoredShard from a SplitResult (converting bytearrays to bytes)."""
+    return StoredShard(
+        shard_b=bytes(sr.shard_b),
+        commitment=bytes(sr.commitment),
+        nonce=bytes(sr.nonce),
+        provider=provider,
+    )
+
+
+@pytest.fixture()
+async def repo(tmp_db_path: str, fernet_key: bytes) -> ShardRepository:
+    """An initialized ShardRepository backed by a temp database."""
+    r = ShardRepository(tmp_db_path, fernet_key)
+    await r.initialize()
+    return r
