@@ -38,9 +38,9 @@ node_modules/
 opencode.json
 
 # Developer tooling (symlinked from private repo)
-**/CLAUDE.md
-!/CLAUDE.md
+CLAUDE.md
 AGENTS.md
+TESTING.md
 
 # Project management (local-only)
 .planning/
@@ -57,6 +57,10 @@ __pycache__/
 
 # uv
 uv.lock
+
+# Test/coverage artifacts
+.coverage
+htmlcov/
 
 # Misc
 history.md
