@@ -2,6 +2,6 @@ reviews:
   auto_review:
     enabled: true
     base_branches:
-      - "**"
+      - ".*"
   review_status: true
   profile: chill
