@@ -8,6 +8,15 @@ from typing import Protocol
 
 import httpx
 
+INTERNAL_HEADER_PREFIX = "x-worthless-"
+
+SSE_RESPONSE_HEADERS: dict[str, str] = {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
 
 @dataclass(frozen=True)
 class AdapterRequest:
@@ -41,3 +50,31 @@ class ProviderAdapter(Protocol):
     ) -> AdapterRequest: ...
 
     async def relay_response(self, response: httpx.Response) -> AdapterResponse: ...
+
+
+def strip_internal_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Copy headers, dropping x-worthless-* and lowercasing keys."""
+    return {
+        low: v
+        for k, v in headers.items()
+        if not (low := k.lower()).startswith(INTERNAL_HEADER_PREFIX)
+    }
+
+
+async def relay_response(response: httpx.Response) -> AdapterResponse:
+    """Shared relay logic for all adapters — handles streaming and non-streaming."""
+    content_type = response.headers.get("content-type", "")
+    if "text/event-stream" in content_type:
+        return AdapterResponse(
+            status_code=response.status_code,
+            headers=dict(SSE_RESPONSE_HEADERS),
+            body=b"",
+            is_streaming=True,
+            stream=response.aiter_bytes(),
+        )
+    return AdapterResponse(
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        body=response.content,
+        is_streaming=False,
+    )

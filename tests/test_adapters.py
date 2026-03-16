@@ -150,13 +150,30 @@ class TestRegistry:
 
 
 class TestHeaderStripping:
-    def test_header_stripping(
+    def test_openai_header_stripping(
         self, sample_openai_body: bytes, sample_api_key: str
     ) -> None:
         """Headers matching x-worthless-* are stripped before forwarding."""
         adapter = OpenAIAdapter()
         req = adapter.prepare_request(
             body=sample_openai_body,
+            headers={
+                "content-type": "application/json",
+                "x-worthless-trace-id": "abc123",
+                "x-worthless-session": "xyz",
+            },
+            api_key=sample_api_key,
+        )
+        for key in req.headers:
+            assert not key.lower().startswith("x-worthless-")
+
+    def test_anthropic_header_stripping(
+        self, sample_anthropic_body: bytes, sample_api_key: str
+    ) -> None:
+        """Anthropic adapter also strips x-worthless-* headers."""
+        adapter = AnthropicAdapter()
+        req = adapter.prepare_request(
+            body=sample_anthropic_body,
             headers={
                 "content-type": "application/json",
                 "x-worthless-trace-id": "abc123",

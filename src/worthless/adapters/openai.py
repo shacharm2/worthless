@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import httpx
 
-from worthless.adapters.types import AdapterRequest, AdapterResponse
+from worthless.adapters.types import (
+    AdapterRequest,
+    AdapterResponse,
+    relay_response,
+    strip_internal_headers,
+)
 
 UPSTREAM_URL = "https://api.openai.com/v1/chat/completions"
 
@@ -19,35 +24,9 @@ class OpenAIAdapter:
         headers: dict[str, str],
         api_key: str,
     ) -> AdapterRequest:
-        out_headers: dict[str, str] = {}
-        for key, value in headers.items():
-            lower = key.lower()
-            if lower.startswith("x-worthless-"):
-                continue
-            out_headers[lower] = value
-
+        out_headers = strip_internal_headers(headers)
         out_headers["authorization"] = f"Bearer {api_key}"
-
         return AdapterRequest(url=UPSTREAM_URL, headers=out_headers, body=body)
 
     async def relay_response(self, response: httpx.Response) -> AdapterResponse:
-        content_type = response.headers.get("content-type", "")
-        if "text/event-stream" in content_type:
-            return AdapterResponse(
-                status_code=response.status_code,
-                headers={
-                    "Content-Type": "text/event-stream; charset=utf-8",
-                    "Cache-Control": "no-cache",
-                    "X-Accel-Buffering": "no",
-                    "Connection": "keep-alive",
-                },
-                body=b"",
-                is_streaming=True,
-                stream=response.aiter_bytes(),
-            )
-        return AdapterResponse(
-            status_code=response.status_code,
-            headers=dict(response.headers),
-            body=response.content,
-            is_streaming=False,
-        )
+        return await relay_response(response)

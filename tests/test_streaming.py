@@ -5,40 +5,11 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from collections.abc import AsyncIterator
+from tests.helpers import make_streaming_response
 
 from worthless.adapters.anthropic import AnthropicAdapter
 from worthless.adapters.openai import OpenAIAdapter
 from worthless.adapters.types import AdapterResponse
-
-
-# ---------------------------------------------------------------------------
-# Helper (duplicated from conftest to avoid import issues)
-# ---------------------------------------------------------------------------
-
-
-class _AsyncByteStream(httpx.AsyncByteStream):
-    """Mock async byte stream that yields chunks one at a time."""
-
-    def __init__(self, chunks: list[bytes]) -> None:
-        self._chunks = chunks
-
-    async def __aiter__(self) -> AsyncIterator[bytes]:
-        for chunk in self._chunks:
-            yield chunk
-
-
-def make_streaming_response(
-    chunks: list[bytes],
-    status_code: int = 200,
-) -> httpx.Response:
-    """Create a mock httpx.Response that streams SSE chunks."""
-    stream = _AsyncByteStream(chunks)
-    return httpx.Response(
-        status_code=status_code,
-        headers={"content-type": "text/event-stream"},
-        stream=stream,
-    )
 
 
 # ---------------------------------------------------------------------------
