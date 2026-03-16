@@ -10,12 +10,30 @@ import httpx
 
 INTERNAL_HEADER_PREFIX = "x-worthless-"
 
+# RFC 2616 hop-by-hop headers that must not be forwarded by proxies.
+_HOP_BY_HOP_HEADERS: frozenset[str] = frozenset(
+    {
+        "connection",
+        "transfer-encoding",
+        "te",
+        "upgrade",
+        "proxy-authorization",
+        "host",
+        "keep-alive",
+        "trailer",
+        "proxy-connection",
+    }
+)
+
 SSE_RESPONSE_HEADERS: dict[str, str] = {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache",
     "X-Accel-Buffering": "no",
     "Connection": "keep-alive",
 }
+
+
+_SENSITIVE_HEADER_KEYS: frozenset[str] = frozenset({"authorization", "x-api-key"})
 
 
 @dataclass(frozen=True)
@@ -25,6 +43,19 @@ class AdapterRequest:
     url: str
     headers: dict[str, str]
     body: bytes
+
+    def __repr__(self) -> str:
+        redacted: dict[str, str] = {}
+        for k, v in self.headers.items():
+            if k.lower() in _SENSITIVE_HEADER_KEYS:
+                redacted[k] = "REDACTED"
+            else:
+                redacted[k] = v
+        return (
+            f"AdapterRequest(url={self.url!r}, "
+            f"headers={redacted!r}, "
+            f"body={self.body!r})"
+        )
 
 
 @dataclass(frozen=True)
@@ -53,18 +84,20 @@ class ProviderAdapter(Protocol):
 
 
 def strip_internal_headers(headers: dict[str, str]) -> dict[str, str]:
-    """Copy headers, dropping x-worthless-* and lowercasing keys."""
+    """Copy headers, dropping x-worthless-*, hop-by-hop headers, and lowercasing keys."""
     return {
         low: v
         for k, v in headers.items()
         if not (low := k.lower()).startswith(INTERNAL_HEADER_PREFIX)
+        and low not in _HOP_BY_HOP_HEADERS
     }
 
 
 async def relay_response(response: httpx.Response) -> AdapterResponse:
     """Shared relay logic for all adapters — handles streaming and non-streaming."""
     content_type = response.headers.get("content-type", "")
-    if "text/event-stream" in content_type:
+    ct_main = content_type.split(";")[0].strip().lower()
+    if ct_main == "text/event-stream":
         return AdapterResponse(
             status_code=response.status_code,
             headers=dict(SSE_RESPONSE_HEADERS),
