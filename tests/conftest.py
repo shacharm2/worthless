@@ -13,3 +13,8 @@ def sample_api_key() -> bytes:
 def sample_long_key() -> bytes:
     """A 64-byte key for testing longer keys."""
     return b"sk-long-" + b"A" * 56
+
+
+def assert_zeroed(buf: bytearray) -> None:
+    """Assert every byte in *buf* is zero."""
+    assert all(b == 0 for b in buf), f"Buffer not zeroed: {buf[:8].hex()}..."

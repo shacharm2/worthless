@@ -14,7 +14,7 @@ import secrets
 from contextlib import contextmanager
 from typing import Generator
 
-from worthless.crypto.types import SplitResult
+from worthless.crypto.types import SplitResult, _zero_buf
 from worthless.exceptions import ShardTamperedError
 
 
@@ -53,15 +53,19 @@ def split_key(api_key: bytes) -> SplitResult:
 
 
 def reconstruct_key(
-    shard_a: bytes,
-    shard_b: bytes,
-    commitment: bytes,
-    nonce: bytes,
+    shard_a: bytes | bytearray,
+    shard_b: bytes | bytearray,
+    commitment: bytes | bytearray,
+    nonce: bytes | bytearray,
 ) -> bytearray:
     """Reconstruct the original API key from two XOR shards.
 
-    Verifies the HMAC commitment before returning the key. If verification
-    fails, the reconstructed material is zeroed and ShardTamperedError is raised.
+    Verifies the HMAC commitment before returning the key.  If verification
+    fails, all intermediate material is zeroed and ShardTamperedError is raised.
+
+    Accepts both ``bytes`` and ``bytearray`` for all inputs — callers are not
+    forced to pre-convert, but note that immutable ``bytes`` inputs cannot be
+    zeroed by this function (caller's responsibility per SR-01).
 
     Args:
         shard_a: The first shard (key XOR mask).
@@ -83,21 +87,20 @@ def reconstruct_key(
 
     # Reconstruct the key via XOR
     key = bytearray(a ^ b for a, b in zip(shard_a, shard_b))
+    expected = bytearray()
 
     try:
         # Verify HMAC commitment
-        expected = hmac.new(nonce, key, hashlib.sha256).digest()
+        expected = bytearray(hmac.new(nonce, key, hashlib.sha256).digest())
         if not hmac.compare_digest(expected, commitment):
             raise ShardTamperedError(
                 "HMAC verification failed: shard data has been tampered with"
             )
-    except ShardTamperedError:
-        key[:] = b"\x00" * len(key)
-        raise
     except Exception:
-        # Zero key material on any unexpected error during verification
-        key[:] = b"\x00" * len(key)
+        _zero_buf(key)
         raise
+    finally:
+        _zero_buf(expected)
 
     return key
 
@@ -128,4 +131,4 @@ def secure_key(key_buf: bytearray) -> Generator[bytearray, None, None]:
     try:
         yield key_buf
     finally:
-        key_buf[:] = b"\x00" * len(key_buf)
+        _zero_buf(key_buf)
