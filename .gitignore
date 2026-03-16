@@ -11,6 +11,7 @@ node_modules/
 
 # Environment variables
 .env
+.mcp.json
 
 # Editor directories and files
 .idea
@@ -39,6 +40,8 @@ opencode.json
 # Developer tooling (symlinked from private repo)
 CLAUDE.md
 AGENTS.md
+TESTING.md
+SECURITY_RULES.md
 
 # Project management (local-only)
 .planning/
@@ -47,6 +50,18 @@ ccpm/
 COMMANDS.md
 CONTEXT_ACCURACY.md
 LOCAL_MODE.md
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# uv
+uv.lock
+
+# Test/coverage artifacts
+.coverage
+htmlcov/
 
 # Misc
 history.md
