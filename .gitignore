@@ -41,10 +41,8 @@ opencode.json
 CLAUDE.md
 AGENTS.md
 TESTING.md
-SECURITY_RULES.md
 
 # Project management (local-only)
-.planning/
 ccpm/
 .claude/
 COMMANDS.md
