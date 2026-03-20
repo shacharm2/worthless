@@ -60,6 +60,7 @@ uv.lock
 # Test/coverage artifacts
 .coverage
 htmlcov/
+.hypothesis/
 
 # Misc
 history.md
