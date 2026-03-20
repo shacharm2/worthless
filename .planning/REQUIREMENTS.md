@@ -11,7 +11,7 @@
 - [ ] **CRYP-02**: HMAC commitment verifies shard integrity on reconstruction
 - [ ] **CRYP-03**: Reconstructed key stored in `bytearray`, zeroed after use (documented as best-effort in Python)
 - [ ] **CRYP-04**: `secrets` module enforced, `random` module banned via lint rule
-- [ ] **CRYP-05**: Rules engine evaluates request BEFORE Shard B is decrypted (gate-before-reconstruct)
+- [x] **CRYP-05**: Rules engine evaluates request BEFORE Shard B is decrypted (gate-before-reconstruct)
 
 ### Proxy
 
@@ -79,7 +79,7 @@
 | CRYP-02 | Phase 1 | Pending |
 | CRYP-03 | Phase 1 | Pending |
 | CRYP-04 | Phase 1 | Pending |
-| CRYP-05 | Phase 3 | Pending |
+| CRYP-05 | Phase 3 | Complete |
 | PROX-01 | Phase 2 | Complete |
 | PROX-02 | Phase 2 | Complete |
 | PROX-03 | Phase 2 | Complete |
