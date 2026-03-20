@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in-progress
-stopped_at: Completed 03-01 proxy foundation
-last_updated: "2026-03-20T19:20:11Z"
-last_activity: 2026-03-20 — Completed 03-01 rules engine, metering, adapter bytearray
+stopped_at: Completed 03-02 proxy app with gate-before-reconstruct
+last_updated: "2026-03-20T21:48:00Z"
+last_activity: 2026-03-20 — Completed 03-02 FastAPI proxy app with all three architectural invariants
 progress:
   total_phases: 5
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 6
-  completed_plans: 5
-  percent: 35
+  completed_plans: 6
+  percent: 50
 ---
 
 # Project State
@@ -25,26 +25,26 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 
 ## Current Position
 
-Phase: 3 of 5 (Proxy Service)
-Plan: 1 of 2 in current phase
-Status: Plan 03-01 Complete
-Last activity: 2026-03-20 — Completed 03-01 rules engine, metering, adapter bytearray
+Phase: 3 of 5 (Proxy Service) -- COMPLETE
+Plan: 2 of 2 in current phase -- COMPLETE
+Status: Phase 03 Complete
+Last activity: 2026-03-20 — Completed 03-02 FastAPI proxy app with all three architectural invariants
 
-Progress: [████░░░░░░] 35%
+Progress: [█████░░░░░] 50%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 5
-- Average duration: 8 min
-- Total execution time: 0.53 hours
+- Total plans completed: 6
+- Average duration: 9 min
+- Total execution time: 0.78 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 02-provider-adapters | 2 | 6 min | 3 min |
-| 03-proxy-service | 1 | 26 min | 26 min |
+| 03-proxy-service | 2 | 41 min | 20 min |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -70,6 +70,9 @@ Recent decisions affecting current work:
 - [03-01]: ErrorResponse is a lightweight dataclass, not FastAPI JSONResponse -- rules engine testable without web framework
 - [03-01]: RateLimitRule uses in-memory sliding window (not SQLite) for sub-millisecond evaluation
 - [03-01]: Adapter api_key decode happens only at header insertion point per SR-01
+- [03-02]: ASGITransport does not run lifespan -- tests manually set app.state
+- [03-02]: Pre-computed uniform 401 body ensures byte-identical anti-enumeration responses
+- [03-02]: Streaming metering via BackgroundTask, non-streaming via create_task
 
 ### Pending Todos
 
@@ -82,6 +85,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-20T19:20:11Z
-Stopped at: Completed 03-01-PLAN.md
-Resume file: .planning/phases/03-proxy-service/03-01-SUMMARY.md
+Last session: 2026-03-20T21:48:00Z
+Stopped at: Completed 03-02-PLAN.md (Phase 03 complete)
+Resume file: .planning/phases/03-proxy-service/03-02-SUMMARY.md

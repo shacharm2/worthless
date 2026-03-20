@@ -18,8 +18,8 @@
 - [x] **PROX-01**: OpenAI-compatible endpoint (`/v1/chat/completions`)
 - [x] **PROX-02**: Anthropic-compatible endpoint (`/v1/messages`)
 - [x] **PROX-03**: SSE streaming relay for both providers
-- [ ] **PROX-04**: Stack-agnostic via `BASE_URL` env var rewriting (no SDK import needed)
-- [ ] **PROX-05**: Reconstruction happens server-side, key never returns to client
+- [x] **PROX-04**: Stack-agnostic via `BASE_URL` env var rewriting (no SDK import needed)
+- [x] **PROX-05**: Reconstruction happens server-side, key never returns to client
 
 ### CLI
 
@@ -83,8 +83,8 @@
 | PROX-01 | Phase 2 | Complete |
 | PROX-02 | Phase 2 | Complete |
 | PROX-03 | Phase 2 | Complete |
-| PROX-04 | Phase 3 | Pending |
-| PROX-05 | Phase 3 | Pending |
+| PROX-04 | Phase 3 | Complete |
+| PROX-05 | Phase 3 | Complete |
 | CLI-01 | Phase 4 | Pending |
 | CLI-02 | Phase 4 | Pending |
 | CLI-03 | Phase 4 | Pending |
