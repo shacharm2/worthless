@@ -9,7 +9,6 @@ Tests prove the three architectural invariants:
 from __future__ import annotations
 
 import base64
-import json
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -74,10 +73,28 @@ async def enrolled_alias(
 
 
 @pytest.fixture()
-async def proxy_client(proxy_settings: ProxySettings, repo):
-    """httpx.AsyncClient wired to the proxy app via ASGITransport."""
+async def proxy_app(proxy_settings: ProxySettings, repo):
+    """A proxy app with state pre-initialized (ASGITransport skips lifespan)."""
+    from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
+
     app = create_app(proxy_settings)
-    transport = httpx.ASGITransport(app=app)
+    # Manually set up state since ASGITransport doesn't run lifespan
+    app.state.repo = repo
+    app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
+    app.state.rules_engine = RulesEngine(
+        rules=[
+            SpendCapRule(db_path=proxy_settings.db_path),
+            RateLimitRule(default_rps=proxy_settings.default_rate_limit_rps),
+        ]
+    )
+    yield app
+    await app.state.httpx_client.aclose()
+
+
+@pytest.fixture()
+async def proxy_client(proxy_app):
+    """httpx.AsyncClient wired to the proxy app via ASGITransport."""
+    transport = httpx.ASGITransport(app=proxy_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
 
@@ -93,15 +110,28 @@ class TestHealthEndpoints:
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
-    async def test_readyz_returns_503_when_no_keys(self, proxy_settings: ProxySettings):
+    async def test_readyz_returns_503_when_no_keys(
+        self, proxy_settings: ProxySettings, tmp_db_path, fernet_key
+    ):
         """readyz should return 503 when no keys are enrolled."""
+        from worthless.proxy.rules import RulesEngine
+        from worthless.storage.repository import ShardRepository
+
         app = create_app(proxy_settings)
+        # Manually set state for ASGITransport
+        empty_repo = ShardRepository(tmp_db_path, fernet_key)
+        await empty_repo.initialize()
+        app.state.repo = empty_repo
+        app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
+        app.state.rules_engine = RulesEngine(rules=[])
+
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport, base_url="http://test"
         ) as client:
             resp = await client.get("/readyz")
             assert resp.status_code == 503
+        await app.state.httpx_client.aclose()
 
     async def test_readyz_returns_200_with_keys(
         self, proxy_client: httpx.AsyncClient, enrolled_alias
@@ -133,32 +163,22 @@ class TestUniformAuth:
         assert resp.status_code == 401
 
     async def test_missing_shard_a_returns_401(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
+        self, proxy_client: httpx.AsyncClient, proxy_app, enrolled_alias
     ):
         alias, _, _ = enrolled_alias
+        # Remove the shard_a file so neither header nor file provides shard_a
+        import os
+
+        shard_a_path = os.path.join(proxy_app.state.settings.shard_a_dir, alias)
+        if os.path.exists(shard_a_path):
+            os.remove(shard_a_path)
+
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={"x-worthless-alias": alias},
             content=b"{}",
         )
-        # No shard_a header, and we haven't written a file fallback for this test
-        # The enrolled_alias fixture does write the file, so we need a fresh alias
-        # that has shard_b but no shard_a file
-        # We test by removing the shard_a file
-        import os
-
-        shard_a_path = os.path.join(
-            proxy_client._transport.app.state.settings.shard_a_dir, alias  # type: ignore[attr-defined]
-        )
-        if os.path.exists(shard_a_path):
-            os.remove(shard_a_path)
-
-        resp2 = await proxy_client.post(
-            "/v1/chat/completions",
-            headers={"x-worthless-alias": alias},
-            content=b"{}",
-        )
-        assert resp2.status_code == 401
+        assert resp.status_code == 401
 
     async def test_all_401_bodies_identical(
         self, proxy_client: httpx.AsyncClient, enrolled_alias
@@ -194,7 +214,7 @@ class TestUniformAuth:
 class TestGateBeforeReconstruct:
     @respx.mock
     async def test_spend_cap_denial_skips_reconstruct(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
+        self, proxy_app, enrolled_alias
     ):
         """When rules engine denies (spend cap), reconstruct_key is never called."""
         alias, shard_a_b64, _ = enrolled_alias
@@ -203,7 +223,7 @@ class TestGateBeforeReconstruct:
             "worthless.proxy.app.reconstruct_key", wraps=None
         ) as mock_reconstruct:
             # Override the rules engine to deny
-            proxy_client._transport.app.state.rules_engine = type(  # type: ignore[attr-defined]
+            proxy_app.state.rules_engine = type(
                 "MockEngine", (), {"evaluate": AsyncMock(return_value=ErrorResponse(
                     status_code=402,
                     body=b'{"error": "spend cap exceeded"}',
@@ -211,20 +231,24 @@ class TestGateBeforeReconstruct:
                 ))}
             )()
 
-            resp = await proxy_client.post(
-                "/v1/chat/completions",
-                headers={
-                    "x-worthless-alias": alias,
-                    "x-worthless-shard-a": shard_a_b64,
-                },
-                content=b'{"model": "gpt-4", "messages": []}',
-            )
+            transport = httpx.ASGITransport(app=proxy_app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "x-worthless-alias": alias,
+                        "x-worthless-shard-a": shard_a_b64,
+                    },
+                    content=b'{"model": "gpt-4", "messages": []}',
+                )
             assert resp.status_code == 402
             mock_reconstruct.assert_not_called()
 
     @respx.mock
     async def test_rate_limit_denial_skips_reconstruct(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
+        self, proxy_app, enrolled_alias
     ):
         """When rules engine denies (rate limit), reconstruct_key is never called."""
         alias, shard_a_b64, _ = enrolled_alias
@@ -232,7 +256,7 @@ class TestGateBeforeReconstruct:
         with patch(
             "worthless.proxy.app.reconstruct_key", wraps=None
         ) as mock_reconstruct:
-            proxy_client._transport.app.state.rules_engine = type(  # type: ignore[attr-defined]
+            proxy_app.state.rules_engine = type(
                 "MockEngine", (), {"evaluate": AsyncMock(return_value=ErrorResponse(
                     status_code=429,
                     body=b'{"error": "rate limit exceeded"}',
@@ -240,14 +264,18 @@ class TestGateBeforeReconstruct:
                 ))}
             )()
 
-            resp = await proxy_client.post(
-                "/v1/chat/completions",
-                headers={
-                    "x-worthless-alias": alias,
-                    "x-worthless-shard-a": shard_a_b64,
-                },
-                content=b'{"model": "gpt-4", "messages": []}',
-            )
+            transport = httpx.ASGITransport(app=proxy_app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "x-worthless-alias": alias,
+                        "x-worthless-shard-a": shard_a_b64,
+                    },
+                    content=b'{"model": "gpt-4", "messages": []}',
+                )
             assert resp.status_code == 429
             mock_reconstruct.assert_not_called()
 
@@ -310,10 +338,9 @@ class TestTransparentRouting:
 
     @respx.mock
     async def test_anthropic_path_routes_to_anthropic(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
+        self, repo, proxy_settings: ProxySettings, proxy_app
     ):
         """Enroll an Anthropic key and verify routing."""
-        # We need an anthropic-enrolled alias
         from worthless.crypto import split_key
         from worthless.storage.repository import StoredShard
 
@@ -326,15 +353,14 @@ class TestTransparentRouting:
             nonce=bytes(sr.nonce),
             provider="anthropic",
         )
-        app = proxy_client._transport.app  # type: ignore[attr-defined]
-        await app.state.repo.store("ant-key", shard)
+        await repo.store("ant-key", shard)
 
         shard_a_b64 = base64.b64encode(bytes(sr.shard_a)).decode()
 
         import os
 
-        os.makedirs(app.state.settings.shard_a_dir, exist_ok=True)
-        with open(os.path.join(app.state.settings.shard_a_dir, "ant-key"), "wb") as f:
+        os.makedirs(proxy_settings.shard_a_dir, exist_ok=True)
+        with open(os.path.join(proxy_settings.shard_a_dir, "ant-key"), "wb") as f:
             f.write(bytes(sr.shard_a))
 
         route = respx.post("https://api.anthropic.com/v1/messages").mock(
@@ -344,15 +370,19 @@ class TestTransparentRouting:
             )
         )
 
-        await proxy_client.post(
-            "/v1/messages",
-            headers={
-                "x-worthless-alias": "ant-key",
-                "x-worthless-shard-a": shard_a_b64,
-                "content-type": "application/json",
-            },
-            content=b'{"model": "claude-3-5-sonnet-20241022", "max_tokens": 10, "messages": []}',
-        )
+        transport = httpx.ASGITransport(app=proxy_app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            await client.post(
+                "/v1/messages",
+                headers={
+                    "x-worthless-alias": "ant-key",
+                    "x-worthless-shard-a": shard_a_b64,
+                    "content-type": "application/json",
+                },
+                content=b'{"model": "claude-3-5-sonnet-20241022", "max_tokens": 10}',
+            )
         assert route.called
 
     async def test_unknown_path_returns_404(
@@ -443,16 +473,23 @@ class TestKeyNotInResponse:
 
 class TestSecurity:
     async def test_tls_enforcement_when_not_insecure(
-        self, tmp_db_path, fernet_key, repo, enrolled_alias, tmp_path
+        self, tmp_db_path, fernet_key, repo, enrolled_alias, proxy_settings
     ):
         """Without allow_insecure, non-TLS requests are rejected."""
+        from worthless.proxy.rules import RulesEngine
+
         settings = ProxySettings(
             db_path=tmp_db_path,
             fernet_key=fernet_key.decode(),
             allow_insecure=False,
-            shard_a_dir=str(tmp_path / "shard_a"),
+            shard_a_dir=proxy_settings.shard_a_dir,
         )
         app = create_app(settings)
+        # Manually set state
+        app.state.repo = repo
+        app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
+        app.state.rules_engine = RulesEngine(rules=[])
+
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport, base_url="http://test"
@@ -468,6 +505,7 @@ class TestSecurity:
             )
             # Should get uniform 401 (no info leak about TLS requirement)
             assert resp.status_code == 401
+        await app.state.httpx_client.aclose()
 
     async def test_query_params_stripped_for_adapter_lookup(
         self, proxy_client: httpx.AsyncClient, enrolled_alias
