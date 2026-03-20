@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from worthless.adapters.anthropic import AnthropicAdapter
 from worthless.adapters.openai import OpenAIAdapter
 

@@ -22,10 +22,10 @@ class OpenAIAdapter:
         *,
         body: bytes,
         headers: dict[str, str],
-        api_key: str,
+        api_key: bytearray,
     ) -> AdapterRequest:
         out_headers = strip_internal_headers(headers)
-        out_headers["authorization"] = f"Bearer {api_key}"
+        out_headers["authorization"] = f"Bearer {api_key.decode()}"
         return AdapterRequest(url=UPSTREAM_URL, headers=out_headers, body=body)
 
     async def relay_response(self, response: httpx.Response) -> AdapterResponse:
