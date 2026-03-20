@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -188,7 +186,8 @@ async def _setup_spend_db(
             )
             if total_tokens > 0:
                 await db.execute(
-                    "INSERT INTO spend_log (key_alias, tokens, model, provider) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO spend_log (key_alias, tokens, model, provider) "
+                    "VALUES (?, ?, ?, ?)",
                     (alias, total_tokens, "gpt-4", "openai"),
                 )
         await db.commit()

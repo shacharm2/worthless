@@ -125,7 +125,10 @@ async def test_record_spend(tmp_path):
     await record_spend(db_path, alias="k1", tokens=100, model="gpt-4", provider="openai")
 
     async with aiosqlite.connect(db_path) as db:
-        async with db.execute("SELECT tokens, model, provider FROM spend_log WHERE key_alias = ?", ("k1",)) as cur:
+        async with db.execute(
+            "SELECT tokens, model, provider FROM spend_log WHERE key_alias = ?",
+            ("k1",),
+        ) as cur:
             row = await cur.fetchone()
     assert row is not None
     assert row[0] == 100
