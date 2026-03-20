@@ -41,11 +41,13 @@ _SAFE_HEADERS = st.dictionaries(
     values=_HEADER_VALUES,
     max_size=6,
 )
-_API_KEYS = st.text(
+_API_KEY_STRINGS = st.text(
     alphabet=string.ascii_letters + string.digits + "-_",
     min_size=8,
     max_size=48,
 )
+_API_KEYS = _API_KEY_STRINGS.map(lambda s: bytearray(s.encode()))
+_API_KEY_STRINGS_FOR_HEADERS = _API_KEY_STRINGS
 
 
 def _apply_case_mask(text: str, mask: list[bool]) -> str:
@@ -117,22 +119,22 @@ class TestStripInternalHeadersProperties:
 class TestPrepareRequestProperties:
     @given(body=st.binary(max_size=4096), headers=_SAFE_HEADERS, api_key=_API_KEYS)
     def test_openai_prepare_request_preserves_body_and_sets_auth(
-        self, body: bytes, headers: dict[str, str], api_key: str
+        self, body: bytes, headers: dict[str, str], api_key: bytearray
     ) -> None:
         req = OpenAIAdapter().prepare_request(body=body, headers=headers, api_key=api_key)
 
         assert req.body == body
-        assert req.headers["authorization"] == f"Bearer {api_key}"
+        assert req.headers["authorization"] == f"Bearer {api_key.decode()}"
         assert req.url.endswith("/v1/chat/completions")
 
     @given(body=st.binary(max_size=4096), headers=_SAFE_HEADERS, api_key=_API_KEYS)
     def test_anthropic_prepare_request_adds_default_version_when_missing(
-        self, body: bytes, headers: dict[str, str], api_key: str
+        self, body: bytes, headers: dict[str, str], api_key: bytearray
     ) -> None:
         req = AnthropicAdapter().prepare_request(body=body, headers=headers, api_key=api_key)
 
         assert req.body == body
-        assert req.headers["x-api-key"] == api_key
+        assert req.headers["x-api-key"] == api_key.decode()
         assert req.headers["anthropic-version"] == DEFAULT_ANTHROPIC_VERSION
         assert req.url.endswith("/v1/messages")
 
@@ -143,7 +145,7 @@ class TestPrepareRequestProperties:
         version=_HEADER_VALUES.filter(bool),
     )
     def test_anthropic_prepare_request_preserves_explicit_version(
-        self, body: bytes, headers: dict[str, str], api_key: str, version: str
+        self, body: bytes, headers: dict[str, str], api_key: bytearray, version: str
     ) -> None:
         raw_headers = dict(headers)
         raw_headers["anthropic-version"] = version
@@ -159,8 +161,8 @@ class TestPrepareRequestProperties:
 
 class TestAdapterRequestProperties:
     @given(
-        authorization=_API_KEYS,
-        anthropic_key=_API_KEYS,
+        authorization=_API_KEY_STRINGS_FOR_HEADERS,
+        anthropic_key=_API_KEY_STRINGS_FOR_HEADERS,
         other_headers=_SAFE_HEADERS,
     )
     def test_repr_redacts_sensitive_headers(
