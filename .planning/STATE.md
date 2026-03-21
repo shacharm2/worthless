@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 Phase: 3.1 of 5 (Proxy Hardening)
 Plan: 3 of 3 in current phase -- COMPLETE
 Status: Executing Phase 03.1
-Last activity: 2026-03-21 — Completed 03.1-03 middleware and rules hardening
+Last activity: 2026-03-21 — Completed 03.1-02 proxy pipeline hardening (SSE streaming, gate ordering, zeroing, error handling)
 
 Progress: [██████▓░░░] 67%
 
@@ -81,6 +81,10 @@ Recent decisions affecting current work:
 - [03.1-03]: Fail-closed pattern: SpendCapRule returns 402 on any DB error
 - [03.1-03]: RateLimitRule uses plain dict with periodic TTL cleanup to bound memory
 - [03.1-03]: BodySizeLimitMiddleware checks Content-Length header only (streaming uploads pass through)
+- [03.1-02]: Anti-enumeration: unknown endpoints return 401 not 404 to prevent endpoint discovery
+- [03.1-02]: Upstream error sanitization: keep status code, replace message with generic "upstream provider error"
+- [03.1-02]: relay_response uses aread() for non-SSE responses when sent with stream=True
+- [03.1-02]: Shard material zeroed in finally block covering entire request lifecycle
 
 ### Roadmap Evolution
 
@@ -97,6 +101,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-21T12:33:58Z
-Stopped at: Completed 03.1-03 middleware and rules hardening plan
-Resume file: .planning/phases/03.1-proxy-hardening/03.1-03-SUMMARY.md
+Last session: 2026-03-21T12:35:04Z
+Stopped at: Completed 03.1-02 proxy pipeline hardening plan
+Resume file: .planning/phases/03.1-proxy-hardening/03.1-02-SUMMARY.md
