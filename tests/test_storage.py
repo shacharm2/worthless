@@ -5,7 +5,7 @@ from __future__ import annotations
 import aiosqlite
 import pytest
 
-from worthless.storage.repository import ShardRepository
+from worthless.storage.repository import EncryptedShard, ShardRepository, StoredShard
 
 from tests.conftest import stored_shard_from_split
 
@@ -122,3 +122,74 @@ async def test_list_enrolled_keys(
 
     keys = await repo.list_keys()
     assert sorted(keys) == ["key-a", "key-b"]
+
+
+# ------------------------------------------------------------------
+# fetch_encrypted + decrypt_shard split (CRYP-05)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_encrypted_returns_encrypted_shard(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """fetch_encrypted returns an EncryptedShard with raw encrypted bytes."""
+    shard = stored_shard_from_split(sample_split_result)
+    await repo.store("enc1", shard)
+
+    enc = await repo.fetch_encrypted("enc1")
+    assert enc is not None
+    assert isinstance(enc, EncryptedShard)
+    # The encrypted blob must differ from the plaintext shard_b
+    assert enc.shard_b_enc != bytes(shard.shard_b)
+    assert enc.provider == "openai"
+
+
+@pytest.mark.asyncio
+async def test_fetch_encrypted_returns_none_for_unknown(
+    repo: ShardRepository,
+) -> None:
+    """fetch_encrypted returns None for an unknown alias."""
+    assert await repo.fetch_encrypted("no-such") is None
+
+
+@pytest.mark.asyncio
+async def test_decrypt_shard_returns_bytearray_stored_shard(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """decrypt_shard takes EncryptedShard and returns StoredShard with bytearray fields."""
+    shard = stored_shard_from_split(sample_split_result)
+    await repo.store("dec1", shard)
+
+    enc = await repo.fetch_encrypted("dec1")
+    assert enc is not None
+
+    result = repo.decrypt_shard(enc)
+    assert isinstance(result, StoredShard)
+    assert isinstance(result.shard_b, bytearray)
+    assert isinstance(result.commitment, bytearray)
+    assert isinstance(result.nonce, bytearray)
+    assert result.provider == "openai"
+    # Content must match original
+    assert bytes(result.shard_b) == bytes(shard.shard_b)
+    assert bytes(result.commitment) == bytes(shard.commitment)
+    assert bytes(result.nonce) == bytes(shard.nonce)
+
+
+@pytest.mark.asyncio
+async def test_retrieve_backward_compat_with_bytearray(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """retrieve() still works and returns StoredShard with bytearray fields."""
+    shard = stored_shard_from_split(sample_split_result)
+    await repo.store("compat1", shard)
+
+    result = await repo.retrieve("compat1")
+    assert result is not None
+    assert isinstance(result.shard_b, bytearray)
+    assert isinstance(result.commitment, bytearray)
+    assert isinstance(result.nonce, bytearray)
+    assert bytes(result.shard_b) == bytes(shard.shard_b)
