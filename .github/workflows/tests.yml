@@ -40,5 +40,5 @@ jobs:
         env:
           UV_CACHE_DIR: /tmp/uv-cache
         run: |
-          uv sync --extra test
+          uv sync --extra dev --extra test
           uv run pytest
