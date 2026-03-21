@@ -66,8 +66,8 @@ Plans:
 
 ### Phase 03.1: Proxy Hardening (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** Fix all blocker, high, and medium-severity findings from the Phase 3 multi-agent review — SSE streaming, CRYP-05 gate ordering, SR-01 bytearray compliance, error handling, anti-enumeration, performance, and code quality
+**Requirements**: CRYP-05, PROX-04, PROX-05
 **Depends on:** Phase 3
 **Plans:** 0 plans
 
