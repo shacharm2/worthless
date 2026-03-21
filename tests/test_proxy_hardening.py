@@ -654,6 +654,52 @@ class TestErrorHandling:
         )
         assert resp.status_code == 502
 
+    @respx.mock
+    async def test_generic_http_error_returns_502(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Generic httpx.HTTPError (not Timeout/Connect) returns 502."""
+        alias, shard_a_b64, _ = enrolled_alias
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=httpx.HTTPError("some http error")
+        )
+
+        resp = await proxy_client.post(
+            "/v1/chat/completions",
+            headers={
+                "x-worthless-alias": alias,
+                "x-worthless-shard-a": shard_a_b64,
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 502
+
+
+# ------------------------------------------------------------------
+# Invalid shard_a header
+# ------------------------------------------------------------------
+
+
+class TestInvalidShardA:
+    async def test_invalid_base64_shard_a_returns_401(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Invalid base64 in x-worthless-shard-a header returns uniform 401."""
+        alias, _, _ = enrolled_alias
+
+        resp = await proxy_client.post(
+            "/v1/chat/completions",
+            headers={
+                "x-worthless-alias": alias,
+                "x-worthless-shard-a": "!!!not-valid-base64!!!",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 401
+
 
 # ------------------------------------------------------------------
 # M-4: Upstream error sanitization
@@ -691,6 +737,34 @@ class TestUpstreamSanitization:
         )
         assert b"Internal server details leaked" not in resp.content
         assert resp.status_code == 500
+
+    @respx.mock
+    async def test_malformed_upstream_error_uses_fallback(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Malformed upstream error body falls back to generic error."""
+        alias, shard_a_b64, _ = enrolled_alias
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                500,
+                content=b"not valid json at all",
+                headers={"content-type": "text/plain"},
+            )
+        )
+
+        resp = await proxy_client.post(
+            "/v1/chat/completions",
+            headers={
+                "x-worthless-alias": alias,
+                "x-worthless-shard-a": shard_a_b64,
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 500
+        body = json.loads(resp.content)
+        assert body["error"]["message"] == "upstream provider error"
 
 
 class TestUpstreamSanitizationAnthropic:
