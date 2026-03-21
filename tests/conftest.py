@@ -37,9 +37,9 @@ def sample_anthropic_body() -> bytes:
 
 
 @pytest.fixture
-def sample_api_key() -> str:
-    """A fake API key string for adapter tests."""
-    return "sk-test-fake-key-1234567890"
+def sample_api_key() -> bytearray:
+    """A fake API key bytearray for adapter tests (SR-01: no immutable secrets)."""
+    return bytearray(b"sk-test-fake-key-1234567890")
 
 
 @pytest.fixture

@@ -18,6 +18,22 @@ CREATE TABLE IF NOT EXISTS metadata (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS spend_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_alias  TEXT NOT NULL,
+    tokens     INTEGER NOT NULL,
+    model      TEXT,
+    provider   TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS enrollment_config (
+    key_alias      TEXT PRIMARY KEY,
+    spend_cap      REAL,
+    rate_limit_rps REAL NOT NULL DEFAULT 100.0,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 

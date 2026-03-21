@@ -1,0 +1,47 @@
+"""Proxy configuration from environment variables."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+def _default_db_path() -> str:
+    return str(Path.home() / ".worthless" / "worthless.db")
+
+
+def _default_shard_a_dir() -> str:
+    return str(Path.home() / ".worthless" / "shard_a")
+
+
+@dataclass
+class ProxySettings:
+    """Proxy configuration loaded from environment variables."""
+
+    db_path: str = field(
+        default_factory=lambda: os.environ.get("WORTHLESS_DB_PATH", _default_db_path())
+    )
+    fernet_key: str = field(default_factory=lambda: os.environ.get("WORTHLESS_FERNET_KEY", ""))
+    default_rate_limit_rps: float = field(
+        default_factory=lambda: float(os.environ.get("WORTHLESS_RATE_LIMIT_RPS", "100.0"))
+    )
+    upstream_timeout: float = field(
+        default_factory=lambda: float(os.environ.get("WORTHLESS_UPSTREAM_TIMEOUT", "120.0"))
+    )
+    streaming_timeout: float = field(
+        default_factory=lambda: float(os.environ.get("WORTHLESS_STREAMING_TIMEOUT", "300.0"))
+    )
+    allow_insecure: bool = field(
+        default_factory=lambda: os.environ.get(
+            "WORTHLESS_ALLOW_INSECURE", ""
+        ).lower() in ("1", "true", "yes")
+    )
+    shard_a_dir: str = field(
+        default_factory=lambda: os.environ.get("WORTHLESS_SHARD_A_DIR", _default_shard_a_dir())
+    )
+
+    def validate(self) -> None:
+        """Raise if required settings are missing."""
+        if not self.fernet_key:
+            raise ValueError("WORTHLESS_FERNET_KEY environment variable is required")

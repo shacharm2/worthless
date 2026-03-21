@@ -61,8 +61,18 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — Rules engine, metering, error responses, adapter bytearray migration
-- [ ] 03-02-PLAN.md — FastAPI proxy app with gate-before-reconstruct pipeline and transparent routing
+- [x] 03-01-PLAN.md — Rules engine, metering, error responses, adapter bytearray migration
+- [x] 03-02-PLAN.md — FastAPI proxy app with gate-before-reconstruct pipeline and transparent routing
+
+### Phase 03.1: Proxy Hardening (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 3
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 03.1 to break down)
 
 ### Phase 4: CLI
 **Goal**: A developer can protect their API keys in 90 seconds using terminal commands, with no configuration files or dashboards
@@ -100,6 +110,6 @@ Phases execute in numeric order. Phases 1 and 2 can be executed in parallel.
 |-------|----------------|--------|-----------|
 | 1. Crypto Core and Storage | 0/2 | Not started | - |
 | 2. Provider Adapters | 2/2 | Complete | 2026-03-15 |
-| 3. Proxy Service | 0/2 | Not started | - |
+| 3. Proxy Service | 2/2 | Complete | 2026-03-20 |
 | 4. CLI | 0/2 | Not started | - |
 | 5. Security Posture Documentation | 0/1 | Not started | - |

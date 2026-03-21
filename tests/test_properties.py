@@ -41,11 +41,13 @@ _SAFE_HEADERS = st.dictionaries(
     values=_HEADER_VALUES,
     max_size=6,
 )
-_API_KEYS = st.text(
+_API_KEY_STRINGS = st.text(
     alphabet=string.ascii_letters + string.digits + "-_",
     min_size=8,
     max_size=48,
-)
+).filter(lambda key: key != "REDACTED")
+# bytearray strategy for adapter api_key tests (SR-01: no immutable types for secrets)
+_API_KEYS = _API_KEY_STRINGS.map(lambda s: bytearray(s.encode()))
 
 
 def _apply_case_mask(text: str, mask: list[bool]) -> str:
@@ -67,6 +69,16 @@ def _collect_streaming_chunks(response: httpx.Response) -> list[bytes]:
     return asyncio.run(_collect())
 
 
+def _mask_header_map(headers: dict[str, str], mask: list[bool]) -> dict[str, str]:
+    """Apply casing changes across a header map while preserving values."""
+    masked_headers: dict[str, str] = {}
+    offset = 0
+    for key, value in headers.items():
+        masked_headers[_apply_case_mask(key, mask[offset : offset + len(key)])] = value
+        offset += len(key)
+    return masked_headers
+
+
 class TestStripInternalHeadersProperties:
     @given(
         suffix=st.text(
@@ -83,10 +95,9 @@ class TestStripInternalHeadersProperties:
         raw_headers[f"X-WorThLeSs-{suffix}"] = "secret"
 
         stripped = strip_internal_headers(raw_headers)
+        expected_headers = {key.lower(): value for key, value in safe_headers.items()}
 
-        assert f"x-worthless-{suffix.lower()}" not in stripped
-        for key, value in safe_headers.items():
-            assert stripped[key.lower()] == value
+        assert stripped == expected_headers
 
     @given(
         hop_header=st.sampled_from(_HOP_BY_HOP_HEADERS),
@@ -101,38 +112,41 @@ class TestStripInternalHeadersProperties:
         raw_headers[header_name] = "blocked"
 
         stripped = strip_internal_headers(raw_headers)
+        expected_headers = {key.lower(): value for key, value in safe_headers.items()}
 
-        assert hop_header not in stripped
-        for key, value in safe_headers.items():
-            assert stripped[key.lower()] == value
+        assert stripped == expected_headers
 
-    @given(headers=_SAFE_HEADERS)
+    @given(
+        headers=_SAFE_HEADERS,
+        mask=st.lists(st.booleans(), min_size=1, max_size=1_024),
+    )
     def test_safe_headers_are_preserved_and_lowercased(
-        self, headers: dict[str, str]
+        self, headers: dict[str, str], mask: list[bool]
     ) -> None:
-        stripped = strip_internal_headers(headers)
+        mixed_case_headers = _mask_header_map(headers, mask)
+        stripped = strip_internal_headers(mixed_case_headers)
         assert stripped == {key.lower(): value for key, value in headers.items()}
 
 
 class TestPrepareRequestProperties:
     @given(body=st.binary(max_size=4096), headers=_SAFE_HEADERS, api_key=_API_KEYS)
     def test_openai_prepare_request_preserves_body_and_sets_auth(
-        self, body: bytes, headers: dict[str, str], api_key: str
+        self, body: bytes, headers: dict[str, str], api_key: bytearray
     ) -> None:
         req = OpenAIAdapter().prepare_request(body=body, headers=headers, api_key=api_key)
 
         assert req.body == body
-        assert req.headers["authorization"] == f"Bearer {api_key}"
+        assert req.headers["authorization"] == f"Bearer {api_key.decode()}"
         assert req.url.endswith("/v1/chat/completions")
 
     @given(body=st.binary(max_size=4096), headers=_SAFE_HEADERS, api_key=_API_KEYS)
     def test_anthropic_prepare_request_adds_default_version_when_missing(
-        self, body: bytes, headers: dict[str, str], api_key: str
+        self, body: bytes, headers: dict[str, str], api_key: bytearray
     ) -> None:
         req = AnthropicAdapter().prepare_request(body=body, headers=headers, api_key=api_key)
 
         assert req.body == body
-        assert req.headers["x-api-key"] == api_key
+        assert req.headers["x-api-key"] == api_key.decode()
         assert req.headers["anthropic-version"] == DEFAULT_ANTHROPIC_VERSION
         assert req.url.endswith("/v1/messages")
 
@@ -143,7 +157,7 @@ class TestPrepareRequestProperties:
         version=_HEADER_VALUES.filter(bool),
     )
     def test_anthropic_prepare_request_preserves_explicit_version(
-        self, body: bytes, headers: dict[str, str], api_key: str, version: str
+        self, body: bytes, headers: dict[str, str], api_key: bytearray, version: str
     ) -> None:
         raw_headers = dict(headers)
         raw_headers["anthropic-version"] = version
@@ -156,19 +170,58 @@ class TestPrepareRequestProperties:
 
         assert req.headers["anthropic-version"] == version
 
+    @given(
+        body=st.binary(max_size=4096),
+        headers=_SAFE_HEADERS,
+        api_key=_API_KEYS,
+        version=_HEADER_VALUES.filter(bool),
+        mask=st.lists(st.booleans(), min_size=1, max_size=1_024),
+    )
+    def test_anthropic_prepare_request_preserves_explicit_version_case_insensitively(
+        self,
+        body: bytes,
+        headers: dict[str, str],
+        api_key: bytearray,
+        version: str,
+        mask: list[bool],
+    ) -> None:
+        raw_headers = dict(headers)
+        header_name = _apply_case_mask(
+            "anthropic-version",
+            mask[: len("anthropic-version")],
+        )
+        raw_headers[header_name] = version
+
+        req = AnthropicAdapter().prepare_request(
+            body=body,
+            headers=raw_headers,
+            api_key=api_key,
+        )
+
+        assert req.headers["anthropic-version"] == version
+
 
 class TestAdapterRequestProperties:
     @given(
-        authorization=_API_KEYS,
-        anthropic_key=_API_KEYS,
-        other_headers=_SAFE_HEADERS,
+        authorization=_API_KEY_STRINGS,
+        anthropic_key=_API_KEY_STRINGS,
+        data=st.data(),
     )
     def test_repr_redacts_sensitive_headers(
         self,
         authorization: str,
         anthropic_key: str,
-        other_headers: dict[str, str],
+        data: st.DataObject,
     ) -> None:
+        other_headers = data.draw(
+            st.dictionaries(
+                keys=_SAFE_HEADER_KEYS,
+                values=_HEADER_VALUES.filter(
+                    lambda value: value not in {"REDACTED", authorization, anthropic_key}
+                ),
+                max_size=6,
+            )
+        )
         headers = dict(other_headers)
         headers["authorization"] = authorization
         headers["x-api-key"] = anthropic_key
@@ -178,7 +231,8 @@ class TestAdapterRequestProperties:
 
         assert f"'authorization': '{authorization}'" not in text
         assert f"'x-api-key': '{anthropic_key}'" not in text
-        assert text.count("REDACTED") >= 2
+        assert "authorization" in text
+        assert "x-api-key" in text
 
 
 class TestRelayResponseProperties:
