@@ -179,9 +179,6 @@ class TestAdapterResponseRepr:
 
 
 class TestDeadCodeRemoval:
-    def test_uniform_401_removed_from_app(self) -> None:
-        from worthless.proxy import app as app_module
-        assert not hasattr(app_module, "_uniform_401")
 
     def test_dependencies_module_removed(self) -> None:
         dep_path = (
@@ -310,7 +307,7 @@ class TestGateBeforeDecrypt:
             call_order.append("decrypt_shard")
             return orig_decrypt(enc)
 
-        async def mock_evaluate(a, r):
+        async def mock_evaluate(_self, a, r):
             call_order.append("evaluate")
             return None
 

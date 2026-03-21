@@ -390,9 +390,10 @@ class TestTransparentRouting:
             )
         assert route.called
 
-    async def test_unknown_path_returns_404(
+    async def test_unknown_path_returns_401_anti_enumeration(
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
+        """Unknown paths return uniform 401, not 404 (H-2/M-3 anti-enumeration)."""
         alias, shard_a_b64, _ = enrolled_alias
         resp = await proxy_client.post(
             "/v1/unknown",
@@ -402,7 +403,7 @@ class TestTransparentRouting:
             },
             content=b"{}",
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 401
 
 
 # ------------------------------------------------------------------
@@ -515,7 +516,7 @@ class TestSecurity:
     async def test_query_params_stripped_for_adapter_lookup(
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
-        """Query params should not affect adapter resolution."""
+        """Query params should not affect adapter resolution (returns 401 for unknown)."""
         alias, shard_a_b64, _ = enrolled_alias
         resp = await proxy_client.post(
             "/v1/unknown?foo=bar",
@@ -525,7 +526,7 @@ class TestSecurity:
             },
             content=b"{}",
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 401
 
     async def test_no_openapi_docs(self, proxy_client: httpx.AsyncClient):
         resp = await proxy_client.get("/docs")
