@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in-progress
-stopped_at: Completed 03.1-01 foundation hardening plan
-last_updated: "2026-03-21T12:20:42Z"
-last_activity: 2026-03-21 — Completed 03.1-01 foundation hardening (fetch_encrypted split, bytearray, repr redaction, dead code removal)
+stopped_at: Completed 03.1-03 middleware and rules hardening plan
+last_updated: "2026-03-21T12:33:58Z"
+last_activity: 2026-03-21 — Completed 03.1-03 middleware and rules hardening (atomic spend cap, fail-closed, TTL cleanup, body size limit, CORS denial)
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 12
-  completed_plans: 7
-  percent: 58
+  completed_plans: 9
+  percent: 67
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 ## Current Position
 
 Phase: 3.1 of 5 (Proxy Hardening)
-Plan: 1 of 3 in current phase -- COMPLETE
+Plan: 3 of 3 in current phase -- COMPLETE
 Status: Executing Phase 03.1
-Last activity: 2026-03-21 — Completed 03.1-01 foundation hardening
+Last activity: 2026-03-21 — Completed 03.1-03 middleware and rules hardening
 
-Progress: [██████░░░░] 58%
+Progress: [██████▓░░░] 67%
 
 ## Performance Metrics
 
@@ -45,7 +45,7 @@ Progress: [██████░░░░] 58%
 |-------|-------|-------|----------|
 | 02-provider-adapters | 2 | 6 min | 3 min |
 | 03-proxy-service | 2 | 41 min | 20 min |
-| 03.1-proxy-hardening | 1 | 4 min | 4 min |
+| 03.1-proxy-hardening | 3 | 14 min | 5 min |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -77,6 +77,10 @@ Recent decisions affecting current work:
 - [03.1-01]: StoredShard is now a dataclass with bytearray fields (NamedTuple cannot constrain types)
 - [03.1-01]: EncryptedShard is a NamedTuple (immutable, no secret material)
 - [03.1-01]: fetch_encrypted + decrypt_shard split enables gate-before-decrypt
+- [03.1-03]: SpendCapRule uses persistent aiosqlite.Connection with BEGIN IMMEDIATE for atomic spend checks
+- [03.1-03]: Fail-closed pattern: SpendCapRule returns 402 on any DB error
+- [03.1-03]: RateLimitRule uses plain dict with periodic TTL cleanup to bound memory
+- [03.1-03]: BodySizeLimitMiddleware checks Content-Length header only (streaming uploads pass through)
 
 ### Roadmap Evolution
 
@@ -93,6 +97,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-21T12:20:42Z
-Stopped at: Completed 03.1-01 foundation hardening plan
-Resume file: .planning/phases/03.1-proxy-hardening/03.1-02-PLAN.md
+Last session: 2026-03-21T12:33:58Z
+Stopped at: Completed 03.1-03 middleware and rules hardening plan
+Resume file: .planning/phases/03.1-proxy-hardening/03.1-03-SUMMARY.md
