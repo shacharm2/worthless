@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import logging
+import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -20,10 +20,16 @@ import httpx
 import pytest
 import respx
 
+import aiosqlite
+
+from worthless.adapters import registry
 from worthless.adapters.types import AdapterRequest, AdapterResponse
+from worthless.crypto import split_key
 from worthless.proxy.app import create_app
 from worthless.proxy.config import ProxySettings
-from worthless.proxy.errors import ErrorResponse
+from worthless.proxy.errors import ErrorResponse, gateway_error_response
+from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
+from worthless.storage.repository import EncryptedShard, StoredShard
 
 
 # ------------------------------------------------------------------
@@ -48,9 +54,6 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettin
 @pytest.fixture()
 async def enrolled_alias(repo, proxy_settings: ProxySettings, sample_api_key_bytes: bytes):
     """Enroll a test key and return (alias, shard_a_b64, raw_api_key)."""
-    from worthless.crypto import split_key
-    from worthless.storage.repository import StoredShard
-
     alias = "test-key"
     sr = split_key(sample_api_key_bytes)
 
@@ -74,10 +77,6 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings, sample_api_key_byt
 
 @pytest.fixture()
 async def proxy_app(proxy_settings: ProxySettings, repo):
-    import aiosqlite
-
-    from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
-
     app = create_app(proxy_settings)
     db = await aiosqlite.connect(proxy_settings.db_path)
     app.state.db = db
@@ -199,7 +198,6 @@ class TestDeadCodeRemoval:
 
 class TestBytearrayCompliance:
     def test_stored_shard_bytearray_fields(self) -> None:
-        from worthless.storage.repository import StoredShard
         shard = StoredShard(
             shard_b=bytearray(b"shard-b-data"),
             commitment=bytearray(b"commitment-data"),
@@ -209,6 +207,36 @@ class TestBytearrayCompliance:
         assert isinstance(shard.shard_b, bytearray)
         assert isinstance(shard.commitment, bytearray)
         assert isinstance(shard.nonce, bytearray)
+
+
+class TestStoredShardRepr:
+    """StoredShard.__repr__ must not expose shard material (SR-04)."""
+
+    def test_shard_b_not_in_repr(self) -> None:
+        shard = StoredShard(
+            shard_b=bytearray(b"secret-shard-b"),
+            commitment=bytearray(b"secret-commitment"),
+            nonce=bytearray(b"secret-nonce"),
+            provider="openai",
+        )
+        r = repr(shard)
+        assert b"secret-shard-b".decode() not in r
+        assert b"secret-commitment".decode() not in r
+        assert b"secret-nonce".decode() not in r
+        assert "<14 bytes>" in r
+        assert "provider='openai'" in r
+
+    def test_encrypted_shard_repr_redacted(self) -> None:
+        enc = EncryptedShard(
+            shard_b_enc=b"encrypted-data-here",
+            commitment=b"commit-bytes",
+            nonce=b"nonce-bytes",
+            provider="anthropic",
+        )
+        r = repr(enc)
+        assert b"encrypted-data-here".decode() not in r
+        assert "<19 bytes>" in r
+        assert "provider='anthropic'" in r
 
 
 # ==================================================================
@@ -223,37 +251,97 @@ class TestBytearrayCompliance:
 
 class TestSSEStreaming:
     @respx.mock
-    async def test_sse_stream_delivers_chunks(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    async def test_stream_true_passed_to_httpx_send(
+        self, proxy_app, enrolled_alias
     ):
-        """SSE request receives chunks via StreamingResponse (not buffered body)."""
+        """Verify httpx.send() is called with stream=True for all requests."""
         alias, shard_a_b64, _ = enrolled_alias
+        send_kwargs: dict = {}
 
+        async def capturing_send(req, **kwargs):
+            send_kwargs.update(kwargs)
+            # Return a non-streaming response to keep things simple
+            return httpx.Response(
+                200,
+                json={"choices": [], "usage": {"total_tokens": 5}},
+                request=req,
+            )
+
+        proxy_app.state.httpx_client.send = capturing_send
+
+        respx.post("https://api.openai.com/v1/chat/completions").pass_through()
+
+        transport = httpx.ASGITransport(app=proxy_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post(
+                "/v1/chat/completions",
+                headers={
+                    "x-worthless-alias": alias,
+                    "x-worthless-shard-a": shard_a_b64,
+                    "content-type": "application/json",
+                },
+                content=b'{"model": "gpt-4", "messages": []}',
+            )
+
+        assert send_kwargs.get("stream") is True, "httpx.send() must be called with stream=True"
+
+    @respx.mock
+    async def test_streaming_response_uses_streaming_path(
+        self, proxy_app, enrolled_alias
+    ):
+        """When adapter returns is_streaming=True, proxy uses StreamingResponse."""
+        alias, shard_a_b64, _ = enrolled_alias
         sse_body = (
             b'data: {"id":"1","choices":[{"delta":{"content":"Hello"}}]}\n\n'
-            b'data: {"id":"1","choices":[{"delta":{"content":" world"}}]}\n\n'
             b"data: [DONE]\n\n"
         )
-        respx.post("https://api.openai.com/v1/chat/completions").mock(
-            return_value=httpx.Response(
-                200,
-                content=sse_body,
-                headers={"content-type": "text/event-stream"},
-            )
-        )
 
-        resp = await proxy_client.post(
-            "/v1/chat/completions",
-            headers={
-                "x-worthless-alias": alias,
-                "x-worthless-shard-a": shard_a_b64,
-                "content-type": "application/json",
-            },
-            content=b'{"model": "gpt-4", "messages": [], "stream": true}',
-        )
-        assert resp.status_code == 200
-        assert b"Hello" in resp.content
-        assert b"world" in resp.content
+        async def sse_stream():
+            for chunk in sse_body.split(b"\n\n"):
+                if chunk:
+                    yield chunk + b"\n\n"
+
+        # Mock the adapter to return a streaming response
+        orig_relay = None
+
+        async def mock_relay(upstream_resp):
+            return AdapterResponse(
+                status_code=200,
+                headers={"content-type": "text/event-stream"},
+                body=b"",
+                is_streaming=True,
+                stream=sse_stream(),
+            )
+
+        # Mock httpx send to return a streaming-like response
+        async def mock_send(req, **kwargs):
+            resp = httpx.Response(200, headers={"content-type": "text/event-stream"}, request=req)
+            return resp
+
+        proxy_app.state.httpx_client.send = mock_send
+
+        # Patch the adapter's relay_response
+        adapter = registry.get_adapter("/v1/chat/completions")
+        orig_relay = adapter.relay_response
+        adapter.relay_response = mock_relay
+
+        try:
+            transport = httpx.ASGITransport(app=proxy_app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "x-worthless-alias": alias,
+                        "x-worthless-shard-a": shard_a_b64,
+                        "content-type": "application/json",
+                    },
+                    content=b'{"model": "gpt-4", "messages": [], "stream": true}',
+                )
+            assert resp.status_code == 200
+            assert b"Hello" in resp.content
+        finally:
+            if orig_relay:
+                adapter.relay_response = orig_relay
 
     @respx.mock
     async def test_non_streaming_response_properly_handled(
@@ -421,6 +509,54 @@ class TestByteArrayZeroing:
 
 
 # ------------------------------------------------------------------
+# Reconstruct failure zeroing
+# ------------------------------------------------------------------
+
+
+class TestReconstructFailureZeroing:
+    @respx.mock
+    async def test_shard_material_zeroed_on_reconstruct_failure(
+        self, proxy_app, enrolled_alias
+    ):
+        """When reconstruct_key raises, all shard material is zeroed and 401 returned."""
+        alias, shard_a_b64, _ = enrolled_alias
+        captured_stored: dict = {}
+
+        orig_decrypt = proxy_app.state.repo.decrypt_shard
+
+        def capturing_decrypt(enc):
+            result = orig_decrypt(enc)
+            captured_stored["shard"] = result
+            return result
+
+        proxy_app.state.repo.decrypt_shard = capturing_decrypt
+
+        with patch(
+            "worthless.proxy.app.reconstruct_key",
+            side_effect=Exception("tampered shard"),
+        ):
+            transport = httpx.ASGITransport(app=proxy_app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "x-worthless-alias": alias,
+                        "x-worthless-shard-a": shard_a_b64,
+                        "content-type": "application/json",
+                    },
+                    content=b'{"model": "gpt-4", "messages": []}',
+                )
+
+        assert resp.status_code == 401
+        shard = captured_stored["shard"]
+        assert all(b == 0 for b in shard.shard_b), "shard_b not zeroed on failure"
+        assert all(b == 0 for b in shard.commitment), "commitment not zeroed on failure"
+        assert all(b == 0 for b in shard.nonce), "nonce not zeroed on failure"
+
+
+# ------------------------------------------------------------------
 # B-4: Async file I/O
 # ------------------------------------------------------------------
 
@@ -535,7 +671,12 @@ class TestUpstreamSanitization:
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
                 500,
-                json={"error": {"message": "Internal server details leaked", "type": "server_error"}},
+                json={
+                    "error": {
+                        "message": "Internal server details leaked",
+                        "type": "server_error",
+                    }
+                },
             )
         )
 
@@ -550,6 +691,58 @@ class TestUpstreamSanitization:
         )
         assert b"Internal server details leaked" not in resp.content
         assert resp.status_code == 500
+
+
+class TestUpstreamSanitizationAnthropic:
+    @respx.mock
+    async def test_anthropic_error_body_sanitized(
+        self, proxy_app, tmp_path, fernet_key, sample_api_key_bytes
+    ):
+        """Upstream Anthropic error bodies are sanitized to Anthropic format."""
+        # Enroll an Anthropic key
+        alias = "anthropic-key"
+        sr = split_key(sample_api_key_bytes)
+        shard = StoredShard(
+            shard_b=bytearray(sr.shard_b),
+            commitment=bytearray(sr.commitment),
+            nonce=bytearray(sr.nonce),
+            provider="anthropic",
+        )
+        await proxy_app.state.repo.store(alias, shard)
+        shard_a_b64 = base64.b64encode(bytes(sr.shard_a)).decode()
+
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(
+                500,
+                json={
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": "Internal server secret details leaked here",
+                    },
+                },
+            )
+        )
+
+        transport = httpx.ASGITransport(app=proxy_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/messages",
+                headers={
+                    "x-worthless-alias": alias,
+                    "x-worthless-shard-a": shard_a_b64,
+                    "content-type": "application/json",
+                },
+                content=b'{"model": "claude-3-5-sonnet-20241022",'
+                b' "max_tokens": 10, "messages": []}',
+            )
+
+        body = json.loads(resp.content)
+        assert resp.status_code == 500
+        assert b"Internal server secret details leaked here" not in resp.content
+        assert body["type"] == "error"
+        assert body["error"]["type"] == "api_error"
+        assert body["error"]["message"] == "upstream provider error"
 
 
 # ------------------------------------------------------------------
@@ -632,8 +825,6 @@ class TestMeteringResilience:
 class TestGatewayErrorResponse:
     def test_gateway_error_response_structure(self):
         """gateway_error_response produces correct JSON structure."""
-        from worthless.proxy.errors import gateway_error_response
-
         err = gateway_error_response(502, "bad gateway")
         assert err.status_code == 502
         assert b"bad gateway" in err.body

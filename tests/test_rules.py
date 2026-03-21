@@ -217,39 +217,14 @@ async def _setup_spend_db(
         await db.commit()
 
 
-async def _setup_spend_db_conn(
-    db: "aiosqlite.Connection",
-    *,
-    alias: str | None,
-    spend_cap: float | None,
-    total_tokens: int,
-) -> None:
-    """Set up spend DB tables on an existing connection."""
-    from worthless.storage.schema import SCHEMA
-
-    await db.executescript(SCHEMA)
-    if alias is not None:
-        await db.execute(
-            "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
-            (alias, spend_cap),
-        )
-        if total_tokens > 0:
-            await db.execute(
-                "INSERT INTO spend_log (key_alias, tokens, model, provider) "
-                "VALUES (?, ?, ?, ?)",
-                (alias, total_tokens, "gpt-4", "openai"),
-            )
-    await db.commit()
-
-
 # ---------------------------------------------------------------------------
 # SpendCapRule — persistent connection, atomic, fail-closed
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_spend_cap_concurrent(tmp_path):
-    """Two concurrent requests against a spend cap — only one should pass if both would exceed."""
+async def test_spend_cap_concurrent_two_connections(tmp_path):
+    """Two concurrent requests via separate connections — both over cap get denied."""
     import aiosqlite
 
     from worthless.storage.schema import SCHEMA
@@ -258,56 +233,78 @@ async def test_spend_cap_concurrent(tmp_path):
     async with aiosqlite.connect(db_path) as db:
         await db.executescript(SCHEMA)
         await db.execute("PRAGMA journal_mode=WAL")
-        # Cap of 100, already spent 95 — only 5 tokens headroom
+        # Cap of 100, already spent 100 — both should be denied
         await db.execute(
             "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
             ("k1", 100.0),
         )
         await db.execute(
             "INSERT INTO spend_log (key_alias, tokens, model, provider) VALUES (?, ?, ?, ?)",
-            ("k1", 95, "gpt-4", "openai"),
-        )
-        await db.commit()
-
-    # Create rule with persistent connection
-    db_conn = await aiosqlite.connect(db_path)
-    await db_conn.execute("PRAGMA journal_mode=WAL")
-    await db_conn.execute("PRAGMA busy_timeout=5000")
-    try:
-        rule = SpendCapRule(db=db_conn)
-        # Both requests should hit the same state — at 95/100, both should deny
-        results = await asyncio.gather(
-            rule.evaluate("k1", object()),
-            rule.evaluate("k1", object()),
-        )
-        # At least one should be denied (both at 95 tokens, cap 100 — under cap)
-        # Actually at 95 < 100, both should pass. Let's use 100 to test at cap.
-        # Rewrite: set tokens = 100, cap = 100 — both should be denied
-    finally:
-        await db_conn.close()
-
-    # Better test: set to exactly at cap
-    async with aiosqlite.connect(db_path) as db:
-        await db.execute("DELETE FROM spend_log")
-        await db.execute(
-            "INSERT INTO spend_log (key_alias, tokens, model, provider) VALUES (?, ?, ?, ?)",
             ("k1", 100, "gpt-4", "openai"),
         )
         await db.commit()
 
-    db_conn = await aiosqlite.connect(db_path)
-    await db_conn.execute("PRAGMA journal_mode=WAL")
-    await db_conn.execute("PRAGMA busy_timeout=5000")
+    # Two SEPARATE connections to test real concurrency (not serialized on one conn)
+    db_conn1 = await aiosqlite.connect(db_path)
+    db_conn2 = await aiosqlite.connect(db_path)
+    await db_conn1.execute("PRAGMA journal_mode=WAL")
+    await db_conn1.execute("PRAGMA busy_timeout=5000")
+    await db_conn2.execute("PRAGMA journal_mode=WAL")
+    await db_conn2.execute("PRAGMA busy_timeout=5000")
     try:
-        rule = SpendCapRule(db=db_conn)
+        rule1 = SpendCapRule(db=db_conn1)
+        rule2 = SpendCapRule(db=db_conn2)
         results = await asyncio.gather(
-            rule.evaluate("k1", object()),
-            rule.evaluate("k1", object()),
+            rule1.evaluate("k1", object()),
+            rule2.evaluate("k1", object()),
         )
         # Both should be denied since spend (100) >= cap (100)
         assert all(r is not None and r.status_code == 402 for r in results)
     finally:
-        await db_conn.close()
+        await db_conn1.close()
+        await db_conn2.close()
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_concurrent_under_cap_serialized(tmp_path):
+    """At 40/100 spent, two concurrent 60-token-equivalent requests both pass the gate
+    (spend cap checks current total, not projected)."""
+    import aiosqlite
+
+    from worthless.storage.schema import SCHEMA
+
+    db_path = str(tmp_path / "concurrent2.db")
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute(
+            "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
+            ("k1", 100.0),
+        )
+        await db.execute(
+            "INSERT INTO spend_log (key_alias, tokens, model, provider) VALUES (?, ?, ?, ?)",
+            ("k1", 40, "gpt-4", "openai"),
+        )
+        await db.commit()
+
+    db_conn1 = await aiosqlite.connect(db_path)
+    db_conn2 = await aiosqlite.connect(db_path)
+    await db_conn1.execute("PRAGMA journal_mode=WAL")
+    await db_conn1.execute("PRAGMA busy_timeout=5000")
+    await db_conn2.execute("PRAGMA journal_mode=WAL")
+    await db_conn2.execute("PRAGMA busy_timeout=5000")
+    try:
+        rule1 = SpendCapRule(db=db_conn1)
+        rule2 = SpendCapRule(db=db_conn2)
+        results = await asyncio.gather(
+            rule1.evaluate("k1", object()),
+            rule2.evaluate("k1", object()),
+        )
+        # Both should pass — 40 < 100 cap
+        assert all(r is None for r in results)
+    finally:
+        await db_conn1.close()
+        await db_conn2.close()
 
 
 @pytest.mark.asyncio
