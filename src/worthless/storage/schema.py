@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS enrollment_config (
     rate_limit_rps REAL NOT NULL DEFAULT 100.0,
     created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_spend_log_alias ON spend_log (key_alias);
 """
 
 

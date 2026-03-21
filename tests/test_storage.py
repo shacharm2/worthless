@@ -193,3 +193,22 @@ async def test_retrieve_backward_compat_with_bytearray(
     assert isinstance(result.commitment, bytearray)
     assert isinstance(result.nonce, bytearray)
     assert bytes(result.shard_b) == bytes(shard.shard_b)
+
+
+# ------------------------------------------------------------------
+# spend_log index (H-6/H-7)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spend_log_index_exists(tmp_db_path: str) -> None:
+    """idx_spend_log_alias index must exist after init_db."""
+    from worthless.storage.schema import init_db
+
+    await init_db(tmp_db_path)
+
+    async with aiosqlite.connect(tmp_db_path) as db:
+        cursor = await db.execute("PRAGMA index_list(spend_log)")
+        indexes = await cursor.fetchall()
+        index_names = [row[1] for row in indexes]
+        assert "idx_spend_log_alias" in index_names
