@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import aiosqlite
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -31,6 +32,7 @@ from worthless.proxy.errors import auth_error_response
 from worthless.proxy.metering import extract_usage_anthropic, extract_usage_openai, record_spend
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 from worthless.storage.repository import ShardRepository
+from worthless.storage.schema import SCHEMA
 
 _ALIAS_RE = re.compile(r"[a-zA-Z0-9_-]+")
 
@@ -57,6 +59,14 @@ async def _lifespan(app: FastAPI):
     """Startup/shutdown lifecycle for the proxy."""
     settings: ProxySettings = app.state.settings
 
+    # Initialize persistent DB connection (H-6/H-7: reuse across requests)
+    db = await aiosqlite.connect(settings.db_path)
+    await db.executescript(SCHEMA)
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA busy_timeout=5000")
+    await db.commit()
+    app.state.db = db
+
     # Initialize repository
     repo = ShardRepository(settings.db_path, settings.fernet_key.encode())
     await repo.initialize()
@@ -75,10 +85,10 @@ async def _lifespan(app: FastAPI):
     )
     app.state.httpx_client = client
 
-    # Initialize rules engine
+    # Initialize rules engine with persistent DB connection
     rules_engine = RulesEngine(
         rules=[
-            SpendCapRule(db_path=settings.db_path),
+            SpendCapRule(db=db),
             RateLimitRule(default_rps=settings.default_rate_limit_rps),
         ]
     )
@@ -88,6 +98,7 @@ async def _lifespan(app: FastAPI):
 
     # Cleanup
     await client.aclose()
+    await db.close()
 
 
 def create_app(settings: ProxySettings | None = None) -> FastAPI:

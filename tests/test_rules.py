@@ -67,48 +67,72 @@ async def test_short_circuits_on_first_denial():
 @pytest.mark.asyncio
 async def test_spend_cap_under_limit(tmp_path):
     """Spend below cap -> None (pass)."""
+    import aiosqlite
+
     db_path = str(tmp_path / "test.db")
     await _setup_spend_db(db_path, alias="k1", spend_cap=1000.0, total_tokens=500)
 
-    rule = SpendCapRule(db_path=db_path)
-    result = await rule.evaluate("k1", object())
-    assert result is None
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        result = await rule.evaluate("k1", object())
+        assert result is None
+    finally:
+        await db_conn.close()
 
 
 @pytest.mark.asyncio
 async def test_spend_cap_exceeded(tmp_path):
     """Spend at or above cap -> 402 denial."""
+    import aiosqlite
+
     db_path = str(tmp_path / "test.db")
     await _setup_spend_db(db_path, alias="k1", spend_cap=100.0, total_tokens=150)
 
-    rule = SpendCapRule(db_path=db_path)
-    result = await rule.evaluate("k1", object())
-    assert result is not None
-    assert result.status_code == 402
-    body = json.loads(result.body)
-    assert "spend cap" in body["error"]["message"].lower()
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        result = await rule.evaluate("k1", object())
+        assert result is not None
+        assert result.status_code == 402
+        body = json.loads(result.body)
+        assert "spend cap" in body["error"]["message"].lower()
+    finally:
+        await db_conn.close()
 
 
 @pytest.mark.asyncio
 async def test_spend_cap_null_no_cap(tmp_path):
     """NULL spend_cap -> no limit -> None (pass)."""
+    import aiosqlite
+
     db_path = str(tmp_path / "test.db")
     await _setup_spend_db(db_path, alias="k1", spend_cap=None, total_tokens=999999)
 
-    rule = SpendCapRule(db_path=db_path)
-    result = await rule.evaluate("k1", object())
-    assert result is None
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        result = await rule.evaluate("k1", object())
+        assert result is None
+    finally:
+        await db_conn.close()
 
 
 @pytest.mark.asyncio
 async def test_spend_cap_no_enrollment_record(tmp_path):
     """Alias with no enrollment_config row -> pass (no cap configured)."""
+    import aiosqlite
+
     db_path = str(tmp_path / "test.db")
     await _setup_spend_db(db_path, alias=None, spend_cap=None, total_tokens=0)
 
-    rule = SpendCapRule(db_path=db_path)
-    result = await rule.evaluate("unknown-alias", object())
-    assert result is None
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        result = await rule.evaluate("unknown-alias", object())
+        assert result is None
+    finally:
+        await db_conn.close()
 
 
 # ---------------------------------------------------------------------------
