@@ -208,11 +208,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         httpx_client: httpx.AsyncClient = request.app.state.httpx_client
 
         # (a) Strip query params from path for adapter lookup
-        clean_path = "/" + path.split("?")[0] if not path.startswith("/") else path
-        if "?" in clean_path:
-            clean_path = clean_path.split("?")[0]
-        if not clean_path.startswith("/"):
-            clean_path = "/" + clean_path
+        clean_path = "/" + path.split("?")[0].lstrip("/")
 
         # (b) Validate alias header present
         alias = request.headers.get("x-worthless-alias")
@@ -292,9 +288,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         except Exception:
             # Zero shard material on failure
             shard_a[:] = b"\x00" * len(shard_a)
-            stored.shard_b[:] = b"\x00" * len(stored.shard_b)
-            stored.commitment[:] = b"\x00" * len(stored.commitment)
-            stored.nonce[:] = b"\x00" * len(stored.nonce)
+            stored.zero()
             return _uniform_401()
 
         # B-1: Build and send with stream=True for SSE support
@@ -414,9 +408,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             # B-3: Zero all shard material after request completes
             shard_a[:] = b"\x00" * len(shard_a)
             if stored is not None:
-                stored.shard_b[:] = b"\x00" * len(stored.shard_b)
-                stored.commitment[:] = b"\x00" * len(stored.commitment)
-                stored.nonce[:] = b"\x00" * len(stored.nonce)
+                stored.zero()
 
     return app
 
