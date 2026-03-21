@@ -75,20 +75,25 @@ async def enrolled_alias(
 @pytest.fixture()
 async def proxy_app(proxy_settings: ProxySettings, repo):
     """A proxy app with state pre-initialized (ASGITransport skips lifespan)."""
+    import aiosqlite
+
     from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 
     app = create_app(proxy_settings)
     # Manually set up state since ASGITransport doesn't run lifespan
+    db = await aiosqlite.connect(proxy_settings.db_path)
+    app.state.db = db
     app.state.repo = repo
     app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
     app.state.rules_engine = RulesEngine(
         rules=[
-            SpendCapRule(db_path=proxy_settings.db_path),
+            SpendCapRule(db=db),
             RateLimitRule(default_rps=proxy_settings.default_rate_limit_rps),
         ]
     )
     yield app
     await app.state.httpx_client.aclose()
+    await db.close()
 
 
 @pytest.fixture()
