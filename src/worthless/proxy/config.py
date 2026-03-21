@@ -40,6 +40,11 @@ class ProxySettings:
     shard_a_dir: str = field(
         default_factory=lambda: os.environ.get("WORTHLESS_SHARD_A_DIR", _default_shard_a_dir())
     )
+    max_request_bytes: int = field(
+        default_factory=lambda: int(
+            os.environ.get("WORTHLESS_MAX_REQUEST_BYTES", str(10 * 1024 * 1024))
+        )
+    )
 
     def validate(self) -> None:
         """Raise if required settings are missing."""

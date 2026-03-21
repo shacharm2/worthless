@@ -110,11 +110,11 @@ def sample_split_result(sample_api_key_bytes: bytes) -> SplitResult:
 
 
 def stored_shard_from_split(sr: SplitResult, provider: str = "openai") -> StoredShard:
-    """Build a StoredShard from a SplitResult (converting bytearrays to bytes)."""
+    """Build a StoredShard from a SplitResult (wrapping in bytearray per SR-01)."""
     return StoredShard(
-        shard_b=bytes(sr.shard_b),
-        commitment=bytes(sr.commitment),
-        nonce=bytes(sr.nonce),
+        shard_b=bytearray(sr.shard_b),
+        commitment=bytearray(sr.commitment),
+        nonce=bytearray(sr.nonce),
         provider=provider,
     )
 

@@ -61,3 +61,12 @@ def rate_limit_error_response(retry_after: int, provider: str = "openai") -> Err
         body=_error_body(429, "rate limit exceeded", "rate_limit_error", provider),
         headers={"content-type": "application/json", "Retry-After": str(retry_after)},
     )
+
+
+def gateway_error_response(status: int, message: str, provider: str = "openai") -> ErrorResponse:
+    """Gateway error (502/504) — upstream connectivity or timeout failure."""
+    return ErrorResponse(
+        status_code=status,
+        body=_error_body(status, message, "gateway_error", provider),
+        headers={"content-type": "application/json"},
+    )

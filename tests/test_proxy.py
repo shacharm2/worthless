@@ -54,9 +54,9 @@ async def enrolled_alias(
     sr = split_key(sample_api_key_bytes)
 
     shard = StoredShard(
-        shard_b=bytes(sr.shard_b),
-        commitment=bytes(sr.commitment),
-        nonce=bytes(sr.nonce),
+        shard_b=bytearray(sr.shard_b),
+        commitment=bytearray(sr.commitment),
+        nonce=bytearray(sr.nonce),
         provider="openai",
     )
     await repo.store(alias, shard)
@@ -75,20 +75,25 @@ async def enrolled_alias(
 @pytest.fixture()
 async def proxy_app(proxy_settings: ProxySettings, repo):
     """A proxy app with state pre-initialized (ASGITransport skips lifespan)."""
+    import aiosqlite
+
     from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 
     app = create_app(proxy_settings)
     # Manually set up state since ASGITransport doesn't run lifespan
+    db = await aiosqlite.connect(proxy_settings.db_path)
+    app.state.db = db
     app.state.repo = repo
     app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
     app.state.rules_engine = RulesEngine(
         rules=[
-            SpendCapRule(db_path=proxy_settings.db_path),
+            SpendCapRule(db=db),
             RateLimitRule(default_rps=proxy_settings.default_rate_limit_rps),
         ]
     )
     yield app
     await app.state.httpx_client.aclose()
+    await db.close()
 
 
 @pytest.fixture()
@@ -385,9 +390,10 @@ class TestTransparentRouting:
             )
         assert route.called
 
-    async def test_unknown_path_returns_404(
+    async def test_unknown_path_returns_401_anti_enumeration(
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
+        """Unknown paths return uniform 401, not 404 (H-2/M-3 anti-enumeration)."""
         alias, shard_a_b64, _ = enrolled_alias
         resp = await proxy_client.post(
             "/v1/unknown",
@@ -397,7 +403,7 @@ class TestTransparentRouting:
             },
             content=b"{}",
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 401
 
 
 # ------------------------------------------------------------------
@@ -510,7 +516,7 @@ class TestSecurity:
     async def test_query_params_stripped_for_adapter_lookup(
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
-        """Query params should not affect adapter resolution."""
+        """Query params should not affect adapter resolution (returns 401 for unknown)."""
         alias, shard_a_b64, _ = enrolled_alias
         resp = await proxy_client.post(
             "/v1/unknown?foo=bar",
@@ -520,7 +526,7 @@ class TestSecurity:
             },
             content=b"{}",
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 401
 
     async def test_no_openapi_docs(self, proxy_client: httpx.AsyncClient):
         resp = await proxy_client.get("/docs")

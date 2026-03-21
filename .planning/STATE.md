@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Completed 03-02-PLAN.md (Phase 03 complete)
-last_updated: "2026-03-21T06:35:34.448Z"
-last_activity: 2026-03-20 — Completed 03-02 FastAPI proxy app with all three architectural invariants
+status: executing
+stopped_at: Completed 03.1-02 proxy pipeline hardening plan
+last_updated: "2026-03-21T12:40:30.527Z"
+last_activity: 2026-03-21 — Completed 03.1-02 proxy pipeline hardening (SSE streaming, gate ordering, zeroing, error handling)
 progress:
-  total_phases: 5
-  completed_phases: 3
-  total_plans: 6
-  completed_plans: 6
-  percent: 50
+  total_phases: 6
+  completed_phases: 4
+  total_plans: 9
+  completed_plans: 9
+  percent: 67
 ---
 
 # Project State
@@ -21,23 +21,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-14)
 
 **Core value:** A developer installs Worthless and goes back to work with a quiet mind. Their API keys are architecturally worthless to anyone who steals them.
-**Current focus:** Phase 3 - Proxy Service
+**Current focus:** Phase 3.1 - Proxy Hardening
 
 ## Current Position
 
-Phase: 3 of 5 (Proxy Service) -- COMPLETE
-Plan: 2 of 2 in current phase -- COMPLETE
-Status: Phase 03 Complete
-Last activity: 2026-03-20 — Completed 03-02 FastAPI proxy app with all three architectural invariants
+Phase: 3.1 of 5 (Proxy Hardening)
+Plan: 3 of 3 in current phase -- COMPLETE
+Status: Executing Phase 03.1
+Last activity: 2026-03-21 — Completed 03.1-02 proxy pipeline hardening (SSE streaming, gate ordering, zeroing, error handling)
 
-Progress: [█████░░░░░] 50%
+Progress: [██████▓░░░] 67%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6
-- Average duration: 9 min
-- Total execution time: 0.78 hours
+- Total plans completed: 7
+- Average duration: 8 min
+- Total execution time: 0.85 hours
 
 **By Phase:**
 
@@ -45,6 +45,7 @@ Progress: [█████░░░░░] 50%
 |-------|-------|-------|----------|
 | 02-provider-adapters | 2 | 6 min | 3 min |
 | 03-proxy-service | 2 | 41 min | 20 min |
+| 03.1-proxy-hardening | 3 | 14 min | 5 min |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -73,6 +74,17 @@ Recent decisions affecting current work:
 - [03-02]: ASGITransport does not run lifespan -- tests manually set app.state
 - [03-02]: Pre-computed uniform 401 body ensures byte-identical anti-enumeration responses
 - [03-02]: Streaming metering via BackgroundTask, non-streaming via create_task
+- [03.1-01]: StoredShard is now a dataclass with bytearray fields (NamedTuple cannot constrain types)
+- [03.1-01]: EncryptedShard is a NamedTuple (immutable, no secret material)
+- [03.1-01]: fetch_encrypted + decrypt_shard split enables gate-before-decrypt
+- [03.1-03]: SpendCapRule uses persistent aiosqlite.Connection with BEGIN IMMEDIATE for atomic spend checks
+- [03.1-03]: Fail-closed pattern: SpendCapRule returns 402 on any DB error
+- [03.1-03]: RateLimitRule uses plain dict with periodic TTL cleanup to bound memory
+- [03.1-03]: BodySizeLimitMiddleware checks Content-Length header only (streaming uploads pass through)
+- [03.1-02]: Anti-enumeration: unknown endpoints return 401 not 404 to prevent endpoint discovery
+- [03.1-02]: Upstream error sanitization: keep status code, replace message with generic "upstream provider error"
+- [03.1-02]: relay_response uses aread() for non-SSE responses when sent with stream=True
+- [03.1-02]: Shard material zeroed in finally block covering entire request lifecycle
 
 ### Roadmap Evolution
 
@@ -89,6 +101,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-20T21:48:00Z
-Stopped at: Completed 03-02-PLAN.md (Phase 03 complete)
-Resume file: .planning/phases/03-proxy-service/03-02-SUMMARY.md
+Last session: 2026-03-21T12:35:04Z
+Stopped at: Completed 03.1-02 proxy pipeline hardening plan
+Resume file: .planning/phases/03.1-proxy-hardening/03.1-02-SUMMARY.md
