@@ -60,6 +60,24 @@ def test_hmac_tampered_shard_b(sample_api_key_bytes: bytes) -> None:
         reconstruct_key(result.shard_a, tampered, result.commitment, result.nonce)
 
 
+def test_hmac_tampered_commitment(sample_api_key_bytes: bytes) -> None:
+    """Flipping a byte in the commitment must cause ShardTamperedError."""
+    result = split_key(sample_api_key_bytes)
+    tampered = bytearray(result.commitment)
+    tampered[0] ^= 0xFF
+    with pytest.raises(ShardTamperedError):
+        reconstruct_key(result.shard_a, result.shard_b, tampered, result.nonce)
+
+
+def test_hmac_tampered_nonce(sample_api_key_bytes: bytes) -> None:
+    """Flipping a byte in the nonce must cause ShardTamperedError."""
+    result = split_key(sample_api_key_bytes)
+    tampered = bytearray(result.nonce)
+    tampered[0] ^= 0xFF
+    with pytest.raises(ShardTamperedError):
+        reconstruct_key(result.shard_a, result.shard_b, result.commitment, tampered)
+
+
 # --- CRYP-03: Bytearray zeroing ---
 
 

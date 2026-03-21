@@ -58,11 +58,11 @@ Plans:
   1. The rules engine evaluates every request BEFORE Shard B is decrypted (gate-before-reconstruct verified)
   2. Setting `BASE_URL` to the proxy address causes API calls from any HTTP client to route through the proxy transparently
   3. The reconstructed key is used server-side for the upstream call and never appears in any response to the client
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 03-01: TBD
-- [ ] 03-02: TBD
+- [ ] 03-01-PLAN.md — Rules engine, metering, error responses, adapter bytearray migration
+- [ ] 03-02-PLAN.md — FastAPI proxy app with gate-before-reconstruct pipeline and transparent routing
 
 ### Phase 4: CLI
 **Goal**: A developer can protect their API keys in 90 seconds using terminal commands, with no configuration files or dashboards
