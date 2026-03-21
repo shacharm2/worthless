@@ -74,6 +74,10 @@ Recent decisions affecting current work:
 - [03-02]: Pre-computed uniform 401 body ensures byte-identical anti-enumeration responses
 - [03-02]: Streaming metering via BackgroundTask, non-streaming via create_task
 
+### Roadmap Evolution
+
+- Phase 03.1 inserted after Phase 3: Proxy Hardening (URGENT) — Fix 4 blockers and 7 high-severity findings from Phase 3 review
+
 ### Pending Todos
 
 None yet.
