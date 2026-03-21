@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import string
 
 import httpx
@@ -59,14 +58,11 @@ def _apply_case_mask(text: str, mask: list[bool]) -> str:
     return "".join(chars)
 
 
-def _collect_streaming_chunks(response: httpx.Response) -> list[bytes]:
-    async def _collect() -> list[bytes]:
-        relayed = await relay_response(response)
-        assert relayed.is_streaming is True
-        assert relayed.stream is not None
-        return [chunk async for chunk in relayed.stream]
-
-    return asyncio.run(_collect())
+async def _collect_streaming_chunks(response: httpx.Response) -> list[bytes]:
+    relayed = await relay_response(response)
+    assert relayed.is_streaming is True
+    assert relayed.stream is not None
+    return [chunk async for chunk in relayed.stream]
 
 
 def _mask_header_map(headers: dict[str, str], mask: list[bool]) -> dict[str, str]:
@@ -242,13 +238,13 @@ class TestRelayResponseProperties:
             ["application/json", "text/plain", "application/octet-stream", ""]
         ),
     )
-    def test_non_streaming_responses_preserve_body(
+    async def test_non_streaming_responses_preserve_body(
         self, body: bytes, content_type: str
     ) -> None:
         headers = {"content-type": content_type} if content_type else {}
         upstream = httpx.Response(status_code=200, content=body, headers=headers)
 
-        relayed = asyncio.run(relay_response(upstream))
+        relayed = await relay_response(upstream)
 
         assert relayed.is_streaming is False
         assert relayed.body == body
@@ -258,7 +254,7 @@ class TestRelayResponseProperties:
         chunks=st.lists(st.binary(min_size=1, max_size=64), min_size=1, max_size=8),
         extra_param=_HEADER_VALUES,
     )
-    def test_event_stream_responses_yield_original_chunks(
+    async def test_event_stream_responses_yield_original_chunks(
         self, chunks: list[bytes], extra_param: str
     ) -> None:
         content_type = "text/event-stream"
@@ -270,6 +266,6 @@ class TestRelayResponseProperties:
             headers={"content-type": content_type},
         )
 
-        collected = _collect_streaming_chunks(upstream)
+        collected = await _collect_streaming_chunks(upstream)
 
         assert collected == chunks
