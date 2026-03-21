@@ -69,10 +69,12 @@ Plans:
 **Goal:** Fix all blocker, high, and medium-severity findings from the Phase 3 multi-agent review — SSE streaming, CRYP-05 gate ordering, SR-01 bytearray compliance, error handling, anti-enumeration, performance, and code quality
 **Requirements**: CRYP-05, PROX-04, PROX-05
 **Depends on:** Phase 3
-**Plans:** 0 plans
+**Plans:** 3 plans
 
 Plans:
-- [ ] TBD (run /gsd:plan-phase 03.1 to break down)
+- [ ] 03.1-01-PLAN.md — Split ShardRepository for gate-before-decrypt, bytearray compliance, repr redaction, dead code removal
+- [ ] 03.1-02-PLAN.md — SSE streaming, gate ordering wiring, zeroing, error handling, upstream sanitization
+- [ ] 03.1-03-PLAN.md — Body size limit middleware, CORS denial, atomic spend cap, rate limiter TTL, persistent DB
 
 ### Phase 4: CLI
 **Goal**: A developer can protect their API keys in 90 seconds using terminal commands, with no configuration files or dashboards
@@ -111,5 +113,6 @@ Phases execute in numeric order. Phases 1 and 2 can be executed in parallel.
 | 1. Crypto Core and Storage | 0/2 | Not started | - |
 | 2. Provider Adapters | 2/2 | Complete | 2026-03-15 |
 | 3. Proxy Service | 2/2 | Complete | 2026-03-20 |
+| 03.1. Proxy Hardening | 0/3 | Planning complete | - |
 | 4. CLI | 0/2 | Not started | - |
 | 5. Security Posture Documentation | 0/1 | Not started | - |
