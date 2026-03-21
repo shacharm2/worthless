@@ -35,16 +35,6 @@ from worthless.storage.repository import ShardRepository
 _ALIAS_RE = re.compile(r"[a-zA-Z0-9_-]+")
 
 
-def _uniform_401() -> JSONResponse:
-    """Return a uniform 401 response (anti-enumeration)."""
-    err = auth_error_response()
-    return JSONResponse(
-        status_code=err.status_code,
-        content=None,
-        headers=err.headers,
-    )
-
-
 def _make_uniform_401_bytes() -> tuple[bytes, dict[str, str]]:
     """Pre-compute the uniform 401 body so all code paths return the exact same bytes."""
     err = auth_error_response()

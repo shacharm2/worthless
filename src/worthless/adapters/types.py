@@ -54,7 +54,7 @@ class AdapterRequest:
         return (
             f"AdapterRequest(url={self.url!r}, "
             f"headers={redacted!r}, "
-            f"body={self.body!r})"
+            f"body=<{len(self.body)} bytes>)"
         )
 
 
@@ -67,6 +67,14 @@ class AdapterResponse:
     body: bytes
     is_streaming: bool = False
     stream: AsyncIterator[bytes] | None = field(default=None, compare=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"AdapterResponse(status_code={self.status_code}, "
+            f"headers=<{len(self.headers)} entries>, "
+            f"body=<{len(self.body)} bytes>, "
+            f"is_streaming={self.is_streaming})"
+        )
 
 
 class ProviderAdapter(Protocol):
