@@ -102,7 +102,11 @@ def strip_internal_headers(headers: dict[str, str]) -> dict[str, str]:
 
 
 async def relay_response(response: httpx.Response) -> AdapterResponse:
-    """Shared relay logic for all adapters — handles streaming and non-streaming."""
+    """Shared relay logic for all adapters — handles streaming and non-streaming.
+
+    Supports responses sent with stream=True: for non-SSE responses, reads the
+    body with aread() before accessing content.
+    """
     content_type = response.headers.get("content-type", "")
     ct_main = content_type.split(";")[0].strip().lower()
     if ct_main == "text/event-stream":
@@ -113,6 +117,9 @@ async def relay_response(response: httpx.Response) -> AdapterResponse:
             is_streaming=True,
             stream=response.aiter_bytes(),
         )
+    # For non-streaming: read body if sent with stream=True
+    if not hasattr(response, "_content"):
+        await response.aread()
     return AdapterResponse(
         status_code=response.status_code,
         headers=dict(response.headers),
