@@ -161,8 +161,8 @@ class TestPrepareRequestProperties:
 
 class TestAdapterRequestProperties:
     @given(
-        authorization=_API_KEY_STRINGS_FOR_HEADERS,
-        anthropic_key=_API_KEY_STRINGS_FOR_HEADERS,
+        authorization=_API_KEY_STRINGS_FOR_HEADERS.filter(lambda s: s != "REDACTED"),
+        anthropic_key=_API_KEY_STRINGS_FOR_HEADERS.filter(lambda s: s != "REDACTED"),
         other_headers=_SAFE_HEADERS,
     )
     def test_repr_redacts_sensitive_headers(
