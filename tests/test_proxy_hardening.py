@@ -302,8 +302,6 @@ class TestSSEStreaming:
                     yield chunk + b"\n\n"
 
         # Mock the adapter to return a streaming response
-        orig_relay = None
-
         async def mock_relay(upstream_resp):
             return AdapterResponse(
                 status_code=200,
