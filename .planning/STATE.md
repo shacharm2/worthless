@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Phase 3.1 planning complete — 3 plans in 2 waves, verified
-last_updated: "2026-03-21T12:12:44.430Z"
-last_activity: 2026-03-20 — Completed 03-02 FastAPI proxy app with all three architectural invariants
+status: in-progress
+stopped_at: Completed 03.1-01 foundation hardening plan
+last_updated: "2026-03-21T12:20:42Z"
+last_activity: 2026-03-21 — Completed 03.1-01 foundation hardening (fetch_encrypted split, bytearray, repr redaction, dead code removal)
 progress:
-  total_phases: 6
+  total_phases: 7
   completed_phases: 3
-  total_plans: 9
-  completed_plans: 6
-  percent: 50
+  total_plans: 12
+  completed_plans: 7
+  percent: 58
 ---
 
 # Project State
@@ -21,23 +21,23 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-14)
 
 **Core value:** A developer installs Worthless and goes back to work with a quiet mind. Their API keys are architecturally worthless to anyone who steals them.
-**Current focus:** Phase 3 - Proxy Service
+**Current focus:** Phase 3.1 - Proxy Hardening
 
 ## Current Position
 
-Phase: 3 of 5 (Proxy Service) -- COMPLETE
-Plan: 2 of 2 in current phase -- COMPLETE
-Status: Phase 03 Complete
-Last activity: 2026-03-20 — Completed 03-02 FastAPI proxy app with all three architectural invariants
+Phase: 3.1 of 5 (Proxy Hardening)
+Plan: 1 of 3 in current phase -- COMPLETE
+Status: Executing Phase 03.1
+Last activity: 2026-03-21 — Completed 03.1-01 foundation hardening
 
-Progress: [█████░░░░░] 50%
+Progress: [██████░░░░] 58%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6
-- Average duration: 9 min
-- Total execution time: 0.78 hours
+- Total plans completed: 7
+- Average duration: 8 min
+- Total execution time: 0.85 hours
 
 **By Phase:**
 
@@ -45,6 +45,7 @@ Progress: [█████░░░░░] 50%
 |-------|-------|-------|----------|
 | 02-provider-adapters | 2 | 6 min | 3 min |
 | 03-proxy-service | 2 | 41 min | 20 min |
+| 03.1-proxy-hardening | 1 | 4 min | 4 min |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -73,6 +74,9 @@ Recent decisions affecting current work:
 - [03-02]: ASGITransport does not run lifespan -- tests manually set app.state
 - [03-02]: Pre-computed uniform 401 body ensures byte-identical anti-enumeration responses
 - [03-02]: Streaming metering via BackgroundTask, non-streaming via create_task
+- [03.1-01]: StoredShard is now a dataclass with bytearray fields (NamedTuple cannot constrain types)
+- [03.1-01]: EncryptedShard is a NamedTuple (immutable, no secret material)
+- [03.1-01]: fetch_encrypted + decrypt_shard split enables gate-before-decrypt
 
 ### Roadmap Evolution
 
@@ -89,6 +93,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-21T12:12:44.427Z
-Stopped at: Phase 3.1 planning complete — 3 plans in 2 waves, verified
-Resume file: .planning/phases/03.1-proxy-hardening/03.1-01-PLAN.md
+Last session: 2026-03-21T12:20:42Z
+Stopped at: Completed 03.1-01 foundation hardening plan
+Resume file: .planning/phases/03.1-proxy-hardening/03.1-02-PLAN.md
