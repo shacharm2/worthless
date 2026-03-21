@@ -253,6 +253,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             try:
                 raw = await asyncio.to_thread(shard_a_path.read_bytes)
                 shard_a = bytearray(raw)
+                del raw  # Remove immutable bytes reference sooner
             except FileNotFoundError:
                 pass
 
@@ -286,7 +287,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
 
         try:
             key_buf = reconstruct_key(
-                bytes(shard_a), stored.shard_b, stored.commitment, stored.nonce
+                shard_a, stored.shard_b, stored.commitment, stored.nonce
             )
         except Exception:
             # Zero shard material on failure
@@ -392,11 +393,10 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     tokens = extract_usage_anthropic(adapter_resp.body)
                 else:
                     tokens = extract_usage_openai(adapter_resp.body)
-                if tokens > 0:
-                    # M-9/M-10: Metering resilience
+                async def _record_nonstream_metering():
                     try:
-                        asyncio.create_task(
-                            record_spend(settings.db_path, alias, tokens, None, provider)
+                        await record_spend(
+                            settings.db_path, alias, tokens, None, provider
                         )
                     except Exception:
                         logger.warning(
@@ -408,6 +408,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     status_code=adapter_resp.status_code,
                     headers=clean_headers,
                     media_type=clean_headers.get("content-type", "application/json"),
+                    background=BackgroundTask(_record_nonstream_metering) if tokens > 0 else None,
                 )
         finally:
             # B-3: Zero all shard material after request completes

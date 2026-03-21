@@ -19,6 +19,13 @@ class EncryptedShard(NamedTuple):
     nonce: bytes
     provider: str
 
+    def __repr__(self) -> str:
+        return (
+            f"EncryptedShard(shard_b_enc=<{len(self.shard_b_enc)} bytes>, "
+            f"commitment=<{len(self.commitment)} bytes>, "
+            f"nonce=<{len(self.nonce)} bytes>, provider={self.provider!r})"
+        )
+
 
 @dataclass
 class StoredShard:
@@ -28,6 +35,13 @@ class StoredShard:
     commitment: bytearray
     nonce: bytearray
     provider: str
+
+    def __repr__(self) -> str:
+        return (
+            f"StoredShard(shard_b=<{len(self.shard_b)} bytes>, "
+            f"commitment=<{len(self.commitment)} bytes>, "
+            f"nonce=<{len(self.nonce)} bytes>, provider={self.provider!r})"
+        )
 
 
 class ShardRepository:
