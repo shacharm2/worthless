@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: in-progress
-stopped_at: Completed 03.1-03 middleware and rules hardening plan
-last_updated: "2026-03-21T12:33:58Z"
-last_activity: 2026-03-21 — Completed 03.1-03 middleware and rules hardening (atomic spend cap, fail-closed, TTL cleanup, body size limit, CORS denial)
+status: executing
+stopped_at: Completed 03.1-02 proxy pipeline hardening plan
+last_updated: "2026-03-21T12:40:30.527Z"
+last_activity: 2026-03-21 — Completed 03.1-02 proxy pipeline hardening (SSE streaming, gate ordering, zeroing, error handling)
 progress:
-  total_phases: 7
-  completed_phases: 3
-  total_plans: 12
+  total_phases: 6
+  completed_phases: 4
+  total_plans: 9
   completed_plans: 9
   percent: 67
 ---
