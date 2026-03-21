@@ -23,10 +23,10 @@ class AnthropicAdapter:
         *,
         body: bytes,
         headers: dict[str, str],
-        api_key: str,
+        api_key: bytearray,
     ) -> AdapterRequest:
         out_headers = strip_internal_headers(headers)
-        out_headers["x-api-key"] = api_key
+        out_headers["x-api-key"] = api_key.decode()
 
         if "anthropic-version" not in out_headers:
             out_headers["anthropic-version"] = DEFAULT_ANTHROPIC_VERSION

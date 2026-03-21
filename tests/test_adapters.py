@@ -18,7 +18,7 @@ from worthless.adapters.types import AdapterRequest, AdapterResponse
 
 class TestOpenAIRequestTransform:
     def test_openai_request_transform(
-        self, sample_openai_body: bytes, sample_api_key: str
+        self, sample_openai_body: bytes, sample_api_key: bytearray
     ) -> None:
         adapter = OpenAIAdapter()
         req = adapter.prepare_request(
@@ -28,7 +28,7 @@ class TestOpenAIRequestTransform:
         )
         assert isinstance(req, AdapterRequest)
         assert req.url == "https://api.openai.com/v1/chat/completions"
-        assert req.headers["authorization"] == f"Bearer {sample_api_key}"
+        assert req.headers["authorization"] == f"Bearer {sample_api_key.decode()}"
         assert req.body == sample_openai_body
 
 
@@ -69,7 +69,7 @@ class TestOpenAIResponseRelay:
 
 class TestAnthropicRequestTransform:
     def test_anthropic_request_transform(
-        self, sample_anthropic_body: bytes, sample_api_key: str
+        self, sample_anthropic_body: bytes, sample_api_key: bytearray
     ) -> None:
         adapter = AnthropicAdapter()
         req = adapter.prepare_request(
@@ -79,11 +79,11 @@ class TestAnthropicRequestTransform:
         )
         assert isinstance(req, AdapterRequest)
         assert req.url == "https://api.anthropic.com/v1/messages"
-        assert req.headers["x-api-key"] == sample_api_key
+        assert req.headers["x-api-key"] == sample_api_key.decode()
         assert req.body == sample_anthropic_body
 
     def test_anthropic_version_header_default(
-        self, sample_anthropic_body: bytes, sample_api_key: str
+        self, sample_anthropic_body: bytes, sample_api_key: bytearray
     ) -> None:
         """Default anthropic-version header is added when client omits it."""
         adapter = AnthropicAdapter()
@@ -95,7 +95,7 @@ class TestAnthropicRequestTransform:
         assert req.headers["anthropic-version"] == "2023-06-01"
 
     def test_anthropic_version_header_preserved(
-        self, sample_anthropic_body: bytes, sample_api_key: str
+        self, sample_anthropic_body: bytes, sample_api_key: bytearray
     ) -> None:
         """Client-provided anthropic-version header is preserved."""
         adapter = AnthropicAdapter()
@@ -180,7 +180,7 @@ class TestRegistry:
 
 class TestHopByHopStrippingAdapterLevel:
     def test_openai_strips_hop_by_hop(
-        self, sample_openai_body: bytes, sample_api_key: str
+        self, sample_openai_body: bytes, sample_api_key: bytearray
     ) -> None:
         adapter = OpenAIAdapter()
         req = adapter.prepare_request(
@@ -197,7 +197,7 @@ class TestHopByHopStrippingAdapterLevel:
             assert key not in ("host", "transfer-encoding", "connection")
 
     def test_anthropic_strips_hop_by_hop(
-        self, sample_anthropic_body: bytes, sample_api_key: str
+        self, sample_anthropic_body: bytes, sample_api_key: bytearray
     ) -> None:
         adapter = AnthropicAdapter()
         req = adapter.prepare_request(
@@ -219,7 +219,7 @@ class TestHopByHopStrippingAdapterLevel:
 
 
 class TestEdgeCases:
-    def test_openai_empty_body(self, sample_api_key: str) -> None:
+    def test_openai_empty_body(self, sample_api_key: bytearray) -> None:
         adapter = OpenAIAdapter()
         req = adapter.prepare_request(
             body=b"", headers={}, api_key=sample_api_key
@@ -227,7 +227,7 @@ class TestEdgeCases:
         assert req.body == b""
         assert req.url == "https://api.openai.com/v1/chat/completions"
 
-    def test_anthropic_empty_body(self, sample_api_key: str) -> None:
+    def test_anthropic_empty_body(self, sample_api_key: bytearray) -> None:
         adapter = AnthropicAdapter()
         req = adapter.prepare_request(
             body=b"", headers={}, api_key=sample_api_key
@@ -235,7 +235,7 @@ class TestEdgeCases:
         assert req.body == b""
         assert req.url == "https://api.anthropic.com/v1/messages"
 
-    def test_openai_unicode_body(self, sample_api_key: str) -> None:
+    def test_openai_unicode_body(self, sample_api_key: bytearray) -> None:
         body = '{"messages":[{"role":"user","content":"Hello \U0001f600"}]}'.encode()
         adapter = OpenAIAdapter()
         req = adapter.prepare_request(
@@ -243,7 +243,7 @@ class TestEdgeCases:
         )
         assert req.body == body
 
-    def test_anthropic_preserves_extra_headers(self, sample_api_key: str) -> None:
+    def test_anthropic_preserves_extra_headers(self, sample_api_key: bytearray) -> None:
         adapter = AnthropicAdapter()
         req = adapter.prepare_request(
             body=b"{}",
@@ -252,7 +252,7 @@ class TestEdgeCases:
         )
         assert req.headers["x-custom"] == "val"
 
-    def test_openai_preserves_extra_headers(self, sample_api_key: str) -> None:
+    def test_openai_preserves_extra_headers(self, sample_api_key: bytearray) -> None:
         adapter = OpenAIAdapter()
         req = adapter.prepare_request(
             body=b"{}",
@@ -261,7 +261,7 @@ class TestEdgeCases:
         )
         assert req.headers["x-custom"] == "val"
 
-    def test_openai_api_key_overrides_existing_auth(self, sample_api_key: str) -> None:
+    def test_openai_api_key_overrides_existing_auth(self, sample_api_key: bytearray) -> None:
         """If incoming headers contain authorization, it gets replaced."""
         adapter = OpenAIAdapter()
         req = adapter.prepare_request(
@@ -269,16 +269,16 @@ class TestEdgeCases:
             headers={"authorization": "Bearer old-key"},
             api_key=sample_api_key,
         )
-        assert req.headers["authorization"] == f"Bearer {sample_api_key}"
+        assert req.headers["authorization"] == f"Bearer {sample_api_key.decode()}"
 
-    def test_anthropic_api_key_overrides_existing(self, sample_api_key: str) -> None:
+    def test_anthropic_api_key_overrides_existing(self, sample_api_key: bytearray) -> None:
         adapter = AnthropicAdapter()
         req = adapter.prepare_request(
             body=b"{}",
             headers={"x-api-key": "old-key"},
             api_key=sample_api_key,
         )
-        assert req.headers["x-api-key"] == sample_api_key
+        assert req.headers["x-api-key"] == sample_api_key.decode()
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +288,7 @@ class TestEdgeCases:
 
 class TestHeaderStripping:
     def test_openai_header_stripping(
-        self, sample_openai_body: bytes, sample_api_key: str
+        self, sample_openai_body: bytes, sample_api_key: bytearray
     ) -> None:
         """Headers matching x-worthless-* are stripped before forwarding."""
         adapter = OpenAIAdapter()
@@ -305,7 +305,7 @@ class TestHeaderStripping:
             assert not key.lower().startswith("x-worthless-")
 
     def test_anthropic_header_stripping(
-        self, sample_anthropic_body: bytes, sample_api_key: str
+        self, sample_anthropic_body: bytes, sample_api_key: bytearray
     ) -> None:
         """Anthropic adapter also strips x-worthless-* headers."""
         adapter = AnthropicAdapter()

@@ -2,26 +2,9 @@
 
 **We make your API keys worthless to steal.**
 
-A three-person team had a $180/month Gemini bill. Someone stole their API key. Forty-eight hours later: $82,314. Google cited the shared responsibility model. The team faces bankruptcy.
+Your API key is split into two shards using XOR secret sharing. One half stays on your machine. One half is encrypted at rest on the proxy. Neither half alone reveals anything about the key — this is information-theoretic security, not just encryption.
 
-Worthless makes that outcome architecturally impossible.
-
----
-
-## How it works
-
-**The key never exists as a complete string anywhere it can be stolen.**
-
-Your API key is split into two halves using XOR secret sharing. One half stays on your machine. One half is encrypted on the server. Neither half alone reveals anything about the key — this is information-theoretic security, not just encryption.
-
-Every request goes through the Worthless proxy. Before your key ever reconstructs:
-- Is the spend cap still clear? 
-- Is the rate limit still open?
-- Is the model allowed?
-
-If anything fails — the key never forms. The request stops. The attacker gets nothing.
-
-A stolen Worthless credential has a hard cap, routes through a proxy, and unlocks a key that expires after one request's lifetime. It is **literally worthless**.
+The key only reconstructs in memory, server-side, for the duration of a single upstream API call — then zeroed.
 
 ```
 Your code → Worthless proxy → [cap check] → [key reconstructs] → OpenAI / Anthropic
@@ -34,109 +17,99 @@ Your code → Worthless proxy → [cap check] → [key reconstructs] → OpenAI 
 
 ## Install
 
-Pick your path:
-
-### I use Claude Code, Cursor, or Windsurf
-
-```json
-{
-  "mcpServers": {
-    "worthless": {
-      "command": "npx",
-      "args": ["-y", "worthless-mcp"],
-      "env": { "WORTHLESS_BUDGET": "10.00", "WORTHLESS_PERIOD": "daily" }
-    }
-  }
-}
-```
-
-Add to your `.mcp.json`. Every AI API call is now budget-protected. Done.
+- [Solo developer](docs/install-solo.md)
+- [Claude Code / Cursor / Windsurf (MCP)](docs/install-mcp.md)
+- [OpenClaw](docs/install-openclaw.md)
+- [Self-hosted](docs/install-self-hosted.md)
+- [Teams](docs/install-teams.md)
+- [From source (development)](#from-source)
 
 ---
 
-### I want to protect my own code (solo dev)
+## From Source
+
+**Requires Python 3.12+**
 
 ```bash
-curl worthless.sh | sh
+git clone https://github.com/shacharm2/worthless && cd worthless
+uv sync --extra dev --extra test
 ```
 
-This will:
-1. Open a browser for a one-click auth (GitHub or Google)
-2. Ask you to paste your API key
-3. Ask for a daily spend cap
-4. Start a local proxy on `localhost:9191`
+### Enroll an API key
 
-Then swap one environment variable:
+```python
+import asyncio
+from pathlib import Path
+from cryptography.fernet import Fernet
+from worthless.cli.enroll_stub import enroll_stub
+
+fernet_key = Fernet.generate_key()
+print(f"Save this key: {fernet_key.decode()}")
+
+asyncio.run(enroll_stub(
+    alias="my-openai",
+    api_key="sk-your-openai-key-here",
+    provider="openai",
+    db_path=str(Path.home() / ".worthless" / "worthless.db"),
+    fernet_key=fernet_key,
+    shard_a_dir=str(Path.home() / ".worthless" / "shard_a"),
+))
+```
+
+### Start the proxy
 
 ```bash
-export OPENAI_BASE_URL=http://localhost:9191/v1
-# or
-export ANTHROPIC_BASE_URL=http://localhost:9191/v1
+# DEV ONLY — never use WORTHLESS_ALLOW_INSECURE in production
+WORTHLESS_FERNET_KEY="<paste key printed above>" WORTHLESS_ALLOW_INSECURE=true \
+  uv run uvicorn worthless.proxy.app:create_app --factory --port 8443
 ```
 
-Your existing code works identically. Your key now has a hard cap.
-
-**Target: working in 90 seconds.**
-
----
-
-### I use OpenClaw
-
-```yaml
-# In your OpenClaw config
-api_base: https://api.worthless.cloud/openai
-worthless_cap: 50
-worthless_period: daily
-```
-
-One config line. Your agent can no longer run up a bill while you sleep.
-
-Or install the Worthless skill from ClawHub: `worthless-guard`
-
----
-
-### I want to self-host
+### Use it
 
 ```bash
-curl worthless.sh | sh --self-hosted
+curl http://localhost:8443/v1/chat/completions \
+  -H "x-worthless-alias: my-openai" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
-Pulls a Docker Compose stack (proxy + Postgres + Redis), prompts for config, starts running. Your infrastructure, your data, your control.
+### Health check
 
-Full Helm charts and Terraform modules available in `deploy/`.
-
-**Target: working in under 5 minutes.**
-
----
-
-### My team needs shared key management
-
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/worthless)
-
-One-click deploy. Get a team dashboard, per-member spend caps, and contractor management in 2 minutes.
-
----
-
-## The aha moment
-
-First proxied call:
-
-```
-✓ Request proxied
-  Model: gpt-4o-mini  |  Cost: $0.003  |  Remaining today: $9.997
+```bash
+curl http://localhost:8443/healthz   # liveness
+curl http://localhost:8443/readyz    # ready (DB connected, keys enrolled)
 ```
 
 ---
 
-## What Worthless protects
+## How It Works
+
+```
+Client                     Proxy                        Provider
+  │                          │                             │
+  │  x-worthless-alias       │                             │
+  │  x-worthless-shard-a     │                             │
+  │ ──────────────────────►  │                             │
+  │                          │  1. Authenticate (alias)    │
+  │                          │  2. Gate (rules engine)     │
+  │                          │  3. Reconstruct key (XOR)   │
+  │                          │  4. Upstream call ──────────►│
+  │                          │  5. Zero key from memory    │
+  │                    ◄──── │  6. Relay response    ◄──── │
+```
+
+**Key invariant:** Step 2 (gate) always runs before step 3 (reconstruct). If the rules engine denies the request, the key is never reconstructed. Zero key material touched.
+
+---
+
+## What Worthless Protects
 
 - ✅ API key stolen from GitHub, `.env` file, or client-side JS
-- ✅ Agent or script running a billing loop overnight  
+- ✅ Agent or script running a billing loop overnight
 - ✅ Contractor or team member exceeding their budget
 - ✅ Stolen key used by an attacker to rack up charges
-- ✅ Anomalous usage patterns (spend velocity, unusual models, geographic)
 
-## What Worthless does not protect
+## What Worthless Does Not Protect
 
 - ❌ Full machine compromise (same boundary as 1Password)
 - ❌ Upstream LLM provider outages
@@ -144,112 +117,75 @@ First proxied call:
 
 ---
 
-## CLI reference
+## Configuration
 
-```bash
-worthless enroll              # First-time setup (opens browser, splits key)
-worthless wrap -- python app.py  # Run any command with proxy + env vars set
-worthless scan                # Scan files for exposed API keys
-worthless status              # Show current spend, cap, remaining
-worthless keys rotate <alias> # Rotate underlying API key without changing proxy config
-worthless daemon start        # Start/stop the local sidecar proxy
-```
-
-**Pre-commit hook** — detects API keys before they hit GitHub:
-
-```yaml
-# .pre-commit-config.yaml
-repos:
-  - repo: https://github.com/worthless/worthless
-    rev: v1.0.0
-    hooks:
-      - id: worthless-scan
-```
-
-Unlike TruffleHog or GitGuardian which only alert, `worthless scan` detects and offers immediate enrollment — remediation in the same step.
-
----
-
-## Security model
-
-**What the server never sees:**
-- Your full API key (only receives one half at enrollment)
-- Shard A (your half, stored in your OS keychain)
-- Request or response content (proxy has no body-parsing code, verified by CI)
-- Reconstructed key (exists only in isolated Rust memory for < 500ms)
-
-**Trust boundaries:**
-
-| Deployment | Key security | Data privacy |
-|---|---|---|
-| Self-hosted | Architectural — key splitting | Architectural — your servers |
-| Managed | Architectural — key splitting + customer-managed KMS | Policy — no-log, open source, audited |
-
-Full security model and threat boundary: [docs/security.md](docs/security.md)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WORTHLESS_FERNET_KEY` | *(required)* | Fernet key for encrypting Shard B at rest |
+| `WORTHLESS_DB_PATH` | `~/.worthless/worthless.db` | SQLite database path |
+| `WORTHLESS_SHARD_A_DIR` | `~/.worthless/shard_a` | Directory for file-based Shard A loading |
+| `WORTHLESS_RATE_LIMIT_RPS` | `100.0` | Default rate limit (requests/second per IP) |
+| `WORTHLESS_UPSTREAM_TIMEOUT` | `120.0` | Upstream timeout for non-streaming (seconds) |
+| `WORTHLESS_STREAMING_TIMEOUT` | `300.0` | Upstream timeout for streaming (seconds) |
+| `WORTHLESS_ALLOW_INSECURE` | `false` | Allow shard headers over non-TLS (dev only) |
 
 ---
 
 ## Providers
 
-| Provider | Status |
-|---|---|
-| OpenAI | ✅ Full drop-in proxy |
-| Anthropic | ✅ Full drop-in proxy |
-| Gemini | 🚧 In progress |
-| Others | Coming — PRs welcome |
+| Provider | Endpoint | Status |
+|----------|----------|--------|
+| OpenAI | `/v1/chat/completions` | ✅ Streaming + non-streaming |
+| Anthropic | `/v1/messages` | ✅ Streaming + non-streaming |
 
 ---
 
-## Self-hosting
+## Security Model
 
-All components are open source (AGPL-3.0). Self-hosted is a first-class deployment path and will never be degraded or removed.
+Three architectural invariants:
 
-See [deploy/](deploy/) for:
-- `docker-compose.yml` — local or single-server deployment
-- `helm/` — Kubernetes deployment
-- `terraform/` — cloud infrastructure
-- Railway and Render deploy templates
+1. **Gate before reconstruct** — The rules engine evaluates every request before Shard B is decrypted. Denied requests never touch key material.
+2. **Transparent routing** — Setting `BASE_URL` to the proxy causes API calls to route through it. The proxy is invisible to provider SDKs.
+3. **Server-side only** — The reconstructed key is used for the upstream call and never appears in any response.
+
+All auth failures return an identical `401` body to prevent key enumeration.
+
+See [docs/security-model.md](docs/security-model.md) for the full threat model and known limitations.
 
 ---
 
 ## Architecture
 
 ```
-worthless/
-  proxy/          # Python/FastAPI — rules engine, metering, mTLS
-  reconstruction/ # Rust — crypto hot path, XOR, memory zeroing
-  cli/            # Python — enrollment, sidecar daemon, wrap, scan
-  mcp/            # Node.js — MCP server
-  deploy/         # Docker Compose, Helm, Railway, Render
-  docs/           # Architecture, security model, threat boundary
+src/worthless/
+├── crypto/          # XOR splitting, HMAC commitment, memory zeroing
+├── adapters/        # Provider request/response transforms, SSE relay
+├── proxy/           # FastAPI proxy, rules engine, metering
+├── storage/         # Encrypted shard persistence (Fernet + SQLite)
+└── cli/             # Enrollment stub (more commands coming)
 ```
 
-The reconstruction service is written in Rust for deterministic memory control. Key material is mlock'd, explicitly zeroed, and exists for < 500ms. No GC'd language touches the crypto path.
+---
+
+## Development
+
+```bash
+uv sync --extra dev --extra test --extra qa
+uv run pytest              # full suite
+uv run ruff check .        # lint
+```
 
 ---
 
 ## Contributing
 
-PRs welcome. Before contributing, read [docs/security.md](docs/security.md) — especially the three architectural invariants. Any PR that violates them will be closed regardless of other merits.
-
-The three invariants:
-1. Client-side splitting only — server never receives the full key
-2. Gate before reconstruction — rules engine runs before any key material is touched
-3. Direct upstream call — reconstructed key never transits the network
+PRs welcome. Any PR that violates the three architectural invariants will be closed regardless of other merits. Read [docs/security-model.md](docs/security-model.md) first.
 
 ---
 
 ## License
 
 AGPL-3.0. See [LICENSE](LICENSE).
-
-Commercial dual-licensing available for enterprises requiring proprietary distribution. Contact [hello@worthless.cloud](mailto:hello@worthless.cloud).
-
----
-
-## Why AGPL?
-
-Anyone who builds a competing managed service on top of Worthless open source must open source their entire stack. This protects the community that builds on this foundation.
 
 ---
 
