@@ -45,10 +45,17 @@ class SpendCapRule:
     """Denies requests when accumulated spend exceeds the configured cap.
 
     Queries spend_log and enrollment_config tables via a persistent aiosqlite
-    connection. Uses BEGIN IMMEDIATE for atomic spend checks (H-3).
+    connection. Uses BEGIN IMMEDIATE to serialize concurrent reads (H-3).
     Fails closed on any DB error (H-1/M-10).
     Returns None if no cap is configured (NULL spend_cap) or spend is under cap.
     Returns 402 ErrorResponse when cap is exceeded or on DB error.
+
+    .. note:: PoC limitation — the spend cap is a best-effort pre-check, not a
+       hard enforcement boundary. Token count is only known after the upstream
+       response, so check (here) and record (in metering.py) are separate
+       operations. Two concurrent requests can both pass the cap check before
+       either records its spend. Production fix: reserve estimated tokens at
+       check time, reconcile after response.
     """
 
     db: aiosqlite.Connection
