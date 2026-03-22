@@ -58,8 +58,8 @@ def extract_usage_anthropic(data: bytes) -> int:
     try:
         text = data.decode("utf-8", errors="replace")
         lines = text.splitlines()
-        for i, line in enumerate(lines):
-            if line.strip() == "event: message_delta":
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].strip() == "event: message_delta":
                 # Next non-empty line should be the data line
                 for j in range(i + 1, len(lines)):
                     data_line = lines[j].strip()

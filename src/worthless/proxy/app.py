@@ -144,7 +144,10 @@ async def _lifespan(app: FastAPI):
     rules_engine = RulesEngine(
         rules=[
             SpendCapRule(db=db),
-            RateLimitRule(default_rps=settings.default_rate_limit_rps),
+            RateLimitRule(
+                default_rps=settings.default_rate_limit_rps,
+                db_path=settings.db_path,
+            ),
         ]
     )
     app.state.rules_engine = rules_engine
@@ -164,6 +167,8 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
     """
     if settings is None:
         settings = ProxySettings()
+
+    settings.validate()
 
     app = FastAPI(
         title="worthless-proxy",
@@ -257,7 +262,9 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             return _uniform_401()
 
         # (h) GATE: rules engine evaluates BEFORE any Fernet decrypt (SR-03 / CRYP-05)
-        denial = await rules_engine.evaluate(alias, request)
+        denial = await rules_engine.evaluate(
+            alias, request, provider=encrypted.provider
+        )
         if denial is not None:
             # Zero shard_a before returning — gate denied but shard_a was loaded
             shard_a[:] = b"\x00" * len(shard_a)

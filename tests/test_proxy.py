@@ -88,7 +88,10 @@ async def proxy_app(proxy_settings: ProxySettings, repo):
     app.state.rules_engine = RulesEngine(
         rules=[
             SpendCapRule(db=db),
-            RateLimitRule(default_rps=proxy_settings.default_rate_limit_rps),
+            RateLimitRule(
+                default_rps=proxy_settings.default_rate_limit_rps,
+                db_path=proxy_settings.db_path,
+            ),
         ]
     )
     yield app
@@ -535,3 +538,20 @@ class TestSecurity:
     async def test_no_redoc(self, proxy_client: httpx.AsyncClient):
         resp = await proxy_client.get("/redoc")
         assert resp.status_code != 200
+
+
+# ------------------------------------------------------------------
+# Settings validation (L-8)
+# ------------------------------------------------------------------
+
+
+class TestSettingsValidation:
+    def test_create_app_rejects_missing_fernet_key(self, tmp_path):
+        """create_app() should raise ValueError when fernet_key is empty."""
+        settings = ProxySettings(
+            db_path=str(tmp_path / "test.db"),
+            fernet_key="",
+            allow_insecure=True,
+        )
+        with pytest.raises(ValueError, match="WORTHLESS_FERNET_KEY"):
+            create_app(settings)

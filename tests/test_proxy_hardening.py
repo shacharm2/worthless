@@ -393,7 +393,7 @@ class TestGateBeforeDecrypt:
             call_order.append("decrypt_shard")
             return orig_decrypt(enc)
 
-        async def mock_evaluate(_self, a, r):
+        async def mock_evaluate(_self, a, r, **kwargs):
             call_order.append("evaluate")
             return None
 

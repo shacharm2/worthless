@@ -18,7 +18,7 @@ from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 class _PassRule:
     """Stub rule that always passes."""
 
-    async def evaluate(self, alias: str, request: object) -> None:
+    async def evaluate(self, alias: str, request: object, *, provider: str = "openai") -> None:
         return None
 
 
@@ -28,7 +28,7 @@ class _DenyRule:
     def __init__(self) -> None:
         self.called = False
 
-    async def evaluate(self, alias: str, request: object):
+    async def evaluate(self, alias: str, request: object, *, provider: str = "openai"):
         self.called = True
         # Return a simple dict to simulate a denial response
         return {"status": 403, "detail": "denied"}
@@ -189,12 +189,81 @@ def _fake_request(ip: str = "127.0.0.1") -> _FakeRequest:
     return _FakeRequest(ip)
 
 
+@pytest.mark.asyncio
+async def test_spend_cap_returns_anthropic_error_format(tmp_path):
+    """When provider=anthropic, spend cap denial uses Anthropic error format."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "test.db")
+    await _setup_spend_db(db_path, alias="k1", spend_cap=100.0, total_tokens=150)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), provider="anthropic")
+        assert result is not None
+        assert result.status_code == 402
+        body = json.loads(result.body)
+        # Anthropic format: {"type": "error", "error": {"type": ..., "message": ...}}
+        assert body["type"] == "error"
+        assert "spend cap" in body["error"]["message"].lower()
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_returns_anthropic_error_format():
+    """When provider=anthropic, rate limit denial uses Anthropic error format."""
+    rule = RateLimitRule(default_rps=1.0)
+    req = _fake_request("127.0.0.1")
+    await rule.evaluate("k1", req, provider="anthropic")
+    result = await rule.evaluate("k1", req, provider="anthropic")
+    assert result is not None
+    assert result.status_code == 429
+    body = json.loads(result.body)
+    assert body["type"] == "error"
+    assert "rate limit" in body["error"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_per_enrollment_rate_limit(tmp_path):
+    """Per-enrollment rate_limit_rps from DB overrides default."""
+    db_path = str(tmp_path / "test.db")
+    await _setup_spend_db(db_path, alias="k1", spend_cap=None, total_tokens=0, rate_limit_rps=2.0)
+
+    rule = RateLimitRule(default_rps=100.0, db_path=db_path)
+    req = _fake_request("127.0.0.1")
+    # First two should pass (per-enrollment limit is 2)
+    assert await rule.evaluate("k1", req) is None
+    assert await rule.evaluate("k1", req) is None
+    # Third should be denied
+    result = await rule.evaluate("k1", req)
+    assert result is not None
+    assert result.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_per_enrollment_rate_limit_falls_back_to_default(tmp_path):
+    """Without per-enrollment config, falls back to default_rps."""
+    db_path = str(tmp_path / "test.db")
+    await _setup_spend_db(db_path, alias=None, spend_cap=None, total_tokens=0)
+
+    rule = RateLimitRule(default_rps=2.0, db_path=db_path)
+    req = _fake_request("127.0.0.1")
+    await rule.evaluate("unknown", req)
+    await rule.evaluate("unknown", req)
+    result = await rule.evaluate("unknown", req)
+    assert result is not None
+    assert result.status_code == 429
+
+
 async def _setup_spend_db(
     db_path: str,
     *,
     alias: str | None,
     spend_cap: float | None,
     total_tokens: int,
+    rate_limit_rps: float | None = None,
 ) -> None:
     """Create a test DB with spend_log and enrollment_config tables pre-populated."""
     import aiosqlite
@@ -205,8 +274,10 @@ async def _setup_spend_db(
         await db.executescript(SCHEMA)
         if alias is not None:
             await db.execute(
-                "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
-                (alias, spend_cap),
+                "INSERT INTO enrollment_config"
+                " (key_alias, spend_cap, rate_limit_rps)"
+                " VALUES (?, ?, ?)",
+                (alias, spend_cap, rate_limit_rps if rate_limit_rps is not None else 100.0),
             )
             if total_tokens > 0:
                 await db.execute(
