@@ -43,6 +43,11 @@ class StoredShard:
             f"nonce=<{len(self.nonce)} bytes>, provider={self.provider!r})"
         )
 
+    def zero(self) -> None:
+        """Zero all cryptographic fields in place (SR-02)."""
+        for field in (self.shard_b, self.commitment, self.nonce):
+            field[:] = b"\x00" * len(field)
+
 
 class ShardRepository:
     """Async repository that encrypts Shard B at rest with Fernet.
