@@ -822,6 +822,89 @@ class TestUpstreamSanitizationAnthropic:
 # ------------------------------------------------------------------
 
 
+# ------------------------------------------------------------------
+# Path normalization
+# ------------------------------------------------------------------
+
+
+class TestPathNormalization:
+    """Verify path cleaning handles edge cases without breaking routing."""
+
+    @respx.mock
+    async def test_path_with_query_params_stripped(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Query params are stripped — /v1/chat/completions?foo=bar routes correctly."""
+        alias, shard_a_b64, _ = enrolled_alias
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [], "usage": {"total_tokens": 1}},
+            )
+        )
+        resp = await proxy_client.post(
+            "/v1/chat/completions?foo=bar",
+            headers={
+                "x-worthless-alias": alias,
+                "x-worthless-shard-a": shard_a_b64,
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 200
+
+    @respx.mock
+    async def test_path_with_multiple_query_separators(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Multiple ? in path — only first segment used."""
+        alias, shard_a_b64, _ = enrolled_alias
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={"choices": [], "usage": {"total_tokens": 1}},
+            )
+        )
+        resp = await proxy_client.post(
+            "/v1/chat/completions?a=1?b=2",
+            headers={
+                "x-worthless-alias": alias,
+                "x-worthless-shard-a": shard_a_b64,
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 200
+
+    async def test_unknown_path_returns_401(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Unrecognized path returns uniform 401 (not 404)."""
+        alias, shard_a_b64, _ = enrolled_alias
+        resp = await proxy_client.post(
+            "/v2/something/else",
+            headers={
+                "x-worthless-alias": alias,
+                "x-worthless-shard-a": shard_a_b64,
+            },
+            content=b"{}",
+        )
+        assert resp.status_code == 401
+
+    async def test_empty_path_returns_401(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Root path / returns uniform 401 (no adapter matches)."""
+        alias, shard_a_b64, _ = enrolled_alias
+        resp = await proxy_client.post(
+            "/",
+            headers={
+                "x-worthless-alias": alias,
+                "x-worthless-shard-a": shard_a_b64,
+            },
+            content=b"{}",
+        )
+        assert resp.status_code == 401
+
+
 class TestAntiEnumeration:
     async def test_unknown_endpoint_returns_401_not_404(
         self, proxy_client: httpx.AsyncClient, enrolled_alias
