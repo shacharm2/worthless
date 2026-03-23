@@ -105,6 +105,25 @@ def test_extract_usage_anthropic_malformed():
     assert extract_usage_anthropic(b"event: message_delta\ndata: broken{json\n\n") == 0
 
 
+def test_extract_usage_anthropic_multi_delta_returns_last():
+    """When multiple message_delta events exist, return usage from the last one."""
+    delta_1 = json.dumps(
+        {"type": "message_delta", "usage": {"output_tokens": 10}}
+    ).encode()
+    delta_2 = json.dumps(
+        {"type": "message_delta", "usage": {"output_tokens": 42}}
+    ).encode()
+    sse_data = (
+        b"event: message_delta\n"
+        b"data: " + delta_1 + b"\n\n"
+        b"event: content_block_delta\n"
+        b"data: {\"type\": \"content_block_delta\", \"delta\": {\"text\": \"more\"}}\n\n"
+        b"event: message_delta\n"
+        b"data: " + delta_2 + b"\n\n"
+    )
+    assert extract_usage_anthropic(sse_data) == 42
+
+
 # ---------------------------------------------------------------------------
 # record_spend
 # ---------------------------------------------------------------------------

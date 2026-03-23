@@ -23,7 +23,9 @@ from worthless.proxy.errors import (
 class Rule(Protocol):
     """Protocol for a single rule in the gate-before-reconstruct pipeline."""
 
-    async def evaluate(self, alias: str, request: object) -> ErrorResponse | None: ...
+    async def evaluate(
+        self, alias: str, request: object, *, provider: str = "openai"
+    ) -> ErrorResponse | None: ...
 
 
 @dataclass
@@ -32,9 +34,11 @@ class RulesEngine:
 
     rules: list[Rule]
 
-    async def evaluate(self, alias: str, request: object) -> ErrorResponse | None:
+    async def evaluate(
+        self, alias: str, request: object, *, provider: str = "openai"
+    ) -> ErrorResponse | None:
         for rule in self.rules:
-            result = await rule.evaluate(alias, request)
+            result = await rule.evaluate(alias, request, provider=provider)
             if result is not None:
                 return result
         return None
@@ -60,7 +64,9 @@ class SpendCapRule:
 
     db: aiosqlite.Connection
 
-    async def evaluate(self, alias: str, request: object) -> ErrorResponse | None:
+    async def evaluate(
+        self, alias: str, request: object, *, provider: str = "openai"
+    ) -> ErrorResponse | None:
         try:
             # BEGIN IMMEDIATE acquires a write lock, preventing TOCTOU races
             await self.db.execute("BEGIN IMMEDIATE")
@@ -91,7 +97,7 @@ class SpendCapRule:
                 await self.db.execute("ROLLBACK")  # read-only, release lock
 
                 if total_tokens >= spend_cap:
-                    return spend_cap_error_response()
+                    return spend_cap_error_response(provider=provider)
 
                 return None
             except Exception:
@@ -103,7 +109,7 @@ class SpendCapRule:
                 raise
         except Exception:
             # Fail-closed: any DB error -> deny request
-            return spend_cap_error_response()
+            return spend_cap_error_response(provider=provider)
 
 
 @dataclass
@@ -114,16 +120,25 @@ class RateLimitRule:
     Returns 429 ErrorResponse with Retry-After when rate is exceeded.
 
     Periodically cleans up expired entries to bound memory usage (M-2).
+
+    Per-enrollment rate limits are read from enrollment_config.rate_limit_rps
+    on first access and cached in memory. Falls back to default_rps.
     """
 
     default_rps: float = 100.0
     cleanup_interval: float = 60.0
+    db_path: str | None = None
     _windows: dict[tuple[str, str], list[float]] = field(
         default_factory=dict, init=False, repr=False
     )
     _last_cleanup: float = field(default=0.0, init=False, repr=False)
+    _limits: dict[str, float] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
-    async def evaluate(self, alias: str, request: object) -> ErrorResponse | None:
+    async def evaluate(
+        self, alias: str, request: object, *, provider: str = "openai"
+    ) -> ErrorResponse | None:
         client_ip = getattr(getattr(request, "client", None), "host", "unknown")
         now = time.monotonic()
         key = (alias, client_ip)
@@ -138,11 +153,18 @@ class RateLimitRule:
         cutoff = now - 1.0
         window = [t for t in window if t > cutoff]
 
-        if len(window) >= self.default_rps:
+        # Use per-enrollment limit if available, otherwise default
+        if alias not in self._limits and self.db_path is not None:
+            await self._load_limit(alias)
+        rps = self._limits.get(alias, self.default_rps)
+
+        if len(window) >= rps:
             # Calculate retry-after: time until oldest entry expires
             retry_after = max(1, int(window[0] + 1.0 - now) + 1)
             self._windows[key] = window
-            return rate_limit_error_response(retry_after=retry_after)
+            return rate_limit_error_response(
+                retry_after=retry_after, provider=provider
+            )
 
         window.append(now)
         self._windows[key] = window
@@ -157,3 +179,14 @@ class RateLimitRule:
         ]
         for k in stale_keys:
             del self._windows[k]
+
+    async def _load_limit(self, alias: str) -> None:
+        """Load per-enrollment rate limit from DB into cache."""
+        async with aiosqlite.connect(self.db_path) as db:  # type: ignore[arg-type]
+            async with db.execute(
+                "SELECT rate_limit_rps FROM enrollment_config WHERE key_alias = ?",
+                (alias,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is not None and row[0] is not None:
+            self._limits[alias] = float(row[0])
