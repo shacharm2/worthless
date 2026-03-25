@@ -227,9 +227,7 @@ class TestRelayResponseDirect:
     async def test_content_type_exact_match_streaming(self) -> None:
         """Exact 'text/event-stream' (no params) is streaming."""
         chunks = [b"data: test\n\n"]
-        upstream = make_streaming_response(
-            chunks, headers={"content-type": "text/event-stream"}
-        )
+        upstream = make_streaming_response(chunks, headers={"content-type": "text/event-stream"})
         resp = await relay_response(upstream)
         assert resp.is_streaming is True
 

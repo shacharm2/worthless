@@ -81,9 +81,7 @@ def reconstruct_key(
         ShardTamperedError: If the HMAC verification fails.
     """
     if len(shard_a) != len(shard_b):
-        raise ValueError(
-            f"Shard length mismatch: shard_a={len(shard_a)}, shard_b={len(shard_b)}"
-        )
+        raise ValueError(f"Shard length mismatch: shard_a={len(shard_a)}, shard_b={len(shard_b)}")
 
     # Reconstruct the key via XOR
     key = bytearray(a ^ b for a, b in zip(shard_a, shard_b))
@@ -93,9 +91,7 @@ def reconstruct_key(
         # Verify HMAC commitment
         expected = bytearray(hmac.new(nonce, key, hashlib.sha256).digest())
         if not hmac.compare_digest(expected, commitment):
-            raise ShardTamperedError(
-                "HMAC verification failed: shard data has been tampered with"
-            )
+            raise ShardTamperedError("HMAC verification failed: shard data has been tampered with")
     except Exception:
         _zero_buf(key)
         raise

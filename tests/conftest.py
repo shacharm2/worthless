@@ -19,9 +19,7 @@ from worthless.storage.repository import ShardRepository, StoredShard
 @pytest.fixture
 def sample_openai_body() -> bytes:
     """A minimal OpenAI chat completion request body."""
-    return json.dumps(
-        {"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]}
-    ).encode()
+    return json.dumps({"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]}).encode()
 
 
 @pytest.fixture

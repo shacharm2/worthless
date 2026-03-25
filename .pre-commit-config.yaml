@@ -1,0 +1,145 @@
+# Worthless pre-commit hooks
+#
+# Runner: prek (Rust, 10x faster) or pre-commit (Python, fallback)
+#   prek:       uv tool install prek && prek install && prek install --hook-type commit-msg --hook-type pre-push
+#   pre-commit: uv run pre-commit install && uv run pre-commit install --hook-type commit-msg --hook-type pre-push
+#
+# Run all: prek run --all-files  (or: uv run pre-commit run --all-files)
+#
+# Layers:
+#   1. File hygiene          — fast, catches obvious mistakes
+#   2. Secret detection      — gitleaks (SR-04, SR-05)
+#   3. Code quality          — ruff, codespell
+#   4. Security SAST         — bandit on src/ only
+#   5. Worthless-specific    — SR-07, SR-01, segmentation
+#   6. Supply chain          — lockfile, vuln scan, dependency hygiene
+#   7. Commit message        — conventional commits
+
+repos:
+  # ── 1. File hygiene ─────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: detect-private-key          # catches PEM private keys in commits
+      - id: check-case-conflict         # prevents case-only filename collisions
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: no-commit-to-branch
+        args: ["--branch", "main"]
+
+  # ── 2. Secret detection (SR-04, SR-05) ──────────────────────────
+  # Gitleaks: fastest mature scanner, low false-positive rate.
+  # Custom rules in .gitleaks.toml catch SR-05 denylist patterns.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.24.0
+    hooks:
+      - id: gitleaks
+
+  # ── 3. Code quality ────────────────────────────────────────────
+  # Ruff config lives in pyproject.toml (TID251 bans `random` module = SR-08)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.0
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  # Codespell: catches typos in code, comments, and docs
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.2
+    hooks:
+      - id: codespell
+        args: ["--skip=*.lock,*.json", "--ignore-words-list=shard,shards,te"]
+
+  # ── 4. Security SAST ───────────────────────────────────────────
+  # Bandit: fast Python SAST. Semgrep deferred to CI (needs network for --config auto).
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.8.3
+    hooks:
+      - id: bandit
+        args: ["-r", "src/", "-ll"]
+        pass_filenames: false
+
+  # ── 5. Worthless-specific guards ────────────────────────────────
+  - repo: local
+    hooks:
+      # SR-07: No == on digest/hash bytes — must use hmac.compare_digest
+      - id: no-equality-on-digests
+        name: "SR-07: no == on digest bytes"
+        language: pygrep
+        entry: '\.digest\(\)\s*==|==\s*.*\.digest\(\)'
+        files: '\.py$'
+        types: [python]
+
+      # Segmentation: worthless-cloud must never be referenced in this repo
+      - id: no-cloud-references
+        name: "segmentation: no worthless-cloud refs"
+        language: pygrep
+        entry: 'worthless-cloud'
+        files: '\.(py|md|toml|yaml|yml|json|txt)$'
+        types_or: [python, markdown, toml, yaml, json, text]
+
+      # SR-01: bytearray for secrets, not bare bytes literals in crypto code
+      - id: no-bytes-for-secrets
+        name: "SR-01: bytearray for secret material"
+        language: pygrep
+        entry: ':\s*bytes\s*=.*(?:key|shard|secret|nonce)'
+        files: 'src/worthless/crypto/.*\.py$'
+        types: [python]
+
+  # ── 6. Supply chain ────────────────────────────────────────────
+  - repo: local
+    hooks:
+      # Verify uv.lock is in sync with pyproject.toml
+      - id: uv-lock-check
+        name: "supply chain: lockfile integrity"
+        language: system
+        entry: uv lock --check
+        pass_filenames: false
+        files: '(pyproject\.toml|uv\.lock)$'
+
+  # deptry: catches missing, unused, and transitive deps.
+  # Anti-slopsquatting — detects imports of packages not in your dependency tree
+  # (LLMs hallucinate package names; attackers register them).
+  # Must run from project venv (needs installed package metadata).
+  - repo: local
+    hooks:
+      - id: deptry
+        name: "supply chain: dependency hygiene (deptry)"
+        language: system
+        entry: uv run deptry src/
+        pass_filenames: false
+        files: '(\.py|pyproject\.toml|uv\.lock)$'
+
+      # Vulnerability scan — pre-push only (slow, needs network)
+      - id: uv-audit
+        name: "supply chain: vulnerability scan"
+        language: system
+        entry: sh -c 'uv export --frozen --no-emit-project | uv run pip-audit --disable-pip -r /dev/stdin'
+        pass_filenames: false
+        stages: [pre-push]
+
+  # ── 7. Conventional commits ────────────────────────────────────
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.1.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args:
+          - "feat"
+          - "fix"
+          - "chore"
+          - "refactor"
+          - "test"
+          - "docs"
+          - "ci"
+          - "build"
+          - "perf"
+          - "security"

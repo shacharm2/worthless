@@ -132,9 +132,7 @@ class RateLimitRule:
         default_factory=dict, init=False, repr=False
     )
     _last_cleanup: float = field(default=0.0, init=False, repr=False)
-    _limits: dict[str, float] = field(
-        default_factory=dict, init=False, repr=False
-    )
+    _limits: dict[str, float] = field(default_factory=dict, init=False, repr=False)
 
     async def evaluate(
         self, alias: str, request: object, *, provider: str = "openai"
@@ -162,9 +160,7 @@ class RateLimitRule:
             # Calculate retry-after: time until oldest entry expires
             retry_after = max(1, int(window[0] + 1.0 - now) + 1)
             self._windows[key] = window
-            return rate_limit_error_response(
-                retry_after=retry_after, provider=provider
-            )
+            return rate_limit_error_response(retry_after=retry_after, provider=provider)
 
         window.append(now)
         self._windows[key] = window
@@ -174,7 +170,8 @@ class RateLimitRule:
         """Remove all entries where the latest timestamp is older than 2 seconds."""
         ttl_cutoff = now - 2.0
         stale_keys = [
-            k for k, timestamps in self._windows.items()
+            k
+            for k, timestamps in self._windows.items()
             if not timestamps or max(timestamps) < ttl_cutoff
         ]
         for k in stale_keys:

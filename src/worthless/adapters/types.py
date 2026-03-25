@@ -52,9 +52,7 @@ class AdapterRequest:
             else:
                 redacted[k] = v
         return (
-            f"AdapterRequest(url={self.url!r}, "
-            f"headers={redacted!r}, "
-            f"body=<{len(self.body)} bytes>)"
+            f"AdapterRequest(url={self.url!r}, headers={redacted!r}, body=<{len(self.body)} bytes>)"
         )
 
 

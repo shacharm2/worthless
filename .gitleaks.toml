@@ -1,0 +1,42 @@
+# Gitleaks config — extends default rules with SR-05 denylist patterns
+# Ref: SECURITY_RULES.md SR-04, SR-05
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "openai-api-key"
+description = "OpenAI API key"
+regex = '''sk-[A-Za-z0-9_-]{20,}'''
+keywords = ["sk-"]
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key"
+regex = '''anthropic-[A-Za-z0-9_-]{20,}'''
+keywords = ["anthropic-"]
+
+[[rules]]
+id = "google-api-key"
+description = "Google AI API key"
+regex = '''AIza[A-Za-z0-9_-]{30,}'''
+keywords = ["AIza"]
+
+[[rules]]
+id = "xai-api-key"
+description = "xAI API key"
+regex = '''xai-[A-Za-z0-9_-]{20,}'''
+keywords = ["xai-"]
+
+[[rules]]
+id = "long-base64-secret"
+description = "Long base64 string in security context (SR-05)"
+regex = '''(?i)(?:secret|token|key|credential|password|shard)\s*[:=]\s*["']?[A-Za-z0-9+/]{33,}={0,2}["']?'''
+
+[allowlist]
+paths = [
+    '''\.gitleaks\.toml$''',
+    '''SECURITY_RULES\.md$''',
+    '''\.planning/research/.*\.md$''',
+    '''tests/.*\.py$''',
+]
