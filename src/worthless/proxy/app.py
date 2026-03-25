@@ -63,9 +63,7 @@ def _uniform_401() -> Response:
 
 def _strip_worthless_headers(headers: dict[str, str]) -> dict[str, str]:
     """Remove x-worthless-* headers from a response header dict."""
-    return {
-        k: v for k, v in headers.items() if not k.lower().startswith(INTERNAL_HEADER_PREFIX)
-    }
+    return {k: v for k, v in headers.items() if not k.lower().startswith(INTERNAL_HEADER_PREFIX)}
 
 
 def _sanitize_upstream_error(status_code: int, body: bytes, provider: str) -> bytes:
@@ -80,33 +78,39 @@ def _sanitize_upstream_error(status_code: int, body: bytes, provider: str) -> by
             error_type = "api_error"
             if "error" in parsed and isinstance(parsed["error"], dict):
                 error_type = parsed["error"].get("type", "api_error")
-            return json.dumps({
-                "type": "error",
-                "error": {"type": error_type, "message": "upstream provider error"},
-            }).encode()
+            return json.dumps(
+                {
+                    "type": "error",
+                    "error": {"type": error_type, "message": "upstream provider error"},
+                }
+            ).encode()
         elif isinstance(parsed, dict) and "error" in parsed:
             error_type = "api_error"
             if isinstance(parsed["error"], dict):
                 error_type = parsed["error"].get("type", "api_error")
-            return json.dumps({
-                "error": {
-                    "message": "upstream provider error",
-                    "type": error_type,
-                    "param": None,
-                    "code": None,
+            return json.dumps(
+                {
+                    "error": {
+                        "message": "upstream provider error",
+                        "type": error_type,
+                        "param": None,
+                        "code": None,
+                    }
                 }
-            }).encode()
+            ).encode()
     except (json.JSONDecodeError, ValueError, KeyError):
         pass
     # Fallback: generic error body
-    return json.dumps({
-        "error": {
-            "message": "upstream provider error",
-            "type": "api_error",
-            "param": None,
-            "code": None,
+    return json.dumps(
+        {
+            "error": {
+                "message": "upstream provider error",
+                "type": "api_error",
+                "param": None,
+                "code": None,
+            }
         }
-    }).encode()
+    ).encode()
 
 
 @asynccontextmanager
@@ -262,9 +266,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             return _uniform_401()
 
         # (h) GATE: rules engine evaluates BEFORE any Fernet decrypt (SR-03 / CRYP-05)
-        denial = await rules_engine.evaluate(
-            alias, request, provider=encrypted.provider
-        )
+        denial = await rules_engine.evaluate(alias, request, provider=encrypted.provider)
         if denial is not None:
             # Zero shard_a before returning — gate denied but shard_a was loaded
             shard_a[:] = b"\x00" * len(shard_a)
@@ -289,9 +291,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         req_headers = {k: v for k, v in request.headers.items()}
 
         try:
-            key_buf = reconstruct_key(
-                shard_a, stored.shard_b, stored.commitment, stored.nonce
-            )
+            key_buf = reconstruct_key(shard_a, stored.shard_b, stored.commitment, stored.nonce)
         except Exception:
             # Zero shard material on failure
             shard_a[:] = b"\x00" * len(shard_a)
@@ -303,9 +303,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         try:
             with secure_key(key_buf) as k:
                 # Prepare upstream request
-                adapter_req = adapter.prepare_request(
-                    body=body, headers=req_headers, api_key=k
-                )
+                adapter_req = adapter.prepare_request(body=body, headers=req_headers, api_key=k)
 
                 # Build the httpx request object
                 upstream_req = httpx_client.build_request(
@@ -372,13 +370,9 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     if tokens > 0:
                         # M-9/M-10: Metering resilience
                         try:
-                            await record_spend(
-                                settings.db_path, alias, tokens, None, provider
-                            )
+                            await record_spend(settings.db_path, alias, tokens, None, provider)
                         except Exception:
-                            logger.warning(
-                                "Failed to record spend for alias=%s", alias
-                            )
+                            logger.warning("Failed to record spend for alias=%s", alias)
 
                 return StreamingResponse(
                     _stream_with_metering(),
@@ -394,15 +388,12 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     tokens = extract_usage_anthropic(adapter_resp.body)
                 else:
                     tokens = extract_usage_openai(adapter_resp.body)
+
                 async def _record_nonstream_metering():
                     try:
-                        await record_spend(
-                            settings.db_path, alias, tokens, None, provider
-                        )
+                        await record_spend(settings.db_path, alias, tokens, None, provider)
                     except Exception:
-                        logger.warning(
-                            "Failed to record spend for alias=%s", alias
-                        )
+                        logger.warning("Failed to record spend for alias=%s", alias)
 
                 return Response(
                     content=adapter_resp.body,

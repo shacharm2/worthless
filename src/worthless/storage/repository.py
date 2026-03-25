@@ -98,8 +98,7 @@ class ShardRepository:
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT shard_b_enc, commitment, nonce, provider "
-                "FROM shards WHERE key_alias = ?",
+                "SELECT shard_b_enc, commitment, nonce, provider FROM shards WHERE key_alias = ?",
                 (alias,),
             )
             row = await cursor.fetchone()
