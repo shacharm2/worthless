@@ -41,9 +41,7 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettin
 
 
 @pytest.fixture()
-async def enrolled_alias(
-    repo, proxy_settings: ProxySettings, sample_api_key_bytes: bytes
-):
+async def enrolled_alias(repo, proxy_settings: ProxySettings, sample_api_key_bytes: bytes):
     """Enroll a test key and return (alias, shard_a_b64, raw_api_key)."""
     from worthless.crypto import split_key
     from worthless.storage.repository import StoredShard
@@ -134,9 +132,7 @@ class TestHealthEndpoints:
         app.state.rules_engine = RulesEngine(rules=[])
 
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://test"
-        ) as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/readyz")
             assert resp.status_code == 503
         await app.state.httpx_client.aclose()
@@ -154,15 +150,11 @@ class TestHealthEndpoints:
 
 
 class TestUniformAuth:
-    async def test_missing_alias_header_returns_401(
-        self, proxy_client: httpx.AsyncClient
-    ):
+    async def test_missing_alias_header_returns_401(self, proxy_client: httpx.AsyncClient):
         resp = await proxy_client.post("/v1/chat/completions", content=b"{}")
         assert resp.status_code == 401
 
-    async def test_unknown_alias_returns_401(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
-    ):
+    async def test_unknown_alias_returns_401(self, proxy_client: httpx.AsyncClient, enrolled_alias):
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={"x-worthless-alias": "nonexistent"},
@@ -188,9 +180,7 @@ class TestUniformAuth:
         )
         assert resp.status_code == 401
 
-    async def test_all_401_bodies_identical(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
-    ):
+    async def test_all_401_bodies_identical(self, proxy_client: httpx.AsyncClient, enrolled_alias):
         """All auth failure modes must return the same body (anti-enumeration)."""
         # Missing alias
         r1 = await proxy_client.post("/v1/chat/completions", content=b"{}")
@@ -203,9 +193,7 @@ class TestUniformAuth:
         assert r1.status_code == r2.status_code == 401
         assert r1.content == r2.content
 
-    async def test_alias_path_traversal_rejected(
-        self, proxy_client: httpx.AsyncClient
-    ):
+    async def test_alias_path_traversal_rejected(self, proxy_client: httpx.AsyncClient):
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={"x-worthless-alias": "../../etc/passwd"},
@@ -221,28 +209,28 @@ class TestUniformAuth:
 
 class TestGateBeforeReconstruct:
     @respx.mock
-    async def test_spend_cap_denial_skips_reconstruct(
-        self, proxy_app, enrolled_alias
-    ):
+    async def test_spend_cap_denial_skips_reconstruct(self, proxy_app, enrolled_alias):
         """When rules engine denies (spend cap), reconstruct_key is never called."""
         alias, shard_a_b64, _ = enrolled_alias
 
-        with patch(
-            "worthless.proxy.app.reconstruct_key", wraps=None
-        ) as mock_reconstruct:
+        with patch("worthless.proxy.app.reconstruct_key", wraps=None) as mock_reconstruct:
             # Override the rules engine to deny
             proxy_app.state.rules_engine = type(
-                "MockEngine", (), {"evaluate": AsyncMock(return_value=ErrorResponse(
-                    status_code=402,
-                    body=b'{"error": "spend cap exceeded"}',
-                    headers={"content-type": "application/json"},
-                ))}
+                "MockEngine",
+                (),
+                {
+                    "evaluate": AsyncMock(
+                        return_value=ErrorResponse(
+                            status_code=402,
+                            body=b'{"error": "spend cap exceeded"}',
+                            headers={"content-type": "application/json"},
+                        )
+                    )
+                },
             )()
 
             transport = httpx.ASGITransport(app=proxy_app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://test"
-            ) as client:
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.post(
                     "/v1/chat/completions",
                     headers={
@@ -255,27 +243,27 @@ class TestGateBeforeReconstruct:
             mock_reconstruct.assert_not_called()
 
     @respx.mock
-    async def test_rate_limit_denial_skips_reconstruct(
-        self, proxy_app, enrolled_alias
-    ):
+    async def test_rate_limit_denial_skips_reconstruct(self, proxy_app, enrolled_alias):
         """When rules engine denies (rate limit), reconstruct_key is never called."""
         alias, shard_a_b64, _ = enrolled_alias
 
-        with patch(
-            "worthless.proxy.app.reconstruct_key", wraps=None
-        ) as mock_reconstruct:
+        with patch("worthless.proxy.app.reconstruct_key", wraps=None) as mock_reconstruct:
             proxy_app.state.rules_engine = type(
-                "MockEngine", (), {"evaluate": AsyncMock(return_value=ErrorResponse(
-                    status_code=429,
-                    body=b'{"error": "rate limit exceeded"}',
-                    headers={"content-type": "application/json", "Retry-After": "1"},
-                ))}
+                "MockEngine",
+                (),
+                {
+                    "evaluate": AsyncMock(
+                        return_value=ErrorResponse(
+                            status_code=429,
+                            body=b'{"error": "rate limit exceeded"}',
+                            headers={"content-type": "application/json", "Retry-After": "1"},
+                        )
+                    )
+                },
             )()
 
             transport = httpx.ASGITransport(app=proxy_app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://test"
-            ) as client:
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.post(
                     "/v1/chat/completions",
                     headers={
@@ -379,9 +367,7 @@ class TestTransparentRouting:
         )
 
         transport = httpx.ASGITransport(app=proxy_app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://test"
-        ) as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await client.post(
                 "/v1/messages",
                 headers={
@@ -470,9 +456,7 @@ class TestKeyNotInResponse:
         )
 
         for name in resp.headers:
-            assert not name.lower().startswith(
-                "x-worthless-"
-            ), f"Leaked internal header: {name}"
+            assert not name.lower().startswith("x-worthless-"), f"Leaked internal header: {name}"
 
 
 # ------------------------------------------------------------------
@@ -500,9 +484,7 @@ class TestSecurity:
         app.state.rules_engine = RulesEngine(rules=[])
 
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://test"
-        ) as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             alias, shard_a_b64, _ = enrolled_alias
             resp = await client.post(
                 "/v1/chat/completions",

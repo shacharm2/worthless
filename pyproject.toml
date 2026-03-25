@@ -13,6 +13,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "deptry>=0.22",
+    "pre-commit>=4.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
@@ -75,6 +77,15 @@ select = ["E", "F", "W", "TID"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "random".msg = "Use the 'secrets' module for cryptographic randomness. The 'random' module is banned (CRYP-04)."
+
+[tool.deptry]
+# Only scan src/ — dev/test/qa deps are CLI tools, not imported by app code
+optional_dependencies_dev_groups = ["dev", "test", "qa", "fuzz"]
+[tool.deptry.per_rule_ignores]
+# starlette: transitive dep of fastapi, but we import ASGI types directly
+# uvicorn: runtime ASGI server invoked via CLI, never imported
+DEP002 = ["uvicorn"]
+DEP003 = ["starlette"]
 
 [tool.mutmut]
 paths_to_mutate = [

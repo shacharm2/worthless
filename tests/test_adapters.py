@@ -221,26 +221,20 @@ class TestHopByHopStrippingAdapterLevel:
 class TestEdgeCases:
     def test_openai_empty_body(self, sample_api_key: bytearray) -> None:
         adapter = OpenAIAdapter()
-        req = adapter.prepare_request(
-            body=b"", headers={}, api_key=sample_api_key
-        )
+        req = adapter.prepare_request(body=b"", headers={}, api_key=sample_api_key)
         assert req.body == b""
         assert req.url == "https://api.openai.com/v1/chat/completions"
 
     def test_anthropic_empty_body(self, sample_api_key: bytearray) -> None:
         adapter = AnthropicAdapter()
-        req = adapter.prepare_request(
-            body=b"", headers={}, api_key=sample_api_key
-        )
+        req = adapter.prepare_request(body=b"", headers={}, api_key=sample_api_key)
         assert req.body == b""
         assert req.url == "https://api.anthropic.com/v1/messages"
 
     def test_openai_unicode_body(self, sample_api_key: bytearray) -> None:
         body = '{"messages":[{"role":"user","content":"Hello \U0001f600"}]}'.encode()
         adapter = OpenAIAdapter()
-        req = adapter.prepare_request(
-            body=body, headers={}, api_key=sample_api_key
-        )
+        req = adapter.prepare_request(body=body, headers={}, api_key=sample_api_key)
         assert req.body == body
 
     def test_anthropic_preserves_extra_headers(self, sample_api_key: bytearray) -> None:

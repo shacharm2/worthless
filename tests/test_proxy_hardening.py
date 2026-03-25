@@ -178,11 +178,13 @@ class TestAdapterResponseRepr:
 
 
 class TestDeadCodeRemoval:
-
     def test_dependencies_module_removed(self) -> None:
         dep_path = (
             Path(__file__).resolve().parent.parent
-            / "src" / "worthless" / "proxy" / "dependencies.py"
+            / "src"
+            / "worthless"
+            / "proxy"
+            / "dependencies.py"
         )
         assert not dep_path.exists()
 
@@ -251,9 +253,7 @@ class TestStoredShardRepr:
 
 class TestSSEStreaming:
     @respx.mock
-    async def test_stream_true_passed_to_httpx_send(
-        self, proxy_app, enrolled_alias
-    ):
+    async def test_stream_true_passed_to_httpx_send(self, proxy_app, enrolled_alias):
         """Verify httpx.send() is called with stream=True for all requests."""
         alias, shard_a_b64, _ = enrolled_alias
         send_kwargs: dict = {}
@@ -286,15 +286,10 @@ class TestSSEStreaming:
         assert send_kwargs.get("stream") is True, "httpx.send() must be called with stream=True"
 
     @respx.mock
-    async def test_streaming_response_uses_streaming_path(
-        self, proxy_app, enrolled_alias
-    ):
+    async def test_streaming_response_uses_streaming_path(self, proxy_app, enrolled_alias):
         """When adapter returns is_streaming=True, proxy uses StreamingResponse."""
         alias, shard_a_b64, _ = enrolled_alias
-        sse_body = (
-            b'data: {"id":"1","choices":[{"delta":{"content":"Hello"}}]}\n\n'
-            b"data: [DONE]\n\n"
-        )
+        sse_body = b'data: {"id":"1","choices":[{"delta":{"content":"Hello"}}]}\n\ndata: [DONE]\n\n'
 
         async def sse_stream():
             for chunk in sse_body.split(b"\n\n"):
@@ -375,9 +370,7 @@ class TestSSEStreaming:
 
 class TestGateBeforeDecrypt:
     @respx.mock
-    async def test_fetch_encrypted_before_rules_decrypt_after(
-        self, proxy_app, enrolled_alias
-    ):
+    async def test_fetch_encrypted_before_rules_decrypt_after(self, proxy_app, enrolled_alias):
         """fetch_encrypted called BEFORE rules_engine.evaluate, decrypt_shard AFTER."""
         alias, shard_a_b64, _ = enrolled_alias
         call_order: list[str] = []
@@ -399,13 +392,12 @@ class TestGateBeforeDecrypt:
 
         proxy_app.state.repo.fetch_encrypted = mock_fetch
         proxy_app.state.repo.decrypt_shard = mock_decrypt
-        proxy_app.state.rules_engine = type(
-            "MockEngine", (), {"evaluate": mock_evaluate}
-        )()
+        proxy_app.state.rules_engine = type("MockEngine", (), {"evaluate": mock_evaluate})()
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
-                200, json={"choices": [], "usage": {"total_tokens": 5}},
+                200,
+                json={"choices": [], "usage": {"total_tokens": 5}},
             )
         )
 
@@ -438,11 +430,17 @@ class TestGateBeforeDecrypt:
 
         proxy_app.state.repo.decrypt_shard = mock_decrypt
         proxy_app.state.rules_engine = type(
-            "MockEngine", (), {"evaluate": AsyncMock(return_value=ErrorResponse(
-                status_code=402,
-                body=b'{"error": "spend cap exceeded"}',
-                headers={"content-type": "application/json"},
-            ))}
+            "MockEngine",
+            (),
+            {
+                "evaluate": AsyncMock(
+                    return_value=ErrorResponse(
+                        status_code=402,
+                        body=b'{"error": "spend cap exceeded"}',
+                        headers={"content-type": "application/json"},
+                    )
+                )
+            },
         )()
 
         transport = httpx.ASGITransport(app=proxy_app)
@@ -466,9 +464,7 @@ class TestGateBeforeDecrypt:
 
 class TestByteArrayZeroing:
     @respx.mock
-    async def test_shard_material_zeroed_after_request(
-        self, proxy_app, enrolled_alias
-    ):
+    async def test_shard_material_zeroed_after_request(self, proxy_app, enrolled_alias):
         """shard_a and stored shard fields are zeroed after request completes."""
         alias, shard_a_b64, _ = enrolled_alias
         captured_stored: dict = {}
@@ -484,7 +480,8 @@ class TestByteArrayZeroing:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
-                200, json={"choices": [], "usage": {"total_tokens": 5}},
+                200,
+                json={"choices": [], "usage": {"total_tokens": 5}},
             )
         )
 
@@ -513,9 +510,7 @@ class TestByteArrayZeroing:
 
 class TestReconstructFailureZeroing:
     @respx.mock
-    async def test_shard_material_zeroed_on_reconstruct_failure(
-        self, proxy_app, enrolled_alias
-    ):
+    async def test_shard_material_zeroed_on_reconstruct_failure(self, proxy_app, enrolled_alias):
         """When reconstruct_key raises, all shard material is zeroed and 401 returned."""
         alias, shard_a_b64, _ = enrolled_alias
         captured_stored: dict = {}
@@ -534,9 +529,7 @@ class TestReconstructFailureZeroing:
             side_effect=Exception("tampered shard"),
         ):
             transport = httpx.ASGITransport(app=proxy_app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://test"
-            ) as client:
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.post(
                     "/v1/chat/completions",
                     headers={
@@ -561,9 +554,7 @@ class TestReconstructFailureZeroing:
 
 class TestAsyncFileIO:
     @respx.mock
-    async def test_file_shard_a_uses_to_thread(
-        self, proxy_app, enrolled_alias
-    ):
+    async def test_file_shard_a_uses_to_thread(self, proxy_app, enrolled_alias):
         """File-based shard_a loading uses asyncio.to_thread."""
         alias, _, _ = enrolled_alias
         to_thread_called = False
@@ -577,7 +568,8 @@ class TestAsyncFileIO:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
-                200, json={"choices": [], "usage": {"total_tokens": 5}},
+                200,
+                json={"choices": [], "usage": {"total_tokens": 5}},
             )
         )
 
@@ -587,9 +579,7 @@ class TestAsyncFileIO:
             mock_asyncio_mod.create_task = asyncio.create_task
 
             transport = httpx.ASGITransport(app=proxy_app)
-            async with httpx.AsyncClient(
-                transport=transport, base_url="http://test"
-            ) as client:
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.post(
                     "/v1/chat/completions",
                     headers={
@@ -609,9 +599,7 @@ class TestAsyncFileIO:
 
 class TestErrorHandling:
     @respx.mock
-    async def test_timeout_returns_504(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
-    ):
+    async def test_timeout_returns_504(self, proxy_client: httpx.AsyncClient, enrolled_alias):
         """httpx.TimeoutException returns 504."""
         alias, shard_a_b64, _ = enrolled_alias
 
@@ -631,9 +619,7 @@ class TestErrorHandling:
         assert resp.status_code == 504
 
     @respx.mock
-    async def test_connect_error_returns_502(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
-    ):
+    async def test_connect_error_returns_502(self, proxy_client: httpx.AsyncClient, enrolled_alias):
         """httpx.ConnectError returns 502."""
         alias, shard_a_b64, _ = enrolled_alias
 
@@ -838,7 +824,8 @@ class TestPathNormalization:
         alias, shard_a_b64, _ = enrolled_alias
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
-                200, json={"choices": [], "usage": {"total_tokens": 1}},
+                200,
+                json={"choices": [], "usage": {"total_tokens": 1}},
             )
         )
         resp = await proxy_client.post(
@@ -860,7 +847,8 @@ class TestPathNormalization:
         alias, shard_a_b64, _ = enrolled_alias
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
-                200, json={"choices": [], "usage": {"total_tokens": 1}},
+                200,
+                json={"choices": [], "usage": {"total_tokens": 1}},
             )
         )
         resp = await proxy_client.post(
@@ -874,9 +862,7 @@ class TestPathNormalization:
         )
         assert resp.status_code == 200
 
-    async def test_unknown_path_returns_401(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
-    ):
+    async def test_unknown_path_returns_401(self, proxy_client: httpx.AsyncClient, enrolled_alias):
         """Unrecognized path returns uniform 401 (not 404)."""
         alias, shard_a_b64, _ = enrolled_alias
         resp = await proxy_client.post(
@@ -889,9 +875,7 @@ class TestPathNormalization:
         )
         assert resp.status_code == 401
 
-    async def test_empty_path_returns_401(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
-    ):
+    async def test_empty_path_returns_401(self, proxy_client: httpx.AsyncClient, enrolled_alias):
         """Root path / returns uniform 401 (no adapter matches)."""
         alias, shard_a_b64, _ = enrolled_alias
         resp = await proxy_client.post(

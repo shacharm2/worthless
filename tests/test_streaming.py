@@ -19,9 +19,7 @@ from worthless.adapters.types import AdapterResponse
 
 class TestOpenAISSERelay:
     @pytest.mark.asyncio
-    async def test_openai_sse_relay(
-        self, mock_openai_sse_chunks: list[bytes]
-    ) -> None:
+    async def test_openai_sse_relay(self, mock_openai_sse_chunks: list[bytes]) -> None:
         """OpenAI streaming response yields chunks with is_streaming=True."""
         mock_resp = make_streaming_response(mock_openai_sse_chunks)
         adapter = OpenAIAdapter()
@@ -46,9 +44,7 @@ class TestOpenAISSERelay:
 
 class TestAnthropicSSERelay:
     @pytest.mark.asyncio
-    async def test_anthropic_sse_relay(
-        self, mock_anthropic_sse_chunks: list[bytes]
-    ) -> None:
+    async def test_anthropic_sse_relay(self, mock_anthropic_sse_chunks: list[bytes]) -> None:
         """Anthropic streaming response yields chunks with is_streaming=True."""
         mock_resp = make_streaming_response(mock_anthropic_sse_chunks)
         adapter = AnthropicAdapter()
@@ -73,9 +69,7 @@ class TestAnthropicSSERelay:
 
 class TestStreamingHeaders:
     @pytest.mark.asyncio
-    async def test_streaming_headers(
-        self, mock_openai_sse_chunks: list[bytes]
-    ) -> None:
+    async def test_streaming_headers(self, mock_openai_sse_chunks: list[bytes]) -> None:
         """Streaming response includes correct SSE headers."""
         mock_resp = make_streaming_response(mock_openai_sse_chunks)
         adapter = OpenAIAdapter()
@@ -106,9 +100,7 @@ class TestStreamingHeaders:
 
 class TestNoBuffering:
     @pytest.mark.asyncio
-    async def test_no_buffering(
-        self, mock_openai_sse_chunks: list[bytes]
-    ) -> None:
+    async def test_no_buffering(self, mock_openai_sse_chunks: list[bytes]) -> None:
         """Chunks are yielded individually, not accumulated into one blob."""
         mock_resp = make_streaming_response(mock_openai_sse_chunks)
         adapter = OpenAIAdapter()
@@ -152,13 +144,9 @@ class TestNonStreamingUnchanged:
 
 class TestStreamingErrorPassthrough:
     @pytest.mark.asyncio
-    async def test_streaming_error_passthrough(
-        self, mock_openai_sse_chunks: list[bytes]
-    ) -> None:
+    async def test_streaming_error_passthrough(self, mock_openai_sse_chunks: list[bytes]) -> None:
         """Non-2xx status with streaming content-type is still streamed."""
-        mock_resp = make_streaming_response(
-            mock_openai_sse_chunks, status_code=429
-        )
+        mock_resp = make_streaming_response(mock_openai_sse_chunks, status_code=429)
         adapter = OpenAIAdapter()
         resp = await adapter.relay_response(mock_resp)
 
