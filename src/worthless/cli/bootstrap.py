@@ -89,7 +89,7 @@ def _init_db(home: WorthlessHome) -> None:
     try:
         conn.execute(
             """CREATE TABLE IF NOT EXISTS shards (
-                alias TEXT PRIMARY KEY,
+                key_alias TEXT PRIMARY KEY,
                 shard_b_enc BLOB NOT NULL,
                 commitment BLOB NOT NULL,
                 nonce BLOB NOT NULL,

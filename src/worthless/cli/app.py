@@ -23,3 +23,9 @@ def _main(
 ) -> None:
     """Worthless — make stolen API keys architecturally worthless."""
     set_console(WorthlessConsole(quiet=quiet, json_mode=json_output))
+
+
+# -- Register command modules --------------------------------------------------
+from worthless.cli.commands.lock import register_lock_commands  # noqa: E402
+
+register_lock_commands(app)
