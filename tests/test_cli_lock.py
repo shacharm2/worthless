@@ -65,7 +65,7 @@ class TestLockCommand:
         assert line.startswith("sk-proj-")
 
         # shard_a file should exist
-        shard_a_files = list(home_dir.shard_a_dir.iterdir())
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if not f.name.endswith(".meta")]
         assert len(shard_a_files) == 1
 
         # shard_a file should have 0600 permissions
@@ -113,7 +113,7 @@ class TestLockCommand:
         result2 = runner.invoke(app, ["lock", "--env", str(env_file)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
         assert result2.exit_code == 0
         # Still only one shard_a file
-        shard_a_files = list(home_dir.shard_a_dir.iterdir())
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if not f.name.endswith(".meta")]
         assert len(shard_a_files) == 1
 
     def test_lock_prefix_preservation(
@@ -141,7 +141,7 @@ class TestLockCommand:
         )
         assert result.exit_code == 0
 
-        shard_a_files = list(home_dir.shard_a_dir.iterdir())
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if not f.name.endswith(".meta")]
         assert len(shard_a_files) == 2
 
         repo = _repo(home_dir)

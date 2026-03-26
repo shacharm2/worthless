@@ -134,6 +134,15 @@ class ShardRepository:
             return None
         return self.decrypt_shard(encrypted)
 
+    async def delete(self, alias: str) -> bool:
+        """Delete the shard record for *alias*. Returns True if deleted."""
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM shards WHERE key_alias = ?", (alias,)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
     async def list_keys(self) -> list[str]:
         """Return a list of all enrolled key aliases."""
         async with aiosqlite.connect(self._db_path) as db:

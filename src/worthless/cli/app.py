@@ -29,3 +29,7 @@ def _main(
 from worthless.cli.commands.lock import register_lock_commands  # noqa: E402
 
 register_lock_commands(app)
+
+from worthless.cli.commands.unlock import register_unlock_commands  # noqa: E402
+
+register_unlock_commands(app)

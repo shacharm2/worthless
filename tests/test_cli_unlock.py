@@ -84,8 +84,8 @@ class TestUnlockCommand:
         """Unlock with --alias should only unlock that specific key."""
         _lock(multi_env_file, home_dir)
 
-        # Find aliases
-        shard_a_files = list(home_dir.shard_a_dir.iterdir())
+        # Find aliases (exclude .meta files)
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if not f.name.endswith(".meta")]
         assert len(shard_a_files) == 2
 
         # Unlock just one
@@ -97,8 +97,8 @@ class TestUnlockCommand:
         )
         assert result.exit_code == 0, result.output
 
-        # Only one shard_a file should remain
-        remaining = list(home_dir.shard_a_dir.iterdir())
+        # Only one shard_a file should remain (plus its .meta)
+        remaining = [f for f in home_dir.shard_a_dir.iterdir() if not f.name.endswith(".meta")]
         assert len(remaining) == 1
 
     def test_unlock_all_aliases(

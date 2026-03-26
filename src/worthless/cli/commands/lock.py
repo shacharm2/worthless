@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Optional
@@ -106,6 +107,13 @@ def _lock_keys(
                 provider=provider,
             )
             asyncio.run(repo.store(alias, stored))
+
+            # Store metadata for unlock (var_name + env_path mapping)
+            meta_path = home.shard_a_dir / f"{alias}.meta"
+            meta_path.write_text(json.dumps({
+                "var_name": var_name,
+                "env_path": str(env_path.resolve()),
+            }))
 
             # Build and write prefix-preserving decoy
             decoy = _make_decoy(value, prefix, bytes(sr.shard_a))
