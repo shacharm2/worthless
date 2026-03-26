@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 4 context gathered
-last_updated: "2026-03-25T22:42:20.332Z"
-last_activity: 2026-03-21 — Completed 03.1-02 proxy pipeline hardening (SSE streaming, gate ordering, zeroing, error handling)
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-03-26T21:43:05.741Z"
+last_activity: 2026-03-26 — Completed 04-01 CLI foundation (Typer app, console, errors, bootstrap, dotenv rewriter, scanner)
 progress:
   total_phases: 6
   completed_phases: 4
-  total_plans: 9
-  completed_plans: 9
-  percent: 67
+  total_plans: 13
+  completed_plans: 10
+  percent: 77
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 
 ## Current Position
 
-Phase: 3.1 of 5 (Proxy Hardening)
-Plan: 3 of 3 in current phase -- COMPLETE
-Status: Executing Phase 03.1
-Last activity: 2026-03-21 — Completed 03.1-02 proxy pipeline hardening (SSE streaming, gate ordering, zeroing, error handling)
+Phase: 04 of 5 (CLI)
+Plan: 1 of 4 in current phase
+Status: Executing Phase 04-cli
+Last activity: 2026-03-26 — Completed 04-01 CLI foundation (Typer app, console, errors, bootstrap, dotenv rewriter, scanner)
 
-Progress: [██████▓░░░] 67%
+Progress: [████████░░] 77%
 
 ## Performance Metrics
 
@@ -52,6 +52,7 @@ Progress: [██████▓░░░] 67%
 - Trend: -
 
 *Updated after each plan completion*
+| Phase 04-cli P01 | 5min | 2 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -85,6 +86,8 @@ Recent decisions affecting current work:
 - [03.1-02]: Upstream error sanitization: keep status code, replace message with generic "upstream provider error"
 - [03.1-02]: relay_response uses aread() for non-SSE responses when sent with stream=True
 - [03.1-02]: Shard material zeroed in finally block covering entire request lifecycle
+- [Phase 04-01]: Prefix detection sorted longest-first to prevent sk-ant- matching openai sk-
+- [Phase 04-01]: Bootstrap uses synchronous sqlite3 for DB init (avoids async in CLI setup)
 
 ### Roadmap Evolution
 
@@ -101,6 +104,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-25T22:42:20.326Z
-Stopped at: Phase 4 context gathered
-Resume file: .planning/phases/04-cli/04-CONTEXT.md
+Last session: 2026-03-26T21:43:05.737Z
+Stopped at: Completed 04-01-PLAN.md
+Resume file: None
