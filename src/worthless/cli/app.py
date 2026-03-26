@@ -1,0 +1,25 @@
+"""Typer application — CLI entry point for ``worthless``."""
+
+from __future__ import annotations
+
+from typing import Optional
+
+import typer
+
+from worthless.cli.console import WorthlessConsole, set_console
+
+app = typer.Typer(
+    name="worthless",
+    help="Protect your API keys in 90 seconds.",
+    no_args_is_help=True,
+    pretty_exceptions_enable=False,
+)
+
+
+@app.callback()
+def _main(
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress non-error output"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Worthless — make stolen API keys architecturally worthless."""
+    set_console(WorthlessConsole(quiet=quiet, json_mode=json_output))
