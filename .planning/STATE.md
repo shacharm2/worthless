@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 04-04-PLAN.md
-last_updated: "2026-03-27T01:10:19.309Z"
+stopped_at: Completed 04-03-PLAN.md
+last_updated: "2026-03-27T01:13:33.348Z"
 last_activity: 2026-03-27 — Completed 04-04 wrap/up commands (pipe death detection, ephemeral proxy, daemon mode)
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 13
-  completed_plans: 12
+  completed_plans: 13
   percent: 92
 ---
 
@@ -55,6 +55,7 @@ Progress: [█████████░] 92%
 | Phase 04-cli P01 | 5min | 2 tasks | 13 files |
 | Phase 04-cli P02 | 7min | 2 tasks | 8 files |
 | Phase 04-cli P04 | 5min | 2 tasks | 7 files |
+| Phase 04-cli P03 | 7min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -94,6 +95,8 @@ Recent decisions affecting current work:
 - [Phase 04-02]: Deterministic alias via provider-sha256[:8] for reproducible enrollment
 - [Phase 04-02]: Metadata sidecar (.meta JSON) stores var_name for .env restoration on unlock
 - [Phase 04-cli]: Pipe-based death detection via os.pipe() with WORTHLESS_LIVENESS_FD for robust proxy cleanup
+- [Phase 04-cli]: Exit codes follow ESLint/Semgrep convention: 0=clean, 1=unprotected, 2=error
+- [Phase 04-cli]: Proxy port discovered from PID file or WORTHLESS_PORT env var
 
 ### Roadmap Evolution
 
@@ -110,6 +113,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-27T01:10:19.306Z
-Stopped at: Completed 04-04-PLAN.md
+Last session: 2026-03-27T01:13:33.344Z
+Stopped at: Completed 04-03-PLAN.md
 Resume file: None
