@@ -114,5 +114,5 @@ Phases execute in numeric order. Phases 1 and 2 can be executed in parallel.
 | 2. Provider Adapters | 2/2 | Complete | 2026-03-15 |
 | 3. Proxy Service | 2/2 | Complete | 2026-03-20 |
 | 03.1. Proxy Hardening | 0/3 | Complete    | 2026-03-21 |
-| 4. CLI | 2/4 | In Progress|  |
+| 4. CLI | 3/4 | In Progress|  |
 | 5. Security Posture Documentation | 0/1 | Not started | - |

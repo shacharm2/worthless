@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 04-02-PLAN.md
-last_updated: "2026-03-26T21:43:05.741Z"
-last_activity: 2026-03-26 — Completed 04-01 CLI foundation (Typer app, console, errors, bootstrap, dotenv rewriter, scanner)
+stopped_at: Completed 04-04-PLAN.md
+last_updated: "2026-03-27T01:10:19.309Z"
+last_activity: 2026-03-27 — Completed 04-04 wrap/up commands (pipe death detection, ephemeral proxy, daemon mode)
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 13
-  completed_plans: 11
-  percent: 85
+  completed_plans: 12
+  percent: 92
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 ## Current Position
 
 Phase: 04 of 5 (CLI)
-Plan: 2 of 4 in current phase
+Plan: 4 of 4 in current phase
 Status: Executing Phase 04-cli
-Last activity: 2026-03-26 — Completed 04-02 lock/unlock commands (split, store, rewrite, round-trip restoration)
+Last activity: 2026-03-27 — Completed 04-04 wrap/up commands (pipe death detection, ephemeral proxy, daemon mode)
 
-Progress: [████████▌░] 85%
+Progress: [█████████░] 92%
 
 ## Performance Metrics
 
@@ -54,6 +54,7 @@ Progress: [████████▌░] 85%
 *Updated after each plan completion*
 | Phase 04-cli P01 | 5min | 2 tasks | 13 files |
 | Phase 04-cli P02 | 7min | 2 tasks | 8 files |
+| Phase 04-cli P04 | 5min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -92,6 +93,7 @@ Recent decisions affecting current work:
 - [Phase 04-02]: Low-entropy decoy pattern (WRTLS filler) keeps Shannon entropy below 4.5 for idempotent lock
 - [Phase 04-02]: Deterministic alias via provider-sha256[:8] for reproducible enrollment
 - [Phase 04-02]: Metadata sidecar (.meta JSON) stores var_name for .env restoration on unlock
+- [Phase 04-cli]: Pipe-based death detection via os.pipe() with WORTHLESS_LIVENESS_FD for robust proxy cleanup
 
 ### Roadmap Evolution
 
@@ -108,6 +110,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-26T21:43:05.737Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-03-27T01:10:19.306Z
+Stopped at: Completed 04-04-PLAN.md
 Resume file: None
