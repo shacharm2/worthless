@@ -36,8 +36,13 @@ def load_enrollment_data(home: object | None) -> set[str]:
         return set()
     values: set[str] = set()
     for f in Path(shard_a_dir).iterdir():
-        if f.is_file():
+        if not f.is_file() or f.suffix == ".meta":
+            continue
+        try:
             values.add(f.read_text().strip())
+        except (UnicodeDecodeError, OSError):
+            # Shard files are binary — skip them gracefully
+            continue
     return values
 
 

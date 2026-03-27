@@ -1,0 +1,7 @@
+- id: worthless-scan
+  name: Worthless API Key Scanner
+  entry: worthless scan --pre-commit
+  language: python
+  types: [text]
+  stages: [pre-commit]
+  pass_filenames: true
