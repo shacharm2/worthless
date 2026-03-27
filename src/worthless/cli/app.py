@@ -33,3 +33,15 @@ register_lock_commands(app)
 from worthless.cli.commands.unlock import register_unlock_commands  # noqa: E402
 
 register_unlock_commands(app)
+
+from worthless.cli.commands.scan import register_scan_commands  # noqa: E402
+
+register_scan_commands(app)
+
+from worthless.cli.commands.wrap import register_wrap_commands  # noqa: E402
+
+register_wrap_commands(app)
+
+from worthless.cli.commands.up import register_up_commands  # noqa: E402
+
+register_up_commands(app)
