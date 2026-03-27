@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 04-01-PLAN.md
+stopped_at: Completed 04-02-PLAN.md
 last_updated: "2026-03-26T21:43:05.741Z"
 last_activity: 2026-03-26 — Completed 04-01 CLI foundation (Typer app, console, errors, bootstrap, dotenv rewriter, scanner)
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 13
-  completed_plans: 10
-  percent: 77
+  completed_plans: 11
+  percent: 85
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 ## Current Position
 
 Phase: 04 of 5 (CLI)
-Plan: 1 of 4 in current phase
+Plan: 2 of 4 in current phase
 Status: Executing Phase 04-cli
-Last activity: 2026-03-26 — Completed 04-01 CLI foundation (Typer app, console, errors, bootstrap, dotenv rewriter, scanner)
+Last activity: 2026-03-26 — Completed 04-02 lock/unlock commands (split, store, rewrite, round-trip restoration)
 
-Progress: [████████░░] 77%
+Progress: [████████▌░] 85%
 
 ## Performance Metrics
 
@@ -53,6 +53,7 @@ Progress: [████████░░] 77%
 
 *Updated after each plan completion*
 | Phase 04-cli P01 | 5min | 2 tasks | 13 files |
+| Phase 04-cli P02 | 7min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -88,6 +89,9 @@ Recent decisions affecting current work:
 - [03.1-02]: Shard material zeroed in finally block covering entire request lifecycle
 - [Phase 04-01]: Prefix detection sorted longest-first to prevent sk-ant- matching openai sk-
 - [Phase 04-01]: Bootstrap uses synchronous sqlite3 for DB init (avoids async in CLI setup)
+- [Phase 04-02]: Low-entropy decoy pattern (WRTLS filler) keeps Shannon entropy below 4.5 for idempotent lock
+- [Phase 04-02]: Deterministic alias via provider-sha256[:8] for reproducible enrollment
+- [Phase 04-02]: Metadata sidecar (.meta JSON) stores var_name for .env restoration on unlock
 
 ### Roadmap Evolution
 
