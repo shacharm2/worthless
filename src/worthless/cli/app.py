@@ -38,6 +38,10 @@ from worthless.cli.commands.scan import register_scan_commands  # noqa: E402
 
 register_scan_commands(app)
 
+from worthless.cli.commands.status import register_status_commands  # noqa: E402
+
+register_status_commands(app)
+
 from worthless.cli.commands.wrap import register_wrap_commands  # noqa: E402
 
 register_wrap_commands(app)
