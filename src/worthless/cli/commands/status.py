@@ -11,25 +11,9 @@ from typing import Any, Optional
 import httpx
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, ensure_home
+from worthless.cli.bootstrap import WorthlessHome, ensure_home, resolve_home
 from worthless.cli.console import get_console
-
-
-def _resolve_home() -> WorthlessHome | None:
-    """Try to load WorthlessHome; return None if not initialized."""
-    try:
-        env_home = os.environ.get("WORTHLESS_HOME")
-        if env_home:
-            base = Path(env_home)
-            if base.exists():
-                return ensure_home(base)
-            return None
-        default = Path.home() / ".worthless"
-        if default.exists():
-            return ensure_home(default)
-        return None
-    except Exception:
-        return None
+from worthless.cli.process import read_pid
 
 
 def _list_enrolled_keys(home: WorthlessHome) -> list[dict[str, str]]:
@@ -63,14 +47,12 @@ def _discover_proxy_port(home: WorthlessHome) -> int | None:
         except ValueError:
             pass
 
-    # Check PID file
+    # Check PID file (format: "pid\nport\n")
     pid_file = home.base_dir / "proxy.pid"
     if pid_file.exists():
-        try:
-            data = json.loads(pid_file.read_text())
-            return int(data.get("port", 0)) or None
-        except (json.JSONDecodeError, ValueError, OSError):
-            pass
+        info = read_pid(pid_file)
+        if info is not None:
+            return info[1]
 
     return None
 
@@ -100,7 +82,7 @@ def register_status_commands(app: typer.Typer) -> None:
         """Show enrolled keys and proxy health."""
         console = get_console()
 
-        home = _resolve_home()
+        home = resolve_home()
 
         # Enrolled keys
         keys: list[dict[str, str]] = []

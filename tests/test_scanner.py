@@ -39,15 +39,16 @@ class TestScanFiles:
         findings = scan_files([f])
         assert len(findings) == 0
 
-    def test_decoy_suppression(self, tmp_path: Path):
+    def test_decoy_low_entropy_skipped(self, tmp_path: Path):
+        """Low-entropy decoys (WRTLS pattern) are filtered by entropy threshold."""
         from worthless.cli.scanner import scan_files
 
         f = tmp_path / ".env"
-        decoy_value = "sk-proj-a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0u1V2"
+        # Decoy with low entropy — repeating WRTLS pattern after prefix
+        decoy_value = "sk-proj-a1b2c3d4WRTLSWRTLSWRTLSWRTLSWRTLSWRTLSWRTLSWRTLS"
         f.write_text(f'OPENAI_API_KEY={decoy_value}\n')
-        findings = scan_files([f], enrollment_data={decoy_value})
-        assert len(findings) >= 1
-        assert findings[0].is_protected is True
+        findings = scan_files([f])
+        assert len(findings) == 0  # filtered by entropy
 
     def test_multiple_files(self, tmp_path: Path):
         from worthless.cli.scanner import scan_files
@@ -85,9 +86,9 @@ class TestSarifOutput:
         assert len(sarif["runs"][0]["results"]) == 1
 
 
-class TestLoadEnrollmentData:
-    def test_returns_empty_without_home(self):
-        from worthless.cli.scanner import load_enrollment_data
+class TestEnrollmentDataRemoved:
+    def test_load_enrollment_data_removed(self):
+        """load_enrollment_data was dead code (shard_a is binary, not text) and has been removed."""
+        import worthless.cli.scanner as scanner_mod
 
-        result = load_enrollment_data(None)
-        assert result == set()
+        assert not hasattr(scanner_mod, "load_enrollment_data")

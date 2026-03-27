@@ -9,9 +9,7 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
-from worthless.cli.key_patterns import KEY_PATTERN, detect_provider
-
-_ENTROPY_THRESHOLD = 4.5
+from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
 
 
 def shannon_entropy(s: str) -> float:
@@ -46,7 +44,7 @@ def scan_env_keys(env_path: Path) -> list[tuple[str, str, str]]:
         value = raw_value.strip().strip("\"'")
         if not KEY_PATTERN.search(value):
             continue
-        if shannon_entropy(value) < _ENTROPY_THRESHOLD:
+        if shannon_entropy(value) < ENTROPY_THRESHOLD:
             continue
         provider = detect_provider(value)
         if provider:
@@ -82,12 +80,15 @@ def rewrite_env_key(env_path: Path, var_name: str, new_value: str) -> None:
     # Atomic write: write to temp file, then os.replace
     dir_path = env_path.parent
     fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), prefix=".env.tmp.")
+    fd_closed = False
     try:
         os.write(fd, "".join(new_lines).encode())
         os.close(fd)
+        fd_closed = True
         os.replace(tmp_path, str(env_path))
     except BaseException:
-        os.close(fd) if not os.get_inheritable(fd) else None
+        if not fd_closed:
+            os.close(fd)
         try:
             os.unlink(tmp_path)
         except OSError:

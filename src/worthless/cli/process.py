@@ -91,13 +91,26 @@ def spawn_proxy(
         str(port),
     ]
 
+    # Pass Fernet key via inherited fd instead of env var (avoids /proc/PID/environ leak)
+    fernet_key = env.pop("WORTHLESS_FERNET_KEY", None)
+    fernet_fd: int | None = None
+    if fernet_key:
+        r_fd, w_fd = os.pipe()
+        os.write(w_fd, fernet_key.encode() if isinstance(fernet_key, str) else fernet_key)
+        os.close(w_fd)
+        fernet_fd = r_fd
+
     # Build subprocess environment
     full_env = {**os.environ, **env, "WORTHLESS_ALLOW_INSECURE": env.get("WORTHLESS_ALLOW_INSECURE", "true")}
+    if fernet_fd is not None:
+        full_env["WORTHLESS_FERNET_FD"] = str(fernet_fd)
 
-    pass_fds: tuple[int, ...] = ()
+    pass_fds: list[int] = []
     if liveness_fd is not None:
         full_env["WORTHLESS_LIVENESS_FD"] = str(liveness_fd)
-        pass_fds = (liveness_fd,)
+        pass_fds.append(liveness_fd)
+    if fernet_fd is not None:
+        pass_fds.append(fernet_fd)
 
     proc = subprocess.Popen(
         cmd,
@@ -105,7 +118,7 @@ def spawn_proxy(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         process_group=0,
-        pass_fds=pass_fds,
+        pass_fds=tuple(pass_fds),
     )
 
     if port == 0:
@@ -162,15 +175,15 @@ def poll_health(port: int, timeout: float = 10.0) -> bool:
     deadline = time.monotonic() + timeout
     url = f"http://127.0.0.1:{port}/healthz"
 
-    while time.monotonic() < deadline:
-        try:
-            with httpx.Client(timeout=2.0) as client:
+    with httpx.Client(timeout=2.0) as client:
+        while time.monotonic() < deadline:
+            try:
                 resp = client.get(url)
                 if resp.status_code == 200:
                     return True
-        except (httpx.ConnectError, httpx.TimeoutException, OSError):
-            pass
-        time.sleep(0.3)
+            except (httpx.ConnectError, httpx.TimeoutException, OSError):
+                pass
+            time.sleep(0.3)
 
     return False
 
@@ -181,8 +194,12 @@ def poll_health(port: int, timeout: float = 10.0) -> bool:
 
 
 def write_pid(pid_path: Path, pid: int, port: int) -> None:
-    """Write PID file with ``pid\\nport`` format."""
-    pid_path.write_text(f"{pid}\n{port}\n")
+    """Write PID file with ``pid\\nport`` format (0600 permissions)."""
+    fd = os.open(str(pid_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, f"{pid}\n{port}\n".encode())
+    finally:
+        os.close(fd)
 
 
 def read_pid(pid_path: Path) -> tuple[int, int] | None:

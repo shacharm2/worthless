@@ -15,7 +15,7 @@ from typing import Optional
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, ensure_home
+from worthless.cli.bootstrap import WorthlessHome, ensure_home, get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.process import (
@@ -28,14 +28,6 @@ from worthless.cli.process import (
     spawn_proxy,
     write_pid,
 )
-
-
-def _get_home() -> WorthlessHome:
-    """Resolve WorthlessHome from WORTHLESS_HOME env var or default."""
-    env_home = os.environ.get("WORTHLESS_HOME")
-    if env_home:
-        return ensure_home(Path(env_home))
-    return ensure_home()
 
 
 def _pid_path(home: WorthlessHome) -> Path:
@@ -70,7 +62,7 @@ def register_up_commands(app: typer.Typer) -> None:
     ) -> None:
         """Start the proxy server (foreground or daemon)."""
         console = get_console()
-        home = _get_home()
+        home = get_home()
 
         actual_port = _resolve_port(port)
 
@@ -128,11 +120,24 @@ def register_up_commands(app: typer.Typer) -> None:
             str(port),
         ]
 
+        # Pass Fernet key via fd, not env var
+        fernet_key = proxy_env.pop("WORTHLESS_FERNET_KEY", None)
+        fernet_fd: int | None = None
+        if fernet_key:
+            r_fd, w_fd = os.pipe()
+            os.write(w_fd, fernet_key.encode() if isinstance(fernet_key, str) else fernet_key)
+            os.close(w_fd)
+            fernet_fd = r_fd
+
         full_env = {
             **os.environ,
             **proxy_env,
             "WORTHLESS_ALLOW_INSECURE": proxy_env.get("WORTHLESS_ALLOW_INSECURE", "true"),
         }
+        pass_fds: list[int] = []
+        if fernet_fd is not None:
+            full_env["WORTHLESS_FERNET_FD"] = str(fernet_fd)
+            pass_fds.append(fernet_fd)
 
         # Start detached process
         proc = subprocess.Popen(
@@ -140,7 +145,8 @@ def register_up_commands(app: typer.Typer) -> None:
             env=full_env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,  # setsid equivalent
+            start_new_session=True,
+            pass_fds=tuple(pass_fds),
         )
 
         # Write PID file
@@ -187,7 +193,7 @@ def register_up_commands(app: typer.Typer) -> None:
 
         console.print_success(f"Proxy running on 127.0.0.1:{actual_port} (Ctrl+C to stop)")
 
-        # Register cleanup handler
+        # Register signal handler that cleans up PID file and stops proxy
         def _cleanup(signum, frame):
             proxy.terminate()
             try:
@@ -201,9 +207,6 @@ def register_up_commands(app: typer.Typer) -> None:
 
         signal.signal(signal.SIGINT, _cleanup)
         signal.signal(signal.SIGTERM, _cleanup)
-
-        # Register forwarding
-        forward_signals(proxy=proxy, child=None)
 
         # Wait for proxy to exit (either by signal or crash)
         proxy.wait()

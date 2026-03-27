@@ -171,7 +171,7 @@ class TestStatusProxy:
         """Status with mock healthy proxy shows 'running'."""
         # Write a PID file to indicate proxy is running on port 18787
         pid_file = home_with_key.base_dir / "proxy.pid"
-        pid_file.write_text(json.dumps({"pid": 99999, "port": 18787}))
+        pid_file.write_text("99999\n18787\n")
 
         # Mock httpx.get to return healthy response
         import httpx
@@ -199,7 +199,7 @@ class TestStatusProxy:
     ) -> None:
         """Status --json with mock proxy shows port and mode."""
         pid_file = home_with_key.base_dir / "proxy.pid"
-        pid_file.write_text(json.dumps({"pid": 99999, "port": 18787}))
+        pid_file.write_text("99999\n18787\n")
 
         import httpx
 

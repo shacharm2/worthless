@@ -6,32 +6,16 @@ import json
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, ensure_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError
-from worthless.cli.scanner import ScanFinding, format_sarif, load_enrollment_data, scan_files
-
-
-def _resolve_home() -> WorthlessHome | None:
-    """Try to load WorthlessHome; return None if not initialized."""
-    try:
-        env_home = os.environ.get("WORTHLESS_HOME")
-        if env_home:
-            base = Path(env_home)
-            if base.exists():
-                return ensure_home(base)
-            return None
-        default = Path.home() / ".worthless"
-        if default.exists():
-            return ensure_home(default)
-        return None
-    except Exception:
-        return None
+from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
 
 
 def _find_git_dir() -> Path | None:
@@ -61,33 +45,34 @@ def _collect_fast_paths(explicit_paths: list[Path]) -> list[Path]:
     return paths
 
 
-def _collect_deep_paths(explicit_paths: list[Path]) -> list[Path]:
-    """Deep mode: fast paths + config files in project root + env dump."""
-    import tempfile
+def _collect_deep_paths(explicit_paths: list[Path]) -> tuple[list[Path], Path | None]:
+    """Deep mode: fast paths + config files in project root + env dump.
 
+    Returns (paths, tmp_file) — caller must unlink tmp_file when done.
+    """
     paths = _collect_fast_paths(explicit_paths)
+    tmp_path: Path | None = None
 
-    # Common config files
     for pattern in ["*.yml", "*.yaml", "*.toml", "*.json"]:
         for p in Path(".").glob(pattern):
             if p.is_file() and p not in paths:
                 paths.append(p)
 
-    # Dump os.environ to temp file and scan it
     env_lines = [f"{k}={v}" for k, v in os.environ.items()]
     if env_lines:
         fd, tmp = tempfile.mkstemp(prefix="worthless-env-", suffix=".env")
         try:
             os.write(fd, "\n".join(env_lines).encode())
             os.close(fd)
-            paths.append(Path(tmp))
+            tmp_path = Path(tmp)
+            paths.append(tmp_path)
         except Exception:
             try:
                 os.close(fd)
             except Exception:
                 pass
 
-    return paths
+    return paths, tmp_path
 
 
 def _format_human(
@@ -102,16 +87,18 @@ def _format_human(
     lines: list[str] = []
     unprotected_count = 0
     protected_count = 0
+    file_cache: dict[str, str] = {}
 
     for f in findings:
         status = "PROTECTED" if f.is_protected else "UNPROTECTED"
         preview = f.value_preview
         if show_suffix and not f.is_protected:
-            # Read the actual file to get suffix
             try:
                 from worthless.cli.key_patterns import KEY_PATTERN
 
-                text = Path(f.file).read_text(errors="replace")
+                if f.file not in file_cache:
+                    file_cache[f.file] = Path(f.file).read_text(errors="replace")
+                text = file_cache[f.file]
                 for line in text.splitlines():
                     for match in KEY_PATTERN.finditer(line):
                         value = match.group(0)
@@ -190,7 +177,7 @@ def register_scan_commands(app: typer.Typer) -> None:
         paths: Optional[list[Path]] = typer.Argument(None, help="Files to scan"),
         deep: bool = typer.Option(False, "--deep", help="Extended scan (env vars, config files)"),
         pre_commit: bool = typer.Option(False, "--pre-commit", help="Pre-commit hook mode"),
-        format_: str = typer.Option("text", "--format", "-f", help="Output format: text, sarif, json"),
+        format_: str = typer.Option("text", "--format", "-f", help="Output format: text, sarif, json", show_choices=True),
         show_suffix: bool = typer.Option(False, "--show-suffix", help="Show last 4 chars of keys"),
         install_hook: bool = typer.Option(False, "--install-hook", help="Install git pre-commit hook"),
         json_output: bool = typer.Option(False, "--json", help="Output JSON (alias for --format json)"),
@@ -212,23 +199,25 @@ def register_scan_commands(app: typer.Typer) -> None:
         fmt = format_
         if json_output:
             fmt = "json"
+        if fmt not in ("text", "sarif", "json"):
+            console.print_error(
+                WorthlessError(ErrorCode.SCAN_ERROR, f"Unknown format: {fmt!r} (use text, sarif, or json)")
+            )
+            raise typer.Exit(code=2)
 
+        tmp_file: Path | None = None
         try:
             # Collect files to scan
             explicit = list(paths) if paths else []
             if pre_commit:
                 scan_paths = explicit
             elif deep:
-                scan_paths = _collect_deep_paths(explicit)
+                scan_paths, tmp_file = _collect_deep_paths(explicit)
             else:
                 scan_paths = _collect_fast_paths(explicit)
 
-            # Load enrollment data for decoy detection
-            home = _resolve_home()
-            enrollment_data = load_enrollment_data(home)
-
             # Run scan
-            findings = scan_files(scan_paths, enrollment_data)
+            findings = scan_files(scan_paths)
 
             # Count unprotected
             unprotected = [f for f in findings if not f.is_protected]
@@ -263,3 +252,6 @@ def register_scan_commands(app: typer.Typer) -> None:
             if not console.quiet:
                 sys.stderr.write(f"Scan error: {type(exc).__name__}: {exc}\n")
             raise typer.Exit(code=2) from exc
+        finally:
+            if tmp_file is not None:
+                tmp_file.unlink(missing_ok=True)

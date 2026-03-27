@@ -8,7 +8,6 @@ the child, and cleans up when the child exits.
 from __future__ import annotations
 
 import os
-import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -16,7 +15,7 @@ from typing import Optional
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, ensure_home
+from worthless.cli.bootstrap import WorthlessHome, ensure_home, get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.process import (
@@ -34,14 +33,6 @@ _PROVIDER_ENV_MAP: dict[str, str] = {
 }
 
 
-def _get_home() -> WorthlessHome:
-    """Resolve WorthlessHome from WORTHLESS_HOME env var or default."""
-    env_home = os.environ.get("WORTHLESS_HOME")
-    if env_home:
-        return ensure_home(Path(env_home))
-    return ensure_home()
-
-
 def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
     """List providers that have enrolled keys (shard_a files exist).
 
@@ -56,16 +47,6 @@ def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
     for entry in shard_dir.iterdir():
         if entry.suffix == ".meta":
             continue
-        # Read meta to get provider
-        meta_path = shard_dir / f"{entry.name}.meta"
-        if meta_path.exists():
-            import json
-
-            try:
-                meta = json.loads(meta_path.read_text())
-                # Provider is encoded in the alias: "provider-hash"
-            except (json.JSONDecodeError, KeyError):
-                pass
         # Extract provider from alias (format: "provider-hash8")
         name = entry.name
         if "-" in name:
@@ -78,20 +59,17 @@ def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
 def _build_child_env(
     port: int,
     providers: list[str],
-    session_token: str,
 ) -> dict[str, str]:
     """Build environment for the child process.
 
-    Inherits the current env and adds:
-    - {PROVIDER}_BASE_URL for each enrolled provider
-    - WORTHLESS_SESSION_TOKEN for proxy auth
+    Inherits the current env and adds {PROVIDER}_BASE_URL for each
+    enrolled provider so SDK calls route through the proxy.
     """
     env = dict(os.environ)
     for provider in providers:
         env_var = _PROVIDER_ENV_MAP.get(provider)
         if env_var:
             env[env_var] = f"http://127.0.0.1:{port}"
-    env["WORTHLESS_SESSION_TOKEN"] = session_token
     return env
 
 
@@ -146,7 +124,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
         console = get_console()
 
         # Load home, verify keys enrolled
-        home = _get_home()
+        home = get_home()
         providers = _list_enrolled_providers(home)
         if not providers:
             console.print_error(
@@ -169,9 +147,6 @@ def register_wrap_commands(app: typer.Typer) -> None:
             "WORTHLESS_FERNET_KEY": home.fernet_key.decode(),
             "WORTHLESS_SHARD_A_DIR": str(home.shard_a_dir),
         }
-
-        # Generate session token
-        session_token = secrets.token_urlsafe(32)
 
         # Spawn proxy on random port
         try:
@@ -202,7 +177,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
 
         # Build child env with BASE_URL injection
         full_command = list(command) + ctx.args
-        child_env = _build_child_env(port, providers, session_token)
+        child_env = _build_child_env(port, providers)
 
         # Spawn child
         try:

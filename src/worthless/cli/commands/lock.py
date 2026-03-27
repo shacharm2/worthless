@@ -7,27 +7,23 @@ import base64
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, acquire_lock, ensure_home
+from worthless.cli.bootstrap import WorthlessHome, acquire_lock, ensure_home, get_home
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.key_patterns import detect_prefix, detect_provider
+from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.crypto.splitter import split_key
+
+_SUPPORTED_PROVIDERS = frozenset(_PROVIDER_ENV_MAP.keys())
 from worthless.crypto.types import _zero_buf
 from worthless.storage.repository import ShardRepository, StoredShard
-
-
-def _get_home() -> WorthlessHome:
-    """Resolve WorthlessHome from WORTHLESS_HOME env var or default."""
-    env_home = os.environ.get("WORTHLESS_HOME")
-    if env_home:
-        return ensure_home(Path(env_home))
-    return ensure_home()
 
 
 def _make_alias(provider: str, api_key: str) -> str:
@@ -69,59 +65,69 @@ def _lock_keys(
         console.print_warning("No unprotected API keys found.")
         return 0
 
-    repo = ShardRepository(str(home.db_path), home.fernet_key)
-    asyncio.run(repo.initialize())
-    count = 0
+    async def _lock_async() -> int:
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        await repo.initialize()
+        count = 0
 
-    for var_name, value, detected_provider in keys:
-        provider = provider_override or detected_provider
-        alias = _make_alias(provider, value)
+        for var_name, value, detected_provider in keys:
+            provider = provider_override or detected_provider
 
-        # Skip already-enrolled keys
-        shard_a_path = home.shard_a_dir / alias
-        if shard_a_path.exists():
-            console.print_warning(f"Skipping {var_name} (already enrolled as {alias})")
-            continue
+            # Only enroll providers that wrap can redirect
+            if provider not in _SUPPORTED_PROVIDERS:
+                console.print_warning(
+                    f"Skipping {var_name}: provider {provider!r} not yet supported for proxy redirect"
+                )
+                continue
 
-        # Split key
-        sr = split_key(value.encode())
-        try:
-            # Detect prefix for decoy
+            alias = _make_alias(provider, value)
+
+            shard_a_path = home.shard_a_dir / alias
+            if shard_a_path.exists():
+                console.print_warning(f"Skipping {var_name} (already enrolled as {alias})")
+                continue
+
+            sr = split_key(value.encode())
             try:
-                prefix = detect_prefix(value, provider)
-            except ValueError:
-                prefix = ""
+                try:
+                    prefix = detect_prefix(value, provider)
+                except ValueError:
+                    prefix = ""
 
-            # Write shard_a to file with 0600 permissions
-            fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            try:
-                os.write(fd, bytes(sr.shard_a))
+                fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                try:
+                    os.write(fd, bytes(sr.shard_a))
+                finally:
+                    os.close(fd)
+
+                stored = StoredShard(
+                    shard_b=bytearray(sr.shard_b),
+                    commitment=bytearray(sr.commitment),
+                    nonce=bytearray(sr.nonce),
+                    provider=provider,
+                )
+                await repo.store(alias, stored)
+
+                meta_path = home.shard_a_dir / f"{alias}.meta"
+                meta_fd = os.open(str(meta_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.write(meta_fd, json.dumps({
+                        "var_name": var_name,
+                        "env_path": str(env_path.resolve()),
+                    }).encode())
+                finally:
+                    os.close(meta_fd)
+
+                decoy = _make_decoy(value, prefix, bytes(sr.shard_a))
+                rewrite_env_key(env_path, var_name, decoy)
+
+                count += 1
             finally:
-                os.close(fd)
+                sr.zero()
 
-            # Store shard_b in DB
-            stored = StoredShard(
-                shard_b=bytearray(sr.shard_b),
-                commitment=bytearray(sr.commitment),
-                nonce=bytearray(sr.nonce),
-                provider=provider,
-            )
-            asyncio.run(repo.store(alias, stored))
+        return count
 
-            # Store metadata for unlock (var_name + env_path mapping)
-            meta_path = home.shard_a_dir / f"{alias}.meta"
-            meta_path.write_text(json.dumps({
-                "var_name": var_name,
-                "env_path": str(env_path.resolve()),
-            }))
-
-            # Build and write prefix-preserving decoy
-            decoy = _make_decoy(value, prefix, bytes(sr.shard_a))
-            rewrite_env_key(env_path, var_name, decoy)
-
-            count += 1
-        finally:
-            sr.zero()
+    count = asyncio.run(_lock_async())
 
     if count:
         console.print_success(f"{count} key(s) protected.")
@@ -138,9 +144,23 @@ def _enroll_single(
     home: WorthlessHome,
 ) -> None:
     """Enroll a single key (no .env scanning)."""
+    _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+    if not _ALIAS_RE.match(alias):
+        raise WorthlessError(ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}")
+
+    async def _enroll_async():
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        await repo.initialize()
+        stored = StoredShard(
+            shard_b=bytearray(sr.shard_b),
+            commitment=bytearray(sr.commitment),
+            nonce=bytearray(sr.nonce),
+            provider=provider,
+        )
+        await repo.store(alias, stored)
+
     sr = split_key(key.encode())
     try:
-        # Write shard_a
         shard_a_path = home.shard_a_dir / alias
         fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
@@ -148,16 +168,7 @@ def _enroll_single(
         finally:
             os.close(fd)
 
-        # Store shard_b
-        repo = ShardRepository(str(home.db_path), home.fernet_key)
-        asyncio.run(repo.initialize())
-        stored = StoredShard(
-            shard_b=bytearray(sr.shard_b),
-            commitment=bytearray(sr.commitment),
-            nonce=bytearray(sr.nonce),
-            provider=provider,
-        )
-        asyncio.run(repo.store(alias, stored))
+        asyncio.run(_enroll_async())
     finally:
         sr.zero()
 
@@ -179,7 +190,7 @@ def register_lock_commands(app: typer.Typer) -> None:
     ) -> None:
         """Protect API keys in a .env file."""
         console = get_console()
-        home = _get_home()
+        home = get_home()
         try:
             with acquire_lock(home):
                 _lock_keys(env, home, provider_override=provider)
@@ -190,14 +201,29 @@ def register_lock_commands(app: typer.Typer) -> None:
     @app.command()
     def enroll(
         alias: str = typer.Option(..., "--alias", "-a", help="Key alias"),
-        key: str = typer.Option(..., "--key", "-k", help="API key to enroll"),
+        key: Optional[str] = typer.Option(None, "--key", "-k", help="API key (use --key-stdin instead to avoid shell history)"),
+        key_stdin: bool = typer.Option(False, "--key-stdin", help="Read API key from stdin"),
         provider: str = typer.Option(..., "--provider", "-p", help="Provider name"),
     ) -> None:
         """Enroll a single API key (scripting/CI primitive)."""
+        import sys
+
         console = get_console()
-        home = _get_home()
+        home = get_home()
+
+        if key_stdin:
+            actual_key = sys.stdin.readline().strip()
+            if not actual_key:
+                console.print_error(WorthlessError(ErrorCode.KEY_NOT_FOUND, "No key provided on stdin"))
+                raise typer.Exit(code=1)
+        elif key:
+            actual_key = key
+        else:
+            console.print_error(WorthlessError(ErrorCode.KEY_NOT_FOUND, "Provide --key or --key-stdin"))
+            raise typer.Exit(code=1)
+
         try:
-            _enroll_single(alias, key, provider, home)
+            _enroll_single(alias, actual_key, provider, home)
         except WorthlessError as exc:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc

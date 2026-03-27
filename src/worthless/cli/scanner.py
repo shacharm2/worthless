@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from worthless.cli.dotenv_rewriter import shannon_entropy
-from worthless.cli.key_patterns import KEY_PATTERN, detect_provider
+from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
 
-_ENTROPY_THRESHOLD = 4.5
+_VAR_NAME_RE = re.compile(r"(\w+)\s*$")
 
 
 @dataclass
@@ -23,32 +24,8 @@ class ScanFinding:
     value_preview: str  # fully masked by default
 
 
-def load_enrollment_data(home: object | None) -> set[str]:
-    """Read shard_a files to get known decoy values.
-
-    Returns an empty set if *home* is ``None`` (CI mode) or if no
-    shard_a directory exists.
-    """
-    if home is None:
-        return set()
-    shard_a_dir = getattr(home, "shard_a_dir", None)
-    if shard_a_dir is None or not Path(shard_a_dir).exists():
-        return set()
-    values: set[str] = set()
-    for f in Path(shard_a_dir).iterdir():
-        if not f.is_file() or f.suffix == ".meta":
-            continue
-        try:
-            values.add(f.read_text().strip())
-        except (UnicodeDecodeError, OSError):
-            # Shard files are binary — skip them gracefully
-            continue
-    return values
-
-
 def scan_files(
     paths: list[Path],
-    enrollment_data: set[str] | None = None,
 ) -> list[ScanFinding]:
     """Scan files for API key patterns.
 
@@ -57,8 +34,9 @@ def scan_files(
     is provided and contains the matched value, the finding is marked
     ``is_protected=True``.
     """
+    # TODO: Implement hash-based enrollment lookup for defense-in-depth.
+    # Currently decoy detection relies solely on entropy threshold.
     findings: list[ScanFinding] = []
-    enrolled = enrollment_data or set()
 
     for path in paths:
         try:
@@ -68,7 +46,7 @@ def scan_files(
         for line_no, line in enumerate(text.splitlines(), start=1):
             for match in KEY_PATTERN.finditer(line):
                 value = match.group(0)
-                if shannon_entropy(value) < _ENTROPY_THRESHOLD:
+                if shannon_entropy(value) < ENTROPY_THRESHOLD:
                     continue
                 provider = detect_provider(value)
                 if provider is None:
@@ -77,7 +55,7 @@ def scan_files(
                 # Try to extract var_name from KEY=VALUE or KEY = "VALUE"
                 var_name = _extract_var_name(line, match.start())
 
-                is_protected = value in enrolled
+                is_protected = False
 
                 findings.append(ScanFinding(
                     file=str(path),
@@ -95,9 +73,7 @@ def _extract_var_name(line: str, value_start: int) -> str | None:
     prefix = line[:value_start].rstrip()
     if prefix.endswith("="):
         prefix = prefix[:-1].rstrip().strip('"').strip("'")
-        # Take the last word-like token
-        import re
-        m = re.search(r'(\w+)\s*$', prefix)
+        m = _VAR_NAME_RE.search(prefix)
         return m.group(1) if m else None
     return None
 

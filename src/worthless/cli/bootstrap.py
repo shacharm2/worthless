@@ -104,6 +104,7 @@ def _init_db(home: WorthlessHome) -> None:
 @contextmanager
 def acquire_lock(home: WorthlessHome) -> Generator[None, None, None]:
     """Acquire an exclusive lock file using O_CREAT|O_EXCL."""
+    check_stale_lock(home)
     try:
         fd = os.open(
             str(home.lock_file),
@@ -124,6 +125,31 @@ def acquire_lock(home: WorthlessHome) -> Generator[None, None, None]:
             home.lock_file.unlink()
         except FileNotFoundError:
             pass
+
+
+def get_home() -> WorthlessHome:
+    """Resolve WorthlessHome from WORTHLESS_HOME env var or default."""
+    env_home = os.environ.get("WORTHLESS_HOME")
+    if env_home:
+        return ensure_home(Path(env_home))
+    return ensure_home()
+
+
+def resolve_home() -> WorthlessHome | None:
+    """Try to load WorthlessHome; return None if not initialized."""
+    try:
+        env_home = os.environ.get("WORTHLESS_HOME")
+        if env_home:
+            base = Path(env_home)
+            if base.exists():
+                return ensure_home(base)
+            return None
+        default = Path.home() / ".worthless"
+        if default.exists():
+            return ensure_home(default)
+        return None
+    except Exception:
+        return None
 
 
 def check_stale_lock(home: WorthlessHome) -> None:

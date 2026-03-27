@@ -38,6 +38,9 @@ def detect_provider(api_key: str) -> str | None:
     return None
 
 
+ENTROPY_THRESHOLD: float = 4.5
+
+
 def detect_prefix(api_key: str, provider: str) -> str:
     """Return the matching prefix string for *api_key* given *provider*."""
     prefixes = PROVIDER_PREFIXES.get(provider, [])

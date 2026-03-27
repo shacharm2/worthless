@@ -22,50 +22,30 @@ class TestWrapEnvInjection:
         """wrap should inject OPENAI_BASE_URL into child environment."""
         from worthless.cli.commands.wrap import _build_child_env
 
-        child_env = _build_child_env(
-            port=9999,
-            providers=["openai"],
-            session_token="test-token-123",
-        )
+        child_env = _build_child_env(port=9999, providers=["openai"])
         assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:9999"
-        assert child_env["WORTHLESS_SESSION_TOKEN"] == "test-token-123"
 
     def test_child_env_anthropic(self, tmp_path: Path):
         """wrap should inject ANTHROPIC_BASE_URL for anthropic provider."""
         from worthless.cli.commands.wrap import _build_child_env
 
-        child_env = _build_child_env(
-            port=8888,
-            providers=["anthropic"],
-            session_token="tok",
-        )
+        child_env = _build_child_env(port=8888, providers=["anthropic"])
         assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888"
 
     def test_child_env_multiple_providers(self):
         """wrap injects env vars for all enrolled providers."""
         from worthless.cli.commands.wrap import _build_child_env
 
-        child_env = _build_child_env(
-            port=7777,
-            providers=["openai", "anthropic"],
-            session_token="tok",
-        )
+        child_env = _build_child_env(port=7777, providers=["openai", "anthropic"])
         assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:7777"
         assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:7777"
 
-
-class TestWrapSessionToken:
-    """wrap generates and injects session token."""
-
-    def test_session_token_in_env(self):
+    def test_child_env_no_session_token(self):
+        """Session token should not be in child env (dead code removed)."""
         from worthless.cli.commands.wrap import _build_child_env
 
-        child_env = _build_child_env(
-            port=9999,
-            providers=["openai"],
-            session_token="my-secret-token",
-        )
-        assert child_env["WORTHLESS_SESSION_TOKEN"] == "my-secret-token"
+        child_env = _build_child_env(port=9999, providers=["openai"])
+        assert "WORTHLESS_SESSION_TOKEN" not in child_env
 
 
 class TestWrapExitCode:
