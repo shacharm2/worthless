@@ -59,6 +59,9 @@ def _lock_keys(
     if not env_path.exists():
         raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"File not found: {env_path}")
 
+    if env_path.is_symlink():
+        raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"Refusing to follow symlink: {env_path}")
+
     keys = scan_env_keys(env_path)
     if not keys:
         console.print_warning("No unprotected API keys found.")
@@ -259,7 +262,8 @@ def register_lock_commands(app: typer.Typer) -> None:
             raise typer.Exit(code=1)
 
         try:
-            _enroll_single(alias, actual_key, provider, home)
+            with acquire_lock(home):
+                _enroll_single(alias, actual_key, provider, home)
         except WorthlessError as exc:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc

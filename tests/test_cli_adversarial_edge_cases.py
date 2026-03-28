@@ -985,6 +985,141 @@ class TestScannerEdgeCases:
         """Value with SQL-like content should not cause issues."""
         f = tmp_path / ".env"
         f.write_text("OPENAI_API_KEY=sk-proj-'; DROP TABLE shards;--abcdefghijklmnop\n")
-        # Should not crash, and the entropy might or might not pass threshold
         findings = scan_files([f])
         assert isinstance(findings, list)
+
+
+# ---- 17. ENROLL ACQUIRES LOCK -----------------------------------------------
+
+
+class TestEnrollAcquiresLock:
+    """enroll should use acquire_lock to prevent races with lock/unlock."""
+
+    def test_enroll_acquires_lock(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """enroll should fail when lock file is already held."""
+        # Create lock file manually (simulates another process holding the lock)
+        fd = os.open(
+            str(home_dir.lock_file),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        os.close(fd)
+
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        r = runner.invoke(
+            app,
+            [
+                "enroll",
+                "--alias", "lock-test",
+                "--key", _OPENAI_KEY,
+                "--provider", "openai",
+            ],
+            env=env_vars,
+        )
+        # Should fail because lock is held
+        assert r.exit_code == 1, f"Expected exit 1 (lock held), got {r.exit_code}: {r.output}"
+        assert "in progress" in r.output.lower() or "lock" in r.output.lower()
+
+    def test_enroll_cleans_lock_after_success(
+        self, home_dir: WorthlessHome
+    ) -> None:
+        """Lock file must not persist after a successful enroll."""
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        r = runner.invoke(
+            app,
+            [
+                "enroll",
+                "--alias", "clean-lock",
+                "--key", _OPENAI_KEY,
+                "--provider", "openai",
+            ],
+            env=env_vars,
+        )
+        assert r.exit_code == 0, r.output
+        assert not home_dir.lock_file.exists()
+
+
+# ---- 18. UNLOCK ACQUIRES LOCK -----------------------------------------------
+
+
+class TestUnlockAcquiresLock:
+    """unlock should use acquire_lock to prevent races."""
+
+    def test_unlock_acquires_lock(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """unlock should fail when lock file is already held."""
+        # Enroll a key first
+        env = _make_env(tmp_path, "proj", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        r = runner.invoke(app, ["lock", "--env", str(env)], env=env_vars)
+        assert r.exit_code == 0, r.output
+
+        # Now hold the lock
+        fd = os.open(
+            str(home_dir.lock_file),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        os.close(fd)
+
+        r2 = runner.invoke(app, ["unlock", "--env", str(env)], env=env_vars)
+        assert r2.exit_code == 1, f"Expected exit 1 (lock held), got {r2.exit_code}: {r2.output}"
+        assert "in progress" in r2.output.lower() or "lock" in r2.output.lower()
+
+
+# ---- 19. LOCK REJECTS SYMLINK ENV -------------------------------------------
+
+
+class TestLockRejectsSymlinkEnv:
+    """lock should refuse to follow symlink .env files (TOCTOU protection)."""
+
+    def test_lock_rejects_env_symlink(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """lock --env pointing to a symlink should be rejected."""
+        real_env = tmp_path / "real.env"
+        real_env.write_text(f"OPENAI_API_KEY={_OPENAI_KEY}\n")
+
+        link_env = tmp_path / "link.env"
+        link_env.symlink_to(real_env)
+
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        r = runner.invoke(app, ["lock", "--env", str(link_env)], env=env_vars)
+        assert r.exit_code == 1, f"Expected exit 1 (symlink rejected), got {r.exit_code}: {r.output}"
+        assert "symlink" in r.output.lower()
+
+
+# ---- 20. WRAP USES DB PROVIDER NOT ALIAS SPELLING ---------------------------
+
+
+class TestWrapUsesDbProvider:
+    """wrap should get providers from DB, not by parsing alias names."""
+
+    def test_wrap_provider_from_db_not_alias(
+        self, home_dir: WorthlessHome
+    ) -> None:
+        """Enroll with non-standard alias; _list_enrolled_providers should still find provider."""
+        from worthless.cli.commands.wrap import _list_enrolled_providers
+
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+
+        # Enroll with alias that does NOT follow provider-hash format
+        r = runner.invoke(
+            app,
+            [
+                "enroll",
+                "--alias", "my-custom-alias",
+                "--key", _OPENAI_KEY,
+                "--provider", "openai",
+            ],
+            env=env_vars,
+        )
+        assert r.exit_code == 0, r.output
+
+        providers = _list_enrolled_providers(home_dir)
+        assert "openai" in providers, (
+            f"Expected 'openai' from DB lookup, got {providers}"
+        )

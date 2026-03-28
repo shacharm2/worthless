@@ -10,7 +10,7 @@ from typing import Optional
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, ensure_home, get_home
+from worthless.cli.bootstrap import WorthlessHome, acquire_lock, ensure_home, get_home
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import rewrite_env_key
 from worthless.cli.errors import ErrorCode, WorthlessError
@@ -134,7 +134,8 @@ def register_unlock_commands(app: typer.Typer) -> None:
                 console.print_success(f"{len(aliases)} key(s) restored.")
 
         try:
-            asyncio.run(_unlock_async())
+            with acquire_lock(home):
+                asyncio.run(_unlock_async())
         except WorthlessError as exc:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc

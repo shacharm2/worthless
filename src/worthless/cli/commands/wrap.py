@@ -34,23 +34,18 @@ _PROVIDER_ENV_MAP: dict[str, str] = {
 
 
 def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
-    """List providers that have enrolled keys (shard_a files exist).
+    """List providers from the DB shards table."""
+    import sqlite3
 
-    Extracts provider name from alias format: ``provider-hash8``.
-    """
-    providers: set[str] = set()
-    shard_dir = home.shard_a_dir
-    if not shard_dir.exists():
+    if not home.db_path.exists():
         return []
 
-    for entry in shard_dir.iterdir():
-        # Extract provider from alias (format: "provider-hash8")
-        name = entry.name
-        if "-" in name:
-            provider = name.rsplit("-", 1)[0]
-            providers.add(provider)
-
-    return sorted(providers)
+    conn = sqlite3.connect(str(home.db_path))
+    try:
+        rows = conn.execute("SELECT DISTINCT provider FROM shards").fetchall()
+        return sorted(r[0] for r in rows)
+    finally:
+        conn.close()
 
 
 def _build_child_env(
