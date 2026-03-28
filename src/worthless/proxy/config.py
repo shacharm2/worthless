@@ -15,6 +15,20 @@ def _default_shard_a_dir() -> str:
     return str(Path.home() / ".worthless" / "shard_a")
 
 
+def _read_fernet_key() -> str:
+    """Read Fernet key from inherited fd (preferred) or env var (fallback)."""
+    fd_str = os.environ.get("WORTHLESS_FERNET_FD")
+    if fd_str:
+        try:
+            fd = int(fd_str)
+            key = os.read(fd, 4096).decode().strip()
+            os.close(fd)
+            return key
+        except (ValueError, OSError):
+            pass
+    return os.environ.get("WORTHLESS_FERNET_KEY", "")
+
+
 @dataclass
 class ProxySettings:
     """Proxy configuration loaded from environment variables."""
@@ -22,7 +36,7 @@ class ProxySettings:
     db_path: str = field(
         default_factory=lambda: os.environ.get("WORTHLESS_DB_PATH", _default_db_path())
     )
-    fernet_key: str = field(default_factory=lambda: os.environ.get("WORTHLESS_FERNET_KEY", ""))
+    fernet_key: str = field(default_factory=lambda: _read_fernet_key())
     default_rate_limit_rps: float = field(
         default_factory=lambda: float(os.environ.get("WORTHLESS_RATE_LIMIT_RPS", "100.0"))
     )

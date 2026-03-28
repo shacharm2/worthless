@@ -61,6 +61,40 @@ def _uniform_401() -> Response:
     )
 
 
+def _infer_alias_from_path(clean_path: str, settings: "ProxySettings") -> str | None:
+    """Infer alias from request path when x-worthless-alias header is absent.
+
+    Maps the path to a provider via the adapter registry, then scans
+    shard_a_dir for a unique matching alias (format: ``provider-hash8``).
+    Returns None if no match or ambiguous (multiple aliases for same provider).
+    """
+    from worthless.adapters.registry import get_provider_for_path
+
+    provider = get_provider_for_path(clean_path)
+    if not provider:
+        return None
+
+    shard_a_dir = Path(settings.shard_a_dir)
+    if not shard_a_dir.exists():
+        return None
+
+    matches = [
+        f.name for f in shard_a_dir.iterdir()
+        if f.is_file() and f.name.startswith(f"{provider}-")
+    ]
+    if len(matches) == 1:
+        return matches[0]
+
+    # Zero or multiple matches — cannot infer unambiguously
+    if len(matches) > 1:
+        logger.warning(
+            "Ambiguous alias inference: %d aliases for provider %r. "
+            "Use x-worthless-alias header or enroll only one key per provider.",
+            len(matches), provider,
+        )
+    return None
+
+
 def _strip_worthless_headers(headers: dict[str, str]) -> dict[str, str]:
     """Remove x-worthless-* headers from a response header dict."""
     return {k: v for k, v in headers.items() if not k.lower().startswith(INTERNAL_HEADER_PREFIX)}
@@ -219,8 +253,10 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         # (a) Strip query params from path for adapter lookup
         clean_path = "/" + path.split("?")[0].lstrip("/")
 
-        # (b) Validate alias header present
+        # (b) Validate alias header present, or infer from path
         alias = request.headers.get("x-worthless-alias")
+        if not alias:
+            alias = _infer_alias_from_path(clean_path, settings)
         if not alias:
             return _uniform_401()
 

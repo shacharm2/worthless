@@ -23,10 +23,10 @@
 
 ### CLI
 
-- [ ] **CLI-01**: `worthless enroll` splits key, stores Shard A locally, sends Shard B to proxy
-- [ ] **CLI-02**: `worthless wrap` sets env vars so API calls route through proxy
-- [ ] **CLI-03**: `worthless status` shows protected keys and proxy health
-- [ ] **CLI-04**: `worthless scan` pre-commit hook detects leaked keys in code
+- [x] **CLI-01**: `worthless enroll` splits key, stores Shard A locally, sends Shard B to proxy
+- [x] **CLI-02**: `worthless wrap` sets env vars so API calls route through proxy
+- [x] **CLI-03**: `worthless status` shows protected keys and proxy health
+- [x] **CLI-04**: `worthless scan` pre-commit hook detects leaked keys in code
 
 ### Storage
 
@@ -85,10 +85,10 @@
 | PROX-03 | Phase 2 | Complete |
 | PROX-04 | Phase 3 | Complete |
 | PROX-05 | Phase 3 | Complete |
-| CLI-01 | Phase 4 | Pending |
-| CLI-02 | Phase 4 | Pending |
-| CLI-03 | Phase 4 | Pending |
-| CLI-04 | Phase 4 | Pending |
+| CLI-01 | Phase 4 | Complete |
+| CLI-02 | Phase 4 | Complete |
+| CLI-03 | Phase 4 | Complete |
+| CLI-04 | Phase 4 | Complete |
 | STOR-01 | Phase 1 | Pending |
 | STOR-02 | Phase 1 | Pending |
 | DOCS-01 | Phase 5 | Pending |
