@@ -703,6 +703,90 @@ class TestCascadeIntegrity:
         assert deleted is False
 
 
+# ---- 16. ERROR COMPENSATION: must not destroy other enrollments -------------
+
+
+class TestErrorCompensationPreservesEnrollments:
+    """If lock fails mid-key, compensation must not destroy enrollments from other .env files."""
+
+    def test_lock_error_compensation_preserves_other_enrollments(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Q5 regression: delete_enrolled(alias) CASCADE-deletes ALL enrollments.
+
+        Setup:
+          1. Successfully lock a key from project-a/.env
+          2. Manually add enrollment for project-b (simulating prior lock from another env)
+          3. Attempt to lock same key from project-c/.env but mock rewrite_env_key to raise
+          4. Error compensation fires
+
+        Assert:
+          - project-a's enrollment still exists
+          - project-b's enrollment still exists
+          - shard still exists in DB
+        """
+        env_a = _make_env(tmp_path, "project-a", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+
+        # 1. Lock from project-a
+        r1 = runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars)
+        assert r1.exit_code == 0, r1.output
+
+        alias = asyncio.run(_repo(home_dir).list_keys())[0]
+
+        # 2. Manually add enrollment for project-b (simulates prior lock)
+        repo = _repo(home_dir)
+        stored = asyncio.run(repo.retrieve(alias))
+        assert stored is not None
+        asyncio.run(
+            repo.store_enrolled(
+                alias, stored,
+                var_name="OPENAI_API_KEY",
+                env_path=str(tmp_path / "project-b" / ".env"),
+            )
+        )
+
+        enrollments_before = asyncio.run(repo.list_enrollments(alias))
+        assert len(enrollments_before) == 2
+
+        shard_a_path = home_dir.shard_a_dir / alias
+        assert shard_a_path.exists()
+
+        # 3. Create project-c env with same key. Remove shard_a so lock
+        #    doesn't skip, then mock rewrite_env_key to raise AFTER db+file writes.
+        env_c = _make_env(tmp_path, "project-c", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
+        shard_a_path.unlink()
+
+        from unittest.mock import patch
+
+        with patch(
+            "worthless.cli.commands.lock.rewrite_env_key",
+            side_effect=RuntimeError("simulated .env rewrite failure"),
+        ):
+            r2 = runner.invoke(app, ["lock", "--env", str(env_c)], env=env_vars)
+            assert r2.exit_code != 0, f"Expected failure but got: {r2.output}"
+
+        # 4. Verify compensation did NOT destroy the other enrollments
+        remaining_enrollments = asyncio.run(repo.list_enrollments(alias))
+        env_paths = [e.env_path for e in remaining_enrollments]
+
+        assert str(env_a.resolve()) in env_paths, (
+            f"project-a enrollment destroyed by compensation! remaining: {env_paths}"
+        )
+        assert str(tmp_path / "project-b" / ".env") in env_paths, (
+            f"project-b enrollment destroyed by compensation! remaining: {env_paths}"
+        )
+
+        # Shard must still exist in DB
+        shard_after = asyncio.run(repo.retrieve(alias))
+        assert shard_after is not None, "Shard was destroyed by compensation!"
+
+        # project-c's enrollment should NOT exist (it was compensated)
+        assert str(env_c.resolve()) not in env_paths, (
+            f"project-c enrollment should have been cleaned up: {env_paths}"
+        )
+
+
 # ---- Bonus: crypto roundtrip integrity --------------------------------------
 
 
@@ -740,6 +824,138 @@ class TestCryptoRoundtripIntegrity:
 
 
 # ---- Bonus: scanner edge cases ----------------------------------------------
+
+
+# ---- Q1: Same key value in two vars, same .env -----------------------------
+
+
+class TestDuplicateKeyValueSameEnv:
+    """Two vars with identical key values must both be rewritten with decoys."""
+
+    def test_lock_duplicate_value_both_rewritten(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """When two vars have the same key value, both should be rewritten."""
+        original = (
+            f"OPENAI_API_KEY={_OPENAI_KEY}\n"
+            f"OPENAI_API_KEY_DEV={_OPENAI_KEY}\n"
+        )
+        env = _make_env(tmp_path, "proj", original)
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+
+        r = runner.invoke(app, ["lock", "--env", str(env)], env=env_vars)
+        assert r.exit_code == 0, r.output
+
+        locked = env.read_text()
+        # Neither line should still contain the original key
+        for line in locked.splitlines():
+            assert _OPENAI_KEY not in line, (
+                f"Original key still present in line: {line}"
+            )
+
+        # Both enrollment records should exist
+        repo = _repo(home_dir)
+        enrollments = asyncio.run(repo.list_enrollments())
+        var_names = {e.var_name for e in enrollments}
+        assert "OPENAI_API_KEY" in var_names
+        assert "OPENAI_API_KEY_DEV" in var_names
+
+    def test_lock_duplicate_value_creates_two_enrollments(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Same key value in two vars creates two enrollment rows but one shard."""
+        original = (
+            f"OPENAI_API_KEY={_OPENAI_KEY}\n"
+            f"OPENAI_API_KEY_DEV={_OPENAI_KEY}\n"
+        )
+        env = _make_env(tmp_path, "proj", original)
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+
+        r = runner.invoke(app, ["lock", "--env", str(env)], env=env_vars)
+        assert r.exit_code == 0, r.output
+
+        repo = _repo(home_dir)
+        # Only one shard (same key value -> same alias)
+        aliases = asyncio.run(repo.list_keys())
+        assert len(aliases) == 1
+
+        # But two enrollment rows
+        enrollments = asyncio.run(repo.list_enrollments())
+        assert len(enrollments) == 2
+
+        # Only one shard_a file
+        shard_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
+        assert len(shard_files) == 1
+
+
+# ---- Q2: Same key in two .env files ----------------------------------------
+
+
+class TestDuplicateKeyTwoEnvFiles:
+    """Locking the same key from two .env files should protect both."""
+
+    def test_lock_same_key_two_env_files(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        env_a = _make_env(tmp_path, "project-a", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
+        env_b = _make_env(tmp_path, "project-b", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+
+        r1 = runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars)
+        assert r1.exit_code == 0, r1.output
+        assert _OPENAI_KEY not in env_a.read_text()
+
+        r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
+        assert r2.exit_code == 0, r2.output
+        # env_b must ALSO be rewritten with a decoy
+        assert _OPENAI_KEY not in env_b.read_text(), (
+            "Second .env file was not rewritten with decoy"
+        )
+
+        # Both env files should have enrollment records
+        repo = _repo(home_dir)
+        enrollments = asyncio.run(repo.list_enrollments())
+        env_paths = {e.env_path for e in enrollments}
+        assert str(env_a.resolve()) in env_paths
+        assert str(env_b.resolve()) in env_paths
+
+
+# ---- Q6: Enroll then lock --------------------------------------------------
+
+
+class TestEnrollThenLock:
+    """After enroll, running lock should still rewrite .env with decoy."""
+
+    def test_enroll_then_lock_protects_env(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+
+        # Step 1: enroll with the SAME alias that lock would generate
+        # (provider + sha256(key)[:8]) so that shard_a already exists
+        alias = _make_alias("openai", _OPENAI_KEY)
+        r1 = runner.invoke(
+            app,
+            ["enroll", "--alias", alias, "--key", _OPENAI_KEY, "--provider", "openai"],
+            env=env_vars,
+        )
+        assert r1.exit_code == 0, r1.output
+        assert (home_dir.shard_a_dir / alias).exists()
+
+        # Step 2: create .env with the same key
+        env = _make_env(tmp_path, "proj", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
+
+        # Step 3: lock should still rewrite .env even though shard_a exists
+        r2 = runner.invoke(app, ["lock", "--env", str(env)], env=env_vars)
+        assert r2.exit_code == 0, r2.output
+
+        # The .env must not contain the original key anymore
+        assert _OPENAI_KEY not in env.read_text(), (
+            ".env was not rewritten after enroll+lock"
+        )
+
+
+# ---- Scanner edge cases (existing) -----------------------------------------
 
 
 class TestScannerEdgeCases:

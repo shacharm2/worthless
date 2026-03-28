@@ -83,7 +83,29 @@ def _lock_keys(
 
             shard_a_path = home.shard_a_dir / alias
             if shard_a_path.exists():
-                console.print_warning(f"Skipping {var_name} (already enrolled as {alias})")
+                # Shard file already exists.  Check if the DB row exists too
+                # (orphan shard_a = file without DB row — warn and skip).
+                db_shard = await repo.fetch_encrypted(alias)
+                if db_shard is None:
+                    console.print_warning(
+                        f"Skipping {var_name} (orphan shard_a for {alias}, no DB record)"
+                    )
+                    continue
+
+                # Shard fully enrolled — still need to:
+                # 1. Create enrollment for THIS var_name/env_path
+                # 2. Rewrite THIS .env line with a decoy
+                existing_shard_a = shard_a_path.read_bytes()
+                await repo.add_enrollment(
+                    alias, var_name=var_name, env_path=str(env_path.resolve()),
+                )
+                try:
+                    prefix = detect_prefix(value, provider)
+                except ValueError:
+                    prefix = ""
+                decoy = _make_decoy(value, prefix, existing_shard_a)
+                rewrite_env_key(env_path, var_name, decoy)
+                count += 1
                 continue
 
             sr = split_key(value.encode())
@@ -127,7 +149,14 @@ def _lock_keys(
                 if shard_a_written:
                     shard_a_path.unlink(missing_ok=True)
                 if db_written:
-                    await repo.delete_enrolled(alias)
+                    # Only delete THIS specific enrollment — not the shard
+                    # or other enrollments (CASCADE would destroy them all).
+                    env_str = str(env_path.resolve())
+                    await repo.delete_enrollment(alias, env_str)
+                    remaining = await repo.list_enrollments(alias)
+                    if not remaining:
+                        # No other enrollments — safe to remove shard too
+                        await repo.delete_enrolled(alias)
                 raise
             finally:
                 sr.zero()

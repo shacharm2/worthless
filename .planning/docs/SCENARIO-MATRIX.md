@@ -268,6 +268,48 @@ These must always hold. Any scenario that breaks them is a bug:
 - **Risk**: HIGH for non-additive schema changes
 - **Test status**: UNTESTED
 
+### 1.7 Cross-Command User Journeys
+
+#### U-32: User has the same key value in two vars in one `.env`
+
+- **Precondition**: `.env` has `OPENAI_API_KEY=sk-proj-X` and `OPENAI_API_KEY_DEV=sk-proj-X`
+- **Expected**: One shard alias can back both vars. Both vars should be rewritten with decoys, and unlock should be able to restore both names from enrollment metadata.
+- **Current behavior**: BUG -- first var enrolls normally, second var hits `shard_a_path.exists()` and is skipped. Also, the schema only allows one enrollment row per `(key_alias, env_path)`, so two vars in the same file cannot both be represented for the same alias. Result: second var stays plaintext and cannot be restored from DB metadata.
+- **Risk**: HIGH -- plaintext key remains in the same `.env` after "successful" lock
+- **Test status**: UNTESTED
+
+#### U-33: User runs `enroll --key-stdin` and later `lock` on a `.env` containing the same key
+
+- **Precondition**: Key was directly enrolled earlier with a user-chosen alias such as `ci-key`; later a project `.env` contains the same real key
+- **Expected**: `lock` should either reuse the existing enrolled state or explicitly surface that a duplicate enrollment is being created.
+- **Current behavior**: `enroll` stores an arbitrary alias with `env_path=NULL`, while `lock` always computes a deterministic `{provider}-{sha256[:8]}` alias from the key value. Unless the user manually chose that exact alias, `lock` silently creates a second independent alias for the same secret. The `.env` is protected, but state is duplicated and later cleanup is confusing.
+- **Risk**: MEDIUM -- no immediate plaintext leak, but duplicate secret state and operator confusion
+- **Test status**: UNTESTED
+
+#### U-34: User unlocks a directly enrolled key
+
+- **Precondition**: Key was enrolled via `enroll`, so the enrollment row has `env_path=NULL`
+- **Expected**: `unlock` should print the recovery value if no env file is involved and then fully clean up the enrollment row, shard row, and shard_a file.
+- **Current behavior**: BUG -- `unlock` always defaults `--env` to `.env`, so it takes the exact-path branch instead of the `env_path=NULL` branch. Recovery can still be printed, but `delete_enrollment(alias, env_str)` does not match the `NULL` row, so shard and enrollment state can remain orphaned after a normal unlock.
+- **Risk**: HIGH -- direct-enroll state is not reliably reversible
+- **Test status**: UNTESTED
+
+#### U-35: User runs `wrap` after direct `enroll` with a custom alias
+
+- **Precondition**: Key was enrolled as `my-ci-key` or `apikey` instead of the lock-generated `provider-hash8` form
+- **Expected**: `wrap` should discover provider support from stored key metadata, not from filename shape, so the direct-enroll primitive composes cleanly with wrap.
+- **Current behavior**: BUG -- `wrap` infers providers by parsing shard_a filenames as `provider-hash8`. Arbitrary aliases allowed by `enroll` can therefore be misclassified or ignored. Result: either `wrap` claims "No keys enrolled" even though keys exist, or it starts with a bogus provider name and injects no usable `{PROVIDER}_BASE_URL`.
+- **Risk**: HIGH -- scripting/CI primitive does not reliably compose with wrap
+- **Test status**: UNTESTED
+
+#### U-36: User runs `wrap` with only google/xai keys enrolled
+
+- **Precondition**: Unsupported-provider keys were enrolled directly (for example `google-demo` or `xai-demo`)
+- **Expected**: `wrap` should fail fast with a clear error that these providers cannot be redirected yet.
+- **Current behavior**: BUG -- `lock` refuses unsupported providers, but `enroll` allows them. If aliases are named `google-*` or `xai-*`, `wrap` treats them as enrolled providers, starts a proxy, and then injects no provider base URL because `_PROVIDER_ENV_MAP` only supports OpenAI/Anthropic. The session looks active but does not actually route those providers.
+- **Risk**: MEDIUM -- misleading success path, especially in CI
+- **Test status**: UNTESTED
+
 ---
 
 ## 2. Attacker Scenarios
@@ -564,6 +606,14 @@ These must always hold. Any scenario that breaks them is a bug:
 - **Risk**: Medium
 - **Test status**: UNTESTED
 
+#### I-12: Child makes a normal SDK request through `wrap`/`up` using only `BASE_URL`
+
+- **Precondition**: User runs `wrap` or points a client at `up`, and the client only knows the provider base URL override (`OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`)
+- **Expected**: Requests should be forwarded through the Worthless proxy without the caller having to add Worthless-specific headers manually.
+- **Current behavior**: CRITICAL BUG -- the proxy requires `x-worthless-alias` on every request, but `wrap`/`up` only set base URL environment variables. No automatic alias/session bridge exists in the CLI request path, so normal SDK traffic appears to hit the proxy and then gets uniform 401 responses.
+- **Risk**: CRITICAL -- advertised transparent proxy flow does not work as described
+- **Test status**: UNTESTED
+
 ---
 
 ## 5. Discovered Issues Summary
@@ -574,6 +624,9 @@ These must always hold. Any scenario that breaks them is a bug:
 | U-07 | MEDIUM | `enroll` with existing alias: unhandled FileExistsError | `lock.py:172` |
 | U-09 | HIGH | Unlock-all writes all keys to single --env regardless of enrollment source | `unlock.py:136-138` |
 | U-13 | HIGH | Corrupt shard_b: unhandled Fernet InvalidToken | `repository.py:136` |
+| U-32 | HIGH | Same key in two vars in one `.env`: second var stays plaintext, schema cannot model both vars | `lock.py:85-87`, `schema.py:40-47` |
+| U-34 | HIGH | Direct-enroll unlock prints recovery but can leave NULL-path enrollment + shards behind | `unlock.py:54-100` |
+| U-35 | HIGH | `wrap` infers provider from alias spelling, so custom direct-enroll aliases break wrap | `wrap.py:36-53` |
 | A-11 | HIGH | No path validation on --env: can corrupt arbitrary files | `lock.py:190-206` |
 | S-01 | HIGH | SIGKILL during lock: INV-1 broken, no recovery | `lock.py:90-131` |
 | S-02 | HIGH | SIGKILL after shard write but before .env rewrite: .env stuck with real key | `lock.py:122` |
@@ -581,6 +634,7 @@ These must always hold. Any scenario that breaks them is a bug:
 | S-11 | HIGH | `enroll` bypasses lock mechanism: race condition | `lock.py:208-236` |
 | S-12 | HIGH | `unlock` bypasses lock mechanism: concurrent data corruption | `unlock.py:113-144` |
 | I-06 | HIGH | git pull reverts .env: lock won't re-protect (shard_a exists) | `lock.py:85-87` |
+| I-12 | CRITICAL | `wrap`/`up` set only BASE_URL, but proxy still requires `x-worthless-alias` | `wrap.py:175-185`, `proxy/app.py:223` |
 | U-31 | HIGH | No schema migration system for upgrades | `schema.py` |
 
 ---
@@ -599,6 +653,11 @@ These must always hold. Any scenario that breaks them is a bug:
 | U-09 Unlock all multi-env | | | | TODO |
 | U-12 Missing shard_a | x | | | DONE |
 | U-13 Corrupt shard_b | | | | TODO |
+| U-32 Same key in two vars | | | | TODO |
+| U-33 Direct enroll then lock | | | | TODO |
+| U-34 Direct-enroll unlock cleanup | | | | TODO |
+| U-35 Wrap after custom direct enroll alias | | | | TODO |
+| U-36 Wrap with only unsupported providers enrolled | | | | TODO |
 | U-26 Delete ~/.worthless/ | | | | TODO |
 | A-07 Tampered shard | x | | | DONE |
 | A-10 Malicious alias | x | | | DONE |
@@ -608,3 +667,4 @@ These must always hold. Any scenario that breaks them is a bug:
 | S-11 Lock + enroll race | | | | TODO |
 | I-01 CI pipeline | | | x | TODO |
 | I-06 Git pull after lock | | | | TODO |
+| I-12 SDK traffic through wrap/up | | | x | TODO |

@@ -222,6 +222,22 @@ class ShardRepository:
             )
             await db.commit()
 
+    async def add_enrollment(
+        self, alias: str, *, var_name: str, env_path: str | None = None
+    ) -> None:
+        """Add an enrollment row without touching the shards table.
+
+        Uses INSERT OR IGNORE so duplicate (alias, var_name, env_path) tuples
+        are silently ignored.
+        """
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO enrollments (key_alias, var_name, env_path) "
+                "VALUES (?, ?, ?)",
+                (alias, var_name, env_path),
+            )
+            await db.commit()
+
     async def get_enrollment(
         self, alias: str, env_path: str | None = None
     ) -> EnrollmentRecord | None:

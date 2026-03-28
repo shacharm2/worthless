@@ -43,13 +43,13 @@ CREATE TABLE IF NOT EXISTS enrollments (
     var_name   TEXT NOT NULL,
     env_path   TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(key_alias, env_path)
+    UNIQUE(key_alias, var_name, env_path)
 );
 
 CREATE INDEX IF NOT EXISTS idx_spend_log_alias ON spend_log (key_alias);
 CREATE INDEX IF NOT EXISTS idx_enrollments_alias ON enrollments (key_alias);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollments_null_path
-    ON enrollments (key_alias) WHERE env_path IS NULL;
+    ON enrollments (key_alias, var_name) WHERE env_path IS NULL;
 """
 
 
