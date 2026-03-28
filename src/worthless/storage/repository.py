@@ -281,13 +281,19 @@ class ShardRepository:
             rows = await cursor.fetchall()
             return [EnrollmentRecord(key_alias=r[0], var_name=r[1], env_path=r[2]) for r in rows]
 
-    async def delete_enrollment(self, alias: str, env_path: str) -> bool:
+    async def delete_enrollment(self, alias: str, env_path: str | None) -> bool:
         """Delete a single enrollment row. Returns True if deleted."""
         async with self._connect() as db:
-            cursor = await db.execute(
-                "DELETE FROM enrollments WHERE key_alias = ? AND env_path = ?",
-                (alias, env_path),
-            )
+            if env_path is None:
+                cursor = await db.execute(
+                    "DELETE FROM enrollments WHERE key_alias = ? AND env_path IS NULL",
+                    (alias,),
+                )
+            else:
+                cursor = await db.execute(
+                    "DELETE FROM enrollments WHERE key_alias = ? AND env_path = ?",
+                    (alias, env_path),
+                )
             await db.commit()
             return cursor.rowcount > 0
 

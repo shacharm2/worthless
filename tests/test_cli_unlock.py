@@ -240,3 +240,55 @@ class TestUnlockFromDB:
         # shard_a_dir should be completely empty
         remaining = list(home_dir.shard_a_dir.iterdir())
         assert remaining == []
+
+
+class TestEnrollUnlockNullEnvPath:
+    """Direct enroll (env_path=NULL) followed by unlock should clean up completely."""
+
+    def test_enroll_then_unlock_cleans_up(self, home_dir: WorthlessHome) -> None:
+        """After enroll (env_path=NULL), unlock should remove enrollment + shard."""
+        from worthless.cli.commands.lock import _make_alias
+        from worthless.crypto.splitter import split_key
+        from worthless.storage.repository import StoredShard
+
+        alias = _make_alias("openai", _TEST_KEY)
+        sr = split_key(_TEST_KEY.encode())
+        try:
+            # Write shard_a
+            import os
+
+            shard_a_path = home_dir.shard_a_dir / alias
+            fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                os.write(fd, bytes(sr.shard_a))
+            finally:
+                os.close(fd)
+
+            # Store with env_path=None (direct enroll)
+            repo = _repo(home_dir)
+            stored = StoredShard(
+                shard_b=bytearray(sr.shard_b),
+                commitment=bytearray(sr.commitment),
+                nonce=bytearray(sr.nonce),
+                provider="openai",
+            )
+            asyncio.run(repo.store_enrolled(alias, stored, var_name=alias, env_path=None))
+        finally:
+            sr.zero()
+
+        # Unlock the direct-enrolled key
+        result = runner.invoke(
+            app,
+            ["unlock", "--alias", alias],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        # Key printed to stdout (no .env to restore)
+        assert _TEST_KEY in result.output
+
+        # Everything cleaned up
+        assert not shard_a_path.exists(), "shard_a file should be deleted"
+        repo2 = _repo(home_dir)
+        assert asyncio.run(repo2.list_enrollments(alias)) == []
+        assert asyncio.run(repo2.list_keys()) == []

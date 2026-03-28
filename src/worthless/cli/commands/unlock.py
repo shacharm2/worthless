@@ -83,15 +83,11 @@ async def _unlock_alias(
                 sys.stdout.write(f"{alias}={key_str}\n")
                 sys.stdout.flush()
 
-            # Delete this specific enrollment
-            env_str = str(env_path.resolve()) if env_path else None
+            # Delete this specific enrollment using the DB's env_path (handles NULL)
+            enrollment_env = enrollment.env_path if enrollment else None
             remaining = await repo.list_enrollments(alias)
-            if env_str:
-                await repo.delete_enrollment(alias, env_str)
-                remaining = [e for e in remaining if e.env_path != env_str]
-            else:
-                # No env specified — delete all enrollments for this alias
-                remaining = []
+            await repo.delete_enrollment(alias, enrollment_env)
+            remaining = [e for e in remaining if e.env_path != enrollment_env]
 
             # Only delete shard + shard_a file when no enrollments remain
             if not remaining:
