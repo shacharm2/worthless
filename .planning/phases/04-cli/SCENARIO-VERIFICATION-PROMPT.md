@@ -1,289 +1,2373 @@
+# Worthless CLI — Scenario Verification Prompt
+
+> Paste this entire document into ANY LLM to get a complete security and correctness audit.
+> All source code is embedded. You need nothing else.
+
+## System Overview
+
+**Worthless** is a split-key reverse proxy CLI that protects API keys at rest via XOR secret sharing.
+
+**Commands**: lock, unlock, enroll, scan, status, wrap, up
+
+**State stores**:
+- `~/.worthless/shard_a/{alias}` — binary XOR shard files (0o600)
+- `~/.worthless/worthless.db` — SQLite with shards table (encrypted shard_b) + enrollments table (var_name, env_path)
+- `~/.worthless/fernet.key` — Fernet encryption key for shard_b at rest
+- `.env` files — rewritten with prefix-preserving low-entropy decoys after lock
+
+**Key invariants**:
+- INV-1: For every shard_a file, a matching row exists in shards table (and vice versa)
+- INV-2: For every enrollment row, the referenced key_alias exists in shards (FK constraint)
+- INV-3: A locked .env contains only decoy values for enrolled keys
+- INV-4: reconstruct_key(shard_a, shard_b, commitment, nonce) always recovers the original key
+
+---
+
+## Source Code
+
+### `src/worthless/cli/commands/lock.py`
+
+```python
+"""Lock command — scan .env, split keys, store shards, rewrite with decoys."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import os
+import re
+from pathlib import Path
+from typing import Optional
+
+import typer
+
+from worthless.cli.bootstrap import WorthlessHome, acquire_lock, ensure_home, get_home
+from worthless.cli.console import get_console
+from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys
+from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.key_patterns import detect_prefix, detect_provider
+from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
+from worthless.crypto.splitter import split_key
+
+_SUPPORTED_PROVIDERS = frozenset(_PROVIDER_ENV_MAP.keys())
+from worthless.crypto.types import _zero_buf
+from worthless.storage.repository import ShardRepository, StoredShard
 
 
-I'll gather all the source files and build the self-contained verification prompt.
+def _make_alias(provider: str, api_key: str) -> str:
+    """Deterministic alias: provider + first 8 hex chars of sha256(key)."""
+    digest = hashlib.sha256(api_key.encode()).hexdigest()[:8]
+    return f"{provider}-{digest}"
 
-<tool_use>
-mcp__plugin_context-mode_context-mode__ctx_batch_execute
-commands: [{"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/cli/commands/lock.py", "label": "lock.py"}, {"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/cli/commands/unlock.py", "label": "unlock.py"}, {"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/cli/commands/wrap.py", "label": "wrap.py"}, {"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/cli/commands/up.py", "label": "up.py"}, {"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/cli/commands/scan.py", "label": "scan.py"}, {"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/cli/commands/status.py", "label": "status.py"}, {"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/storage/repository.py", "label": "repository.py"}, {"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/storage/schema.py", "label": "schema.py"}, {"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/cli/bootstrap.py", "label": "bootstrap.py"}, {"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/cli/scanner.py", "label": "scanner.py"}, {"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/cli/dotenv_rewriter.py", "label": "dotenv_rewriter.py"}, {"command": "cat /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/src/worthless/cli/process.py", "label": "process.py"}]
-queries: ["full source code of all CLI command files", "repository and schema storage layer", "bootstrap scanner dotenv_rewriter process utilities"]
-</thinking>
-</tool_use>
 
-<tool_result>
-{"status":"ok","results":[{"type":"search","query":"full source code of all CLI command files","results":[{"source":"lock.py","score":1.5887198448181152,"segments":["\"\"\"Lock command — encrypt enrolled keys and rewrite .env files.\"\"\"\n\nfrom __future__ import annotations\n\nimport os\nimport secrets\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nfrom worthless.cli.dotenv_rewriter import rewrite_env_file\nfrom worthless.crypto import split_key\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef lock(repo: Repository, *, directory: Path | None = None) -> dict:\n    \"\"\"Encrypt all enrolled-but-unlocked keys.\n\n    For each enrolled key that has no shard yet:\n    1. Read current plaintext value from the .env file.\n    2. Split into (shard_a, shard_b) via XOR.\n    3. Write shard_a to a binary file under .worthless/shards/.\n    4. Store shard_b + metadata in the SQLite shards table.\n    5. Rewrite the .env file replacing the real value with a decoy.\n\n    Returns a summary dict: {\"locked\": [...names...], \"errors\": [...]}.\n    \"\"\"\n    base = directory or Path.cwd()\n    enrollments = repo.list_enrollments()\n\n    locked: list[str] = []\n    errors: list[dict] = []\n\n    for enr in enrollments:\n        # Skip already-locked keys\n        if repo.get_shard(enr[\"name\"]):\n            continue\n\n        env_path = base / enr[\"env_file\"]\n        if not env_path.exists():\n            errors.append({\"name\": enr[\"name\"], \"error\": f\".env file not found: {env_path}\"})\n            continue\n\n        # Read plaintext value from .env\n        plaintext = _read_env_value(env_path, enr[\"env_var\"])\n        if plaintext is None:\n            errors.append({\"name\": enr[\"name\"], \"error\": f\"Variable {enr['env_var']} not found in {env_path}\"})\n            continue\n\n        try:\n            # Split the key\n            plaintext_bytes = plaintext.encode(\"utf-8\")\n            shard_a, shard_b = split_key(plaintext_bytes)\n\n            # Write shard_a to file\n            shard_dir = base / \".worthless\" / \"shards\"\n            shard_dir.mkdir(parents=True, exist_ok=True)\n            shard_a_path = shard_dir / f\"{enr['name']}.shard_a\"\n            # Use O_EXCL to prevent overwriting\n            fd = os.open(str(shard_a_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)\n            try:\n                os.write(fd, shard_a)\n            finally:\n                os.close(fd)\n\n            # Store shard_b in SQLite\n            repo.store_shard(\n                name=enr[\"name\"],\n                shard_b=shard_b,\n                env_file=enr[\"env_file\"],\n                env_var=enr[\"env_var\"],\n            )\n\n            # Generate decoy and rewrite .env\n            decoy = _generate_decoy(len(plaintext))\n            rewrite_env_file(env_path, enr[\"env_var\"], decoy)\n\n            locked.append(enr[\"name\"])\n\n        except Exception as exc:\n            errors.append({\"name\": enr[\"name\"], \"error\": str(exc)})\n            # TODO: compensation logic — clean up partial state\n\n    return {\"locked\": locked, \"errors\": errors}\n\n\ndef _read_env_value(env_path: Path, var_name: str) -> str | None:\n    \"\"\"Read a variable's value from a .env file.\"\"\"\n    with open(env_path) as f:\n        for line in f:\n            line = line.strip()\n            if line.startswith(\"#\") or \"=\" not in line:\n                continue\n            key, _, value = line.partition(\"=\")\n            if key.strip() == var_name:\n                # Strip optional quotes\n                value = value.strip()\n                if (value.startswith('\"') and value.endswith('\"')) or (\n                    value.startswith(\"'\") and value.endswith(\"'\")\n                ):\n                    value = value[1:-1]\n                return value\n    return None\n\n\ndef _generate_decoy(length: int) -> str:\n    \"\"\"Generate a decoy value that looks like an API key.\"\"\"\n    prefix = \"wless_\"\n    # Generate enough random chars to match original length\n    remaining = max(length - len(prefix), 16)\n    return prefix + secrets.token_hex(remaining // 2 + 1)[:remaining]"]},{"source":"unlock.py","score":1.0574798584120433,"segments":["\"\"\"Unlock command — reassemble keys and restore .env files.\"\"\"\n\nfrom __future__ import annotations\n\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nfrom worthless.cli.dotenv_rewriter import rewrite_env_file\nfrom worthless.crypto import reconstruct_key\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef unlock(repo: Repository, *, directory: Path | None = None) -> dict:\n    \"\"\"Decrypt all locked keys and restore .env files.\n\n    For each shard in the database:\n    1. Read shard_a from the binary file.\n    2. XOR with shard_b from SQLite to reconstruct the plaintext.\n    3. Rewrite the .env file with the real value.\n    4. Remove shard_a file and shard_b from database.\n\n    Returns a summary dict: {\"unlocked\": [...names...], \"errors\": [...]}.\n    \"\"\"\n    base = directory or Path.cwd()\n    shards = repo.list_shards()\n\n    unlocked: list[str] = []\n    errors: list[dict] = []\n\n    for shard in shards:\n        try:\n            # Read shard_a from file\n            shard_a_path = base / \".worthless\" / \"shards\" / f\"{shard['name']}.shard_a\"\n            if not shard_a_path.exists():\n                errors.append({\"name\": shard[\"name\"], \"error\": f\"shard_a file missing: {shard_a_path}\"})\n                continue\n\n            shard_a = shard_a_path.read_bytes()\n            shard_b = shard[\"shard_b\"]\n\n            # Reconstruct the key\n            plaintext_bytes = reconstruct_key(shard_a, shard_b)\n            plaintext = plaintext_bytes.decode(\"utf-8\")\n\n            # Restore the .env file\n            env_path = base / shard[\"env_file\"]\n            rewrite_env_file(env_path, shard[\"env_var\"], plaintext)\n\n            # Clean up shard_a file\n            shard_a_path.unlink()\n\n            # Remove shard from database\n            repo.delete_shard(shard[\"name\"])\n\n            unlocked.append(shard[\"name\"])\n\n        except Exception as exc:\n            errors.append({\"name\": shard[\"name\"], \"error\": str(exc)})\n\n    return {\"unlocked\": unlocked, \"errors\": errors}"]},{"source":"wrap.py","score":0.7868665456771851,"segments":["\"\"\"Wrap command — one-shot lock+proxy for quick usage.\"\"\"\n\nfrom __future__ import annotations\n\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nfrom worthless.cli.commands.lock import lock\nfrom worthless.cli.commands.up import up\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef wrap(\n    repo: Repository,\n    *,\n    directory: Path | None = None,\n    host: str = \"127.0.0.1\",\n    port: int = 0,\n) -> dict:\n    \"\"\"Lock all enrolled keys and start the proxy in one step.\n\n    This is the happy-path command for quick usage:\n    1. Lock any unlocked enrolled keys.\n    2. Start the reverse proxy.\n\n    Returns combined result from lock + up.\n    \"\"\"\n    lock_result = lock(repo, directory=directory)\n\n    # Only start proxy if we have locked keys (or had previously locked keys)\n    shards = repo.list_shards()\n    if not shards:\n        return {\n            \"lock\": lock_result,\n            \"proxy\": {\"status\": \"skipped\", \"reason\": \"no locked keys\"},\n        }\n\n    up_result = up(repo, directory=directory, host=host, port=port)\n\n    return {\n        \"lock\": lock_result,\n        \"proxy\": up_result,\n    }"]},{"source":"up.py","score":0.6747999191284179,"segments":["\"\"\"Up command — start the reverse proxy that injects reassembled keys.\"\"\"\n\nfrom __future__ import annotations\n\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nfrom worthless.cli.process import ProxyProcess\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef up(\n    repo: Repository,\n    *,\n    directory: Path | None = None,\n    host: str = \"127.0.0.1\",\n    port: int = 0,\n) -> dict:\n    \"\"\"Start the reverse proxy server.\n\n    Reassembles keys from shards and starts an HTTP proxy that\n    injects the real API keys into outgoing requests.\n\n    Returns: {\"status\": \"running\", \"host\": ..., \"port\": ..., \"pid\": ...}\n    \"\"\"\n    base = directory or Path.cwd()\n    shards = repo.list_shards()\n\n    if not shards:\n        return {\"status\": \"error\", \"reason\": \"no locked keys found\"}\n\n    # Reassemble keys for the proxy\n    keys: dict[str, str] = {}\n    for shard in shards:\n        shard_a_path = base / \".worthless\" / \"shards\" / f\"{shard['name']}.shard_a\"\n        if not shard_a_path.exists():\n            continue\n\n        shard_a = shard_a_path.read_bytes()\n        from worthless.crypto import reconstruct_key\n\n        plaintext = reconstruct_key(shard_a, shard[\"shard_b\"])\n        keys[shard[\"env_var\"]] = plaintext.decode(\"utf-8\")\n\n    if not keys:\n        return {\"status\": \"error\", \"reason\": \"no shard_a files found\"}\n\n    # Start proxy process\n    proxy = ProxyProcess(host=host, port=port, keys=keys)\n    proxy.start()\n\n    return {\n        \"status\": \"running\",\n        \"host\": proxy.host,\n        \"port\": proxy.port,\n        \"pid\": proxy.pid,\n        \"keys_loaded\": list(keys.keys()),\n    }"]},{"source":"scan.py","score":0.5641332864761353,"segments":["\"\"\"Scan command — detect API keys in project files.\"\"\"\n\nfrom __future__ import annotations\n\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nfrom worthless.cli.scanner import scan_directory\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef scan(\n    repo: Repository,\n    *,\n    directory: Path | None = None,\n) -> dict:\n    \"\"\"Scan the project directory for exposed API keys.\n\n    Checks .env files and common config files for patterns that\n    look like API keys (high entropy strings, known prefixes).\n\n    Returns: {\"found\": [...], \"protected\": [...], \"exposed\": [...]}\n    \"\"\"\n    base = directory or Path.cwd()\n\n    # Get all findings from scanner\n    findings = scan_directory(base)\n\n    # Cross-reference with enrolled/locked keys\n    enrolled = {e[\"env_var\"]: e for e in repo.list_enrollments()}\n    shards = {s[\"env_var\"]: s for s in repo.list_shards()}\n\n    protected = []\n    exposed = []\n\n    for finding in findings:\n        var_name = finding[\"variable\"]\n        if var_name in shards:\n            # This key is locked — check if the value is a decoy\n            protected.append({**finding, \"status\": \"locked\"})\n        elif var_name in enrolled:\n            # Enrolled but not locked\n            exposed.append({**finding, \"status\": \"enrolled_not_locked\"})\n        else:\n            # Unknown key — not managed by worthless\n            exposed.append({**finding, \"status\": \"unmanaged\"})\n\n    return {\n        \"found\": findings,\n        \"protected\": protected,\n        \"exposed\": exposed,\n        \"summary\": {\n            \"total\": len(findings),\n            \"protected\": len(protected),\n            \"exposed\": len(exposed),\n        },\n    }"]},{"source":"status.py","score":0.2820666432380676,"segments":["\"\"\"Status command — show current state of worthless protection.\"\"\"\n\nfrom __future__ import annotations\n\nimport json\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef status(\n    repo: Repository,\n    *,\n    directory: Path | None = None,\n    output_json: bool = False,\n) -> dict:\n    \"\"\"Report current protection status.\n\n    Shows:\n    - Enrolled keys and their lock state\n    - Shard file integrity\n    - Proxy status (if running)\n\n    Returns: {\"keys\": [...], \"proxy\": {...}, \"healthy\": bool}\n    \"\"\"\n    base = directory or Path.cwd()\n\n    enrollments = repo.list_enrollments()\n    shards = {s[\"name\"]: s for s in repo.list_shards()}\n\n    keys = []\n    all_healthy = True\n\n    for enr in enrollments:\n        name = enr[\"name\"]\n        shard = shards.get(name)\n\n        if shard:\n            # Check shard_a file exists\n            shard_a_path = base / \".worthless\" / \"shards\" / f\"{name}.shard_a\"\n            shard_a_ok = shard_a_path.exists()\n\n            if not shard_a_ok:\n                all_healthy = False\n\n            keys.append({\n                \"name\": name,\n                \"env_var\": enr[\"env_var\"],\n                \"env_file\": enr[\"env_file\"],\n                \"status\": \"locked\",\n                \"shard_a_present\": shard_a_ok,\n                \"healthy\": shard_a_ok,\n            })\n        else:\n            keys.append({\n                \"name\": name,\n                \"env_var\": enr[\"env_var\"],\n                \"env_file\": enr[\"env_file\"],\n                \"status\": \"enrolled\",\n                \"shard_a_present\": False,\n                \"healthy\": True,  # Not locked yet, so not unhealthy\n            })\n\n    # Check proxy status\n    proxy_status = _check_proxy(base)\n\n    result = {\n        \"keys\": keys,\n        \"proxy\": proxy_status,\n        \"healthy\": all_healthy and proxy_status.get(\"healthy\", True),\n    }\n\n    if output_json:\n        print(json.dumps(result, indent=2))\n\n    return result\n\n\ndef _check_proxy(base: Path) -> dict:\n    \"\"\"Check if the proxy is running.\"\"\"\n    pid_file = base / \".worthless\" / \"proxy.pid\"\n    if not pid_file.exists():\n        return {\"running\": False, \"healthy\": True}\n\n    try:\n        pid = int(pid_file.read_text().strip())\n        import os\n        os.kill(pid, 0)  # Check if process exists\n        return {\"running\": True, \"pid\": pid, \"healthy\": True}\n    except (ValueError, ProcessLookupError, PermissionError):\n        # Stale PID file\n        return {\"running\": False, \"stale_pid_file\": True, \"healthy\": False}"]}]},{"type":"search","query":"repository and schema storage layer","results":[{"source":"repository.py","score":1.5887198448181152,"segments":["\"\"\"SQLite-backed repository for worthless state.\"\"\"\n\nfrom __future__ import annotations\n\nimport sqlite3\nfrom pathlib import Path\nfrom typing import Any\n\nfrom worthless.storage.schema import SCHEMA_SQL\n\n\nclass Repository:\n    \"\"\"Manages SQLite storage for shards and enrollments.\"\"\"\n\n    def __init__(self, db_path: Path) -> None:\n        self.db_path = db_path\n        self.db_path.parent.mkdir(parents=True, exist_ok=True)\n        self._conn = sqlite3.connect(str(db_path))\n        self._conn.row_factory = sqlite3.Row\n        self._conn.execute(\"PRAGMA journal_mode=WAL\")\n        self._conn.execute(\"PRAGMA foreign_keys=ON\")\n        self._init_schema()\n\n    def _init_schema(self) -> None:\n        \"\"\"Create tables if they don't exist.\"\"\"\n        self._conn.executescript(SCHEMA_SQL)\n\n    # --- Enrollments ---\n\n    def enroll(self, name: str, env_file: str, env_var: str) -> None:\n        \"\"\"Register a key for protection.\"\"\"\n        self._conn.execute(\n            \"INSERT INTO enrollments (name, env_file, env_var) VALUES (?, ?, ?)\",\n            (name, env_file, env_var),\n        )\n        self._conn.commit()\n\n    def list_enrollments(self) -> list[dict[str, Any]]:\n        \"\"\"List all enrolled keys.\"\"\"\n        rows = self._conn.execute(\"SELECT * FROM enrollments\").fetchall()\n        return [dict(row) for row in rows]\n\n    def get_enrollment(self, name: str) -> dict[str, Any] | None:\n        \"\"\"Get a specific enrollment by name.\"\"\"\n        row = self._conn.execute(\n            \"SELECT * FROM enrollments WHERE name = ?\", (name,)\n        ).fetchone()\n        return dict(row) if row else None\n\n    def delete_enrollment(self, name: str) -> None:\n        \"\"\"Remove an enrollment.\"\"\"\n        self._conn.execute(\"DELETE FROM enrollments WHERE name = ?\", (name,))\n        self._conn.commit()\n\n    # --- Shards ---\n\n    def store_shard(self, name: str, shard_b: bytes, env_file: str, env_var: str) -> None:\n        \"\"\"Store shard_b and metadata.\"\"\"\n        self._conn.execute(\n            \"INSERT INTO shards (name, shard_b, env_file, env_var) VALUES (?, ?, ?, ?)\",\n            (name, shard_b, env_file, env_var),\n        )\n        self._conn.commit()\n\n    def get_shard(self, name: str) -> dict[str, Any] | None:\n        \"\"\"Get shard data by name.\"\"\"\n        row = self._conn.execute(\n            \"SELECT * FROM shards WHERE name = ?\", (name,)\n        ).fetchone()\n        return dict(row) if row else None\n\n    def list_shards(self) -> list[dict[str, Any]]:\n        \"\"\"List all stored shards.\"\"\"\n        rows = self._conn.execute(\"SELECT * FROM shards\").fetchall()\n        return [dict(row) for row in rows]\n\n    def delete_shard(self, name: str) -> None:\n        \"\"\"Remove a shard.\"\"\"\n        self._conn.execute(\"DELETE FROM shards WHERE name = ?\", (name,))\n        self._conn.commit()\n\n    def close(self) -> None:\n        \"\"\"Close the database connection.\"\"\"\n        self._conn.close()"]},{"source":"schema.py","score":1.5887198448181152,"segments":["\"\"\"Database schema for worthless storage.\"\"\"\n\nSCHEMA_SQL = \"\"\"\nCREATE TABLE IF NOT EXISTS enrollments (\n    name TEXT PRIMARY KEY,\n    env_file TEXT NOT NULL,\n    env_var TEXT NOT NULL,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n);\n\nCREATE TABLE IF NOT EXISTS shards (\n    name TEXT PRIMARY KEY,\n    shard_b BLOB NOT NULL,\n    env_file TEXT NOT NULL,\n    env_var TEXT NOT NULL,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n);\n\"\"\""]},{"source":"lock.py","score":0.3307799100875854,"segments":["\"\"\"Lock command — encrypt enrolled keys and rewrite .env files.\"\"\"\n\nfrom __future__ import annotations\n\nimport os\nimport secrets\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nfrom worthless.cli.dotenv_rewriter import rewrite_env_file\nfrom worthless.crypto import split_key\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef lock(repo: Repository, *, directory: Path | None = None) -> dict:\n    \"\"\"Encrypt all enrolled-but-unlocked keys.\n\n    For each enrolled key that has no shard yet:\n    1. Read current plaintext value from the .env file.\n    2. Split into (shard_a, shard_b) via XOR.\n    3. Write shard_a to a binary file under .worthless/shards/.\n    4. Store shard_b + metadata in the SQLite shards table.\n    5. Rewrite the .env file replacing the real value with a decoy.\n\n    Returns a summary dict: {\"locked\": [...names...], \"errors\": [...]}.\n    \"\"\"\n    base = directory or Path.cwd()\n    enrollments = repo.list_enrollments()\n\n    locked: list[str] = []\n    errors: list[dict] = []\n\n    for enr in enrollments:\n        # Skip already-locked keys\n        if repo.get_shard(enr[\"name\"]):\n            continue\n\n        env_path = base / enr[\"env_file\"]\n        if not env_path.exists():\n            errors.append({\"name\": enr[\"name\"], \"error\": f\".env file not found: {env_path}\"})\n            continue\n\n        # Read plaintext value from .env\n        plaintext = _read_env_value(env_path, enr[\"env_var\"])\n        if plaintext is None:\n            errors.append({\"name\": enr[\"name\"], \"error\": f\"Variable {enr['env_var']} not found in {env_path}\"})\n            continue\n\n        try:\n            # Split the key\n            plaintext_bytes = plaintext.encode(\"utf-8\")\n            shard_a, shard_b = split_key(plaintext_bytes)\n\n            # Write shard_a to file\n            shard_dir = base / \".worthless\" / \"shards\"\n            shard_dir.mkdir(parents=True, exist_ok=True)\n            shard_a_path = shard_dir / f\"{enr['name']}.shard_a\"\n            # Use O_EXCL to prevent overwriting\n            fd = os.open(str(shard_a_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)\n            try:\n                os.write(fd, shard_a)\n            finally:\n                os.close(fd)\n\n            # Store shard_b in SQLite\n            repo.store_shard(\n                name=enr[\"name\"],\n                shard_b=shard_b,\n                env_file=enr[\"env_file\"],\n                env_var=enr[\"env_var\"],\n            )\n\n            # Generate decoy and rewrite .env\n            decoy = _generate_decoy(len(plaintext))\n            rewrite_env_file(env_path, enr[\"env_var\"], decoy)\n\n            locked.append(enr[\"name\"])\n\n        except Exception as exc:\n            errors.append({\"name\": enr[\"name\"], \"error\": str(exc)})\n            # TODO: compensation logic — clean up partial state\n\n    return {\"locked\": locked, \"errors\": errors}"]}]},{"type":"search","query":"bootstrap scanner dotenv_rewriter process utilities","results":[{"source":"bootstrap.py","score":1.5887198448181152,"segments":["\"\"\"Bootstrap — initialize the .worthless directory and database.\"\"\"\n\nfrom __future__ import annotations\n\nfrom pathlib import Path\n\nfrom worthless.storage.repository import Repository\n\n\ndef bootstrap(directory: Path | None = None) -> Repository:\n    \"\"\"Initialize the .worthless directory structure and return a Repository.\n\n    Creates:\n    - .worthless/\n    - .worthless/shards/\n    - .worthless/worthless.db (SQLite)\n\n    Idempotent — safe to call multiple times.\n    \"\"\"\n    base = directory or Path.cwd()\n    worthless_dir = base / \".worthless\"\n    worthless_dir.mkdir(exist_ok=True)\n\n    shards_dir = worthless_dir / \"shards\"\n    shards_dir.mkdir(exist_ok=True)\n\n    db_path = worthless_dir / \"worthless.db\"\n    repo = Repository(db_path)\n\n    return repo"]},{"source":"scanner.py","score":1.5887198448181152,"segments":["\"\"\"Scanner — detect potential API keys in project files.\"\"\"\n\nfrom __future__ import annotations\n\nimport re\nfrom pathlib import Path\n\n# Known API key prefixes\nKNOWN_PREFIXES = [\n    \"sk-\",           # OpenAI\n    \"pk-\",           # Various\n    \"api-\",          # Generic\n    \"key-\",          # Generic\n    \"token-\",        # Generic\n    \"ghp_\",          # GitHub\n    \"gho_\",          # GitHub OAuth\n    \"github_pat_\",   # GitHub PAT\n    \"glpat-\",        # GitLab\n    \"AKIAI\",         # AWS\n    \"AKIA\",          # AWS\n    \"xoxb-\",         # Slack Bot\n    \"xoxp-\",         # Slack User\n    \"xapp-\",         # Slack App\n    \"SG.\",           # SendGrid\n    \"sk_live_\",      # Stripe\n    \"pk_live_\",      # Stripe\n    \"rk_live_\",      # Stripe\n    \"sq0atp-\",       # Square\n    \"AIza\",          # Google\n    \"ya29.\",         # Google OAuth\n    \"whsec_\",        # Webhook secrets\n]\n\n# High-entropy pattern: at least 20 chars of alphanum + special\nHIGH_ENTROPY_PATTERN = re.compile(r'^[A-Za-z0-9+/=_\\-]{20,}$')\n\n# Default files to scan\nDEFAULT_SCAN_GLOBS = [\n    \"*.env\",\n    \".env\",\n    \".env.*\",\n    \"*.env.local\",\n    \".env.local\",\n]\n\n# Files/dirs to skip\nSKIP_DIRS = {\".git\", \"node_modules\", \"__pycache__\", \".worthless\", \".venv\", \"venv\"}\n\n\ndef scan_directory(base: Path) -> list[dict]:\n    \"\"\"Scan directory for potential API keys in .env files.\n\n    Returns list of findings: [{\"file\": ..., \"variable\": ..., \"value_preview\": ..., \"reason\": ...}]\n    \"\"\"\n    findings = []\n\n    for pattern in DEFAULT_SCAN_GLOBS:\n        for env_file in base.rglob(pattern):\n            # Skip excluded directories\n            if any(part in SKIP_DIRS for part in env_file.parts):\n                continue\n\n            if env_file.is_file():\n                findings.extend(_scan_env_file(env_file, base))\n\n    return findings\n\n\ndef _scan_env_file(file_path: Path, base: Path) -> list[dict]:\n    \"\"\"Scan a single .env file for potential keys.\"\"\"\n    findings = []\n\n    try:\n        with open(file_path) as f:\n            for line_num, line in enumerate(f, 1):\n                line = line.strip()\n                if not line or line.startswith(\"#\") or \"=\" not in line:\n                    continue\n\n                key, _, value = line.partition(\"=\")\n                key = key.strip()\n                value = value.strip()\n\n                # Strip quotes\n                if (value.startswith('\"') and value.endswith('\"')) or (\n                    value.startswith(\"'\") and value.endswith(\"'\")\n                ):\n                    value = value[1:-1]\n\n                if not value:\n                    continue\n\n                # Check if it looks like a decoy\n                if value.startswith(\"wless_\"):\n                    continue\n\n                reason = _classify_value(value, key)\n                if reason:\n                    # Preview: show first 8 chars + mask the rest\n                    preview = value[:8] + \"*\" * max(0, len(value) - 8)\n                    findings.append({\n                        \"file\": str(file_path.relative_to(base)),\n                        \"line\": line_num,\n                        \"variable\": key,\n                        \"value_preview\": preview,\n                        \"reason\": reason,\n                    })\n    except (OSError, UnicodeDecodeError):\n        pass\n\n    return findings\n\n\ndef _classify_value(value: str, key_name: str) -> str | None:\n    \"\"\"Classify if a value looks like an API key. Returns reason or None.\"\"\"\n    # Check known prefixes\n    for prefix in KNOWN_PREFIXES:\n        if value.startswith(prefix):\n            return f\"known_prefix:{prefix}\"\n\n    # Check key name patterns\n    key_upper = key_name.upper()\n    sensitive_patterns = [\"API_KEY\", \"SECRET\", \"TOKEN\", \"PASSWORD\", \"CREDENTIAL\", \"AUTH\"]\n    has_sensitive_name = any(p in key_upper for p in sensitive_patterns)\n\n    # High entropy + sensitive name\n    if has_sensitive_name and HIGH_ENTROPY_PATTERN.match(value) and len(value) >= 20:\n        return \"high_entropy_sensitive_name\"\n\n    # Very high entropy regardless of name (likely a key)\n    if HIGH_ENTROPY_PATTERN.match(value) and len(value) >= 32:\n        return \"high_entropy_long\"\n\n    return None"]},{"source":"dotenv_rewriter.py","score":1.5887198448181152,"segments":["\"\"\"Dotenv rewriter — safely replace values in .env files.\"\"\"\n\nfrom __future__ import annotations\n\nimport re\nfrom pathlib import Path\n\n\ndef rewrite_env_file(env_path: Path, var_name: str, new_value: str) -> None:\n    \"\"\"Replace a variable's value in a .env file, preserving structure.\n\n    Handles:\n    - Unquoted values: KEY=value\n    - Double-quoted: KEY=\"value\"\n    - Single-quoted: KEY='value'\n    - Comments and blank lines are preserved\n\n    Only the FIRST occurrence of the variable is replaced.\n    \"\"\"\n    if not env_path.exists():\n        raise FileNotFoundError(f\".env file not found: {env_path}\")\n\n    content = env_path.read_text()\n    lines = content.splitlines(keepends=True)\n    found = False\n    new_lines = []\n\n    for line in lines:\n        if not found:\n            stripped = line.strip()\n            if stripped and not stripped.startswith(\"#\") and \"=\" in stripped:\n                key, sep, rest = line.partition(\"=\")\n                if key.strip() == var_name:\n                    # Determine quoting style\n                    rest_stripped = rest.strip()\n                    if rest_stripped.startswith('\"'):\n                        new_line = f'{key.strip()}=\"{new_value}\"\\n'\n                    elif rest_stripped.startswith(\"'\"):\n                        new_line = f\"{key.strip()}='{new_value}'\\n\"\n                    else:\n                        new_line = f\"{key.strip()}={new_value}\\n\"\n                    new_lines.append(new_line)\n                    found = True\n                    continue\n        new_lines.append(line)\n\n    if not found:\n        raise ValueError(f\"Variable {var_name} not found in {env_path}\")\n\n    env_path.write_text(\"\".join(new_lines))"]},{"source":"process.py","score":1.5887198448181152,"segments":["\"\"\"Proxy process management.\"\"\"\n\nfrom __future__ import annotations\n\nimport os\nimport signal\nimport socket\nimport subprocess\nimport sys\nfrom pathlib import Path\n\n\nclass ProxyProcess:\n    \"\"\"Manages the reverse proxy subprocess.\"\"\"\n\n    def __init__(\n        self,\n        *,\n        host: str = \"127.0.0.1\",\n        port: int = 0,\n        keys: dict[str, str] | None = None,\n        pid_file: Path | None = None,\n    ) -> None:\n        self.host = host\n        self.port = port\n        self.keys = keys or {}\n        self.pid_file = pid_file\n        self.pid: int | None = None\n        self._process: subprocess.Popen | None = None\n\n    def start(self) -> None:\n        \"\"\"Start the proxy server.\n\n        For now, this is a placeholder that finds an available port\n        and records the PID. The actual proxy implementation will\n        be added in a later phase.\n        \"\"\"\n        if self.port == 0:\n            self.port = self._find_free_port()\n\n        # For now, we just record the intent to start\n        # The actual proxy server will be implemented in the proxy module\n        self.pid = os.getpid()  # Placeholder\n\n        if self.pid_file:\n            self.pid_file.write_text(str(self.pid))\n\n    def stop(self) -> None:\n        \"\"\"Stop the proxy server.\"\"\"\n        if self._process:\n            self._process.terminate()\n            try:\n                self._process.wait(timeout=5)\n            except subprocess.TimeoutExpired:\n                self._process.kill()\n\n        if self.pid_file and self.pid_file.exists():\n            self.pid_file.unlink()\n\n    def _find_free_port(self) -> int:\n        \"\"\"Find a free port on the host.\"\"\"\n        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:\n            s.bind((self.host, 0))\n            return s.getsockname()[1]"]}]}]}
-</tool_result>
+def _make_decoy(original: str, prefix: str, shard_a: bytes) -> str:
+    """Build a prefix-preserving decoy of the same length as *original*.
 
-Now I have all the source code indexed. Let me build the prompt file.
+    The decoy uses a low-entropy repeating pattern so that scan_env_keys()
+    filters it out on re-scan (Shannon entropy < 4.5 threshold), making
+    lock idempotent.  The 8-char hex digest gives the decoy a unique look
+    while keeping overall entropy low via the repeating 'WRTLS' filler.
+    """
+    suffix_len = len(original) - len(prefix)
+    # Use 8 hex chars from shard_a hash for some uniqueness, then fill with
+    # low-entropy repeating pattern to stay below the entropy threshold.
+    tag = hashlib.sha256(shard_a).hexdigest()[:8]
+    filler = "WRTLS" * ((suffix_len // 5) + 2)
+    raw = tag + filler
+    return prefix + raw[:suffix_len]
 
-<tool_use>
-mcp__plugin_context-mode_context-mode__ctx_search
-queries: ["lock.py full source code", "unlock.py full source", "wrap.py full source", "up.py full source", "scan.py full source", "status.py full source", "repository.py full source", "schema.py full source", "bootstrap.py full source", "scanner.py full source with KNOWN_PREFIXES", "dotenv_rewriter.py full source rewrite_env_file", "process.py ProxyProcess full source"]
-</tool_use>
 
-<tool_result>
-{"status":"ok","results":[{"query":"lock.py full source code","results":[{"source":"lock.py","score":2.1183597564697266,"segments":["\"\"\"Lock command — encrypt enrolled keys and rewrite .env files.\"\"\"\n\nfrom __future__ import annotations\n\nimport os\nimport secrets\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nfrom worthless.cli.dotenv_rewriter import rewrite_env_file\nfrom worthless.crypto import split_key\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef lock(repo: Repository, *, directory: Path | None = None) -> dict:\n    \"\"\"Encrypt all enrolled-but-unlocked keys.\n\n    For each enrolled key that has no shard yet:\n    1. Read current plaintext value from the .env file.\n    2. Split into (shard_a, shard_b) via XOR.\n    3. Write shard_a to a binary file under .worthless/shards/.\n    4. Store shard_b + metadata in the SQLite shards table.\n    5. Rewrite the .env file replacing the real value with a decoy.\n\n    Returns a summary dict: {\"locked\": [...names...], \"errors\": [...]}.\n    \"\"\"\n    base = directory or Path.cwd()\n    enrollments = repo.list_enrollments()\n\n    locked: list[str] = []\n    errors: list[dict] = []\n\n    for enr in enrollments:\n        # Skip already-locked keys\n        if repo.get_shard(enr[\"name\"]):\n            continue\n\n        env_path = base / enr[\"env_file\"]\n        if not env_path.exists():\n            errors.append({\"name\": enr[\"name\"], \"error\": f\".env file not found: {env_path}\"})\n            continue\n\n        # Read plaintext value from .env\n        plaintext = _read_env_value(env_path, enr[\"env_var\"])\n        if plaintext is None:\n            errors.append({\"name\": enr[\"name\"], \"error\": f\"Variable {enr['env_var']} not found in {env_path}\"})\n            continue\n\n        try:\n            # Split the key\n            plaintext_bytes = plaintext.encode(\"utf-8\")\n            shard_a, shard_b = split_key(plaintext_bytes)\n\n            # Write shard_a to file\n            shard_dir = base / \".worthless\" / \"shards\"\n            shard_dir.mkdir(parents=True, exist_ok=True)\n            shard_a_path = shard_dir / f\"{enr['name']}.shard_a\"\n            # Use O_EXCL to prevent overwriting\n            fd = os.open(str(shard_a_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)\n            try:\n                os.write(fd, shard_a)\n            finally:\n                os.close(fd)\n\n            # Store shard_b in SQLite\n            repo.store_shard(\n                name=enr[\"name\"],\n                shard_b=shard_b,\n                env_file=enr[\"env_file\"],\n                env_var=enr[\"env_var\"],\n            )\n\n            # Generate decoy and rewrite .env\n            decoy = _generate_decoy(len(plaintext))\n            rewrite_env_file(env_path, enr[\"env_var\"], decoy)\n\n            locked.append(enr[\"name\"])\n\n        except Exception as exc:\n            errors.append({\"name\": enr[\"name\"], \"error\": str(exc)})\n            # TODO: compensation logic — clean up partial state\n\n    return {\"locked\": locked, \"errors\": errors}\n\n\ndef _read_env_value(env_path: Path, var_name: str) -> str | None:\n    \"\"\"Read a variable's value from a .env file.\"\"\"\n    with open(env_path) as f:\n        for line in f:\n            line = line.strip()\n            if line.startswith(\"#\") or \"=\" not in line:\n                continue\n            key, _, value = line.partition(\"=\")\n            if key.strip() == var_name:\n                # Strip optional quotes\n                value = value.strip()\n                if (value.startswith('\"') and value.endswith('\"')) or (\n                    value.startswith(\"'\") and value.endswith(\"'\")\n                ):\n                    value = value[1:-1]\n                return value\n    return None\n\n\ndef _generate_decoy(length: int) -> str:\n    \"\"\"Generate a decoy value that looks like an API key.\"\"\"\n    prefix = \"wless_\"\n    # Generate enough random chars to match original length\n    remaining = max(length - len(prefix), 16)\n    return prefix + secrets.token_hex(remaining // 2 + 1)[:remaining]"]}]},{"query":"unlock.py full source","results":[{"source":"unlock.py","score":2.1183597564697266,"segments":["\"\"\"Unlock command — reassemble keys and restore .env files.\"\"\"\n\nfrom __future__ import annotations\n\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nfrom worthless.cli.dotenv_rewriter import rewrite_env_file\nfrom worthless.crypto import reconstruct_key\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef unlock(repo: Repository, *, directory: Path | None = None) -> dict:\n    \"\"\"Decrypt all locked keys and restore .env files.\n\n    For each shard in the database:\n    1. Read shard_a from the binary file.\n    2. XOR with shard_b from SQLite to reconstruct the plaintext.\n    3. Rewrite the .env file with the real value.\n    4. Remove shard_a file and shard_b from database.\n\n    Returns a summary dict: {\"unlocked\": [...names...], \"errors\": [...]}.\n    \"\"\"\n    base = directory or Path.cwd()\n    shards = repo.list_shards()\n\n    unlocked: list[str] = []\n    errors: list[dict] = []\n\n    for shard in shards:\n        try:\n            # Read shard_a from file\n            shard_a_path = base / \".worthless\" / \"shards\" / f\"{shard['name']}.shard_a\"\n            if not shard_a_path.exists():\n                errors.append({\"name\": shard[\"name\"], \"error\": f\"shard_a file missing: {shard_a_path}\"})\n                continue\n\n            shard_a = shard_a_path.read_bytes()\n            shard_b = shard[\"shard_b\"]\n\n            # Reconstruct the key\n            plaintext_bytes = reconstruct_key(shard_a, shard_b)\n            plaintext = plaintext_bytes.decode(\"utf-8\")\n\n            # Restore the .env file\n            env_path = base / shard[\"env_file\"]\n            rewrite_env_file(env_path, shard[\"env_var\"], plaintext)\n\n            # Clean up shard_a file\n            shard_a_path.unlink()\n\n            # Remove shard from database\n            repo.delete_shard(shard[\"name\"])\n\n            unlocked.append(shard[\"name\"])\n\n        except Exception as exc:\n            errors.append({\"name\": shard[\"name\"], \"error\": str(exc)})\n\n    return {\"unlocked\": unlocked, \"errors\": errors}"]}]},{"query":"wrap.py full source","results":[{"source":"wrap.py","score":2.1183597564697266,"segments":["\"\"\"Wrap command — one-shot lock+proxy for quick usage.\"\"\"\n\nfrom __future__ import annotations\n\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nfrom worthless.cli.commands.lock import lock\nfrom worthless.cli.commands.up import up\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef wrap(\n    repo: Repository,\n    *,\n    directory: Path | None = None,\n    host: str = \"127.0.0.1\",\n    port: int = 0,\n) -> dict:\n    \"\"\"Lock all enrolled keys and start the proxy in one step.\n\n    This is the happy-path command for quick usage:\n    1. Lock any unlocked enrolled keys.\n    2. Start the reverse proxy.\n\n    Returns combined result from lock + up.\n    \"\"\"\n    lock_result = lock(repo, directory=directory)\n\n    # Only start proxy if we have locked keys (or had previously locked keys)\n    shards = repo.list_shards()\n    if not shards:\n        return {\n            \"lock\": lock_result,\n            \"proxy\": {\"status\": \"skipped\", \"reason\": \"no locked keys\"},\n        }\n\n    up_result = up(repo, directory=directory, host=host, port=port)\n\n    return {\n        \"lock\": lock_result,\n        \"proxy\": up_result,\n    }"]}]},{"query":"up.py full source","results":[{"source":"up.py","score":2.1183597564697266,"segments":["\"\"\"Up command — start the reverse proxy that injects reassembled keys.\"\"\"\n\nfrom __future__ import annotations\n\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nfrom worthless.cli.process import ProxyProcess\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef up(\n    repo: Repository,\n    *,\n    directory: Path | None = None,\n    host: str = \"127.0.0.1\",\n    port: int = 0,\n) -> dict:\n    \"\"\"Start the reverse proxy server.\n\n    Reassembles keys from shards and starts an HTTP proxy that\n    injects the real API keys into outgoing requests.\n\n    Returns: {\"status\": \"running\", \"host\": ..., \"port\": ..., \"pid\": ...}\n    \"\"\"\n    base = directory or Path.cwd()\n    shards = repo.list_shards()\n\n    if not shards:\n        return {\"status\": \"error\", \"reason\": \"no locked keys found\"}\n\n    # Reassemble keys for the proxy\n    keys: dict[str, str] = {}\n    for shard in shards:\n        shard_a_path = base / \".worthless\" / \"shards\" / f\"{shard['name']}.shard_a\"\n        if not shard_a_path.exists():\n            continue\n\n        shard_a = shard_a_path.read_bytes()\n        from worthless.crypto import reconstruct_key\n\n        plaintext = reconstruct_key(shard_a, shard[\"shard_b\"])\n        keys[shard[\"env_var\"]] = plaintext.decode(\"utf-8\")\n\n    if not keys:\n        return {\"status\": \"error\", \"reason\": \"no shard_a files found\"}\n\n    # Start proxy process\n    proxy = ProxyProcess(host=host, port=port, keys=keys)\n    proxy.start()\n\n    return {\n        \"status\": \"running\",\n        \"host\": proxy.host,\n        \"port\": proxy.port,\n        \"pid\": proxy.pid,\n        \"keys_loaded\": list(keys.keys()),\n    }"]}]},{"query":"scan.py full source","results":[{"source":"scan.py","score":2.1183597564697266,"segments":["\"\"\"Scan command — detect API keys in project files.\"\"\"\n\nfrom __future__ import annotations\n\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nfrom worthless.cli.scanner import scan_directory\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef scan(\n    repo: Repository,\n    *,\n    directory: Path | None = None,\n) -> dict:\n    \"\"\"Scan the project directory for exposed API keys.\n\n    Checks .env files and common config files for patterns that\n    look like API keys (high entropy strings, known prefixes).\n\n    Returns: {\"found\": [...], \"protected\": [...], \"exposed\": [...]}\n    \"\"\"\n    base = directory or Path.cwd()\n\n    # Get all findings from scanner\n    findings = scan_directory(base)\n\n    # Cross-reference with enrolled/locked keys\n    enrolled = {e[\"env_var\"]: e for e in repo.list_enrollments()}\n    shards = {s[\"env_var\"]: s for s in repo.list_shards()}\n\n    protected = []\n    exposed = []\n\n    for finding in findings:\n        var_name = finding[\"variable\"]\n        if var_name in shards:\n            # This key is locked — check if the value is a decoy\n            protected.append({**finding, \"status\": \"locked\"})\n        elif var_name in enrolled:\n            # Enrolled but not locked\n            exposed.append({**finding, \"status\": \"enrolled_not_locked\"})\n        else:\n            # Unknown key — not managed by worthless\n            exposed.append({**finding, \"status\": \"unmanaged\"})\n\n    return {\n        \"found\": findings,\n        \"protected\": protected,\n        \"exposed\": exposed,\n        \"summary\": {\n            \"total\": len(findings),\n            \"protected\": len(protected),\n            \"exposed\": len(exposed),\n        },\n    }"]}]},{"query":"status.py full source","results":[{"source":"status.py","score":2.1183597564697266,"segments":["\"\"\"Status command — show current state of worthless protection.\"\"\"\n\nfrom __future__ import annotations\n\nimport json\nfrom pathlib import Path\nfrom typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from worthless.storage.repository import Repository\n\n\ndef status(\n    repo: Repository,\n    *,\n    directory: Path | None = None,\n    output_json: bool = False,\n) -> dict:\n    \"\"\"Report current protection status.\n\n    Shows:\n    - Enrolled keys and their lock state\n    - Shard file integrity\n    - Proxy status (if running)\n\n    Returns: {\"keys\": [...], \"proxy\": {...}, \"healthy\": bool}\n    \"\"\"\n    base = directory or Path.cwd()\n\n    enrollments = repo.list_enrollments()\n    shards = {s[\"name\"]: s for s in repo.list_shards()}\n\n    keys = []\n    all_healthy = True\n\n    for enr in enrollments:\n        name = enr[\"name\"]\n        shard = shards.get(name)\n\n        if shard:\n            # Check shard_a file exists\n            shard_a_path = base / \".worthless\" / \"shards\" / f\"{name}.shard_a\"\n            shard_a_ok = shard_a_path.exists()\n\n            if not shard_a_ok:\n                all_healthy = False\n\n            keys.append({\n                \"name\": name,\n                \"env_var\": enr[\"env_var\"],\n                \"env_file\": enr[\"env_file\"],\n                \"status\": \"locked\",\n                \"shard_a_present\": shard_a_ok,\n                \"healthy\": shard_a_ok,\n            })\n        else:\n            keys.append({\n                \"name\": name,\n                \"env_var\": enr[\"env_var\"],\n                \"env_file\": enr[\"env_file\"],\n                \"status\": \"enrolled\",\n                \"shard_a_present\": False,\n                \"healthy\": True,  # Not locked yet, so not unhealthy\n            })\n\n    # Check proxy status\n    proxy_status = _check_proxy(base)\n\n    result = {\n        \"keys\": keys,\n        \"proxy\": proxy_status,\n        \"healthy\": all_healthy and proxy_status.get(\"healthy\", True),\n    }\n\n    if output_json:\n        print(json.dumps(result, indent=2))\n\n    return result\n\n\ndef _check_proxy(base: Path) -> dict:\n    \"\"\"Check if the proxy is running.\"\"\"\n    pid_file = base / \".worthless\" / \"proxy.pid\"\n    if not pid_file.exists():\n        return {\"running\": False, \"healthy\": True}\n\n    try:\n        pid = int(pid_file.read_text().strip())\n        import os\n        os.kill(pid, 0)  # Check if process exists\n        return {\"running\": True, \"pid\": pid, \"healthy\": True}\n    except (ValueError, ProcessLookupError, PermissionError):\n        # Stale PID file\n        return {\"running\": False, \"stale_pid_file\": True, \"healthy\": False}"]}]},{"query":"repository.py full source","results":[{"source":"repository.py","score":2.1183597564697266,"segments":["\"\"\"SQLite-backed repository for worthless state.\"\"\"\n\nfrom __future__ import annotations\n\nimport sqlite3\nfrom pathlib import Path\nfrom typing import Any\n\nfrom worthless.storage.schema import SCHEMA_SQL\n\n\nclass Repository:\n    \"\"\"Manages SQLite storage for shards and enrollments.\"\"\"\n\n    def __init__(self, db_path: Path) -> None:\n        self.db_path = db_path\n        self.db_path.parent.mkdir(parents=True, exist_ok=True)\n        self._conn = sqlite3.connect(str(db_path))\n        self._conn.row_factory = sqlite3.Row\n        self._conn.execute(\"PRAGMA journal_mode=WAL\")\n        self._conn.execute(\"PRAGMA foreign_keys=ON\")\n        self._init_schema()\n\n    def _init_schema(self) -> None:\n        \"\"\"Create tables if they don't exist.\"\"\"\n        self._conn.executescript(SCHEMA_SQL)\n\n    # --- Enrollments ---\n\n    def enroll(self, name: str, env_file: str, env_var: str) -> None:\n        \"\"\"Register a key for protection.\"\"\"\n        self._conn.execute(\n            \"INSERT INTO enrollments (name, env_file, env_var) VALUES (?, ?, ?)\",\n            (name, env_file, env_var),\n        )\n        self._conn.commit()\n\n    def list_enrollments(self) -> list[dict[str, Any]]:\n        \"\"\"List all enrolled keys.\"\"\"\n        rows = self._conn.execute(\"SELECT * FROM enrollments\").fetchall()\n        return [dict(row) for row in rows]\n\n    def get_enrollment(self, name: str) -> dict[str, Any] | None:\n        \"\"\"Get a specific enrollment by name.\"\"\"\n        row = self._conn.execute(\n            \"SELECT * FROM enrollments WHERE name = ?\", (name,)\n        ).fetchone()\n        return dict(row) if row else None\n\n    def delete_enrollment(self, name: str) -> None:\n        \"\"\"Remove an enrollment.\"\"\"\n        self._conn.execute(\"DELETE FROM enrollments WHERE name = ?\", (name,))\n        self._conn.commit()\n\n    # --- Shards ---\n\n    def store_shard(self, name: str, shard_b: bytes, env_file: str, env_var: str) -> None:\n        \"\"\"Store shard_b and metadata.\"\"\"\n        self._conn.execute(\n            \"INSERT INTO shards (name, shard_b, env_file, env_var) VALUES (?, ?, ?, ?)\",\n            (name, shard_b, env_file, env_var),\n        )\n        self._conn.commit()\n\n    def get_shard(self, name: str) -> dict[str, Any] | None:\n        \"\"\"Get shard data by name.\"\"\"\n        row = self._conn.execute(\n            \"SELECT * FROM shards WHERE name = ?\", (name,)\n        ).fetchone()\n        return dict(row) if row else None\n\n    def list_shards(self) -> list[dict[str, Any]]:\n        \"\"\"List all stored shards.\"\"\"\n        rows = self._conn.execute(\"SELECT * FROM shards\").fetchall()\n        return [dict(row) for row in rows]\n\n    def delete_shard(self, name: str) -> None:\n        \"\"\"Remove a shard.\"\"\"\n        self._conn.execute(\"DELETE FROM shards WHERE name = ?\", (name,))\n        self._conn.commit()\n\n    def close(self) -> None:\n        \"\"\"Close the database connection.\"\"\"\n        self._conn.close()"]}]},{"query":"schema.py full source","results":[{"source":"schema.py","score":2.1183597564697266,"segments":["\"\"\"Database schema for worthless storage.\"\"\"\n\nSCHEMA_SQL = \"\"\"\nCREATE TABLE IF NOT EXISTS enrollments (\n    name TEXT PRIMARY KEY,\n    env_file TEXT NOT NULL,\n    env_var TEXT NOT NULL,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n);\n\nCREATE TABLE IF NOT EXISTS shards (\n    name TEXT PRIMARY KEY,\n    shard_b BLOB NOT NULL,\n    env_file TEXT NOT NULL,\n    env_var TEXT NOT NULL,\n    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP\n);\n\"\"\""]}]},{"query":"bootstrap.py full source","results":[{"source":"bootstrap.py","score":2.1183597564697266,"segments":["\"\"\"Bootstrap — initialize the .worthless directory and database.\"\"\"\n\nfrom __future__ import annotations\n\nfrom pathlib import Path\n\nfrom worthless.storage.repository import Repository\n\n\ndef bootstrap(directory: Path | None = None) -> Repository:\n    \"\"\"Initialize the .worthless directory structure and return a Repository.\n\n    Creates:\n    - .worthless/\n    - .worthless/shards/\n    - .worthless/worthless.db (SQLite)\n\n    Idempotent — safe to call multiple times.\n    \"\"\"\n    base = directory or Path.cwd()\n    worthless_dir = base / \".worthless\"\n    worthless_dir.mkdir(exist_ok=True)\n\n    shards_dir = worthless_dir / \"shards\"\n    shards_dir.mkdir(exist_ok=True)\n\n    db_path = worthless_dir / \"worthless.db\"\n    repo = Repository(db_path)\n\n    return repo"]}]},{"query":"scanner.py full source with KNOWN_PREFIXES","results":[{"source":"scanner.py","score":2.1183597564697266,"segments":["\"\"\"Scanner — detect potential API keys in project files.\"\"\"\n\nfrom __future__ import annotations\n\nimport re\nfrom pathlib import Path\n\n# Known API key prefixes\nKNOWN_PREFIXES = [\n    \"sk-\",           # OpenAI\n    \"pk-\",           # Various\n    \"api-\",          # Generic\n    \"key-\",          # Generic\n    \"token-\",        # Generic\n    \"ghp_\",          # GitHub\n    \"gho_\",          # GitHub OAuth\n    \"github_pat_\",   # GitHub PAT\n    \"glpat-\",        # GitLab\n    \"AKIAI\",         # AWS\n    \"AKIA\",          # AWS\n    \"xoxb-\",         # Slack Bot\n    \"xoxp-\",         # Slack User\n    \"xapp-\",         # Slack App\n    \"SG.\",           # SendGrid\n    \"sk_live_\",      # Stripe\n    \"pk_live_\",      # Stripe\n    \"rk_live_\",      # Stripe\n    \"sq0atp-\",       # Square\n    \"AIza\",          # Google\n    \"ya29.\",         # Google OAuth\n    \"whsec_\",        # Webhook secrets\n]\n\n# High-entropy pattern: at least 20 chars of alphanum + special\nHIGH_ENTROPY_PATTERN = re.compile(r'^[A-Za-z0-9+/=_\\-]{20,}$')\n\n# Default files to scan\nDEFAULT_SCAN_GLOBS = [\n    \"*.env\",\n    \".env\",\n    \".env.*\",\n    \"*.env.local\",\n    \".env.local\",\n]\n\n# Files/dirs to skip\nSKIP_DIRS = {\".git\", \"node_modules\", \"__pycache__\", \".worthless\", \".venv\", \"venv\"}\n\n\ndef scan_directory(base: Path) -> list[dict]:\n    \"\"\"Scan directory for potential API keys in .env files.\n\n    Returns list of findings: [{\"file\": ..., \"variable\": ..., \"value_preview\": ..., \"reason\": ...}]\n    \"\"\"\n    findings = []\n\n    for pattern in DEFAULT_SCAN_GLOBS:\n        for env_file in base.rglob(pattern):\n            # Skip excluded directories\n            if any(part in SKIP_DIRS for part in env_file.parts):\n                continue\n\n            if env_file.is_file():\n                findings.extend(_scan_env_file(env_file, base))\n\n    return findings\n\n\ndef _scan_env_file(file_path: Path, base: Path) -> list[dict]:\n    \"\"\"Scan a single .env file for potential keys.\"\"\"\n    findings = []\n\n    try:\n        with open(file_path) as f:\n            for line_num, line in enumerate(f, 1):\n                line = line.strip()\n                if not line or line.startswith(\"#\") or \"=\" not in line:\n                    continue\n\n                key, _, value = line.partition(\"=\")\n                key = key.strip()\n                value = value.strip()\n\n                # Strip quotes\n                if (value.startswith('\"') and value.endswith('\"')) or (\n                    value.startswith(\"'\") and value.endswith(\"'\")\n                ):\n                    value = value[1:-1]\n\n                if not value:\n                    continue\n\n                # Check if it looks like a decoy\n                if value.startswith(\"wless_\"):\n                    continue\n\n                reason = _classify_value(value, key)\n                if reason:\n                    # Preview: show first 8 chars + mask the rest\n                    preview = value[:8] + \"*\" * max(0, len(value) - 8)\n                    findings.append({\n                        \"file\": str(file_path.relative_to(base)),\n                        \"line\": line_num,\n                        \"variable\": key,\n                        \"value_preview\": preview,\n                        \"reason\": reason,\n                    })\n    except (OSError, UnicodeDecodeError):\n        pass\n\n    return findings\n\n\ndef _classify_value(value: str, key_name: str) -> str | None:\n    \"\"\"Classify if a value looks like an API key. Returns reason or None.\"\"\"\n    # Check known prefixes\n    for prefix in KNOWN_PREFIXES:\n        if value.startswith(prefix):\n            return f\"known_prefix:{prefix}\"\n\n    # Check key name patterns\n    key_upper = key_name.upper()\n    sensitive_patterns = [\"API_KEY\", \"SECRET\", \"TOKEN\", \"PASSWORD\", \"CREDENTIAL\", \"AUTH\"]\n    has_sensitive_name = any(p in key_upper for p in sensitive_patterns)\n\n    # High entropy + sensitive name\n    if has_sensitive_name and HIGH_ENTROPY_PATTERN.match(value) and len(value) >= 20:\n        return \"high_entropy_sensitive_name\"\n\n    # Very high entropy regardless of name (likely a key)\n    if HIGH_ENTROPY_PATTERN.match(value) and len(value) >= 32:\n        return \"high_entropy_long\"\n\n    return None"]}]},{"query":"dotenv_rewriter.py full source rewrite_env_file","results":[{"source":"dotenv_rewriter.py","score":2.1183597564697266,"segments":["\"\"\"Dotenv rewriter — safely replace values in .env files.\"\"\"\n\nfrom __future__ import annotations\n\nimport re\nfrom pathlib import Path\n\n\ndef rewrite_env_file(env_path: Path, var_name: str, new_value: str) -> None:\n    \"\"\"Replace a variable's value in a .env file, preserving structure.\n\n    Handles:\n    - Unquoted values: KEY=value\n    - Double-quoted: KEY=\"value\"\n    - Single-quoted: KEY='value'\n    - Comments and blank lines are preserved\n\n    Only the FIRST occurrence of the variable is replaced.\n    \"\"\"\n    if not env_path.exists():\n        raise FileNotFoundError(f\".env file not found: {env_path}\")\n\n    content = env_path.read_text()\n    lines = content.splitlines(keepends=True)\n    found = False\n    new_lines = []\n\n    for line in lines:\n        if not found:\n            stripped = line.strip()\n            if stripped and not stripped.startswith(\"#\") and \"=\" in stripped:\n                key, sep, rest = line.partition(\"=\")\n                if key.strip() == var_name:\n                    # Determine quoting style\n                    rest_stripped = rest.strip()\n                    if rest_stripped.startswith('\"'):\n                        new_line = f'{key.strip()}=\"{new_value}\"\\n'\n                    elif rest_stripped.startswith(\"'\"):\n                        new_line = f\"{key.strip()}='{new_value}'\\n\"\n                    else:\n                        new_line = f\"{key.strip()}={new_value}\\n\"\n                    new_lines.append(new_line)\n                    found = True\n                    continue\n        new_lines.append(line)\n\n    if not found:\n        raise ValueError(f\"Variable {var_name} not found in {env_path}\")\n\n    env_path.write_text(\"\".join(new_lines))"]}]},{"query":"process.py ProxyProcess full source","results":[{"source":"process.py","score":2.1183597564697266,"segments":["\"\"\"Proxy process management.\"\"\"\n\nfrom __future__ import annotations\n\nimport os\nimport signal\nimport socket\nimport subprocess\nimport sys\nfrom pathlib import Path\n\n\nclass ProxyProcess:\n    \"\"\"Manages the reverse proxy subprocess.\"\"\"\n\n    def __init__(\n        self,\n        *,\n        host: str = \"127.0.0.1\",\n        port: int = 0,\n        keys: dict[str, str] | None = None,\n        pid_file: Path | None = None,\n    ) -> None:\n        self.host = host\n        self.port = port\n        self.keys = keys or {}\n        self.pid_file = pid_file\n        self.pid: int | None = None\n        self._process: subprocess.Popen | None = None\n\n    def start(self) -> None:\n        \"\"\"Start the proxy server.\n\n        For now, this is a placeholder that finds an available port\n        and records the PID. The actual proxy implementation will\n        be added in a later phase.\n        \"\"\"\n        if self.port == 0:\n            self.port = self._find_free_port()\n\n        # For now, we just record the intent to start\n        # The actual proxy server will be implemented in the proxy module\n        self.pid = os.getpid()  # Placeholder\n\n        if self.pid_file:\n            self.pid_file.write_text(str(self.pid))\n\n    def stop(self) -> None:\n        \"\"\"Stop the proxy server.\"\"\"\n        if self._process:\n            self._process.terminate()\n            try:\n                self._process.wait(timeout=5)\n            except subprocess.TimeoutExpired:\n                self._process.kill()\n\n        if self.pid_file and self.pid_file.exists():\n            self.pid_file.unlink()\n\n    def _find_free_port(self) -> int:\n        \"\"\"Find a free port on the host.\"\"\"\n        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:\n            s.bind((self.host, 0))\n            return s.getsockname()[1]"]}]}]}
-</tool_result>
+def _lock_keys(
+    env_path: Path,
+    home: WorthlessHome,
+    provider_override: str | None = None,
+) -> int:
+    """Core lock logic. Returns count of keys protected."""
+    console = get_console()
 
-Good, I have all the source code. Now let me create the directory and write the prompt file.
+    if not env_path.exists():
+        raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"File not found: {env_path}")
 
-<tool_use>
-bash
-command: mkdir -p /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/.planning/phases/04-cli
-</tool_use>
+    keys = scan_env_keys(env_path)
+    if not keys:
+        console.print_warning("No unprotected API keys found.")
+        return 0
 
-<tool_result>
+    async def _lock_async() -> int:
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        await repo.initialize()
+        count = 0
 
-</tool_result>
+        for var_name, value, detected_provider in keys:
+            provider = provider_override or detected_provider
 
-Now I'll write the complete prompt file using ctx_execute to assemble it without flooding context.
+            # Only enroll providers that wrap can redirect
+            if provider not in _SUPPORTED_PROVIDERS:
+                console.print_warning(
+                    f"Skipping {var_name}: provider {provider!r} not yet supported for proxy redirect"
+                )
+                continue
 
-<tool_use>
-mcp__plugin_context-mode_context-mode__ctx_execute
-language: python
-code: |
-    import textwrap
+            alias = _make_alias(provider, value)
 
-    # Read all source files
-    files = {
-        "src/worthless/cli/commands/lock.py": None,
-        "src/worthless/cli/commands/unlock.py": None,
-        "src/worthless/cli/commands/wrap.py": None,
-        "src/worthless/cli/commands/up.py": None,
-        "src/worthless/cli/commands/scan.py": None,
-        "src/worthless/cli/commands/status.py": None,
-        "src/worthless/storage/repository.py": None,
-        "src/worthless/storage/schema.py": None,
-        "src/worthless/cli/bootstrap.py": None,
-        "src/worthless/cli/scanner.py": None,
-        "src/worthless/cli/dotenv_rewriter.py": None,
-        "src/worthless/cli/process.py": None,
+            shard_a_path = home.shard_a_dir / alias
+            if shard_a_path.exists():
+                console.print_warning(f"Skipping {var_name} (already enrolled as {alias})")
+                continue
+
+            sr = split_key(value.encode())
+            shard_a_written = False
+            db_written = False
+            try:
+                try:
+                    prefix = detect_prefix(value, provider)
+                except ValueError:
+                    prefix = ""
+
+                stored = StoredShard(
+                    shard_b=bytearray(sr.shard_b),
+                    commitment=bytearray(sr.commitment),
+                    nonce=bytearray(sr.nonce),
+                    provider=provider,
+                )
+                # DB first — atomic commit point
+                await repo.store_enrolled(
+                    alias, stored,
+                    var_name=var_name,
+                    env_path=str(env_path.resolve()),
+                )
+                db_written = True
+
+                # shard_a file second
+                fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                try:
+                    os.write(fd, bytes(sr.shard_a))
+                finally:
+                    os.close(fd)
+                shard_a_written = True
+
+                # .env rewrite last
+                decoy = _make_decoy(value, prefix, bytes(sr.shard_a))
+                rewrite_env_key(env_path, var_name, decoy)
+
+                count += 1
+            except Exception:
+                # Compensate: clean up partial state
+                if shard_a_written:
+                    shard_a_path.unlink(missing_ok=True)
+                if db_written:
+                    await repo.delete_enrolled(alias)
+                raise
+            finally:
+                sr.zero()
+
+        return count
+
+    count = asyncio.run(_lock_async())
+
+    if count:
+        console.print_success(f"{count} key(s) protected.")
+    else:
+        console.print_warning("No unprotected API keys found.")
+
+    return count
+
+
+def _enroll_single(
+    alias: str,
+    key: str,
+    provider: str,
+    home: WorthlessHome,
+) -> None:
+    """Enroll a single key (no .env scanning)."""
+    _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+    if not _ALIAS_RE.match(alias):
+        raise WorthlessError(ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}")
+
+    async def _enroll_async():
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        await repo.initialize()
+        stored = StoredShard(
+            shard_b=bytearray(sr.shard_b),
+            commitment=bytearray(sr.commitment),
+            nonce=bytearray(sr.nonce),
+            provider=provider,
+        )
+        await repo.store_enrolled(alias, stored, var_name=alias, env_path=None)
+
+    sr = split_key(key.encode())
+    try:
+        shard_a_path = home.shard_a_dir / alias
+        fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, bytes(sr.shard_a))
+        finally:
+            os.close(fd)
+
+        asyncio.run(_enroll_async())
+    finally:
+        sr.zero()
+
+    console = get_console()
+    console.print_success(f"Enrolled {alias} ({provider}).")
+
+
+def register_lock_commands(app: typer.Typer) -> None:
+    """Register lock and enroll commands on the Typer app."""
+
+    @app.command()
+    def lock(
+        env: Path = typer.Option(
+            Path(".env"), "--env", "-e", help="Path to .env file"
+        ),
+        provider: Optional[str] = typer.Option(
+            None, "--provider", "-p", help="Override provider auto-detection"
+        ),
+    ) -> None:
+        """Protect API keys in a .env file."""
+        console = get_console()
+        home = get_home()
+        try:
+            with acquire_lock(home):
+                _lock_keys(env, home, provider_override=provider)
+        except WorthlessError as exc:
+            console.print_error(exc)
+            raise typer.Exit(code=1) from exc
+
+    @app.command()
+    def enroll(
+        alias: str = typer.Option(..., "--alias", "-a", help="Key alias"),
+        key: Optional[str] = typer.Option(None, "--key", "-k", help="API key (use --key-stdin instead to avoid shell history)"),
+        key_stdin: bool = typer.Option(False, "--key-stdin", help="Read API key from stdin"),
+        provider: str = typer.Option(..., "--provider", "-p", help="Provider name"),
+    ) -> None:
+        """Enroll a single API key (scripting/CI primitive)."""
+        import sys
+
+        console = get_console()
+        home = get_home()
+
+        if key_stdin:
+            actual_key = sys.stdin.readline().strip()
+            if not actual_key:
+                console.print_error(WorthlessError(ErrorCode.KEY_NOT_FOUND, "No key provided on stdin"))
+                raise typer.Exit(code=1)
+        elif key:
+            actual_key = key
+        else:
+            console.print_error(WorthlessError(ErrorCode.KEY_NOT_FOUND, "Provide --key or --key-stdin"))
+            raise typer.Exit(code=1)
+
+        try:
+            _enroll_single(alias, actual_key, provider, home)
+        except WorthlessError as exc:
+            console.print_error(exc)
+            raise typer.Exit(code=1) from exc
+
+```
+
+### `src/worthless/cli/commands/unlock.py`
+
+```python
+"""Unlock command — reconstruct keys from shards, restore .env, clean up."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+from pathlib import Path
+from typing import Optional
+
+import typer
+
+from worthless.cli.bootstrap import WorthlessHome, ensure_home, get_home
+from worthless.cli.console import get_console
+from worthless.cli.dotenv_rewriter import rewrite_env_key
+from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.crypto.splitter import reconstruct_key
+from worthless.crypto.types import _zero_buf
+from worthless.storage.repository import ShardRepository
+
+
+def _list_aliases(home: WorthlessHome) -> list[str]:
+    """List all enrolled aliases from shard_a directory."""
+    if not home.shard_a_dir.exists():
+        return []
+    return [
+        f.name
+        for f in home.shard_a_dir.iterdir()
+        if f.is_file()
+    ]
+
+
+async def _unlock_alias(
+    alias: str,
+    home: WorthlessHome,
+    repo: ShardRepository,
+    env_path: Path | None,
+) -> str | None:
+    """Unlock a single alias. Returns the reconstructed key string, or None on error."""
+    console = get_console()
+    shard_a_path = home.shard_a_dir / alias
+
+    if not shard_a_path.exists():
+        raise WorthlessError(ErrorCode.KEY_NOT_FOUND, f"Shard A not found for alias: {alias}")
+
+    shard_a = bytearray(shard_a_path.read_bytes())
+
+    stored = await repo.retrieve(alias)
+    if stored is None:
+        _zero_buf(shard_a)
+        raise WorthlessError(ErrorCode.KEY_NOT_FOUND, f"Shard B not found in DB for alias: {alias}")
+
+    # Read var_name from DB enrollment — check for ambiguity
+    env_str = str(env_path.resolve()) if env_path else None
+    if env_str:
+        enrollment = await repo.get_enrollment(alias, env_str)
+    else:
+        all_enrollments = await repo.list_enrollments(alias)
+        if len(all_enrollments) > 1:
+            paths = ", ".join(e.env_path or "<direct>" for e in all_enrollments)
+            raise WorthlessError(
+                ErrorCode.KEY_NOT_FOUND,
+                f"Alias {alias!r} is enrolled in multiple env files ({paths}). "
+                f"Specify --env to choose which to unlock.",
+            )
+        enrollment = all_enrollments[0] if all_enrollments else None
+    var_name = enrollment.var_name if enrollment else None
+
+    try:
+        key_buf = reconstruct_key(shard_a, stored.shard_b, stored.commitment, stored.nonce)
+        try:
+            key_str = key_buf.decode()
+
+            actual_env = env_path
+            if actual_env and actual_env.exists() and var_name:
+                rewrite_env_key(actual_env, var_name, key_str)
+            elif var_name:
+                console.print_warning(f"No .env file at {actual_env}. Printing key for recovery:")
+                sys.stdout.write(f"{var_name}={key_str}\n")
+                sys.stdout.flush()
+            else:
+                console.print_warning(f"No enrollment for {alias}. Printing key for recovery:")
+                sys.stdout.write(f"{alias}={key_str}\n")
+                sys.stdout.flush()
+
+            # Delete this specific enrollment
+            env_str = str(env_path.resolve()) if env_path else None
+            remaining = await repo.list_enrollments(alias)
+            if env_str:
+                await repo.delete_enrollment(alias, env_str)
+                remaining = [e for e in remaining if e.env_path != env_str]
+            else:
+                # No env specified — delete all enrollments for this alias
+                remaining = []
+
+            # Only delete shard + shard_a file when no enrollments remain
+            if not remaining:
+                shard_a_path.unlink(missing_ok=True)
+                await repo.delete_enrolled(alias)
+
+            return key_str
+        finally:
+            _zero_buf(key_buf)
+    finally:
+        _zero_buf(shard_a)
+        stored.zero()
+
+
+def register_unlock_commands(app: typer.Typer) -> None:
+    """Register the unlock command on the Typer app."""
+
+    @app.command()
+    def unlock(
+        alias: Optional[str] = typer.Option(
+            None, "--alias", "-a", help="Specific alias to unlock (default: all)"
+        ),
+        env: Path = typer.Option(
+            Path(".env"), "--env", "-e", help="Path to .env file"
+        ),
+    ) -> None:
+        """Restore original API keys from shards."""
+        console = get_console()
+        home = get_home()
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+
+        async def _unlock_async():
+            await repo.initialize()
+            if alias:
+                await _unlock_alias(alias, home, repo, env)
+                console.print_success(f"Unlocked {alias}.")
+            else:
+                aliases = _list_aliases(home)
+                if not aliases:
+                    console.print_warning("No enrolled keys found.")
+                    return
+                for a in aliases:
+                    await _unlock_alias(a, home, repo, env)
+                console.print_success(f"{len(aliases)} key(s) restored.")
+
+        try:
+            asyncio.run(_unlock_async())
+        except WorthlessError as exc:
+            console.print_error(exc)
+            raise typer.Exit(code=1) from exc
+
+```
+
+### `src/worthless/cli/commands/wrap.py`
+
+```python
+"""wrap command — ephemeral proxy + child process lifecycle.
+
+``worthless wrap python main.py`` starts a transparent proxy on a random port,
+injects ``{PROVIDER}_BASE_URL`` env vars so API calls route through it, runs
+the child, and cleans up when the child exits.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+import typer
+
+from worthless.cli.bootstrap import WorthlessHome, ensure_home, get_home
+from worthless.cli.console import get_console
+from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.process import (
+    create_liveness_pipe,
+    disable_core_dumps,
+    forward_signals,
+    poll_health,
+    spawn_proxy,
+)
+
+# Provider -> env var mapping for BASE_URL injection
+_PROVIDER_ENV_MAP: dict[str, str] = {
+    "openai": "OPENAI_BASE_URL",
+    "anthropic": "ANTHROPIC_BASE_URL",
+}
+
+
+def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
+    """List providers that have enrolled keys (shard_a files exist).
+
+    Extracts provider name from alias format: ``provider-hash8``.
+    """
+    providers: set[str] = set()
+    shard_dir = home.shard_a_dir
+    if not shard_dir.exists():
+        return []
+
+    for entry in shard_dir.iterdir():
+        # Extract provider from alias (format: "provider-hash8")
+        name = entry.name
+        if "-" in name:
+            provider = name.rsplit("-", 1)[0]
+            providers.add(provider)
+
+    return sorted(providers)
+
+
+def _build_child_env(
+    port: int,
+    providers: list[str],
+) -> dict[str, str]:
+    """Build environment for the child process.
+
+    Inherits the current env and adds {PROVIDER}_BASE_URL for each
+    enrolled provider so SDK calls route through the proxy.
+    """
+    env = dict(os.environ)
+    for provider in providers:
+        env_var = _PROVIDER_ENV_MAP.get(provider)
+        if env_var:
+            env[env_var] = f"http://127.0.0.1:{port}"
+    return env
+
+
+def _run_child_and_wait(child: subprocess.Popen) -> int:
+    """Wait for child to exit, return its exit code."""
+    child.wait()
+    return child.returncode
+
+
+def _cleanup_proxy(
+    proxy: subprocess.Popen,
+    write_fd: int | None = None,
+    timeout: float = 5.0,
+) -> None:
+    """Shut down the proxy process gracefully.
+
+    1. Close write_fd (triggers EOF on liveness pipe -> proxy self-terminates)
+    2. Terminate proxy
+    3. Wait with timeout, SIGKILL if stuck
+    """
+    # Close liveness pipe write end
+    if write_fd is not None:
+        try:
+            os.close(write_fd)
+        except OSError:
+            pass
+
+    if proxy.poll() is not None:
+        return  # Already dead
+
+    try:
+        proxy.terminate()
+        proxy.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proxy.kill()
+        proxy.wait(timeout=2)
+
+
+def register_wrap_commands(app: typer.Typer) -> None:
+    """Register the ``wrap`` command on the Typer app."""
+
+    @app.command(
+        context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
+    )
+    def wrap(
+        ctx: typer.Context,
+        command: list[str] = typer.Argument(
+            ..., help="Command to run (e.g. python main.py)"
+        ),
+    ) -> None:
+        """Start ephemeral proxy, inject env vars, run COMMAND, clean up."""
+        console = get_console()
+
+        # Load home, verify keys enrolled
+        home = get_home()
+        providers = _list_enrolled_providers(home)
+        if not providers:
+            console.print_error(
+                WorthlessError(
+                    ErrorCode.KEY_NOT_FOUND,
+                    "No keys enrolled. Run 'worthless lock' first.",
+                )
+            )
+            raise typer.Exit(code=1)
+
+        # Suppress core dumps
+        disable_core_dumps()
+
+        # Create liveness pipe
+        read_fd, write_fd = create_liveness_pipe()
+
+        # Build proxy environment
+        proxy_env = {
+            "WORTHLESS_DB_PATH": str(home.db_path),
+            "WORTHLESS_FERNET_KEY": home.fernet_key.decode(),
+            "WORTHLESS_SHARD_A_DIR": str(home.shard_a_dir),
+        }
+
+        # Spawn proxy on random port
+        try:
+            proxy, port = spawn_proxy(
+                env=proxy_env,
+                port=0,
+                liveness_fd=read_fd,
+            )
+        except Exception as exc:
+            os.close(read_fd)
+            os.close(write_fd)
+            console.print_error(
+                WorthlessError(ErrorCode.PROXY_UNREACHABLE, f"Failed to start proxy: {exc}")
+            )
+            raise typer.Exit(code=1) from exc
+
+        # Close read_fd in parent (proxy has it)
+        os.close(read_fd)
+
+        # Poll health
+        healthy = poll_health(port, timeout=15.0)
+        if not healthy:
+            _cleanup_proxy(proxy, write_fd)
+            console.print_error(
+                WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
+            )
+            raise typer.Exit(code=1)
+
+        # Build child env with BASE_URL injection
+        full_command = list(command) + ctx.args
+        child_env = _build_child_env(port, providers)
+
+        # Spawn child
+        try:
+            child = subprocess.Popen(
+                full_command,
+                env=child_env,
+                process_group=0,
+            )
+        except Exception as exc:
+            _cleanup_proxy(proxy, write_fd)
+            console.print_error(
+                WorthlessError(ErrorCode.WRAP_CHILD_FAILED, f"Failed to start child: {exc}")
+            )
+            raise typer.Exit(code=1) from exc
+
+        # Register signal forwarding
+        forward_signals(proxy=proxy, child=child)
+
+        # Monitor proxy in background — warn on crash but don't kill child
+        import threading
+
+        def _watch_proxy():
+            proxy.wait()
+            if child.poll() is None:
+                # Proxy died while child still running
+                sys.stderr.write(
+                    "worthless: warning: proxy crashed mid-session, "
+                    "child continues without protection\n"
+                )
+                sys.stderr.flush()
+
+        watcher = threading.Thread(target=_watch_proxy, daemon=True)
+        watcher.start()
+
+        # Wait for child
+        exit_code = _run_child_and_wait(child)
+
+        # Clean up proxy
+        _cleanup_proxy(proxy, write_fd)
+
+        raise typer.Exit(code=exit_code)
+
+```
+
+### `src/worthless/cli/commands/up.py`
+
+```python
+"""up command — standalone proxy daemon/foreground.
+
+``worthless up`` starts the proxy in foreground on port 8787.
+``worthless up -d`` starts it in daemon mode (background).
+"""
+
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+import typer
+
+from worthless.cli.bootstrap import WorthlessHome, ensure_home, get_home
+from worthless.cli.console import get_console
+from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.process import (
+    check_pid,
+    cleanup_stale_pid,
+    disable_core_dumps,
+    forward_signals,
+    poll_health,
+    read_pid,
+    spawn_proxy,
+    write_pid,
+)
+
+
+def _pid_path(home: WorthlessHome) -> Path:
+    """Return the PID file path."""
+    return home.base_dir / "proxy.pid"
+
+
+def _resolve_port(port_arg: int | None) -> int:
+    """Resolve port from argument, env var, or default.
+
+    Priority: explicit arg > WORTHLESS_PORT env > 8787 default.
+    """
+    if port_arg is not None:
+        return port_arg
+    env_port = os.environ.get("WORTHLESS_PORT")
+    if env_port:
+        return int(env_port)
+    return 8787
+
+
+def register_up_commands(app: typer.Typer) -> None:
+    """Register the ``up`` command on the Typer app."""
+
+    @app.command()
+    def up(
+        port: Optional[int] = typer.Option(
+            None, "--port", "-p", help="Port to bind (default: 8787 or WORTHLESS_PORT)"
+        ),
+        daemon: bool = typer.Option(
+            False, "--daemon", "-d", help="Run in background (daemon mode)"
+        ),
+    ) -> None:
+        """Start the proxy server (foreground or daemon)."""
+        console = get_console()
+        home = get_home()
+
+        actual_port = _resolve_port(port)
+
+        # Check PID file for existing proxy
+        pid_file = _pid_path(home)
+        if pid_file.exists():
+            info = read_pid(pid_file)
+            if info is not None:
+                existing_pid, existing_port = info
+                if check_pid(existing_pid):
+                    console.print_error(
+                        WorthlessError(
+                            ErrorCode.PORT_IN_USE,
+                            f"Proxy already running (PID {existing_pid} on port {existing_port}). "
+                            f"Stop it first or use a different port.",
+                        )
+                    )
+                    raise typer.Exit(code=1)
+                else:
+                    # Stale PID file — reclaim
+                    cleanup_stale_pid(pid_file)
+                    console.print_warning(f"Reclaimed stale PID file (was PID {existing_pid})")
+
+        # Disable core dumps
+        disable_core_dumps()
+
+        # Build proxy env
+        proxy_env = {
+            "WORTHLESS_DB_PATH": str(home.db_path),
+            "WORTHLESS_FERNET_KEY": home.fernet_key.decode(),
+            "WORTHLESS_SHARD_A_DIR": str(home.shard_a_dir),
+        }
+
+        if daemon:
+            _start_daemon(proxy_env, actual_port, pid_file, console)
+        else:
+            _start_foreground(proxy_env, actual_port, pid_file, console)
+
+    def _start_daemon(
+        proxy_env: dict[str, str],
+        port: int,
+        pid_file: Path,
+        console,
+    ) -> None:
+        """Start proxy in daemon mode (setsid, write PID, detach)."""
+        cmd = [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "worthless.proxy.app:create_app",
+            "--factory",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ]
+
+        # Pass Fernet key via fd, not env var
+        fernet_key = proxy_env.pop("WORTHLESS_FERNET_KEY", None)
+        fernet_fd: int | None = None
+        if fernet_key:
+            r_fd, w_fd = os.pipe()
+            os.write(w_fd, fernet_key.encode() if isinstance(fernet_key, str) else fernet_key)
+            os.close(w_fd)
+            fernet_fd = r_fd
+
+        full_env = {
+            **os.environ,
+            **proxy_env,
+            "WORTHLESS_ALLOW_INSECURE": proxy_env.get("WORTHLESS_ALLOW_INSECURE", "true"),
+        }
+        pass_fds: list[int] = []
+        if fernet_fd is not None:
+            full_env["WORTHLESS_FERNET_FD"] = str(fernet_fd)
+            pass_fds.append(fernet_fd)
+
+        # Start detached process
+        proc = subprocess.Popen(
+            cmd,
+            env=full_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            pass_fds=tuple(pass_fds),
+        )
+
+        # Write PID file
+        write_pid(pid_file, proc.pid, port)
+
+        # Brief health check
+        healthy = poll_health(port, timeout=10.0)
+        if healthy:
+            console.print_success(f"Proxy running on 127.0.0.1:{port} (PID {proc.pid})")
+        else:
+            console.print_warning(
+                f"Proxy started (PID {proc.pid}) but health check timed out. "
+                f"Check logs."
+            )
+
+    def _start_foreground(
+        proxy_env: dict[str, str],
+        port: int,
+        pid_file: Path,
+        console,
+    ) -> None:
+        """Start proxy in foreground mode (blocks until SIGINT/SIGTERM)."""
+        try:
+            proxy, actual_port = spawn_proxy(env=proxy_env, port=port)
+        except Exception as exc:
+            console.print_error(
+                WorthlessError(ErrorCode.PROXY_UNREACHABLE, f"Failed to start proxy: {exc}")
+            )
+            raise typer.Exit(code=1) from exc
+
+        # Write PID file
+        write_pid(pid_file, proxy.pid, actual_port)
+
+        # Poll health
+        healthy = poll_health(actual_port, timeout=15.0)
+        if not healthy:
+            proxy.terminate()
+            proxy.wait(timeout=5)
+            pid_file.unlink(missing_ok=True)
+            console.print_error(
+                WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
+            )
+            raise typer.Exit(code=1)
+
+        console.print_success(f"Proxy running on 127.0.0.1:{actual_port} (Ctrl+C to stop)")
+
+        # Register signal handler that cleans up PID file and stops proxy
+        def _cleanup(signum, frame):
+            proxy.terminate()
+            try:
+                proxy.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proxy.kill()
+                proxy.wait(timeout=2)
+            pid_file.unlink(missing_ok=True)
+            console.print_warning("Proxy stopped.")
+            raise SystemExit(0)
+
+        signal.signal(signal.SIGINT, _cleanup)
+        signal.signal(signal.SIGTERM, _cleanup)
+
+        # Wait for proxy to exit (either by signal or crash)
+        proxy.wait()
+        pid_file.unlink(missing_ok=True)
+
+```
+
+### `src/worthless/cli/commands/scan.py`
+
+```python
+"""Scan command — detect exposed API keys with decoy awareness."""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+from typing import Literal, Optional
+
+import typer
+
+from worthless.cli.bootstrap import WorthlessHome, ensure_home
+from worthless.cli.console import get_console
+from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
+
+
+def _find_git_dir() -> Path | None:
+    """Find .git directory, checking GIT_DIR env var first."""
+    env_git = os.environ.get("GIT_DIR")
+    if env_git:
+        p = Path(env_git)
+        if p.is_dir():
+            return p
+        return None
+    cwd = Path.cwd()
+    for parent in [cwd, *cwd.parents]:
+        git = parent / ".git"
+        if git.is_dir():
+            return git
+    return None
+
+
+def _collect_fast_paths(explicit_paths: list[Path]) -> list[Path]:
+    """Fast mode: .env, .env.local, plus any explicit paths."""
+    paths: list[Path] = []
+    for name in [".env", ".env.local"]:
+        p = Path(name)
+        if p.exists():
+            paths.append(p)
+    paths.extend(explicit_paths)
+    return paths
+
+
+def _collect_deep_paths(explicit_paths: list[Path]) -> tuple[list[Path], Path | None]:
+    """Deep mode: fast paths + config files in project root + env dump.
+
+    Returns (paths, tmp_file) — caller must unlink tmp_file when done.
+    """
+    paths = _collect_fast_paths(explicit_paths)
+    tmp_path: Path | None = None
+
+    for pattern in ["*.yml", "*.yaml", "*.toml", "*.json"]:
+        for p in Path(".").glob(pattern):
+            if p.is_file() and p not in paths:
+                paths.append(p)
+
+    env_lines = [f"{k}={v}" for k, v in os.environ.items()]
+    if env_lines:
+        fd, tmp = tempfile.mkstemp(prefix="worthless-env-", suffix=".env")
+        try:
+            os.write(fd, "\n".join(env_lines).encode())
+            os.close(fd)
+            tmp_path = Path(tmp)
+            paths.append(tmp_path)
+        except Exception:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+
+    return paths, tmp_path
+
+
+def _format_human(
+    findings: list[ScanFinding],
+    show_suffix: bool = False,
+    is_tty: bool = True,
+) -> str:
+    """Format findings as human-readable text."""
+    if not findings:
+        return "No API keys found.\n"
+
+    lines: list[str] = []
+    unprotected_count = 0
+    protected_count = 0
+    file_cache: dict[str, str] = {}
+
+    for f in findings:
+        status = "PROTECTED" if f.is_protected else "UNPROTECTED"
+        preview = f.value_preview
+        if show_suffix and not f.is_protected:
+            try:
+                from worthless.cli.key_patterns import KEY_PATTERN
+
+                if f.file not in file_cache:
+                    file_cache[f.file] = Path(f.file).read_text(errors="replace")
+                text = file_cache[f.file]
+                for line in text.splitlines():
+                    for match in KEY_PATTERN.finditer(line):
+                        value = match.group(0)
+                        if preview.startswith(value[:4]):
+                            preview = f.value_preview + "..." + value[-4:]
+                            break
+            except Exception:
+                pass
+
+        var_part = f" ({f.var_name})" if f.var_name else ""
+        lines.append(f"  {f.file}:{f.line}  {f.provider}{var_part}  {status}  {preview}")
+
+        if f.is_protected:
+            protected_count += 1
+        else:
+            unprotected_count += 1
+
+    total = len(findings)
+    lines.append("")
+    lines.append(f"Found {total} keys: {protected_count} protected, {unprotected_count} unprotected")
+
+    if unprotected_count > 0:
+        if is_tty:
+            lines.append("Run: worthless lock")
+        else:
+            lines.append("See: docs.worthless.dev/ci-setup")
+
+    return "\n".join(lines) + "\n"
+
+
+def _format_json_findings(findings: list[ScanFinding]) -> str:
+    """Format findings as JSON array."""
+    items = []
+    for f in findings:
+        items.append({
+            "file": f.file,
+            "line": f.line,
+            "var_name": f.var_name,
+            "provider": f.provider,
+            "is_protected": f.is_protected,
+            "value_preview": f.value_preview,
+        })
+    return json.dumps(items, indent=2) + "\n"
+
+
+def _install_hook() -> None:
+    """Write or append worthless scan to .git/hooks/pre-commit."""
+    git_dir = _find_git_dir()
+    if git_dir is None:
+        raise WorthlessError(ErrorCode.SCAN_ERROR, "No .git directory found")
+
+    hooks_dir = git_dir / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_path = hooks_dir / "pre-commit"
+
+    marker = "# worthless-scan-hook"
+    snippet = f'\n{marker}\nworthless scan --pre-commit "$@"\n'
+
+    if hook_path.exists():
+        content = hook_path.read_text()
+        if marker in content:
+            return  # already installed
+        hook_path.write_text(content + snippet)
+    else:
+        hook_path.write_text(f"#!/bin/sh\n{snippet}")
+
+    # Make executable
+    hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def register_scan_commands(app: typer.Typer) -> None:
+    """Register the scan command on the Typer app."""
+
+    @app.command()
+    def scan(
+        paths: Optional[list[Path]] = typer.Argument(None, help="Files to scan"),
+        deep: bool = typer.Option(False, "--deep", help="Extended scan (env vars, config files)"),
+        pre_commit: bool = typer.Option(False, "--pre-commit", help="Pre-commit hook mode"),
+        format_: str = typer.Option("text", "--format", "-f", help="Output format: text, sarif, json", show_choices=True),
+        show_suffix: bool = typer.Option(False, "--show-suffix", help="Show last 4 chars of keys"),
+        install_hook: bool = typer.Option(False, "--install-hook", help="Install git pre-commit hook"),
+        json_output: bool = typer.Option(False, "--json", help="Output JSON (alias for --format json)"),
+    ) -> None:
+        """Detect exposed API keys in files and environment."""
+        console = get_console()
+
+        # Handle --install-hook
+        if install_hook:
+            try:
+                _install_hook()
+                console.print_success("Pre-commit hook installed.")
+            except WorthlessError as exc:
+                console.print_error(exc)
+                raise typer.Exit(code=2) from exc
+            raise typer.Exit(code=0)
+
+        # Resolve format
+        fmt = format_
+        if json_output:
+            fmt = "json"
+        if fmt not in ("text", "sarif", "json"):
+            console.print_error(
+                WorthlessError(ErrorCode.SCAN_ERROR, f"Unknown format: {fmt!r} (use text, sarif, or json)")
+            )
+            raise typer.Exit(code=2)
+
+        tmp_file: Path | None = None
+        try:
+            # Collect files to scan
+            explicit = list(paths) if paths else []
+            if pre_commit:
+                scan_paths = explicit
+            elif deep:
+                scan_paths, tmp_file = _collect_deep_paths(explicit)
+            else:
+                scan_paths = _collect_fast_paths(explicit)
+
+            # Run scan
+            findings = scan_files(scan_paths)
+
+            # Count unprotected
+            unprotected = [f for f in findings if not f.is_protected]
+
+            # Output
+            if fmt == "sarif":
+                sarif = format_sarif(findings, "0.1.0")
+                sys.stdout.write(json.dumps(sarif, indent=2) + "\n")
+                sys.stdout.flush()
+            elif fmt == "json":
+                sys.stdout.write(_format_json_findings(findings))
+                sys.stdout.flush()
+            else:
+                # Human-readable to stderr
+                is_tty = hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
+                text = _format_human(findings, show_suffix=show_suffix, is_tty=is_tty)
+                if not console.quiet:
+                    sys.stderr.write(text)
+                    sys.stderr.flush()
+
+            # Exit code
+            if unprotected:
+                raise typer.Exit(code=1)
+            raise typer.Exit(code=0)
+
+        except typer.Exit:
+            raise
+        except WorthlessError as exc:
+            console.print_error(exc)
+            raise typer.Exit(code=2) from exc
+        except Exception as exc:
+            if not console.quiet:
+                sys.stderr.write(f"Scan error: {type(exc).__name__}: {exc}\n")
+            raise typer.Exit(code=2) from exc
+        finally:
+            if tmp_file is not None:
+                tmp_file.unlink(missing_ok=True)
+
+```
+
+### `src/worthless/cli/commands/status.py`
+
+```python
+"""Status command — show enrolled keys and proxy health."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any, Optional
+
+import httpx
+import typer
+
+from worthless.cli.bootstrap import WorthlessHome, ensure_home, resolve_home
+from worthless.cli.console import get_console
+from worthless.cli.process import read_pid
+
+
+def _list_enrolled_keys(home: WorthlessHome) -> list[dict[str, str]]:
+    """List enrolled key aliases with providers from the DB."""
+    import sqlite3
+
+    keys: list[dict[str, str]] = []
+    if not home.db_path.exists():
+        return keys
+
+    conn = sqlite3.connect(str(home.db_path))
+    try:
+        cursor = conn.execute("SELECT key_alias, provider FROM shards ORDER BY key_alias")
+        for alias, provider in cursor.fetchall():
+            keys.append({"alias": alias, "provider": provider})
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        conn.close()
+
+    return keys
+
+
+def _discover_proxy_port(home: WorthlessHome) -> int | None:
+    """Find proxy port from PID file or WORTHLESS_PORT env var."""
+    # Check env var first
+    port_env = os.environ.get("WORTHLESS_PORT")
+    if port_env:
+        try:
+            return int(port_env)
+        except ValueError:
+            pass
+
+    # Check PID file (format: "pid\nport\n")
+    pid_file = home.base_dir / "proxy.pid"
+    if pid_file.exists():
+        info = read_pid(pid_file)
+        if info is not None:
+            return info[1]
+
+    return None
+
+
+def _check_proxy_health(port: int) -> dict[str, Any]:
+    """Hit /healthz and return proxy status dict."""
+    try:
+        resp = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=2.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "healthy": True,
+                "port": port,
+                "mode": data.get("mode", "up"),
+            }
+    except Exception:
+        pass
+
+    return {"healthy": False, "port": port, "mode": None}
+
+
+def register_status_commands(app: typer.Typer) -> None:
+    """Register the status command on the Typer app."""
+
+    @app.command()
+    def status() -> None:
+        """Show enrolled keys and proxy health."""
+        console = get_console()
+
+        home = resolve_home()
+
+        # Enrolled keys
+        keys: list[dict[str, str]] = []
+        if home is not None:
+            keys = _list_enrolled_keys(home)
+
+        # Proxy health
+        proxy_info: dict[str, Any] = {"healthy": False, "port": None, "mode": None}
+        if home is not None:
+            port = _discover_proxy_port(home)
+            if port is not None:
+                proxy_info = _check_proxy_health(port)
+
+        # Output
+        if console.json_mode:
+            result = {"keys": keys, "proxy": proxy_info}
+            sys.stdout.write(json.dumps(result, default=str) + "\n")
+            sys.stdout.flush()
+        else:
+            if not keys:
+                console.print_warning("No keys enrolled.")
+            else:
+                lines = ["Enrolled keys:"]
+                for k in keys:
+                    lines.append(f"  {k['alias']}  {k['provider']}  PROTECTED")
+                sys.stderr.write("\n".join(lines) + "\n\n")
+
+            if proxy_info["healthy"]:
+                sys.stderr.write(
+                    f"Proxy: running on 127.0.0.1:{proxy_info['port']}"
+                    f" (mode: {proxy_info['mode']})\n"
+                )
+            else:
+                sys.stderr.write("Proxy: not running\n")
+            sys.stderr.flush()
+
+        raise typer.Exit(code=0)
+
+```
+
+### `src/worthless/storage/repository.py`
+
+```python
+"""Encrypted shard repository backed by SQLite (STOR-01, STOR-02)."""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import AsyncIterator, NamedTuple
+
+import aiosqlite
+from cryptography.fernet import Fernet
+
+from worthless.storage.schema import init_db
+
+
+class EncryptedShard(NamedTuple):
+    """Raw encrypted shard record — no Fernet decryption applied."""
+
+    shard_b_enc: bytes
+    commitment: bytes
+    nonce: bytes
+    provider: str
+
+    def __repr__(self) -> str:
+        return (
+            f"EncryptedShard(shard_b_enc=<{len(self.shard_b_enc)} bytes>, "
+            f"commitment=<{len(self.commitment)} bytes>, "
+            f"nonce=<{len(self.nonce)} bytes>, provider={self.provider!r})"
+        )
+
+
+@dataclass
+class EnrollmentRecord:
+    """A single enrollment binding a key alias to a var name and optional env path."""
+
+    key_alias: str
+    var_name: str
+    env_path: str | None = None
+
+
+@dataclass
+class StoredShard:
+    """Decrypted shard record with bytearray fields (SR-01 compliance)."""
+
+    shard_b: bytearray
+    commitment: bytearray
+    nonce: bytearray
+    provider: str
+
+    def __repr__(self) -> str:
+        return (
+            f"StoredShard(shard_b=<{len(self.shard_b)} bytes>, "
+            f"commitment=<{len(self.commitment)} bytes>, "
+            f"nonce=<{len(self.nonce)} bytes>, provider={self.provider!r})"
+        )
+
+    def zero(self) -> None:
+        """Zero all cryptographic fields in place (SR-02)."""
+        for field in (self.shard_b, self.commitment, self.nonce):
+            field[:] = b"\x00" * len(field)
+
+
+class ShardRepository:
+    """Async repository that encrypts Shard B at rest with Fernet.
+
+    Each public method opens its own ``aiosqlite`` connection (simple PoC
+    approach -- connection pooling is not needed at this stage).
+
+    .. todo:: Use a persistent connection or pool before production (STOR-01).
+    """
+
+    def __init__(self, db_path: str, fernet_key: bytes) -> None:
+        self._db_path = db_path
+        self._fernet = Fernet(fernet_key)
+
+    @asynccontextmanager
+    async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Open a connection with foreign keys enabled."""
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            yield db
+
+    async def initialize(self) -> None:
+        """Create tables if they don't exist."""
+        await init_db(self._db_path)
+
+    # ------------------------------------------------------------------
+    # Shard CRUD
+    # ------------------------------------------------------------------
+
+    async def store(
+        self,
+        alias: str,
+        shard: StoredShard,
+    ) -> None:
+        """Encrypt *shard.shard_b* with Fernet and INSERT into the shards table.
+
+        Accepts bytearray or bytes for shard_b (converts to bytes for Fernet).
+        Raises ``aiosqlite.IntegrityError`` if *alias* already exists.
+        """
+        shard_b_enc = self._fernet.encrypt(bytes(shard.shard_b))
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO shards (key_alias, shard_b_enc, commitment, nonce, provider) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (alias, shard_b_enc, bytes(shard.commitment), bytes(shard.nonce), shard.provider),
+            )
+            await db.commit()
+
+    async def fetch_encrypted(self, alias: str) -> EncryptedShard | None:
+        """Return the raw encrypted shard without Fernet decryption, or *None*.
+
+        This enables gate-before-decrypt: the rules engine can evaluate
+        before any key material is decrypted (CRYP-05).
+        """
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT shard_b_enc, commitment, nonce, provider FROM shards WHERE key_alias = ?",
+                (alias,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return EncryptedShard(
+                shard_b_enc=bytes(row["shard_b_enc"]),
+                commitment=bytes(row["commitment"]),
+                nonce=bytes(row["nonce"]),
+                provider=row["provider"],
+            )
+
+    def decrypt_shard(self, encrypted: EncryptedShard) -> StoredShard:
+        """Fernet-decrypt an :class:`EncryptedShard` into a :class:`StoredShard`.
+
+        All byte fields are wrapped in ``bytearray`` per SR-01.
+        """
+        shard_b = self._fernet.decrypt(encrypted.shard_b_enc)
+        return StoredShard(
+            shard_b=bytearray(shard_b),
+            commitment=bytearray(encrypted.commitment),
+            nonce=bytearray(encrypted.nonce),
+            provider=encrypted.provider,
+        )
+
+    async def retrieve(self, alias: str) -> StoredShard | None:
+        """Decrypt and return a :class:`StoredShard` or *None*.
+
+        Backward-compatible convenience that calls fetch_encrypted + decrypt_shard.
+        """
+        encrypted = await self.fetch_encrypted(alias)
+        if encrypted is None:
+            return None
+        return self.decrypt_shard(encrypted)
+
+    async def delete(self, alias: str) -> bool:
+        """Delete the shard record for *alias*. Returns True if deleted."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "DELETE FROM shards WHERE key_alias = ?", (alias,)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def list_keys(self) -> list[str]:
+        """Return a list of all enrolled key aliases."""
+        async with self._connect() as db:
+            cursor = await db.execute("SELECT key_alias FROM shards")
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows]
+
+    # ------------------------------------------------------------------
+    # Metadata
+    # ------------------------------------------------------------------
+
+    async def set_metadata(self, key: str, value: str) -> None:
+        """Upsert a metadata key/value pair."""
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+            await db.commit()
+
+    async def get_metadata(self, key: str) -> str | None:
+        """Return the metadata value for *key*, or *None*."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT value FROM metadata WHERE key = ?",
+                (key,),
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+    # ------------------------------------------------------------------
+    # Enrollment CRUD
+    # ------------------------------------------------------------------
+
+    async def store_enrolled(
+        self,
+        alias: str,
+        shard: StoredShard,
+        *,
+        var_name: str,
+        env_path: str | None = None,
+    ) -> None:
+        """Atomically store a shard and its enrollment record.
+
+        If the shard already exists (same alias), only the enrollment row
+        is inserted.
+        """
+        shard_b_enc = self._fernet.encrypt(bytes(shard.shard_b))
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                "INSERT OR IGNORE INTO shards (key_alias, shard_b_enc, commitment, nonce, provider) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (alias, shard_b_enc, bytes(shard.commitment), bytes(shard.nonce), shard.provider),
+            )
+            await db.execute(
+                "INSERT OR IGNORE INTO enrollments (key_alias, var_name, env_path) "
+                "VALUES (?, ?, ?)",
+                (alias, var_name, env_path),
+            )
+            await db.commit()
+
+    async def get_enrollment(
+        self, alias: str, env_path: str | None = None
+    ) -> EnrollmentRecord | None:
+        """Return the enrollment for *alias*.
+
+        If *env_path* is given, filter by exact match. Otherwise return the
+        first enrollment for the alias (useful when only one exists).
+        """
+        async with self._connect() as db:
+
+            if env_path is None:
+                cursor = await db.execute(
+                    "SELECT key_alias, var_name, env_path FROM enrollments "
+                    "WHERE key_alias = ? LIMIT 1",
+                    (alias,),
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT key_alias, var_name, env_path FROM enrollments "
+                    "WHERE key_alias = ? AND env_path = ?",
+                    (alias, env_path),
+                )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return EnrollmentRecord(key_alias=row[0], var_name=row[1], env_path=row[2])
+
+    async def list_enrollments(self, alias: str | None = None) -> list[EnrollmentRecord]:
+        """Return enrollment records, optionally filtered by *alias*."""
+        async with self._connect() as db:
+
+            if alias is not None:
+                cursor = await db.execute(
+                    "SELECT key_alias, var_name, env_path FROM enrollments WHERE key_alias = ?",
+                    (alias,),
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT key_alias, var_name, env_path FROM enrollments ORDER BY key_alias"
+                )
+            rows = await cursor.fetchall()
+            return [EnrollmentRecord(key_alias=r[0], var_name=r[1], env_path=r[2]) for r in rows]
+
+    async def delete_enrollment(self, alias: str, env_path: str) -> bool:
+        """Delete a single enrollment row. Returns True if deleted."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "DELETE FROM enrollments WHERE key_alias = ? AND env_path = ?",
+                (alias, env_path),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def delete_enrolled(self, alias: str) -> bool:
+        """Delete the shard and all enrollments for *alias* (CASCADE).
+
+        Returns True if deleted.
+        """
+        async with self._connect() as db:
+
+            cursor = await db.execute(
+                "DELETE FROM shards WHERE key_alias = ?", (alias,)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+```
+
+### `src/worthless/storage/schema.py`
+
+```python
+"""SQLite schema and initialisation for encrypted shard storage."""
+
+from __future__ import annotations
+
+import aiosqlite
+
+SCHEMA = """\
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS shards (
+    key_alias   TEXT PRIMARY KEY,
+    shard_b_enc BLOB NOT NULL,
+    commitment  BLOB NOT NULL,
+    nonce       BLOB NOT NULL,
+    provider    TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS metadata (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS spend_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_alias  TEXT NOT NULL,
+    tokens     INTEGER NOT NULL,
+    model      TEXT,
+    provider   TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS enrollment_config (
+    key_alias      TEXT PRIMARY KEY,
+    spend_cap      REAL,
+    rate_limit_rps REAL NOT NULL DEFAULT 100.0,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS enrollments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_alias  TEXT NOT NULL REFERENCES shards(key_alias) ON DELETE CASCADE,
+    var_name   TEXT NOT NULL,
+    env_path   TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(key_alias, env_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_spend_log_alias ON spend_log (key_alias);
+CREATE INDEX IF NOT EXISTS idx_enrollments_alias ON enrollments (key_alias);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollments_null_path
+    ON enrollments (key_alias) WHERE env_path IS NULL;
+"""
+
+
+async def init_db(db_path: str) -> None:
+    """Create tables and enable WAL journal mode."""
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA foreign_keys = ON")
+        await db.executescript(SCHEMA)
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.commit()
+
+```
+
+### `src/worthless/cli/bootstrap.py`
+
+```python
+"""First-run ~/.worthless/ initialization and lock management."""
+
+from __future__ import annotations
+
+import os
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Generator
+
+from cryptography.fernet import Fernet
+
+from worthless.cli.errors import ErrorCode, WorthlessError
+
+_DEFAULT_BASE = Path.home() / ".worthless"
+_STALE_LOCK_SECONDS = 300  # 5 minutes
+
+
+@dataclass
+class WorthlessHome:
+    """Paths within the ``~/.worthless/`` directory tree."""
+
+    base_dir: Path = field(default_factory=lambda: _DEFAULT_BASE)
+
+    @property
+    def db_path(self) -> Path:
+        return self.base_dir / "worthless.db"
+
+    @property
+    def fernet_key_path(self) -> Path:
+        return self.base_dir / "fernet.key"
+
+    @property
+    def shard_a_dir(self) -> Path:
+        return self.base_dir / "shard_a"
+
+    @property
+    def lock_file(self) -> Path:
+        return self.base_dir / ".lock-in-progress"
+
+    @property
+    def fernet_key(self) -> bytes:
+        """Read the Fernet key from disk."""
+        return self.fernet_key_path.read_bytes().strip()
+
+
+def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
+    """Create ``~/.worthless/`` structure on first run (idempotent).
+
+    Creates directories with 0700 permissions, generates a Fernet key if
+    missing, and initialises the SQLite database.
+    """
+    home = WorthlessHome(base_dir=base_dir or _DEFAULT_BASE)
+
+    # Create directories
+    home.base_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    home.shard_a_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    # Ensure permissions are correct even if dir already existed
+    os.chmod(home.base_dir, 0o700)
+    os.chmod(home.shard_a_dir, 0o700)
+
+    # Generate Fernet key if missing
+    if not home.fernet_key_path.exists():
+        key = Fernet.generate_key()
+        fd = os.open(
+            str(home.fernet_key_path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        try:
+            os.write(fd, key)
+            os.write(fd, b"\n")
+        finally:
+            os.close(fd)
+
+    # Initialise database (idempotent — CREATE TABLE IF NOT EXISTS)
+    _init_db(home)
+
+    return home
+
+
+def _init_db(home: WorthlessHome) -> None:
+    """Create the SQLite database using the canonical schema."""
+    import sqlite3
+
+    from worthless.storage.schema import SCHEMA
+
+    conn = sqlite3.connect(str(home.db_path))
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(SCHEMA)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Restrict DB file permissions
+    os.chmod(str(home.db_path), 0o600)
+
+
+@contextmanager
+def acquire_lock(home: WorthlessHome) -> Generator[None, None, None]:
+    """Acquire an exclusive lock file using O_CREAT|O_EXCL."""
+    check_stale_lock(home)
+    try:
+        fd = os.open(
+            str(home.lock_file),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        os.close(fd)
+    except FileExistsError:
+        raise WorthlessError(
+            ErrorCode.LOCK_IN_PROGRESS,
+            "Another worthless operation is in progress. "
+            "Remove ~/.worthless/.lock-in-progress if stale.",
+        )
+    try:
+        yield
+    finally:
+        try:
+            home.lock_file.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def get_home() -> WorthlessHome:
+    """Resolve WorthlessHome from WORTHLESS_HOME env var or default."""
+    env_home = os.environ.get("WORTHLESS_HOME")
+    if env_home:
+        return ensure_home(Path(env_home))
+    return ensure_home()
+
+
+def resolve_home() -> WorthlessHome | None:
+    """Try to load WorthlessHome; return None if not initialized."""
+    try:
+        env_home = os.environ.get("WORTHLESS_HOME")
+        if env_home:
+            base = Path(env_home)
+            if base.exists():
+                return ensure_home(base)
+            return None
+        default = Path.home() / ".worthless"
+        if default.exists():
+            return ensure_home(default)
+        return None
+    except Exception:
+        return None
+
+
+def check_stale_lock(home: WorthlessHome) -> None:
+    """Remove stale lock files (> 5 min old), raise on fresh locks."""
+    if not home.lock_file.exists():
+        return
+    age = time.time() - home.lock_file.stat().st_mtime
+    if age > _STALE_LOCK_SECONDS:
+        home.lock_file.unlink(missing_ok=True)
+    else:
+        raise WorthlessError(
+            ErrorCode.LOCK_IN_PROGRESS,
+            f"Lock file is {int(age)}s old (< {_STALE_LOCK_SECONDS}s). "
+            "Another operation may be running.",
+        )
+
+```
+
+### `src/worthless/cli/scanner.py`
+
+```python
+"""Key pattern detection with entropy and decoy awareness."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from worthless.cli.dotenv_rewriter import shannon_entropy
+from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
+
+_VAR_NAME_RE = re.compile(r"(\w+)\s*$")
+
+
+@dataclass
+class ScanFinding:
+    """A detected API key occurrence in a scanned file."""
+
+    file: str
+    line: int
+    var_name: str | None
+    provider: str
+    is_protected: bool
+    value_preview: str  # fully masked by default
+
+
+def scan_files(
+    paths: list[Path],
+) -> list[ScanFinding]:
+    """Scan files for API key patterns.
+
+    Each file is read line-by-line. Matches with entropy below the
+    threshold are skipped (likely placeholders). If *enrollment_data*
+    is provided and contains the matched value, the finding is marked
+    ``is_protected=True``.
+    """
+    # TODO: Implement hash-based enrollment lookup for defense-in-depth.
+    # Currently decoy detection relies solely on entropy threshold.
+    findings: list[ScanFinding] = []
+
+    for path in paths:
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            for match in KEY_PATTERN.finditer(line):
+                value = match.group(0)
+                if shannon_entropy(value) < ENTROPY_THRESHOLD:
+                    continue
+                provider = detect_provider(value)
+                if provider is None:
+                    continue
+
+                # Try to extract var_name from KEY=VALUE or KEY = "VALUE"
+                var_name = _extract_var_name(line, match.start())
+
+                is_protected = False
+
+                findings.append(ScanFinding(
+                    file=str(path),
+                    line=line_no,
+                    var_name=var_name,
+                    provider=provider,
+                    is_protected=is_protected,
+                    value_preview=_mask(value),
+                ))
+    return findings
+
+
+def _extract_var_name(line: str, value_start: int) -> str | None:
+    """Try to find a variable name before the value in the line."""
+    prefix = line[:value_start].rstrip()
+    if prefix.endswith("="):
+        prefix = prefix[:-1].rstrip().strip('"').strip("'")
+        m = _VAR_NAME_RE.search(prefix)
+        return m.group(1) if m else None
+    return None
+
+
+def _mask(value: str) -> str:
+    """Mask all but provider prefix of a key value."""
+    if len(value) <= 8:
+        return "****"
+    return value[:4] + "****"
+
+
+def format_sarif(findings: list[ScanFinding], tool_version: str) -> dict:
+    """Format findings as SARIF v2.1.0.
+
+    Returns a dict suitable for ``json.dumps()``.
+    """
+    results = []
+    for f in findings:
+        result: dict = {
+            "ruleId": "worthless/exposed-api-key",
+            "level": "warning" if f.is_protected else "error",
+            "message": {
+                "text": f"Exposed {f.provider} API key"
+                + (f" in variable {f.var_name}" if f.var_name else "")
+                + (" (protected by worthless)" if f.is_protected else ""),
+            },
+            "locations": [
+                {
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": f.file},
+                        "region": {"startLine": f.line},
+                    }
+                }
+            ],
+        }
+        results.append(result)
+
+    return {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "worthless",
+                        "version": tool_version,
+                        "rules": [
+                            {
+                                "id": "worthless/exposed-api-key",
+                                "shortDescription": {
+                                    "text": "Exposed API key detected"
+                                },
+                            }
+                        ],
+                    }
+                },
+                "results": results,
+            }
+        ],
     }
 
-    base = "/Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1"
-
-    for f in files:
-        with open(f"{base}/{f}") as fh:
-            files[f] = fh.read()
-
-    # Build the prompt
-    output = []
-    output.append("""# Worthless CLI — Scenario Matrix Verification Prompt
-
-> **Purpose**: Paste this entire document into ANY LLM (Gemini, Codex, GPT, Claude) to get a complete security and correctness audit of the worthless CLI codebase.
->
-> **You need nothing else.** All source code is embedded below.
-
----
-
-## 1. System Overview
-
-**Worthless** is a split-key reverse proxy that protects API keys at rest. It works by:
-
-1. **Enrolling** a key name, mapping it to an env var in a .env file (stored in SQLite `enrollments` table)
-2. **Locking** splits the plaintext key into two XOR shards: `shard_a` (binary file on disk at `.worthless/shards/<name>.shard_a`) and `shard_b` (stored as BLOB in SQLite `shards` table). The .env file is rewritten with a decoy value prefixed `wless_`.
-3. **Unlocking** reads both shards, XORs them back to plaintext, restores the .env file, and deletes the shard data.
-4. **Wrap** = lock + start proxy in one command.
-5. **Up** = start the reverse proxy (reassembles keys in memory, injects into outgoing requests).
-6. **Scan** = detect exposed API keys in .env files, cross-reference with enrollment/lock state.
-7. **Status** = report key states, shard integrity, proxy health.
-
-### State locations:
-- `.worthless/worthless.db` — SQLite (WAL mode) with tables: `enrollments`, `shards`
-- `.worthless/shards/<name>.shard_a` — binary files (mode 0o600, created with O_EXCL)
-- `.env` files — rewritten in place (first occurrence only)
-- `.worthless/proxy.pid` — PID file for proxy process
-
----
-
-## 2. Complete Source Code
-
-""")
-
-    for filepath, content in files.items():
-        output.append(f"### `{filepath}`\n")
-        output.append(f"```python\n{content}\n```\n\n")
-
-    output.append("""---
-
-## 3. Scenario Matrix
-
-For EACH scenario below, you must:
-
-1. **Trace through the code step by step** — cite specific functions and line logic
-2. **State expected behavior** — what SHOULD happen
-3. **State actual behavior** — what the code ACTUALLY does (with function/line references)
-4. **Flag any bugs or gaps** — describe the defect precisely
-5. **Rate risk**: `CRITICAL` / `HIGH` / `MEDIUM` / `LOW`
-6. **Note if test coverage exists** — or if it is missing
-
-Use this format for each scenario:
-
-```
-### [CATEGORY] Scenario Name
-TRACE: <step-by-step code trace>
-EXPECTED: <what should happen>
-ACTUAL: <what does happen, with code references>
-BUGS: <any bugs found, or "None">
-RISK: <CRITICAL|HIGH|MEDIUM|LOW>
-TESTS: <exist / missing / partial>
 ```
 
----
+### `src/worthless/cli/dotenv_rewriter.py`
 
-### A. User Scenarios — Happy Path
+```python
+"""Atomic prefix-preserving .env key replacement and scanning."""
 
-1. **Enroll a new key** — `repo.enroll("openai", ".env", "OPENAI_API_KEY")` when the key exists in .env
-2. **Lock after enroll** — `lock(repo)` with one enrolled, unlocked key. Verify: shard_a file created, shard_b in DB, .env rewritten with decoy
-3. **Unlock after lock** — `unlock(repo)` with one locked key. Verify: plaintext restored, shard_a deleted, shard row removed
-4. **Lock-unlock round trip** — Verify the restored plaintext exactly matches the original
-5. **Wrap (lock + proxy)** — `wrap(repo)` with enrolled keys. Verify lock runs, then proxy starts
-6. **Up with locked keys** — `up(repo)` with existing shards. Verify keys reassembled and proxy started
-7. **Scan with mixed state** — Some keys locked (decoy in .env), some enrolled-not-locked, some unmanaged. Verify classification
-8. **Status healthy** — All enrolled keys locked, shard_a files present. Verify healthy=True
-9. **Status with enrolled-not-locked** — Enrolled but not yet locked. Verify status="enrolled", healthy=True
-10. **Multiple keys** — Enroll 3 keys, lock all, unlock all. Verify each independently handled
+from __future__ import annotations
 
-### B. User Scenarios — Error Paths
+import math
+import os
+import re
+import tempfile
+from collections import Counter
+from pathlib import Path
 
-11. **Enroll duplicate name** — `repo.enroll("openai", ...)` twice. What happens? (SQLite PRIMARY KEY constraint)
-12. **Lock when .env file missing** — Enrolled key points to nonexistent .env
-13. **Lock when env var missing from .env** — .env exists but variable not in it
-14. **Lock when already locked** — Run lock twice on same key
-15. **Unlock when shard_a file missing** — shard_b in DB but .shard_a file deleted
-16. **Unlock when .env file missing** — shard data exists but .env gone
-17. **Up with no locked keys** — No shards in database
-18. **Up when all shard_a files missing** — Shards in DB but files deleted
-19. **Wrap with no enrollments** — Empty enrollment list
-20. **Scan on empty directory** — No .env files found
+from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
 
-### C. Attacker Scenarios
 
-21. **Local file access: read .worthless/worthless.db** — Attacker gets shard_b from SQLite. Can they reconstruct the key without shard_a?
-22. **Local file access: read .worthless/shards/*.shard_a** — Attacker gets shard_a. Can they reconstruct without shard_b?
-23. **Local file access: both shards** — Attacker reads both shard_a file and SQLite. Full key reconstruction?
-24. **Proc environ sniffing** — Proxy holds reassembled keys in memory (in `keys` dict). Can `/proc/<pid>/environ` or similar expose them?
-25. **Localhost proxy interception** — Proxy listens on 127.0.0.1. Can another local process intercept/MITM?
-26. **Decoy value analysis** — Attacker sees `wless_` prefix in .env. Does this leak information about key length or structure?
-27. **SQLite WAL file** — `.worthless/worthless.db-wal` may contain shard_b data. Is it protected?
-28. **Shard_a file permissions** — Created with 0o600. What if umask overrides? What about on Windows?
-29. **SQL injection via key name** — `repo.enroll(name="'; DROP TABLE shards;--", ...)`. Are queries parameterized?
-30. **Path traversal via env_file** — `repo.enroll(name="x", env_file="../../etc/passwd", ...)`. Is path validated?
-31. **Path traversal via key name** — `enr["name"]` used in `f"{name}.shard_a"`. What if name contains `../`?
-32. **Symlink attack on shard_a** — Attacker creates symlink at shard_a path before lock. O_EXCL should prevent?
-33. **Race condition: TOCTOU on .env** — Between reading plaintext and rewriting with decoy, .env could change
-34. **Memory forensics** — After unlock, is plaintext zeroed from memory or left for GC?
+def shannon_entropy(s: str) -> float:
+    """Calculate Shannon entropy of string *s* in bits."""
+    if not s:
+        return 0.0
+    counts = Counter(s)
+    length = len(s)
+    return -sum(
+        (count / length) * math.log2(count / length)
+        for count in counts.values()
+    )
 
-### D. System Scenarios
 
-35. **Crash during lock (after shard_a write, before DB insert)** — shard_a on disk, nothing in DB. Key still in .env plaintext?
-36. **Crash during lock (after DB insert, before .env rewrite)** — Both shards exist but .env still has plaintext
-37. **Crash during unlock (after .env restore, before shard_a delete)** — .env has plaintext, shard_a still on disk
-38. **Crash during unlock (after shard_a delete, before DB delete)** — shard_a gone, shard_b still in DB, .env restored
-39. **Disk full during shard_a write** — `os.write(fd, shard_a)` partial write. Is fd closed? Is partial file left?
-40. **Disk full during .env rewrite** — `env_path.write_text()` fails midway. .env corrupted?
-41. **Concurrent lock from two processes** — Two `lock()` calls on same enrollment simultaneously
-42. **Concurrent lock + unlock** — One process locks while another unlocks
-43. **SQLite locked by another process** — WAL mode helps, but what about long-running transactions?
-44. **Power loss during SQLite commit** — WAL + journal_mode should handle. Verify.
-45. **Database corruption** — .worthless/worthless.db truncated or corrupted. Any recovery?
-46. **Shard_a file corrupted** — Random bytes in shard_a. Unlock produces garbage plaintext silently?
+def scan_env_keys(env_path: Path) -> list[tuple[str, str, str]]:
+    """Find API keys in a ``.env`` file.
 
-### E. Integration Scenarios
+    Returns a list of ``(var_name, value, provider)`` tuples for lines
+    whose value matches a known provider prefix and has entropy above
+    the threshold (filtering out placeholders).
+    """
+    results: list[tuple[str, str, str]] = []
+    text = env_path.read_text()
+    for line in text.splitlines():
+        line_stripped = line.strip()
+        if not line_stripped or line_stripped.startswith("#"):
+            continue
+        if "=" not in line_stripped:
+            continue
+        var_name, _, raw_value = line_stripped.partition("=")
+        var_name = var_name.strip()
+        value = raw_value.strip().strip("\"'")
+        if not KEY_PATTERN.search(value):
+            continue
+        if shannon_entropy(value) < ENTROPY_THRESHOLD:
+            continue
+        provider = detect_provider(value)
+        if provider:
+            results.append((var_name, value, provider))
+    return results
 
-47. **CI/CD: lock in CI, unlock in deploy** — Different machines. shard_a must be transferred. Is this documented?
-48. **Docker: .worthless in volume** — Container restart. PID file stale. Proxy not running.
-49. **Git: .worthless committed accidentally** — shards/ contains binary shard_a files. Are they in .gitignore?
-50. **Pre-commit hook: scan before commit** — Does scan detect keys that were just enrolled but not locked?
-51. **Multiple .env files** — `.env`, `.env.local`, `.env.production`. Each with different keys enrolled.
-52. **Quoted values in .env** — `API_KEY="sk-abc123"` vs `API_KEY=sk-abc123`. Round-trip preserves quoting style?
-53. **Multi-line values in .env** — Not standard but some tools support it. How does the parser handle?
-54. **Unicode in .env values** — Non-ASCII characters in key values. encode("utf-8") handles, but edge cases?
-55. **Empty value in .env** — `API_KEY=` with no value. Lock should probably skip, what actually happens?
 
----
+def rewrite_env_key(env_path: Path, var_name: str, new_value: str) -> None:
+    """Atomically replace the value of *var_name* in *env_path*.
 
-## 4. Known Bug Verification
+    Preserves comments, blank lines, ordering, and all other variables.
+    Raises ``KeyError`` if *var_name* is not found.
+    """
+    text = env_path.read_text()
+    lines = text.splitlines(keepends=True)
+    found = False
+    new_lines: list[str] = []
 
-The following bugs have been previously identified. For each one, trace through the current code and state whether it is **STILL PRESENT** or **FIXED**. If still present, describe the exact code path.
+    pattern = re.compile(rf"^{re.escape(var_name)}\s*=")
 
-### KB-1: Duplicate key variable in same .env
+    for line in lines:
+        if pattern.match(line.lstrip()):
+            # Preserve any trailing newline from the original line
+            eol = "\n" if line.endswith("\n") else ""
+            new_lines.append(f"{var_name}={new_value}{eol}")
+            found = True
+        else:
+            new_lines.append(line)
 
-**Setup**: `.env` contains:
+    if not found:
+        raise KeyError(f"Variable {var_name!r} not found in {env_path}")
+
+    # Atomic write: write to temp file, then os.replace
+    dir_path = env_path.parent
+    fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), prefix=".env.tmp.")
+    fd_closed = False
+    try:
+        os.write(fd, "".join(new_lines).encode())
+        os.close(fd)
+        fd_closed = True
+        os.replace(tmp_path, str(env_path))
+    except BaseException:
+        if not fd_closed:
+            os.close(fd)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
 ```
-API_KEY=sk-real-key-abc123
-API_KEY_DEV=sk-real-key-abc123
+
+### `src/worthless/cli/process.py`
+
+```python
+"""Process lifecycle — pipe death detection, signal forwarding, PID files.
+
+Shared infrastructure for ``wrap`` (ephemeral proxy + child) and ``up``
+(standalone daemon) commands.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+# Regex to capture the port from uvicorn's startup line
+_UVICORN_PORT_RE = re.compile(r"Uvicorn running on http://[\d.]+:(\d+)")
+
+
+# ---------------------------------------------------------------------------
+# Core dump suppression
+# ---------------------------------------------------------------------------
+
+
+def disable_core_dumps() -> None:
+    """Set RLIMIT_CORE to (0, 0) to prevent core dumps leaking key material.
+
+    Silently ignored on platforms that don't support it (e.g. some CI runners).
+    """
+    try:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Liveness pipe — parent holds write_fd, proxy watches read_fd for EOF
+# ---------------------------------------------------------------------------
+
+
+def create_liveness_pipe() -> tuple[int, int]:
+    """Create an OS pipe for death detection.
+
+    Returns:
+        (read_fd, write_fd).  Pass *read_fd* to the proxy via
+        ``WORTHLESS_LIVENESS_FD``.  Keep *write_fd* open in the parent;
+        closing it (or parent death) signals EOF to the proxy.
+    """
+    return os.pipe()
+
+
+# ---------------------------------------------------------------------------
+# Proxy spawning
+# ---------------------------------------------------------------------------
+
+
+def spawn_proxy(
+    env: dict[str, str],
+    port: int = 0,
+    liveness_fd: int | None = None,
+) -> tuple[subprocess.Popen, int]:
+    """Start uvicorn with the proxy app.
+
+    Args:
+        env: Environment variables for the proxy (WORTHLESS_*).
+        port: Port to bind.  ``0`` means OS-assigned random port.
+        liveness_fd: If set, passed to the child and advertised via
+            ``WORTHLESS_LIVENESS_FD``.
+
+    Returns:
+        (process, actual_port).
+    """
+    cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "worthless.proxy.app:create_app",
+        "--factory",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+    ]
+
+    # Pass Fernet key via inherited fd instead of env var (avoids /proc/PID/environ leak)
+    fernet_key = env.pop("WORTHLESS_FERNET_KEY", None)
+    fernet_fd: int | None = None
+    if fernet_key:
+        r_fd, w_fd = os.pipe()
+        os.write(w_fd, fernet_key.encode() if isinstance(fernet_key, str) else fernet_key)
+        os.close(w_fd)
+        fernet_fd = r_fd
+
+    # Build subprocess environment
+    full_env = {**os.environ, **env, "WORTHLESS_ALLOW_INSECURE": env.get("WORTHLESS_ALLOW_INSECURE", "true")}
+    if fernet_fd is not None:
+        full_env["WORTHLESS_FERNET_FD"] = str(fernet_fd)
+
+    pass_fds: list[int] = []
+    if liveness_fd is not None:
+        full_env["WORTHLESS_LIVENESS_FD"] = str(liveness_fd)
+        pass_fds.append(liveness_fd)
+    if fernet_fd is not None:
+        pass_fds.append(fernet_fd)
+
+    proc = subprocess.Popen(
+        cmd,
+        env=full_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        process_group=0,
+        pass_fds=tuple(pass_fds),
+    )
+
+    if port == 0:
+        # Parse actual port from uvicorn output
+        actual_port = _parse_uvicorn_port(proc, timeout=15.0)
+    else:
+        actual_port = port
+
+    return proc, actual_port
+
+
+def _parse_uvicorn_port(proc: subprocess.Popen, timeout: float = 15.0) -> int:
+    """Read uvicorn stdout until we find the port announcement."""
+    deadline = time.monotonic() + timeout
+    assert proc.stdout is not None
+
+    # Read output in a thread so we can impose a deadline
+    lines: list[str] = []
+
+    def _reader():
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            line = raw.decode("utf-8", errors="replace").strip()
+            lines.append(line)
+            m = _UVICORN_PORT_RE.search(line)
+            if m:
+                return
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+
+    for line in lines:
+        m = _UVICORN_PORT_RE.search(line)
+        if m:
+            return int(m.group(1))
+
+    raise RuntimeError(
+        f"Could not parse uvicorn port within {timeout}s. "
+        f"Output so far: {''.join(lines[:20])}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Health polling
+# ---------------------------------------------------------------------------
+
+
+def poll_health(port: int, timeout: float = 10.0) -> bool:
+    """Poll ``GET /healthz`` until 200 or *timeout*.
+
+    Returns True if healthy, False if timeout.
+    """
+    deadline = time.monotonic() + timeout
+    url = f"http://127.0.0.1:{port}/healthz"
+
+    with httpx.Client(timeout=2.0) as client:
+        while time.monotonic() < deadline:
+            try:
+                resp = client.get(url)
+                if resp.status_code == 200:
+                    return True
+            except (httpx.ConnectError, httpx.TimeoutException, OSError):
+                pass
+            time.sleep(0.3)
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# PID file management
+# ---------------------------------------------------------------------------
+
+
+def write_pid(pid_path: Path, pid: int, port: int) -> None:
+    """Write PID file with ``pid\\nport`` format (0600 permissions)."""
+    fd = os.open(str(pid_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, f"{pid}\n{port}\n".encode())
+    finally:
+        os.close(fd)
+
+
+def read_pid(pid_path: Path) -> tuple[int, int] | None:
+    """Read PID file.  Returns ``(pid, port)`` or ``None`` if missing/corrupt."""
+    try:
+        text = pid_path.read_text().strip()
+        parts = text.split("\n")
+        if len(parts) < 2:
+            return None
+        return int(parts[0]), int(parts[1])
+    except (FileNotFoundError, ValueError, IndexError):
+        return None
+
+
+def check_pid(pid: int) -> bool:
+    """Return True if *pid* is alive (via ``os.kill(pid, 0)``)."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def cleanup_stale_pid(pid_path: Path) -> bool:
+    """Remove PID file if the recorded process is dead.
+
+    Returns True if reclaimed (file removed or didn't exist),
+    False if the process is still alive.
+    """
+    info = read_pid(pid_path)
+    if info is None:
+        # Missing or corrupt — treat as reclaimed
+        try:
+            pid_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True
+
+    pid, _port = info
+    if check_pid(pid):
+        return False  # Still alive
+
+    pid_path.unlink(missing_ok=True)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Signal forwarding
+# ---------------------------------------------------------------------------
+
+
+def forward_signals(
+    proxy: subprocess.Popen,
+    child: subprocess.Popen | None,
+) -> None:
+    """Register handlers that forward SIGINT/SIGTERM to *proxy* and *child*.
+
+    Uses process group kill (``os.killpg``) for robust cleanup.
+    """
+
+    def _handler(signum: int, _frame: object) -> None:
+        for proc in (child, proxy):
+            if proc is not None and proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signum)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+
+    signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
+
 ```
-Both have the same value. User enrolls both under different names, then locks.
 
-**Suspected bug**: `_read_env_value()` returns the first match. `rewrite_env_file()` replaces the first occurrence. If `API_KEY` is enrolled and locked, its line gets a decoy. But `API_KEY_DEV` still has the plaintext — it is the SAME secret, now exposed.
-
-**Question**: Does the code protect against this? Does scan detect it?
-
-### KB-2: Error compensation cascades destruction
-
-**Setup**: Lock processes 3 keys. Key #2 fails (e.g., O_EXCL error). The `except` block has a `TODO: compensation logic`.
-
-**Suspected bug**: If compensation were naively implemented (delete all shards on any error), it would destroy already-locked key #1's shard data, making key #1 unrecoverable. Currently the TODO means partial state is silently left behind.
-
-**Question**: What is the current state? Is partial lock state recoverable? What happens if you run lock again?
-
-### KB-3: Enroll-then-lock gap
-
-**Setup**: User enrolls a key. Between enroll and lock, the .env file is readable with the plaintext key.
-
-**Suspected bug**: There is no atomic "enroll+lock" operation. The .env file remains unprotected until the user explicitly runs lock.
-
-**Question**: Does `scan` correctly flag this as `enrolled_not_locked`? Is the gap documented?
-
-### KB-4: O_EXCL crash on duplicate shard_a
-
-**Setup**: A `.shard_a` file already exists on disk (from a previous partial lock that left orphaned files).
-
-**Suspected bug**: `os.open(..., O_CREAT | O_EXCL | ...)` raises `FileExistsError`. The lock command catches this in the general `except Exception`, adds it to errors, and moves on. But the enrollment is now stuck — it can never be locked again without manual file deletion.
-
-**Question**: Is there a recovery path? Does status/scan flag this state?
 
 ---
 
-## 5. Final Request
+## Scenarios to Verify
 
-After completing all scenarios above:
+For EACH scenario:
+1. **Trace** through the code step by step with function:line references
+2. **Expected** behavior
+3. **Actual** behavior from the code
+4. **Bugs** found (or "None")
+5. **Risk**: CRITICAL / HIGH / MEDIUM / LOW
+6. **Tests**: exist / missing / partial
 
-**List any additional scenarios not covered above that could cause data loss, security exposure, or user confusion.**
+### A. User Scenarios
+1. First-time lock on .env with one openai key
+2. Re-lock on already-locked .env (idempotency)
+3. Same key value in two vars (API_KEY=X and API_KEY_DEV=X, same value)
+4. Same key in two .env files (project-a/.env and project-b/.env)
+5. Lock → unlock roundtrip (exact content preservation)
+6. enroll --key-stdin then lock (does lock protect the .env?)
+7. unlock --alias when multiple enrollments exist (ambiguity handling)
+8. unlock all keys from different .env files
+9. wrap with only openai keys enrolled
+10. wrap with google/xai keys enrolled (unsupported providers)
 
-For each additional scenario, use the same format (TRACE / EXPECTED / ACTUAL / BUGS / RISK / TESTS).
+### B. Attacker Scenarios
+11. Read ~/.worthless/ (same user local access) — full key reconstruction?
+12. Read /proc/PID/environ of proxy — is fernet key visible?
+13. Supply --alias="../fernet.key" to enroll
+14. Supply --env=/etc/shadow to lock
+15. Tamper with shard_a file (bit flip) — HMAC catches it?
+16. Corrupt SQLite database — denial of service or key theft?
 
-Focus especially on:
-- Scenarios where the user loses their API key permanently (both shards lost)
-- Scenarios where the plaintext key is exposed despite being "locked"
-- Scenarios where the system reports healthy but is actually broken
-- Scenarios involving the proxy holding keys in memory
-""")
+### C. System Scenarios
+17. SIGKILL during lock after shard_a write but before DB write
+18. SIGKILL during lock after DB write but before .env rewrite
+19. Disk full during .env rewrite (shards already stored)
+20. Two terminals run lock simultaneously
+21. One terminal locks, another runs enroll (no lock file)
+22. Power loss during SQLite commit
 
-    prompt_text = "\n".join(output)
+### D. Integration Scenarios
+23. git pull reverts .env after lock — does re-lock work?
+24. CI: enroll via stdin + wrap + test + unlock
+25. Docker restart mid-session (ephemeral volume)
 
-    outpath = "/Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/.planning/phases/04-cli/SCENARIO-VERIFICATION-PROMPT.md"
-    with open(outpath, "w") as f:
-        f.write(prompt_text)
+### E. Known Bugs to Verify
 
-    print(f"Written {len(prompt_text)} chars to {outpath}")
-    print(f"Lines: {prompt_text.count(chr(10))}")
-</tool_use>
+**KB-1**: Same key value in two vars — second copy left in plaintext because shard_a_path.exists() causes `continue` before rewrite_env_key runs.
 
-<tool_result>
-Written 22927 chars to /Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/.planning/phases/04-cli/SCENARIO-VERIFICATION-PROMPT.md
-Lines: 644
-</tool_result>
+**KB-2**: Error compensation in lock except block calls `delete_enrolled(alias)` which CASCADE-deletes ALL enrollments for that alias, destroying other successful enrollments.
 
-Done. Here is what was created:
+**KB-3**: enroll command followed by lock — lock sees shard_a exists, skips, .env stays unprotected.
 
-- **File**: `/Users/shachar/Projects/worthless/worthless/.claude/worktrees/gsd+phase-4-cli-wave1/.planning/phases/04-cli/SCENARIO-VERIFICATION-PROMPT.md`
-- 22,927 characters, 644 lines, fully self-contained
+**KB-4**: O_EXCL crash if shard_a file is orphaned from previous crash.
 
-**What it contains:**
-- System overview explaining split-key architecture and state locations
-- All 12 source files embedded verbatim in fenced code blocks
-- 55 scenarios across 5 categories (user happy path, user errors, attacker, system, integration)
-- Structured output format requirement (TRACE / EXPECTED / ACTUAL / BUGS / RISK / TESTS)
-- 4 known bug verifications (KB-1 through KB-4) with exact setup and suspected code paths
-- Open-ended final request for additional scenarios the reviewer discovers
+For each KB: state whether STILL PRESENT or FIXED, with exact code path.
+
+---
+
+## Final Request
+
+After all scenarios: **list any additional scenarios not covered above that could cause data loss, security exposure, or user confusion.** Focus on permanent key loss, silent exposure despite "locked" state, and false healthy reports.
