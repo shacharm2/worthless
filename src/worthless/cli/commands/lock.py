@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import json
 import os
 import re
 from pathlib import Path
@@ -88,17 +87,13 @@ def _lock_keys(
                 continue
 
             sr = split_key(value.encode())
+            shard_a_written = False
+            db_written = False
             try:
                 try:
                     prefix = detect_prefix(value, provider)
                 except ValueError:
                     prefix = ""
-
-                fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                try:
-                    os.write(fd, bytes(sr.shard_a))
-                finally:
-                    os.close(fd)
 
                 stored = StoredShard(
                     shard_b=bytearray(sr.shard_b),
@@ -106,22 +101,34 @@ def _lock_keys(
                     nonce=bytearray(sr.nonce),
                     provider=provider,
                 )
-                await repo.store(alias, stored)
+                # DB first — atomic commit point
+                await repo.store_enrolled(
+                    alias, stored,
+                    var_name=var_name,
+                    env_path=str(env_path.resolve()),
+                )
+                db_written = True
 
-                meta_path = home.shard_a_dir / f"{alias}.meta"
-                meta_fd = os.open(str(meta_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                # shard_a file second
+                fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 try:
-                    os.write(meta_fd, json.dumps({
-                        "var_name": var_name,
-                        "env_path": str(env_path.resolve()),
-                    }).encode())
+                    os.write(fd, bytes(sr.shard_a))
                 finally:
-                    os.close(meta_fd)
+                    os.close(fd)
+                shard_a_written = True
 
+                # .env rewrite last
                 decoy = _make_decoy(value, prefix, bytes(sr.shard_a))
                 rewrite_env_key(env_path, var_name, decoy)
 
                 count += 1
+            except Exception:
+                # Compensate: clean up partial state
+                if shard_a_written:
+                    shard_a_path.unlink(missing_ok=True)
+                if db_written:
+                    await repo.delete_enrolled(alias)
+                raise
             finally:
                 sr.zero()
 
@@ -157,7 +164,7 @@ def _enroll_single(
             nonce=bytearray(sr.nonce),
             provider=provider,
         )
-        await repo.store(alias, stored)
+        await repo.store_enrolled(alias, stored, var_name=alias, env_path=None)
 
     sr = split_key(key.encode())
     try:

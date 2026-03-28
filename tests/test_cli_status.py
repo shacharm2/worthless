@@ -44,10 +44,6 @@ def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
         finally:
             os.close(fd)
 
-        # Write meta
-        meta_path = home_dir.shard_a_dir / f"{alias}.meta"
-        meta_path.write_text(json.dumps({"var_name": "OPENAI_API_KEY", "env_path": "/tmp/.env"}))
-
         repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
         asyncio.run(repo.initialize())
         stored = StoredShard(
@@ -56,7 +52,11 @@ def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
             nonce=bytearray(sr.nonce),
             provider="openai",
         )
-        asyncio.run(repo.store(alias, stored))
+        asyncio.run(repo.store_enrolled(
+            alias, stored,
+            var_name="OPENAI_API_KEY",
+            env_path="/tmp/.env",
+        ))
     finally:
         sr.zero()
 

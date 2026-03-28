@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import AsyncIterator, NamedTuple
 
 import aiosqlite
 from cryptography.fernet import Fernet
@@ -25,6 +26,15 @@ class EncryptedShard(NamedTuple):
             f"commitment=<{len(self.commitment)} bytes>, "
             f"nonce=<{len(self.nonce)} bytes>, provider={self.provider!r})"
         )
+
+
+@dataclass
+class EnrollmentRecord:
+    """A single enrollment binding a key alias to a var name and optional env path."""
+
+    key_alias: str
+    var_name: str
+    env_path: str | None = None
 
 
 @dataclass
@@ -62,6 +72,13 @@ class ShardRepository:
         self._db_path = db_path
         self._fernet = Fernet(fernet_key)
 
+    @asynccontextmanager
+    async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Open a connection with foreign keys enabled."""
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
+            yield db
+
     async def initialize(self) -> None:
         """Create tables if they don't exist."""
         await init_db(self._db_path)
@@ -81,7 +98,7 @@ class ShardRepository:
         Raises ``aiosqlite.IntegrityError`` if *alias* already exists.
         """
         shard_b_enc = self._fernet.encrypt(bytes(shard.shard_b))
-        async with aiosqlite.connect(self._db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 "INSERT INTO shards (key_alias, shard_b_enc, commitment, nonce, provider) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -95,7 +112,7 @@ class ShardRepository:
         This enables gate-before-decrypt: the rules engine can evaluate
         before any key material is decrypted (CRYP-05).
         """
-        async with aiosqlite.connect(self._db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT shard_b_enc, commitment, nonce, provider FROM shards WHERE key_alias = ?",
@@ -136,7 +153,7 @@ class ShardRepository:
 
     async def delete(self, alias: str) -> bool:
         """Delete the shard record for *alias*. Returns True if deleted."""
-        async with aiosqlite.connect(self._db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 "DELETE FROM shards WHERE key_alias = ?", (alias,)
             )
@@ -145,7 +162,7 @@ class ShardRepository:
 
     async def list_keys(self) -> list[str]:
         """Return a list of all enrolled key aliases."""
-        async with aiosqlite.connect(self._db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute("SELECT key_alias FROM shards")
             rows = await cursor.fetchall()
             return [r[0] for r in rows]
@@ -156,7 +173,7 @@ class ShardRepository:
 
     async def set_metadata(self, key: str, value: str) -> None:
         """Upsert a metadata key/value pair."""
-        async with aiosqlite.connect(self._db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
                 (key, value),
@@ -165,10 +182,108 @@ class ShardRepository:
 
     async def get_metadata(self, key: str) -> str | None:
         """Return the metadata value for *key*, or *None*."""
-        async with aiosqlite.connect(self._db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 "SELECT value FROM metadata WHERE key = ?",
                 (key,),
             )
             row = await cursor.fetchone()
             return row[0] if row else None
+
+    # ------------------------------------------------------------------
+    # Enrollment CRUD
+    # ------------------------------------------------------------------
+
+    async def store_enrolled(
+        self,
+        alias: str,
+        shard: StoredShard,
+        *,
+        var_name: str,
+        env_path: str | None = None,
+    ) -> None:
+        """Atomically store a shard and its enrollment record.
+
+        If the shard already exists (same alias), only the enrollment row
+        is inserted.
+        """
+        shard_b_enc = self._fernet.encrypt(bytes(shard.shard_b))
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                "INSERT OR IGNORE INTO shards (key_alias, shard_b_enc, commitment, nonce, provider) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (alias, shard_b_enc, bytes(shard.commitment), bytes(shard.nonce), shard.provider),
+            )
+            await db.execute(
+                "INSERT OR IGNORE INTO enrollments (key_alias, var_name, env_path) "
+                "VALUES (?, ?, ?)",
+                (alias, var_name, env_path),
+            )
+            await db.commit()
+
+    async def get_enrollment(
+        self, alias: str, env_path: str | None = None
+    ) -> EnrollmentRecord | None:
+        """Return the enrollment for *alias*.
+
+        If *env_path* is given, filter by exact match. Otherwise return the
+        first enrollment for the alias (useful when only one exists).
+        """
+        async with self._connect() as db:
+
+            if env_path is None:
+                cursor = await db.execute(
+                    "SELECT key_alias, var_name, env_path FROM enrollments "
+                    "WHERE key_alias = ? LIMIT 1",
+                    (alias,),
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT key_alias, var_name, env_path FROM enrollments "
+                    "WHERE key_alias = ? AND env_path = ?",
+                    (alias, env_path),
+                )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return EnrollmentRecord(key_alias=row[0], var_name=row[1], env_path=row[2])
+
+    async def list_enrollments(self, alias: str | None = None) -> list[EnrollmentRecord]:
+        """Return enrollment records, optionally filtered by *alias*."""
+        async with self._connect() as db:
+
+            if alias is not None:
+                cursor = await db.execute(
+                    "SELECT key_alias, var_name, env_path FROM enrollments WHERE key_alias = ?",
+                    (alias,),
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT key_alias, var_name, env_path FROM enrollments ORDER BY key_alias"
+                )
+            rows = await cursor.fetchall()
+            return [EnrollmentRecord(key_alias=r[0], var_name=r[1], env_path=r[2]) for r in rows]
+
+    async def delete_enrollment(self, alias: str, env_path: str) -> bool:
+        """Delete a single enrollment row. Returns True if deleted."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "DELETE FROM enrollments WHERE key_alias = ? AND env_path = ?",
+                (alias, env_path),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def delete_enrolled(self, alias: str) -> bool:
+        """Delete the shard and all enrollments for *alias* (CASCADE).
+
+        Returns True if deleted.
+        """
+        async with self._connect() as db:
+
+            cursor = await db.execute(
+                "DELETE FROM shards WHERE key_alias = ?", (alias,)
+            )
+            await db.commit()
+            return cursor.rowcount > 0

@@ -65,7 +65,7 @@ class TestLockCommand:
         assert line.startswith("sk-proj-")
 
         # shard_a file should exist
-        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if not f.name.endswith(".meta")]
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
         assert len(shard_a_files) == 1
 
         # shard_a file should have 0600 permissions
@@ -113,7 +113,7 @@ class TestLockCommand:
         result2 = runner.invoke(app, ["lock", "--env", str(env_file)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
         assert result2.exit_code == 0
         # Still only one shard_a file
-        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if not f.name.endswith(".meta")]
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
         assert len(shard_a_files) == 1
 
     def test_lock_prefix_preservation(
@@ -141,7 +141,7 @@ class TestLockCommand:
         )
         assert result.exit_code == 0
 
-        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if not f.name.endswith(".meta")]
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
         assert len(shard_a_files) == 2
 
         repo = _repo(home_dir)
@@ -176,6 +176,77 @@ class TestLockCommand:
         stored = asyncio.run(repo.retrieve(aliases[0]))
         assert stored is not None
         assert stored.provider == "anthropic"
+
+
+class TestLockNoMetaFiles:
+    """Lock should NOT create .meta files (consolidated into SQLite)."""
+
+    def test_lock_creates_no_meta_files(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        """After lock, shard_a_dir should contain NO .meta files."""
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        meta_files = [f for f in home_dir.shard_a_dir.iterdir() if f.name.endswith(".meta")]
+        assert meta_files == [], f"Found .meta files: {[f.name for f in meta_files]}"
+
+    def test_lock_multiple_keys_no_meta_files(
+        self, home_dir: WorthlessHome, multi_env_file: Path
+    ) -> None:
+        """After locking multiple keys, no .meta files should exist."""
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(multi_env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        meta_files = [f for f in home_dir.shard_a_dir.iterdir() if f.name.endswith(".meta")]
+        assert meta_files == [], f"Found .meta files: {[f.name for f in meta_files]}"
+
+    def test_lock_stores_enrollment_in_db(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        """Lock should store var_name and env_path in enrollments table."""
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert len(aliases) == 1
+
+        enrollment = asyncio.run(repo.get_enrollment(aliases[0]))
+        assert enrollment is not None
+        assert enrollment.var_name == "OPENAI_API_KEY"
+        assert str(env_file.resolve()) in enrollment.env_path
+
+    def test_lock_multiple_keys_stores_enrollments(
+        self, home_dir: WorthlessHome, multi_env_file: Path
+    ) -> None:
+        """Lock should store enrollment records for all keys."""
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(multi_env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        repo = _repo(home_dir)
+        enrollments = asyncio.run(repo.list_enrollments())
+        assert len(enrollments) == 2
+
+        var_names = {e.var_name for e in enrollments}
+        assert "OPENAI_API_KEY" in var_names
+        assert "ANTHROPIC_API_KEY" in var_names
 
 
 class TestEnrollCommand:

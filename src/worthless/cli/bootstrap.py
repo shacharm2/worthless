@@ -82,23 +82,22 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
 
 
 def _init_db(home: WorthlessHome) -> None:
-    """Create the SQLite database with the shards table."""
+    """Create the SQLite database using the canonical schema."""
     import sqlite3
+
+    from worthless.storage.schema import SCHEMA
 
     conn = sqlite3.connect(str(home.db_path))
     try:
-        conn.execute(
-            """CREATE TABLE IF NOT EXISTS shards (
-                key_alias TEXT PRIMARY KEY,
-                shard_b_enc BLOB NOT NULL,
-                commitment BLOB NOT NULL,
-                nonce BLOB NOT NULL,
-                provider TEXT NOT NULL
-            )"""
-        )
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(SCHEMA)
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.commit()
     finally:
         conn.close()
+
+    # Restrict DB file permissions
+    os.chmod(str(home.db_path), 0o600)
 
 
 @contextmanager

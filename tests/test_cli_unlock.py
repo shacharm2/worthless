@@ -85,7 +85,7 @@ class TestUnlockCommand:
         _lock(multi_env_file, home_dir)
 
         # Find aliases (exclude .meta files)
-        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if not f.name.endswith(".meta")]
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
         assert len(shard_a_files) == 2
 
         # Unlock just one
@@ -98,7 +98,7 @@ class TestUnlockCommand:
         assert result.exit_code == 0, result.output
 
         # Only one shard_a file should remain (plus its .meta)
-        remaining = [f for f in home_dir.shard_a_dir.iterdir() if not f.name.endswith(".meta")]
+        remaining = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
         assert len(remaining) == 1
 
     def test_unlock_all_aliases(
@@ -174,3 +174,69 @@ class TestUnlockCommand:
         repo = _repo(home_dir)
         aliases = asyncio.run(repo.list_keys())
         assert aliases == []
+
+
+class TestUnlockFromDB:
+    """Unlock reads var_name from DB enrollment, not .meta file."""
+
+    def test_unlock_reads_var_name_from_db(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        """Unlock should read var_name from enrollments table, not .meta."""
+        original = env_file.read_text()
+        _lock(env_file, home_dir)
+
+        # Verify NO .meta files exist (new behavior)
+        meta_files = [f for f in home_dir.shard_a_dir.iterdir() if f.name.endswith(".meta")]
+        assert meta_files == [], f"Lock should not create .meta files, found: {meta_files}"
+
+        # Verify enrollment exists in DB
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert len(aliases) == 1
+        enrollment = asyncio.run(repo.get_enrollment(aliases[0]))
+        assert enrollment is not None
+        assert enrollment.var_name == "OPENAI_API_KEY"
+
+        # Unlock should work from DB enrollment (no .meta needed)
+        result = runner.invoke(
+            app,
+            ["unlock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+        assert env_file.read_text() == original
+
+    def test_unlock_cleans_up_enrollment_in_db(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        """After unlock, enrollment records should be deleted from DB."""
+        _lock(env_file, home_dir)
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+
+        repo = _repo(home_dir)
+        enrollments = asyncio.run(repo.list_enrollments())
+        assert enrollments == []
+
+    def test_unlock_no_meta_files_remain(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        """After full lock/unlock cycle, no .meta files should exist."""
+        _lock(env_file, home_dir)
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+
+        # shard_a_dir should be completely empty
+        remaining = list(home_dir.shard_a_dir.iterdir())
+        assert remaining == []

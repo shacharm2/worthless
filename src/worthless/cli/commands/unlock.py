@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path
@@ -27,7 +26,7 @@ def _list_aliases(home: WorthlessHome) -> list[str]:
     return [
         f.name
         for f in home.shard_a_dir.iterdir()
-        if f.is_file() and not f.name.endswith(".meta")
+        if f.is_file()
     ]
 
 
@@ -40,7 +39,6 @@ async def _unlock_alias(
     """Unlock a single alias. Returns the reconstructed key string, or None on error."""
     console = get_console()
     shard_a_path = home.shard_a_dir / alias
-    meta_path = home.shard_a_dir / f"{alias}.meta"
 
     if not shard_a_path.exists():
         raise WorthlessError(ErrorCode.KEY_NOT_FOUND, f"Shard A not found for alias: {alias}")
@@ -52,15 +50,26 @@ async def _unlock_alias(
         _zero_buf(shard_a)
         raise WorthlessError(ErrorCode.KEY_NOT_FOUND, f"Shard B not found in DB for alias: {alias}")
 
+    # Read var_name from DB enrollment — check for ambiguity
+    env_str = str(env_path.resolve()) if env_path else None
+    if env_str:
+        enrollment = await repo.get_enrollment(alias, env_str)
+    else:
+        all_enrollments = await repo.list_enrollments(alias)
+        if len(all_enrollments) > 1:
+            paths = ", ".join(e.env_path or "<direct>" for e in all_enrollments)
+            raise WorthlessError(
+                ErrorCode.KEY_NOT_FOUND,
+                f"Alias {alias!r} is enrolled in multiple env files ({paths}). "
+                f"Specify --env to choose which to unlock.",
+            )
+        enrollment = all_enrollments[0] if all_enrollments else None
+    var_name = enrollment.var_name if enrollment else None
+
     try:
         key_buf = reconstruct_key(shard_a, stored.shard_b, stored.commitment, stored.nonce)
         try:
             key_str = key_buf.decode()
-
-            var_name = None
-            if meta_path.exists():
-                meta = json.loads(meta_path.read_text())
-                var_name = meta.get("var_name")
 
             actual_env = env_path
             if actual_env and actual_env.exists() and var_name:
@@ -70,13 +79,24 @@ async def _unlock_alias(
                 sys.stdout.write(f"{var_name}={key_str}\n")
                 sys.stdout.flush()
             else:
-                console.print_warning(f"No metadata for {alias}. Printing key for recovery:")
+                console.print_warning(f"No enrollment for {alias}. Printing key for recovery:")
                 sys.stdout.write(f"{alias}={key_str}\n")
                 sys.stdout.flush()
 
-            shard_a_path.unlink(missing_ok=True)
-            meta_path.unlink(missing_ok=True)
-            await repo.delete(alias)
+            # Delete this specific enrollment
+            env_str = str(env_path.resolve()) if env_path else None
+            remaining = await repo.list_enrollments(alias)
+            if env_str:
+                await repo.delete_enrollment(alias, env_str)
+                remaining = [e for e in remaining if e.env_path != env_str]
+            else:
+                # No env specified — delete all enrollments for this alias
+                remaining = []
+
+            # Only delete shard + shard_a file when no enrollments remain
+            if not remaining:
+                shard_a_path.unlink(missing_ok=True)
+                await repo.delete_enrolled(alias)
 
             return key_str
         finally:

@@ -36,8 +36,7 @@ _PROVIDER_ENV_MAP: dict[str, str] = {
 def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
     """List providers that have enrolled keys (shard_a files exist).
 
-    Scans shard_a directory for files without .meta extension,
-    reads the corresponding .meta file to get provider info.
+    Extracts provider name from alias format: ``provider-hash8``.
     """
     providers: set[str] = set()
     shard_dir = home.shard_a_dir
@@ -45,8 +44,6 @@ def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
         return []
 
     for entry in shard_dir.iterdir():
-        if entry.suffix == ".meta":
-            continue
         # Extract provider from alias (format: "provider-hash8")
         name = entry.name
         if "-" in name:
