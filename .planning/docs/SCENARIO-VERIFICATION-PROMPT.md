@@ -100,3 +100,5 @@ Suspected: O_EXCL fails, lock can never re-enroll this key.
 ## Final Request
 
 After all scenarios: **list any additional scenarios not covered above that could cause data loss, security exposure, or user confusion.**
+
+If you find new scenarios, **add them directly to `.planning/docs/SCENARIO-MATRIX.md`** under the appropriate section. Use the same format (Expected, Current behavior, Risk, Test status). This is a living document — every reviewer should expand it.
