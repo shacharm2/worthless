@@ -1,0 +1,223 @@
+"""Architectural invariant tests for Worthless security boundaries.
+
+These tests enforce structural constraints that are too important to leave
+to code review alone.  A failing test here means an architectural invariant
+has been violated — treat as a P0.
+"""
+
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+import pytest
+
+# Root of the worthless package under src/
+_SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "worthless"
+
+# Server-side directories — split_key must NEVER be imported here.
+# cli/ is client-side, crypto/ defines it — both are excluded.
+_SERVER_DIRS = ["proxy", "storage", "adapters"]
+
+
+# ---------------------------------------------------------------------------
+# WOR-53 — Invariant #1: split_key is never imported server-side
+# ---------------------------------------------------------------------------
+
+
+def _collect_python_files(*dirs: str) -> list[Path]:
+    """Collect all .py files under the given subdirectories of _SRC_ROOT."""
+    files: list[Path] = []
+    for d in dirs:
+        pkg = _SRC_ROOT / d
+        if pkg.exists():
+            files.extend(pkg.rglob("*.py"))
+    return files
+
+
+def _extract_imported_names(source: str) -> set[str]:
+    """Parse Python source with AST and return all directly imported names.
+
+    Handles:
+      - ``from foo import split_key``
+      - ``from foo import split_key as alias``
+      - ``import split_key`` (unlikely but covered)
+    Does NOT catch dynamic imports (getattr, importlib) — the grep test below
+    covers those.
+    """
+    names: set[str] = set()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return names
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                names.add(alias.name)
+                if alias.asname:
+                    names.add(alias.asname)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                # e.g. ``import split_key`` — grab the leaf
+                names.add(alias.name.split(".")[-1])
+                if alias.asname:
+                    names.add(alias.asname)
+    return names
+
+
+class TestSplitKeyNeverServerSide:
+    """Invariant #1: split_key runs on the client exclusively."""
+
+    server_files = _collect_python_files(*_SERVER_DIRS)
+
+    @pytest.mark.parametrize(
+        "py_file",
+        server_files,
+        ids=[str(f.relative_to(_SRC_ROOT)) for f in server_files],
+    )
+    def test_ast_no_split_key_import(self, py_file: Path) -> None:
+        """AST scan: no server module imports split_key."""
+        source = py_file.read_text()
+        imported = _extract_imported_names(source)
+        assert "split_key" not in imported, (
+            f"{py_file.relative_to(_SRC_ROOT)} imports 'split_key' — "
+            f"this violates architectural invariant #1 (client-side splitting only)"
+        )
+
+    @pytest.mark.parametrize(
+        "py_file",
+        server_files,
+        ids=[str(f.relative_to(_SRC_ROOT)) for f in server_files],
+    )
+    def test_grep_no_split_key_string(self, py_file: Path) -> None:
+        """Grep scan: no server module references 'split_key' as a string.
+
+        Catches dynamic imports like ``getattr(mod, 'split_key')`` or
+        ``importlib.import_module(...).split_key`` that AST import scanning misses.
+        """
+        source = py_file.read_text()
+        for lineno, line in enumerate(source.splitlines(), 1):
+            # Skip comments
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue
+            assert "split_key" not in line, (
+                f"{py_file.relative_to(_SRC_ROOT)}:{lineno} references 'split_key' — "
+                f"this violates architectural invariant #1 (client-side splitting only)"
+            )
+
+    def test_server_dirs_exist(self) -> None:
+        """At least one server directory must exist for these tests to be meaningful."""
+        existing = [d for d in _SERVER_DIRS if (_SRC_ROOT / d).exists()]
+        assert existing, (
+            f"None of {_SERVER_DIRS} exist under {_SRC_ROOT} — "
+            f"invariant tests are vacuously true and need updating"
+        )
+
+    def test_no_star_import_in_server_modules(self) -> None:
+        """No server module uses ``from worthless.crypto import *``.
+
+        crypto/__init__.py re-exports split_key (needed by CLI).  A star import
+        in a server module would silently pull it in.  This test ensures no
+        server module uses star imports from the crypto package.
+        """
+        for py_file in self.server_files:
+            source = py_file.read_text()
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and "crypto" in node.module:
+                    star_names = [a.name for a in node.names if a.name == "*"]
+                    assert not star_names, (
+                        f"{py_file.relative_to(_SRC_ROOT)} uses "
+                        f"'from {node.module} import *' — "
+                        f"this would pull in split_key, violating invariant #1"
+                    )
+
+
+# ---------------------------------------------------------------------------
+# WOR-54 — SR-02: key_buf zeroed after proxy dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestKeyBufZeroedAfterDispatch:
+    """SR-02: reconstructed key buffer must be zeroed after upstream dispatch.
+
+    The proxy wraps key_buf in ``secure_key(key_buf)`` (a context manager that
+    calls ``_zero_buf`` on exit).  These tests verify the mechanism works for
+    both the happy path and the exception path.
+    """
+
+    def test_key_buf_zeroed_after_normal_exit(self) -> None:
+        """secure_key zeros key_buf after the with-block exits normally."""
+        from worthless.crypto.splitter import reconstruct_key, secure_key, split_key
+
+        result = split_key(b"sk-test-key-1234567890abcdef")
+        key_buf = reconstruct_key(
+            result.shard_a, result.shard_b, result.commitment, result.nonce
+        )
+        # Capture a reference — same object the proxy would hold
+        ref = key_buf
+
+        with secure_key(key_buf) as k:
+            # Simulate "dispatch" — key is live here
+            assert any(b != 0 for b in k), "key_buf should be non-zero inside with-block"
+
+        # After exit: the SAME object must be zeroed
+        assert ref is key_buf, "secure_key must not replace the object"
+        assert all(b == 0 for b in ref), (
+            f"key_buf not zeroed after secure_key exit — SR-02 violation. "
+            f"First bytes: {ref[:8].hex()}"
+        )
+
+    def test_key_buf_zeroed_after_exception(self) -> None:
+        """secure_key zeros key_buf even when an exception occurs during dispatch."""
+        from worthless.crypto.splitter import reconstruct_key, secure_key, split_key
+
+        result = split_key(b"sk-test-key-1234567890abcdef")
+        key_buf = reconstruct_key(
+            result.shard_a, result.shard_b, result.commitment, result.nonce
+        )
+        ref = key_buf
+
+        with pytest.raises(ConnectionError):
+            with secure_key(key_buf):
+                raise ConnectionError("simulated upstream failure")
+
+        assert all(b == 0 for b in ref), (
+            f"key_buf not zeroed after exception — SR-02 violation. "
+            f"First bytes: {ref[:8].hex()}"
+        )
+
+    def test_key_buf_zeroed_proxy_style_flow(self) -> None:
+        """End-to-end: mimics the proxy's reconstruct → secure_key → dispatch flow.
+
+        Mirrors proxy/app.py lines 330-366: reconstruct, wrap in secure_key,
+        simulate an upstream call, then verify zeroing.
+        """
+        from worthless.crypto.splitter import reconstruct_key, secure_key, split_key
+
+        api_key = b"sk-prod-real-key-abcdef1234567890"
+        result = split_key(api_key)
+
+        # Simulate: shard_a from header, stored shard from DB
+        shard_a = bytearray(result.shard_a)
+        shard_b = bytearray(result.shard_b)
+        commitment = bytearray(result.commitment)
+        nonce = bytearray(result.nonce)
+
+        key_buf = reconstruct_key(shard_a, shard_b, commitment, nonce)
+        assert bytes(key_buf) == api_key
+
+        dispatched_key: bytes | None = None
+        with secure_key(key_buf) as k:
+            # Capture what would be sent as Authorization header
+            dispatched_key = bytes(k)
+
+        # After secure_key exit:
+        assert dispatched_key == api_key, "key was correct during dispatch"
+        assert all(b == 0 for b in key_buf), "key_buf must be zeroed after dispatch — SR-02"
+
+        # Also verify shard_a is still the caller's responsibility
+        # (proxy zeros it separately in the finally block)
+        assert any(b != 0 for b in shard_a), "shard_a is NOT zeroed by secure_key (caller's job)"
