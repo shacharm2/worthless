@@ -162,21 +162,20 @@ class TestFernetFdFallback:
         key = _read_fernet_key()
         assert key == "env-fallback"
 
-    def test_fernet_fd_os_error_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """OSError on read falls back to env var."""
+    @pytest.mark.parametrize("error", [
+        OSError("Bad fd"),
+        OSError(9, "Bad file descriptor"),
+    ], ids=["generic-oserror", "closed-fd"])
+    def test_fernet_fd_os_error_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch, error: OSError
+    ) -> None:
+        """OSError on read (generic or closed fd) falls back to env var."""
         monkeypatch.setenv("WORTHLESS_FERNET_FD", "99")
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-fallback")
-        with patch("worthless.proxy.config.os.read", side_effect=OSError("Bad fd")):
+        with patch("worthless.proxy.config.os.read", side_effect=error), \
+             patch("worthless.proxy.config.os.close"):
             key = _read_fernet_key()
         assert key == "env-fallback"
-
-    def test_fernet_fd_closed_fd_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Closed fd (OSError on read) falls back to env var."""
-        monkeypatch.setenv("WORTHLESS_FERNET_FD", "42")
-        monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-after-closed-fd")
-        with patch("worthless.proxy.config.os.read", side_effect=OSError(9, "Bad file descriptor")):
-            key = _read_fernet_key()
-        assert key == "env-after-closed-fd"
 
     def test_fernet_fd_preferred_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When both fd and env are set, fd wins."""
