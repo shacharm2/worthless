@@ -537,3 +537,104 @@ class TestSettingsValidation:
         )
         with pytest.raises(ValueError, match="WORTHLESS_FERNET_KEY"):
             create_app(settings)
+
+
+# ------------------------------------------------------------------
+# Transparent proxy — alias inference from request path
+# ------------------------------------------------------------------
+
+
+@pytest.fixture()
+async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo, sample_api_key_bytes: bytes):
+    """Proxy app with an openai key enrolled using the provider-hash alias format."""
+    import os
+
+    import aiosqlite
+
+    from worthless.crypto import split_key
+    from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
+    from worthless.storage.repository import StoredShard
+
+    alias = "openai-abcd1234"
+    sr = split_key(sample_api_key_bytes)
+    shard = StoredShard(
+        shard_b=bytearray(sr.shard_b),
+        commitment=bytearray(sr.commitment),
+        nonce=bytearray(sr.nonce),
+        provider="openai",
+    )
+    await repo.store(alias, shard)
+
+    shard_a_dir = proxy_settings.shard_a_dir
+    os.makedirs(shard_a_dir, exist_ok=True)
+    with open(os.path.join(shard_a_dir, alias), "wb") as f:
+        f.write(bytes(sr.shard_a))
+
+    app = create_app(proxy_settings)
+    db = await aiosqlite.connect(proxy_settings.db_path)
+    app.state.db = db
+    app.state.repo = repo
+    app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
+    app.state.rules_engine = RulesEngine(
+        rules=[
+            SpendCapRule(db=db),
+            RateLimitRule(default_rps=100.0, db_path=proxy_settings.db_path),
+        ]
+    )
+    yield app, alias, sr.shard_a
+    await app.state.httpx_client.aclose()
+    await db.close()
+
+
+class TestTransparentProxy:
+    """Proxy should infer alias from request path when header is absent."""
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_openai_path_infers_alias(self, openai_enrolled_proxy):
+        """Request to /v1/chat/completions without alias header should succeed."""
+        app, alias, shard_a = openai_enrolled_proxy
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}]})
+        )
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+            resp = await client.post(
+                "http://testserver/v1/chat/completions",
+                json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+                headers={
+                    "x-worthless-shard-a": base64.b64encode(bytes(shard_a)).decode(),
+                },
+            )
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_unknown_path_without_alias_returns_401(self, openai_enrolled_proxy):
+        """Unknown path without alias header should 401."""
+        app, _, _ = openai_enrolled_proxy
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+            resp = await client.get("http://testserver/v1/unknown/endpoint")
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_explicit_alias_header_preferred(self, openai_enrolled_proxy):
+        """Explicit x-worthless-alias header should take precedence over inference."""
+        app, alias, shard_a = openai_enrolled_proxy
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": []})
+        )
+
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as client:
+            resp = await client.post(
+                "http://testserver/v1/chat/completions",
+                json={"model": "gpt-4", "messages": []},
+                headers={
+                    "x-worthless-alias": alias,
+                    "x-worthless-shard-a": base64.b64encode(bytes(shard_a)).decode(),
+                },
+            )
+        assert resp.status_code == 200
