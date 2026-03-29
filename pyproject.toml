@@ -94,6 +94,10 @@ optional_dependencies_dev_groups = ["dev", "test", "qa", "fuzz"]
 DEP002 = ["uvicorn"]
 DEP003 = ["starlette"]
 
+[tool.bandit]
+targets = ["src"]
+skips = ["B303"]
+
 [tool.mutmut]
 paths_to_mutate = [
     "src/worthless/adapters",
