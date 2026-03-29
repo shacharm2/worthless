@@ -6,6 +6,14 @@ import json
 
 import pytest
 from cryptography.fernet import Fernet
+from hypothesis import HealthCheck, settings
+
+# Suppress differing_executors health check globally — triggers when mutmut
+# runs tests from its mutants/ directory with a different rootdir.
+settings.register_profile(
+    "ci", suppress_health_check=[HealthCheck.differing_executors]
+)
+settings.load_profile("ci")
 
 from worthless.crypto import SplitResult, split_key
 from worthless.storage.repository import ShardRepository, StoredShard

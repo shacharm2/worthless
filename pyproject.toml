@@ -102,3 +102,11 @@ paths_to_mutate = [
     "src/worthless/adapters",
     "src/worthless/crypto",
 ]
+also_copy = [
+    "src/worthless/__init__.py",
+    "src/worthless/exceptions.py",
+    "src/worthless/cli",
+    "src/worthless/proxy",
+    "src/worthless/storage",
+    "src/worthless.egg-info",
+]
