@@ -95,6 +95,10 @@ class TestSplitKeyNeverServerSide:
 
         Catches dynamic imports like ``getattr(mod, 'split_key')`` or
         ``importlib.import_module(...).split_key`` that AST import scanning misses.
+
+        Limitation: does not catch string-concatenation bypasses like
+        ``getattr(mod, 'split' + '_key')``.  This test guards against
+        accidental imports, not adversarial code.
         """
         source = py_file.read_text()
         for lineno, line in enumerate(source.splitlines(), 1):
