@@ -58,11 +58,13 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+timeout = 30
 addopts = "--strict-config --strict-markers"
 markers = [
     "benchmark: performance and latency regression checks",
     "contract: schema-driven API and protocol checks",
     "snapshot: request/response and stream shape snapshot checks",
+    "integration: tests requiring live infrastructure or subprocesses",
 ]
 
 [tool.coverage.run]
@@ -95,4 +97,5 @@ DEP003 = ["starlette"]
 [tool.mutmut]
 paths_to_mutate = [
     "src/worthless/adapters",
+    "src/worthless/crypto/splitter",
 ]
