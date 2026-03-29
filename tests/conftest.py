@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import json
 
+import os
+
 import pytest
 from cryptography.fernet import Fernet
 from hypothesis import HealthCheck, settings
 
-# Suppress differing_executors health check globally — triggers when mutmut
-# runs tests from its mutants/ directory with a different rootdir.
-settings.register_profile(
-    "ci", suppress_health_check=[HealthCheck.differing_executors]
-)
-settings.load_profile("ci")
+# Suppress differing_executors health check ONLY when running under mutmut.
+# Mutmut runs tests from its mutants/ directory with a different rootdir,
+# which triggers this check spuriously.  In normal test runs, the check
+# remains active to catch real working-directory issues.
+if os.environ.get("MUTANT_UNDER_TEST"):
+    settings.register_profile(
+        "mutmut", suppress_health_check=[HealthCheck.differing_executors]
+    )
+    settings.load_profile("mutmut")
 
 from worthless.crypto import SplitResult, split_key
 from worthless.storage.repository import ShardRepository, StoredShard

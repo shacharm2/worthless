@@ -15,9 +15,11 @@ import pytest
 # Root of the worthless package under src/
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "worthless"
 
-# Server-side directories — split_key must NEVER be imported here.
-# cli/ is client-side, crypto/ defines it — both are excluded.
-_SERVER_DIRS = ["proxy", "storage", "adapters"]
+# Allowlist: directories where split_key IS permitted (client-side or definition).
+# Everything else under src/worthless/ is server-side and must NOT import split_key.
+# When adding a new package, it lands in the "server" bucket by default — safe by
+# construction.  Only add to this allowlist after confirming client-side usage.
+_CLIENT_DIRS = {"cli", "crypto"}
 
 
 # ---------------------------------------------------------------------------
@@ -25,13 +27,17 @@ _SERVER_DIRS = ["proxy", "storage", "adapters"]
 # ---------------------------------------------------------------------------
 
 
-def _collect_python_files(*dirs: str) -> list[Path]:
-    """Collect all .py files under the given subdirectories of _SRC_ROOT."""
+def _collect_server_python_files() -> list[Path]:
+    """Collect all .py files under server-side subdirectories of _SRC_ROOT.
+
+    Server-side = everything EXCEPT the allowlisted client dirs.  This is an
+    allowlist (not a denylist) so new packages are scanned by default.
+    """
     files: list[Path] = []
-    for d in dirs:
-        pkg = _SRC_ROOT / d
-        if pkg.exists():
-            files.extend(pkg.rglob("*.py"))
+    for child in sorted(_SRC_ROOT.iterdir()):
+        if not child.is_dir() or child.name in _CLIENT_DIRS or child.name == "__pycache__":
+            continue
+        files.extend(child.rglob("*.py"))
     return files
 
 
@@ -69,7 +75,7 @@ def _extract_imported_names(source: str) -> set[str]:
 class TestSplitKeyNeverServerSide:
     """Invariant #1: split_key runs on the client exclusively."""
 
-    server_files = _collect_python_files(*_SERVER_DIRS)
+    server_files = _collect_server_python_files()
 
     @pytest.mark.parametrize(
         "py_file",
@@ -111,12 +117,41 @@ class TestSplitKeyNeverServerSide:
                 f"this violates architectural invariant #1 (client-side splitting only)"
             )
 
-    def test_server_dirs_exist(self) -> None:
-        """At least one server directory must exist for these tests to be meaningful."""
-        existing = [d for d in _SERVER_DIRS if (_SRC_ROOT / d).exists()]
-        assert existing, (
-            f"None of {_SERVER_DIRS} exist under {_SRC_ROOT} — "
+    def test_server_files_found(self) -> None:
+        """At least one server-side .py file must exist for these tests to be meaningful."""
+        assert self.server_files, (
+            f"No server-side .py files found under {_SRC_ROOT} (excluding {_CLIENT_DIRS}) — "
             f"invariant tests are vacuously true and need updating"
+        )
+
+    def test_proxy_app_uses_secure_key(self) -> None:
+        """proxy/app.py MUST call secure_key to wrap key_buf.
+
+        Without this, the zeroing mechanism tests above prove the tool works
+        but not that the proxy actually uses it.  An AST scan ensures
+        ``secure_key`` appears in a ``with`` statement in the proxy.
+        """
+        proxy_app = _SRC_ROOT / "proxy" / "app.py"
+        assert proxy_app.exists(), "proxy/app.py not found"
+        source = proxy_app.read_text()
+        tree = ast.parse(source)
+
+        # Look for `with secure_key(...)` in the AST
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.With):
+                for item in node.items:
+                    call = item.context_expr
+                    if isinstance(call, ast.Call) and isinstance(call.func, ast.Name):
+                        if call.func.id == "secure_key":
+                            found = True
+                            break
+            if found:
+                break
+
+        assert found, (
+            "proxy/app.py does not use 'with secure_key(...)' — "
+            "key_buf will not be zeroed after dispatch (SR-02 violation)"
         )
 
     def test_no_star_import_in_server_modules(self) -> None:
