@@ -275,7 +275,6 @@ def test_expected_buf_initialized_as_bytearray() -> None:
     # If expected were None, the finally clause would have raised TypeError.
     assert len(zeroed_items) >= 1
     assert all(isinstance(item, bytearray) for item in zeroed_items)
-    # Direct verification: every buffer that was zeroed is actually all-zeros,
-    # independent of the mock (guards against future refactors that inline zeroing).
+    # Direct verification: every buffer is actually all-zeros (mock-independent).
     for buf in zeroed_items:
-        assert all(b == 0 for b in buf), f"Buffer not zeroed: {buf[:8].hex()}"
+        assert_zeroed(buf)
