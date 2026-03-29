@@ -27,7 +27,7 @@ from worthless.storage.repository import ShardRepository, StoredShard
 
 def _make_alias(provider: str, api_key: str) -> str:
     """Deterministic alias: provider + first 8 hex chars of sha256(key)."""
-    digest = hashlib.sha256(api_key.encode()).hexdigest()[:8]
+    digest = hashlib.sha256(api_key.encode()).hexdigest()[:8]  # nosec B303 — non-cryptographic fingerprint
     return f"{provider}-{digest}"
 
 
@@ -42,7 +42,7 @@ def _make_decoy(original: str, prefix: str, shard_a: bytes) -> str:
     suffix_len = len(original) - len(prefix)
     # Use 8 hex chars from shard_a hash for some uniqueness, then fill with
     # low-entropy repeating pattern to stay below the entropy threshold.
-    tag = hashlib.sha256(shard_a).hexdigest()[:8]
+    tag = hashlib.sha256(shard_a).hexdigest()[:8]  # nosec B303 — non-cryptographic fingerprint
     filler = "WRTLS" * ((suffix_len // 5) + 2)
     raw = tag + filler
     return prefix + raw[:suffix_len]

@@ -96,10 +96,9 @@ DEP003 = ["starlette"]
 
 [tool.bandit]
 targets = ["src"]
-skips = ["B303"]
 
 [tool.mutmut]
 paths_to_mutate = [
     "src/worthless/adapters",
-    "src/worthless/crypto/splitter",
+    "src/worthless/crypto",
 ]
