@@ -91,6 +91,16 @@ Plans:
 - [ ] 04-01: TBD
 - [ ] 04-02: TBD
 
+### Phase 04.1: Post-CLI Wave 1 overhaul (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 4
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 04.1 to break down)
+
 ### Phase 5: Security Posture Documentation
 **Goal**: An honest, auditable document states exactly what Worthless protects, at what confidence level, and what its known limitations are
 **Depends on**: Phase 3, Phase 4

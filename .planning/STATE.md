@@ -101,6 +101,7 @@ Recent decisions affecting current work:
 ### Roadmap Evolution
 
 - Phase 03.1 inserted after Phase 3: Proxy Hardening (URGENT) — Fix 4 blockers and 7 high-severity findings from Phase 3 review
+- Phase 04.1 inserted after Phase 4: Post-CLI Wave 1 overhaul (URGENT) — Reconcile the Wave 1 story around the shipped CLI and restore honest support surfaces before Phase 5
 
 ### Pending Todos
 
