@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -399,7 +400,7 @@ async def test_spend_cap_fail_closed_on_db_error(tmp_path):
 async def test_rate_limiter_ttl_cleanup():
     """Rate limiter _windows dict entries older than 2s are cleaned up."""
     import time
-    from unittest.mock import patch
+
 
     rule = RateLimitRule(default_rps=100.0, cleanup_interval=0.0)
     req = _fake_request("10.0.0.1")
@@ -425,7 +426,7 @@ async def test_rate_limiter_ttl_cleanup():
 async def test_rate_limiter_expired_keys_removed():
     """After cleanup, expired (alias, ip) keys are completely removed from _windows."""
     import time
-    from unittest.mock import patch
+
 
     rule = RateLimitRule(default_rps=100.0, cleanup_interval=0.0)
     req = _fake_request("10.0.0.1")

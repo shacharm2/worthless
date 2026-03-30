@@ -1,5 +1,7 @@
 """Tests for XOR key splitting, HMAC commitment, and bytearray zeroing (CRYP-01 .. CRYP-03)."""
 
+from unittest.mock import patch
+
 import pytest
 
 from worthless.crypto.splitter import reconstruct_key, secure_key, split_key
@@ -249,7 +251,7 @@ def test_expected_buf_initialized_as_bytearray() -> None:
     so that the finally clause can always call ``_zero_buf(expected)`` safely,
     even if ``hmac.new()`` raises before the reassignment.
     """
-    from unittest.mock import patch
+
 
     from worthless.crypto.types import _zero_buf
 
