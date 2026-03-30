@@ -20,6 +20,13 @@ if os.environ.get("MUTANT_UNDER_TEST"):
     )
     settings.load_profile("mutmut")
 
+# CI-fast profile: cap Hypothesis examples for speed in parallel/CI runs.
+# Activate with: HYPOTHESIS_PROFILE=ci-fast
+settings.register_profile("ci-fast", max_examples=50)
+
+if os.environ.get("HYPOTHESIS_PROFILE") == "ci-fast":
+    settings.load_profile("ci-fast")
+
 from worthless.cli.bootstrap import WorthlessHome, ensure_home
 from worthless.crypto import SplitResult, split_key
 from worthless.storage.repository import ShardRepository, StoredShard

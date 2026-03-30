@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import patch
 
 import pytest
@@ -169,7 +170,6 @@ async def test_rate_limit_uses_sliding_window():
     await rule.evaluate("k1", req)
     await rule.evaluate("k1", req)
     # Advance time past the 1s window without sleeping
-    import time
     fake_now = time.monotonic() + 1.1
     with patch("time.monotonic", return_value=fake_now):
         result = await rule.evaluate("k1", req)
