@@ -168,9 +168,11 @@ async def test_rate_limit_uses_sliding_window():
     req = _fake_request("127.0.0.1")
     await rule.evaluate("k1", req)
     await rule.evaluate("k1", req)
-    # Wait for the window to slide
-    await asyncio.sleep(1.1)
-    result = await rule.evaluate("k1", req)
+    # Advance time past the 1s window without sleeping
+    import time
+    fake_now = time.monotonic() + 1.1
+    with patch("time.monotonic", return_value=fake_now):
+        result = await rule.evaluate("k1", req)
     assert result is None  # Should pass after window slides
 
 
