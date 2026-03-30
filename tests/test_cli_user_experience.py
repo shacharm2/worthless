@@ -16,7 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 from worthless.cli.app import app
-from worthless.cli.bootstrap import WorthlessHome, ensure_home
+from worthless.cli.bootstrap import WorthlessHome
 from worthless.crypto.splitter import split_key
 from worthless.storage.repository import ShardRepository, StoredShard
 
@@ -31,12 +31,6 @@ _ANTHROPIC_KEY = "sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu901vwx"
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture()
-def home_dir(tmp_path: Path) -> WorthlessHome:
-    """Bootstrap a fresh WorthlessHome in tmp_path."""
-    return ensure_home(tmp_path / ".worthless")
 
 
 @pytest.fixture()

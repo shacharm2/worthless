@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet
 from typer.testing import CliRunner
 
 from worthless.cli.app import app
-from worthless.cli.bootstrap import WorthlessHome, _STALE_LOCK_SECONDS, ensure_home
+from worthless.cli.bootstrap import WorthlessHome, _STALE_LOCK_SECONDS
 from worthless.cli.commands.lock import _make_alias
 from worthless.cli.dotenv_rewriter import scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError
@@ -33,12 +33,6 @@ _ANTHROPIC_KEY = "sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu901vwx"
 
 
 # ---- Fixtures ---------------------------------------------------------------
-
-
-@pytest.fixture()
-def home_dir(tmp_path: Path) -> WorthlessHome:
-    """Bootstrap a fresh WorthlessHome in tmp_path."""
-    return ensure_home(tmp_path / ".worthless")
 
 
 def _repo(home: WorthlessHome) -> ShardRepository:

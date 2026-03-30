@@ -9,19 +9,13 @@ import pytest
 from typer.testing import CliRunner
 
 from worthless.cli.app import app
-from worthless.cli.bootstrap import WorthlessHome, ensure_home
+from worthless.cli.bootstrap import WorthlessHome
 from worthless.storage.repository import ShardRepository
 
 runner = CliRunner()
 
 _TEST_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"
 _TEST_KEY_2 = "sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu901vwx"
-
-
-@pytest.fixture()
-def home_dir(tmp_path: Path) -> WorthlessHome:
-    """Bootstrap a fresh WorthlessHome in tmp_path."""
-    return ensure_home(tmp_path / ".worthless")
 
 
 @pytest.fixture()

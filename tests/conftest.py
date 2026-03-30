@@ -20,8 +20,20 @@ if os.environ.get("MUTANT_UNDER_TEST"):
     )
     settings.load_profile("mutmut")
 
+from worthless.cli.bootstrap import WorthlessHome, ensure_home
 from worthless.crypto import SplitResult, split_key
 from worthless.storage.repository import ShardRepository, StoredShard
+
+
+# ------------------------------------------------------------------
+# CLI bootstrap fixtures
+# ------------------------------------------------------------------
+
+
+@pytest.fixture()
+def home_dir(tmp_path) -> WorthlessHome:
+    """Bootstrap a fresh WorthlessHome in tmp_path."""
+    return ensure_home(tmp_path / ".worthless")
 
 
 # ------------------------------------------------------------------

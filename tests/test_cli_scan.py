@@ -14,7 +14,7 @@ import pytest
 from typer.testing import CliRunner
 
 from worthless.cli.app import app
-from worthless.cli.bootstrap import WorthlessHome, ensure_home
+from worthless.cli.bootstrap import WorthlessHome
 
 runner = CliRunner(mix_stderr=False)
 
@@ -41,12 +41,6 @@ def _fake_anthropic_key() -> str:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-@pytest.fixture()
-def home_dir(tmp_path: Path) -> WorthlessHome:
-    """Bootstrap a fresh WorthlessHome in tmp_path."""
-    return ensure_home(tmp_path / ".worthless")
-
 
 @pytest.fixture()
 def env_with_real_key(tmp_path: Path) -> Path:
