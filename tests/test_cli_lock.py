@@ -12,7 +12,9 @@ from typer.testing import CliRunner
 
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
-from worthless.storage.repository import ShardRepository
+
+from tests.conftest import make_repo as _repo
+from tests.helpers import fake_anthropic_key, fake_openai_key
 
 runner = CliRunner()
 
@@ -21,7 +23,7 @@ runner = CliRunner()
 def env_file(tmp_path: Path) -> Path:
     """Create a .env with a known OpenAI key."""
     env = tmp_path / ".env"
-    env.write_text("OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n")
+    env.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
     return env
 
 
@@ -30,15 +32,11 @@ def multi_env_file(tmp_path: Path) -> Path:
     """Create a .env with multiple API keys."""
     env = tmp_path / ".env"
     env.write_text(
-        "OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n"
-        "ANTHROPIC_API_KEY=sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu901vwx\n"
+        f"OPENAI_API_KEY={fake_openai_key()}\n"
+        f"ANTHROPIC_API_KEY={fake_anthropic_key()}\n"
         "SOME_OTHER=not-a-key\n"
     )
     return env
-
-
-def _repo(home: WorthlessHome) -> ShardRepository:
-    return ShardRepository(str(home.db_path), home.fernet_key)
 
 
 class TestLockCommand:
@@ -53,7 +51,7 @@ class TestLockCommand:
 
         # .env should be rewritten (different from original)
         new_content = env_file.read_text()
-        assert "sk-proj-abc123def456ghi789" not in new_content
+        assert fake_openai_key()[:24] not in new_content
         # Decoy should still start with sk-proj-
         line = new_content.strip().split("=", 1)[1]
         assert line.startswith("sk-proj-")
@@ -155,7 +153,7 @@ class TestLockCommand:
     ) -> None:
         """--provider flag should override auto-detection."""
         env = tmp_path / ".env"
-        env.write_text("MY_KEY=sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234\n")
+        env.write_text(f"MY_KEY={fake_openai_key()}\n")
         result = runner.invoke(
             app,
             ["lock", "--env", str(env), "--provider", "anthropic"],
@@ -255,7 +253,7 @@ class TestEnrollCommand:
             [
                 "enroll",
                 "--alias", "my-test-key",
-                "--key", "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234",
+                "--key", fake_openai_key(),
                 "--provider", "openai",
             ],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},

@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import os
 import stat
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
@@ -16,26 +15,11 @@ from typer.testing import CliRunner
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 
+from tests.helpers import fake_key as _fake_key
+from tests.helpers import fake_openai_key as _fake_openai_key
+from tests.helpers import fake_anthropic_key as _fake_anthropic_key
+
 runner = CliRunner(mix_stderr=False)
-
-
-def _fake_key(prefix: str, seed: str = "test-fixture-seed") -> str:
-    """Generate a deterministic high-entropy fake key at runtime.
-
-    Avoids literal API-key patterns in source that would trigger scanners
-    (our own ``worthless scan`` or GitHub secret scanning) in CI.
-    """
-    raw = hashlib.sha256(seed.encode()).digest()
-    body = base64.urlsafe_b64encode(raw).decode().rstrip("=")[:48]
-    return prefix + body
-
-
-def _fake_openai_key() -> str:
-    return _fake_key("sk-" + "proj-")
-
-
-def _fake_anthropic_key() -> str:
-    return _fake_key("sk-" + "ant-" + "api03-", seed="anthropic-fixture-seed")
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +508,7 @@ class TestScanErrorPaths:
         self, file_with_key: Path
     ) -> None:
         """Generic exception during scan_files -> exit 2."""
-        from unittest.mock import patch
+
         with patch(
             "worthless.cli.commands.scan.scan_files",
             side_effect=RuntimeError("boom"),
@@ -536,7 +520,7 @@ class TestScanErrorPaths:
         self, file_with_key: Path
     ) -> None:
         """Generic exception in quiet mode -> exit 2, no stderr."""
-        from unittest.mock import patch
+
         with patch(
             "worthless.cli.commands.scan.scan_files",
             side_effect=RuntimeError("boom"),
@@ -549,7 +533,7 @@ class TestScanErrorPaths:
         self, file_with_key: Path
     ) -> None:
         """WorthlessError during scan -> exit 2 with error message."""
-        from unittest.mock import patch
+
         from worthless.cli.errors import ErrorCode, WorthlessError
         with patch(
             "worthless.cli.commands.scan.scan_files",
@@ -582,7 +566,7 @@ class TestCollectDeepPaths:
     ) -> None:
         """If tempfile write fails, deep scan still works (skips env dump)."""
         monkeypatch.chdir(tmp_path)
-        from unittest.mock import patch
+
         with patch("worthless.cli.commands.scan.os.write", side_effect=OSError("disk full")):
             result = runner.invoke(app, ["scan", "--deep"])
         # Should not crash — exception is caught
@@ -614,7 +598,7 @@ class TestFormatHumanBranches:
         result = runner.invoke(app, ["scan", "--show-suffix", str(f)])
         assert result.exit_code == 1
         # Now delete the file and scan with a mocked finding
-        from unittest.mock import patch
+
         from worthless.cli.scanner import ScanFinding
         fake_finding = ScanFinding(
             file=str(tmp_path / "gone.py"),
@@ -632,7 +616,7 @@ class TestFormatHumanBranches:
 
     def test_protected_finding_count(self, tmp_path: Path) -> None:
         """Protected findings should be counted and displayed."""
-        from unittest.mock import patch
+
         from worthless.cli.scanner import ScanFinding
         findings = [
             ScanFinding(
@@ -681,7 +665,7 @@ class TestFormatHumanBranches:
     ) -> None:
         """If both write and close fail in _collect_deep_paths, don't crash."""
         monkeypatch.chdir(tmp_path)
-        from unittest.mock import patch
+
         call_count = 0
 
         def _failing_write(fd, data):

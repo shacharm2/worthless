@@ -11,6 +11,7 @@ import asyncio
 import os
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from cryptography.fernet import Fernet
@@ -25,18 +26,17 @@ from worthless.cli.scanner import scan_files
 from worthless.crypto.splitter import reconstruct_key, split_key
 from worthless.storage.repository import ShardRepository, StoredShard
 
+from tests.conftest import make_repo as _repo
+from tests.helpers import fake_anthropic_key, fake_openai_key
+
 runner = CliRunner()
 
-# A realistic OpenAI key used across tests (high entropy, correct prefix).
-_OPENAI_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"
-_ANTHROPIC_KEY = "sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu901vwx"
+# Scanner-safe fake keys (generated at runtime to avoid false positives).
+_OPENAI_KEY = fake_openai_key()
+_ANTHROPIC_KEY = fake_anthropic_key()
 
 
 # ---- Fixtures ---------------------------------------------------------------
-
-
-def _repo(home: WorthlessHome) -> ShardRepository:
-    return ShardRepository(str(home.db_path), home.fernet_key)
 
 
 def _make_env(tmp_path: Path, name: str, content: str) -> Path:
@@ -751,7 +751,7 @@ class TestErrorCompensationPreservesEnrollments:
         env_c = _make_env(tmp_path, "project-c", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
         shard_a_path.unlink()
 
-        from unittest.mock import patch
+
 
         with patch(
             "worthless.cli.commands.lock.rewrite_env_key",
@@ -790,8 +790,8 @@ class TestCryptoRoundtripIntegrity:
     @pytest.mark.parametrize(
         "key",
         [
-            b"sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234",
-            b"sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu901vwx",
+            _OPENAI_KEY.encode(),
+            _ANTHROPIC_KEY.encode(),
             b"a",  # minimal 1-byte key
             b"x" * 1024,  # large key
         ],

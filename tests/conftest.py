@@ -24,6 +24,13 @@ from worthless.cli.bootstrap import WorthlessHome, ensure_home
 from worthless.crypto import SplitResult, split_key
 from worthless.storage.repository import ShardRepository, StoredShard
 
+from tests.helpers import fake_anthropic_key, fake_openai_key
+
+
+def make_repo(home: WorthlessHome) -> ShardRepository:
+    """Build a ShardRepository from a WorthlessHome (test helper)."""
+    return ShardRepository(str(home.db_path), home.fernet_key)
+
 
 # ------------------------------------------------------------------
 # CLI bootstrap fixtures
@@ -34,6 +41,43 @@ from worthless.storage.repository import ShardRepository, StoredShard
 def home_dir(tmp_path) -> WorthlessHome:
     """Bootstrap a fresh WorthlessHome in tmp_path."""
     return ensure_home(tmp_path / ".worthless")
+
+
+@pytest.fixture()
+def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
+    """Home with one enrolled key (openai)."""
+    import asyncio
+
+    key = fake_openai_key()
+    sr = split_key(key.encode())
+    try:
+        alias = "openai-a1b2c3d4"
+        shard_a_path = home_dir.shard_a_dir / alias
+        fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, bytes(sr.shard_a))
+        finally:
+            os.close(fd)
+
+        repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+        asyncio.run(repo.initialize())
+        stored = StoredShard(
+            shard_b=bytearray(sr.shard_b),
+            commitment=bytearray(sr.commitment),
+            nonce=bytearray(sr.nonce),
+            provider="openai",
+        )
+        asyncio.run(
+            repo.store_enrolled(
+                alias,
+                stored,
+                var_name="OPENAI_API_KEY",
+                env_path="/tmp/.env",
+            )
+        )
+    finally:
+        sr.zero()
+    return home_dir
 
 
 # ------------------------------------------------------------------

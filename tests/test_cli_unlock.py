@@ -10,12 +10,14 @@ from typer.testing import CliRunner
 
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
-from worthless.storage.repository import ShardRepository
+
+from tests.conftest import make_repo as _repo
+from tests.helpers import fake_anthropic_key, fake_openai_key
 
 runner = CliRunner()
 
-_TEST_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"
-_TEST_KEY_2 = "sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu901vwx"
+_TEST_KEY = fake_openai_key()
+_TEST_KEY_2 = fake_anthropic_key()
 
 
 @pytest.fixture()
@@ -35,10 +37,6 @@ def multi_env_file(tmp_path: Path) -> Path:
         f"ANTHROPIC_API_KEY={_TEST_KEY_2}\n"
     )
     return env
-
-
-def _repo(home: WorthlessHome) -> ShardRepository:
-    return ShardRepository(str(home.db_path), home.fernet_key)
 
 
 def _lock(env_file: Path, home: WorthlessHome) -> None:

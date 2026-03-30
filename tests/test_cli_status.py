@@ -12,49 +12,10 @@ from typer.testing import CliRunner
 
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
-from worthless.storage.repository import ShardRepository, StoredShard
 
 runner = CliRunner(mix_stderr=False)
 
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture()
-def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
-    """Home with one enrolled key (openai)."""
-    from worthless.crypto.splitter import split_key
-
-    sr = split_key(b"sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234")
-    try:
-        alias = "openai-a1b2c3d4"
-        import os
-
-        shard_a_path = home_dir.shard_a_dir / alias
-        fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(fd, bytes(sr.shard_a))
-        finally:
-            os.close(fd)
-
-        repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
-        asyncio.run(repo.initialize())
-        stored = StoredShard(
-            shard_b=bytearray(sr.shard_b),
-            commitment=bytearray(sr.commitment),
-            nonce=bytearray(sr.nonce),
-            provider="openai",
-        )
-        asyncio.run(repo.store_enrolled(
-            alias, stored,
-            var_name="OPENAI_API_KEY",
-            env_path="/tmp/.env",
-        ))
-    finally:
-        sr.zero()
-
-    return home_dir
+# home_with_key fixture is in conftest.py
 
 
 # ---------------------------------------------------------------------------

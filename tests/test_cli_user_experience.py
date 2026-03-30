@@ -20,12 +20,16 @@ from worthless.cli.bootstrap import WorthlessHome
 from worthless.crypto.splitter import split_key
 from worthless.storage.repository import ShardRepository, StoredShard
 
+from tests.helpers import fake_anthropic_key, fake_openai_key
+
 # mix_stderr=False so we can inspect stdout vs stderr independently
 runner = CliRunner(mix_stderr=False)
 
-# A realistic OpenAI key (51 chars after prefix) for test fixtures
-_OPENAI_KEY = "sk-proj-abc123def456ghi789jkl012mno345pqr678stu901vwx234"
-_ANTHROPIC_KEY = "sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu901vwx"
+# Scanner-safe fake keys (generated at runtime to avoid false positives).
+_OPENAI_KEY = fake_openai_key()
+_ANTHROPIC_KEY = fake_anthropic_key()
+
+# home_with_key fixture is in conftest.py
 
 
 # ---------------------------------------------------------------------------
@@ -57,39 +61,7 @@ def env_with_google(tmp_path: Path) -> Path:
     env.write_text("GOOGLE_API_KEY=AIzaSyB3x7k9mR2pQ1wE5vF8nJ4hL0tY6uI2oP3\n")
     return env
 
-
-@pytest.fixture()
-def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
-    """Home with one enrolled key (openai)."""
-    sr = split_key(_OPENAI_KEY.encode())
-    try:
-        alias = "openai-a1b2c3d4"
-        shard_a_path = home_dir.shard_a_dir / alias
-        fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(fd, bytes(sr.shard_a))
-        finally:
-            os.close(fd)
-
-        repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
-        asyncio.run(repo.initialize())
-        stored = StoredShard(
-            shard_b=bytearray(sr.shard_b),
-            commitment=bytearray(sr.commitment),
-            nonce=bytearray(sr.nonce),
-            provider="openai",
-        )
-        asyncio.run(
-            repo.store_enrolled(
-                alias,
-                stored,
-                var_name="OPENAI_API_KEY",
-                env_path="/tmp/.env",
-            )
-        )
-    finally:
-        sr.zero()
-    return home_dir
+# home_with_key fixture is in conftest.py
 
 
 @pytest.fixture()
