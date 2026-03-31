@@ -275,6 +275,46 @@ class TestDecoyHashClearedOnUnlock:
         assert env_file.read_text() == original
 
 
+    def test_multi_env_unlock_one_keeps_other_hash(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Same key in two .env files: unlock one, other's decoy hash persists."""
+        env_a = tmp_path / "a.env"
+        env_b = tmp_path / "b.env"
+        env_a.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+        env_b.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+
+        # Lock both
+        _lock(env_a, home_dir)
+        _lock(env_b, home_dir)
+
+        # Extract decoys
+        decoy_a = env_a.read_text().strip().split("=", 1)[1]
+        decoy_b = env_b.read_text().strip().split("=", 1)[1]
+
+        repo = _repo(home_dir)
+        assert asyncio.run(repo.is_known_decoy(decoy_a)) is True
+        assert asyncio.run(repo.is_known_decoy(decoy_b)) is True
+
+        # Unlock only env_a
+        result = runner.invoke(
+            app,
+            ["unlock", "--env", str(env_a)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        # env_a's decoy hash gone, env_b's persists
+        repo2 = _repo(home_dir)
+        assert asyncio.run(repo2.is_known_decoy(decoy_a)) is False
+        assert asyncio.run(repo2.is_known_decoy(decoy_b)) is True
+
+        # Original key restored in env_a
+        assert _TEST_KEY in env_a.read_text()
+        # env_b still has its decoy
+        assert decoy_b in env_b.read_text()
+
+
 class TestEnrollUnlockNullEnvPath:
     """Direct enroll (env_path=NULL) followed by unlock should clean up completely."""
 

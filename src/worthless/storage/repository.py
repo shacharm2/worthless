@@ -301,15 +301,18 @@ class ShardRepository:
 
             if alias is not None:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path FROM enrollments WHERE key_alias = ?",
+                    "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments WHERE key_alias = ?",
                     (alias,),
                 )
             else:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path FROM enrollments ORDER BY key_alias"
+                    "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments ORDER BY key_alias"
                 )
             rows = await cursor.fetchall()
-            return [EnrollmentRecord(key_alias=r[0], var_name=r[1], env_path=r[2]) for r in rows]
+            return [
+                EnrollmentRecord(key_alias=r[0], var_name=r[1], env_path=r[2], decoy_hash=r[3])
+                for r in rows
+            ]
 
     async def delete_enrollment(self, alias: str, env_path: str | None) -> bool:
         """Delete a single enrollment row. Returns True if deleted."""

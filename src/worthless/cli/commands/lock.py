@@ -98,8 +98,11 @@ async def _migrate_old_decoys(
             prefix = ""
 
         new_decoy = make_decoy(provider, prefix)
-        rewrite_env_key(env_path, var_name, new_decoy)
+        # DB first: if crash after DB write but before file write, the old
+        # WRTLS decoy stays in .env (low entropy → still filtered by scan)
+        # and migration retries are harmless (decoy_hash set → skipped).
         await repo.set_decoy_hash(enrollment.key_alias, env_str, new_decoy)
+        rewrite_env_key(env_path, var_name, new_decoy)
         migrated += 1
         console.print_success(f"Migrated old decoy for {var_name}")
 
