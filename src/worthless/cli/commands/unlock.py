@@ -1,4 +1,4 @@
-"""Unlock command — reconstruct keys from shards, restore .env, clean up."""
+"""Unlock command -- reconstruct keys from shards, restore .env, clean up."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ async def _unlock_alias(
         _zero_buf(shard_a)
         raise WorthlessError(ErrorCode.KEY_NOT_FOUND, f"Shard B not found in DB for alias: {alias}")
 
-    # Read var_name from DB enrollment — check for ambiguity
+    # Read var_name from DB enrollment -- check for ambiguity
     env_str = str(env_path.resolve()) if env_path else None
     if env_str:
         enrollment = await repo.get_enrollment(alias, env_str)
@@ -138,4 +138,7 @@ def register_unlock_commands(app: typer.Typer) -> None:
                 asyncio.run(_unlock_async())
         except WorthlessError as exc:
             console.print_error(exc)
+            raise typer.Exit(code=1) from exc
+        except Exception as exc:
+            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
             raise typer.Exit(code=1) from exc
