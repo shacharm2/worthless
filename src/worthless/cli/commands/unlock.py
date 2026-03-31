@@ -44,29 +44,29 @@ async def _unlock_alias(
         raise WorthlessError(ErrorCode.KEY_NOT_FOUND, f"Shard A not found for alias: {alias}")
 
     shard_a = bytearray(shard_a_path.read_bytes())
-
-    stored = await repo.retrieve(alias)
-    if stored is None:
-        _zero_buf(shard_a)
-        raise WorthlessError(ErrorCode.KEY_NOT_FOUND, f"Shard B not found in DB for alias: {alias}")
-
-    # Read var_name from DB enrollment -- check for ambiguity
-    env_str = str(env_path.resolve()) if env_path else None
-    if env_str:
-        enrollment = await repo.get_enrollment(alias, env_str)
-    else:
-        all_enrollments = await repo.list_enrollments(alias)
-        if len(all_enrollments) > 1:
-            paths = ", ".join(e.env_path or "<direct>" for e in all_enrollments)
-            raise WorthlessError(
-                ErrorCode.KEY_NOT_FOUND,
-                f"Alias {alias!r} is enrolled in multiple env files ({paths}). "
-                f"Specify --env to choose which to unlock.",
-            )
-        enrollment = all_enrollments[0] if all_enrollments else None
-    var_name = enrollment.var_name if enrollment else None
+    stored = None
 
     try:
+        stored = await repo.retrieve(alias)
+        if stored is None:
+            raise WorthlessError(ErrorCode.KEY_NOT_FOUND, f"Shard B not found in DB for alias: {alias}")
+
+        # Read var_name from DB enrollment -- check for ambiguity
+        env_str = str(env_path.resolve()) if env_path else None
+        if env_str:
+            enrollment = await repo.get_enrollment(alias, env_str)
+        else:
+            all_enrollments = await repo.list_enrollments(alias)
+            if len(all_enrollments) > 1:
+                paths = ", ".join(e.env_path or "<direct>" for e in all_enrollments)
+                raise WorthlessError(
+                    ErrorCode.KEY_NOT_FOUND,
+                    f"Alias {alias!r} is enrolled in multiple env files ({paths}). "
+                    f"Specify --env to choose which to unlock.",
+                )
+            enrollment = all_enrollments[0] if all_enrollments else None
+        var_name = enrollment.var_name if enrollment else None
+
         key_buf = reconstruct_key(shard_a, stored.shard_b, stored.commitment, stored.nonce)
         try:
             key_str = key_buf.decode()
@@ -99,7 +99,8 @@ async def _unlock_alias(
             _zero_buf(key_buf)
     finally:
         _zero_buf(shard_a)
-        stored.zero()
+        if stored is not None:
+            stored.zero()
 
 
 def register_unlock_commands(app: typer.Typer) -> None:

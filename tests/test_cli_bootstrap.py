@@ -28,13 +28,14 @@ class TestEnsureHomeErrorBranches:
 
         monkeypatch.setattr(Path, "mkdir", _fail_mkdir)
 
-        with pytest.raises((WorthlessError, PermissionError)):
+        with pytest.raises(WorthlessError) as exc_info:
             ensure_home(tmp_path / ".worthless")
+        assert exc_info.value.code == ErrorCode.BOOTSTRAP_FAILED
 
     def test_ensure_home_fernet_key_write_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """PermissionError writing fernet.key -> WorthlessError or PermissionError."""
+        """PermissionError writing fernet.key -> WorthlessError with BOOTSTRAP_FAILED."""
         _real_open = os.open
 
         def _fail_fernet_write(path, flags, *args, **kwargs):
@@ -44,13 +45,14 @@ class TestEnsureHomeErrorBranches:
 
         monkeypatch.setattr(os, "open", _fail_fernet_write)
 
-        with pytest.raises((WorthlessError, PermissionError)):
+        with pytest.raises(WorthlessError) as exc_info:
             ensure_home(tmp_path / ".worthless")
+        assert exc_info.value.code == ErrorCode.BOOTSTRAP_FAILED
 
     def test_ensure_home_db_init_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """sqlite3.DatabaseError during DB init -> WorthlessError with SHARD_STORAGE_FAILED or DatabaseError."""
+        """sqlite3.DatabaseError during DB init -> WorthlessError with SHARD_STORAGE_FAILED."""
         _real_connect = sqlite3.connect
 
         def _fail_connect(path, *args, **kwargs):
@@ -60,5 +62,6 @@ class TestEnsureHomeErrorBranches:
 
         monkeypatch.setattr(sqlite3, "connect", _fail_connect)
 
-        with pytest.raises((WorthlessError, sqlite3.DatabaseError)):
+        with pytest.raises(WorthlessError) as exc_info:
             ensure_home(tmp_path / ".worthless")
+        assert exc_info.value.code == ErrorCode.SHARD_STORAGE_FAILED

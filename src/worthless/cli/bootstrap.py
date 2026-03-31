@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -84,7 +85,7 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
     # Initialise database (idempotent — CREATE TABLE IF NOT EXISTS)
     try:
         _init_db(home)
-    except Exception as exc:
+    except (OSError, sqlite3.DatabaseError) as exc:
         raise WorthlessError(
             ErrorCode.SHARD_STORAGE_FAILED,
             f"Failed to initialise database: {exc}",
