@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import re
 import string
+from collections import Counter
 
 import pytest
 
@@ -155,3 +157,177 @@ class TestDecoyGeneral:
         from worthless.cli.key_patterns import KEY_PATTERN
         decoy = make_decoy(provider, prefix)
         assert KEY_PATTERN.search(decoy) is not None
+
+
+# ---------------------------------------------------------------------------
+# Statistical indistinguishability tests (WOR-31 Step 8)
+# ---------------------------------------------------------------------------
+
+# Provider prefixes used for generating decoys in statistical tests.
+_PROVIDER_PREFIXES: dict[str, str] = {
+    "openai": "sk-proj-",
+    "anthropic": "sk-ant-api03-",
+    "google": "AIzaSy",
+    "xai": "xai-",
+}
+
+
+def _extract_random_body(provider: str, decoy: str) -> str:
+    """Strip the prefix and literal segments, returning only random chars."""
+    prefix = _PROVIDER_PREFIXES[provider]
+    body = decoy[len(prefix):]
+    fmt = PROVIDER_FORMATS[provider]
+    # Remove literal segments, keeping only random portions.
+    random_parts: list[str] = []
+    offset = 0
+    for segment in fmt["segments"]:
+        kind = segment[0]
+        if kind == "random":
+            length = segment[1]
+            random_parts.append(body[offset:offset + length])
+            offset += length
+        elif kind == "literal":
+            literal = segment[1]
+            offset += len(literal)
+    return "".join(random_parts)
+
+
+def _expected_entropy_uniform(length: int, charset_size: int) -> float:
+    """Compute the expected Shannon entropy of a uniform random string.
+
+    For a string of *length* L drawn uniformly from an alphabet of size K,
+    the expected entropy is computed via the exact multinomial expectation.
+    This accounts for the finite-sample bias where short strings cannot
+    achieve the theoretical maximum log2(K).
+
+    Uses the Grassberger/Miller-Madow-corrected approximation:
+        H_expected ~ log2(K) - (K - 1) / (2 * L * ln(2))
+    which is accurate when L >> 1.
+    """
+    return math.log2(charset_size) - (charset_size - 1) / (2 * length * math.log(2))
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(120)
+class TestStatisticalIndistinguishability:
+    """Prove decoy random portions are statistically uniform.
+
+    These tests use chi-squared goodness-of-fit to verify that character
+    frequencies match a uniform distribution over the provider's charset.
+    """
+
+    @pytest.mark.parametrize("provider", ["openai", "anthropic", "google", "xai"])
+    def test_aggregate_character_frequency(self, provider: str) -> None:
+        """Chi-squared on aggregate character frequency across N=1000 decoys.
+
+        Null hypothesis: characters are drawn uniformly from the charset.
+        We reject if p < 0.0025 (Bonferroni-corrected: 0.01 / 4 providers).
+        """
+        from scipy.stats import chisquare
+
+        fmt = PROVIDER_FORMATS[provider]
+        charset = fmt["charset"]
+        n_decoys = 1000
+
+        counter: Counter[str] = Counter()
+        for _ in range(n_decoys):
+            decoy = make_decoy(provider, _PROVIDER_PREFIXES[provider])
+            body = _extract_random_body(provider, decoy)
+            counter.update(body)
+
+        # Build observed frequencies in charset order.
+        observed = [counter.get(c, 0) for c in charset]
+        total = sum(observed)
+        expected_freq = total / len(charset)
+        expected = [expected_freq] * len(charset)
+
+        stat, p_value = chisquare(observed, f_exp=expected)
+        assert p_value > 0.0025, (
+            f"{provider}: chi-squared p-value {p_value:.6f} < 0.0025 — "
+            f"character distribution is not uniform (stat={stat:.2f})"
+        )
+
+    @pytest.mark.parametrize("provider", ["openai", "anthropic", "google", "xai"])
+    def test_per_position_frequency(self, provider: str) -> None:
+        """Per-position chi-squared in 10-char windows to detect positional bias.
+
+        For each window of 10 characters, we run a chi-squared test.
+        We assert no window has p < 0.001 (very conservative threshold).
+        """
+        from scipy.stats import chisquare
+
+        fmt = PROVIDER_FORMATS[provider]
+        charset = fmt["charset"]
+        n_decoys = 500
+
+        # Collect all random bodies.
+        bodies: list[str] = []
+        for _ in range(n_decoys):
+            decoy = make_decoy(provider, _PROVIDER_PREFIXES[provider])
+            bodies.append(_extract_random_body(provider, decoy))
+
+        body_len = len(bodies[0])
+        window_size = 10
+        n_windows = body_len // window_size
+
+        for w in range(n_windows):
+            start = w * window_size
+            end = start + window_size
+            counter: Counter[str] = Counter()
+            for body in bodies:
+                counter.update(body[start:end])
+
+            observed = [counter.get(c, 0) for c in charset]
+            total = sum(observed)
+            if total == 0:
+                continue
+            expected_freq = total / len(charset)
+            expected = [expected_freq] * len(charset)
+
+            stat, p_value = chisquare(observed, f_exp=expected)
+            assert p_value > 0.001, (
+                f"{provider} window [{start}:{end}]: chi-squared p-value "
+                f"{p_value:.6f} < 0.001 — positional bias detected (stat={stat:.2f})"
+            )
+
+    @pytest.mark.parametrize("provider", ["openai", "anthropic", "google", "xai"])
+    def test_entropy_consistency(self, provider: str) -> None:
+        """Mean Shannon entropy should be close to the expected value for
+        a uniform random string of the same length and charset.
+
+        We compare against the finite-sample expected entropy (not the
+        theoretical max log2(K)), which accounts for collision bias in
+        short strings. Tolerance is 0.5 bits.
+        """
+        fmt = PROVIDER_FORMATS[provider]
+        charset = fmt["charset"]
+        charset_size = len(charset)
+        n_decoys = 100
+
+        # Determine random body length from format segments.
+        random_body_len = sum(
+            seg[1] for seg in fmt["segments"] if seg[0] == "random"
+        )
+        expected_ent = _expected_entropy_uniform(random_body_len, charset_size)
+
+        entropies: list[float] = []
+        for _ in range(n_decoys):
+            decoy = make_decoy(provider, _PROVIDER_PREFIXES[provider])
+            body = _extract_random_body(provider, decoy)
+            # Compute Shannon entropy of the random body.
+            length = len(body)
+            if length == 0:
+                continue
+            freq = Counter(body)
+            ent = -sum(
+                (count / length) * math.log2(count / length)
+                for count in freq.values()
+            )
+            entropies.append(ent)
+
+        mean_entropy = sum(entropies) / len(entropies)
+        assert abs(mean_entropy - expected_ent) < 0.5, (
+            f"{provider}: mean entropy {mean_entropy:.3f} deviates from "
+            f"expected {expected_ent:.3f} by more than 0.5 bits "
+            f"(body_len={random_body_len}, charset_size={charset_size})"
+        )
