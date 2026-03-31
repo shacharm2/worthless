@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -53,30 +54,42 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
     """
     home = WorthlessHome(base_dir=base_dir or _DEFAULT_BASE)
 
-    # Create directories
-    home.base_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    home.shard_a_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        # Create directories
+        home.base_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        home.shard_a_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-    # Ensure permissions are correct even if dir already existed
-    os.chmod(home.base_dir, 0o700)
-    os.chmod(home.shard_a_dir, 0o700)
+        # Ensure permissions are correct even if dir already existed
+        os.chmod(home.base_dir, 0o700)
+        os.chmod(home.shard_a_dir, 0o700)
 
-    # Generate Fernet key if missing
-    if not home.fernet_key_path.exists():
-        key = Fernet.generate_key()
-        fd = os.open(
-            str(home.fernet_key_path),
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-        try:
-            os.write(fd, key)
-            os.write(fd, b"\n")
-        finally:
-            os.close(fd)
+        # Generate Fernet key if missing
+        if not home.fernet_key_path.exists():
+            key = Fernet.generate_key()
+            fd = os.open(
+                str(home.fernet_key_path),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            try:
+                os.write(fd, key)
+                os.write(fd, b"\n")
+            finally:
+                os.close(fd)
+    except OSError as exc:
+        raise WorthlessError(
+            ErrorCode.BOOTSTRAP_FAILED,
+            f"Failed to initialise ~/.worthless: {exc}",
+        ) from exc
 
     # Initialise database (idempotent — CREATE TABLE IF NOT EXISTS)
-    _init_db(home)
+    try:
+        _init_db(home)
+    except (OSError, sqlite3.DatabaseError) as exc:
+        raise WorthlessError(
+            ErrorCode.SHARD_STORAGE_FAILED,
+            f"Failed to initialise database: {exc}",
+        ) from exc
 
     return home
 

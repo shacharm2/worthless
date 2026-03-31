@@ -1,4 +1,4 @@
-"""up command — standalone proxy daemon/foreground.
+"""up command -- standalone proxy daemon/foreground.
 
 ``worthless up`` starts the proxy in foreground on port 8787.
 ``worthless up -d`` starts it in daemon mode (background).
@@ -64,42 +64,51 @@ def register_up_commands(app: typer.Typer) -> None:
         console = get_console()
         home = get_home()
 
-        actual_port = _resolve_port(port)
+        try:
+            actual_port = _resolve_port(port)
 
-        # Check PID file for existing proxy
-        pid_file = _pid_path(home)
-        if pid_file.exists():
-            info = read_pid(pid_file)
-            if info is not None:
-                existing_pid, existing_port = info
-                if check_pid(existing_pid):
-                    console.print_error(
-                        WorthlessError(
-                            ErrorCode.PORT_IN_USE,
-                            f"Proxy already running (PID {existing_pid} on port {existing_port}). "
-                            f"Stop it first or use a different port.",
+            # Check PID file for existing proxy
+            pid_file = _pid_path(home)
+            if pid_file.exists():
+                info = read_pid(pid_file)
+                if info is not None:
+                    existing_pid, existing_port = info
+                    if check_pid(existing_pid):
+                        console.print_error(
+                            WorthlessError(
+                                ErrorCode.PORT_IN_USE,
+                                f"Proxy already running (PID {existing_pid} on port {existing_port}). "
+                                f"Stop it first or use a different port.",
+                            )
                         )
-                    )
-                    raise typer.Exit(code=1)
-                else:
-                    # Stale PID file — reclaim
-                    cleanup_stale_pid(pid_file)
-                    console.print_warning(f"Reclaimed stale PID file (was PID {existing_pid})")
+                        raise typer.Exit(code=1)
+                    else:
+                        # Stale PID file -- reclaim
+                        cleanup_stale_pid(pid_file)
+                        console.print_warning(f"Reclaimed stale PID file (was PID {existing_pid})")
 
-        # Disable core dumps
-        disable_core_dumps()
+            # Disable core dumps
+            disable_core_dumps()
 
-        # Build proxy env
-        proxy_env = {
-            "WORTHLESS_DB_PATH": str(home.db_path),
-            "WORTHLESS_FERNET_KEY": home.fernet_key.decode(),
-            "WORTHLESS_SHARD_A_DIR": str(home.shard_a_dir),
-        }
+            # Build proxy env
+            proxy_env = {
+                "WORTHLESS_DB_PATH": str(home.db_path),
+                "WORTHLESS_FERNET_KEY": home.fernet_key.decode(),
+                "WORTHLESS_SHARD_A_DIR": str(home.shard_a_dir),
+            }
 
-        if daemon:
-            _start_daemon(proxy_env, actual_port, pid_file, console)
-        else:
-            _start_foreground(proxy_env, actual_port, pid_file, console)
+            if daemon:
+                _start_daemon(proxy_env, actual_port, pid_file, console)
+            else:
+                _start_foreground(proxy_env, actual_port, pid_file, console)
+        except (typer.Exit, SystemExit):
+            raise
+        except WorthlessError as exc:
+            console.print_error(exc)
+            raise typer.Exit(code=1) from exc
+        except Exception as exc:
+            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
+            raise typer.Exit(code=1) from exc
 
     def _start_daemon(
         proxy_env: dict[str, str],
@@ -140,14 +149,20 @@ def register_up_commands(app: typer.Typer) -> None:
             pass_fds.append(fernet_fd)
 
         # Start detached process
-        proc = subprocess.Popen(
-            cmd,
-            env=full_env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            pass_fds=tuple(pass_fds),
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                env=full_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                pass_fds=tuple(pass_fds),
+            )
+        except Exception as exc:
+            console.print_error(
+                WorthlessError(ErrorCode.PROXY_UNREACHABLE, f"Failed to start daemon: {exc}")
+            )
+            raise typer.Exit(code=1) from exc
 
         # Write PID file
         write_pid(pid_file, proc.pid, port)
@@ -194,7 +209,7 @@ def register_up_commands(app: typer.Typer) -> None:
         console.print_success(f"Proxy running on 127.0.0.1:{actual_port} (Ctrl+C to stop)")
 
         # Register signal handler that cleans up PID file and stops proxy
-        def _cleanup(signum, frame):
+        def _cleanup(_signum, _frame):
             proxy.terminate()
             try:
                 proxy.wait(timeout=5)

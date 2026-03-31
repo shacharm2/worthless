@@ -1,4 +1,4 @@
-"""Lock command — scan .env, split keys, store shards, rewrite with decoys."""
+"""Lock command -- scan .env, split keys, store shards, rewrite with decoys."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ _OLD_DECOY_MARKER = "WRTLS"
 
 def _make_alias(provider: str, api_key: str) -> str:
     """Deterministic alias: provider + first 8 hex chars of sha256(key)."""
-    digest = hashlib.sha256(api_key.encode()).hexdigest()[:8]  # nosec B303 — non-cryptographic fingerprint
+    digest = hashlib.sha256(api_key.encode()).hexdigest()[:8]  # nosec B303 -- non-cryptographic fingerprint
     return f"{provider}-{digest}"
 
 
@@ -99,8 +99,8 @@ async def _migrate_old_decoys(
 
         new_decoy = make_decoy(provider, prefix)
         # DB first: if crash after DB write but before file write, the old
-        # WRTLS decoy stays in .env (low entropy → still filtered by scan)
-        # and migration retries are harmless (decoy_hash set → skipped).
+        # WRTLS decoy stays in .env (low entropy -> still filtered by scan)
+        # and migration retries are harmless (decoy_hash set -> skipped).
         await repo.set_decoy_hash(enrollment.key_alias, env_str, new_decoy)
         rewrite_env_key(env_path, var_name, new_decoy)
         migrated += 1
@@ -158,7 +158,7 @@ def _lock_keys(
             shard_a_path = home.shard_a_dir / alias
             if shard_a_path.exists():
                 # Shard file already exists.  Check if the DB row exists too
-                # (orphan shard_a = file without DB row — warn and skip).
+                # (orphan shard_a = file without DB row -- warn and skip).
                 db_shard = await repo.fetch_encrypted(alias)
                 if db_shard is None:
                     console.print_warning(
@@ -166,7 +166,7 @@ def _lock_keys(
                     )
                     continue
 
-                # Shard fully enrolled — still need to:
+                # Shard fully enrolled -- still need to:
                 # 1. Create enrollment for THIS var_name/env_path
                 # 2. Rewrite THIS .env line with a decoy
                 existing_shard_a = shard_a_path.read_bytes()
@@ -199,7 +199,7 @@ def _lock_keys(
                     nonce=bytearray(sr.nonce),
                     provider=provider,
                 )
-                # DB first — atomic commit point
+                # DB first -- atomic commit point
                 await repo.store_enrolled(
                     alias, stored,
                     var_name=var_name,
@@ -221,20 +221,25 @@ def _lock_keys(
                 await repo.set_decoy_hash(alias, str(env_path.resolve()), decoy)
 
                 count += 1
-            except Exception:
+            except Exception as exc:
                 # Compensate: clean up partial state
                 if shard_a_written:
                     shard_a_path.unlink(missing_ok=True)
                 if db_written:
-                    # Only delete THIS specific enrollment — not the shard
+                    # Only delete THIS specific enrollment -- not the shard
                     # or other enrollments (CASCADE would destroy them all).
                     env_str = str(env_path.resolve())
                     await repo.delete_enrollment(alias, env_str)
                     remaining = await repo.list_enrollments(alias)
                     if not remaining:
-                        # No other enrollments — safe to remove shard too
+                        # No other enrollments -- safe to remove shard too
                         await repo.delete_enrolled(alias)
-                raise
+                if isinstance(exc, WorthlessError):
+                    raise
+                raise WorthlessError(
+                    ErrorCode.SHARD_STORAGE_FAILED,
+                    f"Failed to protect key: {exc}",
+                ) from exc
             finally:
                 sr.zero()
 
@@ -310,6 +315,9 @@ def register_lock_commands(app: typer.Typer) -> None:
         except WorthlessError as exc:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc
+        except Exception as exc:
+            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
+            raise typer.Exit(code=1) from exc
 
     @app.command()
     def enroll(
@@ -340,4 +348,7 @@ def register_lock_commands(app: typer.Typer) -> None:
                 _enroll_single(alias, actual_key, provider, home)
         except WorthlessError as exc:
             console.print_error(exc)
+            raise typer.Exit(code=1) from exc
+        except Exception as exc:
+            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
             raise typer.Exit(code=1) from exc

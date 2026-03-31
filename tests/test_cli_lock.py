@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import stat
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 from worthless.cli.dotenv_rewriter import shannon_entropy
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD
+from worthless.storage.repository import ShardRepository
 
 from tests.conftest import make_repo as _repo
 from tests.helpers import fake_anthropic_key, fake_openai_key
@@ -239,6 +241,127 @@ class TestLockNoMetaFiles:
         var_names = {e.var_name for e in enrollments}
         assert "OPENAI_API_KEY" in var_names
         assert "ANTHROPIC_API_KEY" in var_names
+
+
+class TestLockErrorBranches:
+    """Error branch coverage for lock compensation paths."""
+
+    def test_lock_shard_a_write_failure_compensates(
+        self, home_dir: WorthlessHome, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PermissionError on shard_a write -> DB enrollment rolled back, no orphans."""
+        _real_open = os.open
+
+        def _fail_shard_a(path, flags, *args, **kwargs):
+            if "shard_a" in str(path) and (flags & os.O_CREAT):
+                raise PermissionError(13, "Permission denied", path)
+            return _real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", _fail_shard_a)
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 1
+
+        # No orphan shard_a files
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
+        assert shard_a_files == []
+
+        # No enrollment in DB
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert aliases == []
+
+    def test_lock_env_rewrite_failure_compensates(
+        self, home_dir: WorthlessHome, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """IOError on .env rewrite -> shard_a deleted, DB enrollment deleted, .env unchanged."""
+        original_content = env_file.read_text()
+
+        def _boom(*_args, **_kw):
+            raise IOError("disk full")
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.lock.rewrite_env_key", _boom,
+        )
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 1
+
+        # shard_a cleaned up
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
+        assert shard_a_files == []
+
+        # DB enrollment cleaned up
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert aliases == []
+
+        # .env unchanged after failed operation
+        assert env_file.read_text() == original_content
+
+    def test_lock_symlink_env_refused(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Lock refuses to follow symlinked .env files."""
+        real_env = tmp_path / "real.env"
+        real_env.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
+        link_env = tmp_path / "link.env"
+        link_env.symlink_to(real_env)
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(link_env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 1
+        assert "symlink" in result.output.lower()
+
+    def test_lock_db_write_failure_exits_clean(
+        self, home_dir: WorthlessHome, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """sqlite3.DatabaseError during store_enrolled -> exit_code=1 with WRTLS."""
+
+        async def _boom(self, *args, **kwargs):
+            raise sqlite3.DatabaseError("disk I/O error")
+
+        monkeypatch.setattr(
+            "worthless.storage.repository.ShardRepository.store_enrolled", _boom,
+        )
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 1
+        assert "WRTLS" in result.output
+
+    def test_lock_scan_env_keys_oserror_exits_clean(
+        self, home_dir: WorthlessHome, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OSError in scan_env_keys -> exit_code=1."""
+
+        def _boom(path):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.lock.scan_env_keys", _boom,
+        )
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 1
 
 
 class TestEnrollCommand:

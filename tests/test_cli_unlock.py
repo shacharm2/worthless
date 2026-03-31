@@ -10,6 +10,8 @@ from typer.testing import CliRunner
 
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
+from worthless.cli.commands.unlock import _unlock_alias
+from worthless.cli.errors import WorthlessError
 
 from tests.conftest import make_repo as _repo
 from tests.helpers import fake_anthropic_key, fake_openai_key
@@ -365,3 +367,127 @@ class TestEnrollUnlockNullEnvPath:
         repo2 = _repo(home_dir)
         assert asyncio.run(repo2.list_enrollments(alias)) == []
         assert asyncio.run(repo2.list_keys()) == []
+
+
+class TestUnlockMultiEnrollment:
+    """Multi-enrollment unlock: same key enrolled from multiple .env files.
+
+    The ambiguity check (env_path=None -> error) is only reachable via the
+    library API, not the CLI (--env defaults to .env). Tests call _unlock_alias
+    directly to cover this internal contract.
+    """
+
+    @pytest.fixture()
+    def two_env_files(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Create two .env files with the same key."""
+        env_a = tmp_path / "a.env"
+        env_a.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+        env_b = tmp_path / "b.env"
+        env_b.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+        return env_a, env_b
+
+    def _lock_both(
+        self, env_a: Path, env_b: Path, home: WorthlessHome
+    ) -> str:
+        """Lock same key via two env files, return the alias."""
+        _lock(env_a, home)
+        _lock(env_b, home)
+        shard_a_files = [f.name for f in home.shard_a_dir.iterdir() if f.is_file()]
+        assert len(shard_a_files) == 1  # same key -> same alias
+        return shard_a_files[0]
+
+    def test_unlock_alias_multi_enrollment_no_env_raises(
+        self, home_dir: WorthlessHome, two_env_files: tuple[Path, Path]
+    ) -> None:
+        """_unlock_alias with env_path=None errors when alias has multiple enrollments."""
+        env_a, env_b = two_env_files
+        alias = self._lock_both(env_a, env_b, home_dir)
+
+        async def _run():
+            repo = _repo(home_dir)
+            await repo.initialize()
+            await _unlock_alias(alias, home_dir, repo, env_path=None)
+
+        with pytest.raises(WorthlessError, match="multiple"):
+            asyncio.run(_run())
+
+    def test_unlock_multi_enrollment_with_env_flag_succeeds(
+        self, home_dir: WorthlessHome, two_env_files: tuple[Path, Path]
+    ) -> None:
+        """Unlock with --env restores one file, leaves other enrollment intact."""
+        env_a, env_b = two_env_files
+        original_a = env_a.read_text()
+        alias = self._lock_both(env_a, env_b, home_dir)
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--alias", alias, "--env", str(env_a)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        # env_a restored
+        assert env_a.read_text() == original_a
+
+        # env_b still has decoy
+        assert _TEST_KEY not in env_b.read_text()
+
+        # shard_a still exists (one enrollment remains)
+        assert (home_dir.shard_a_dir / alias).exists()
+
+        # One enrollment remains in DB
+        repo = _repo(home_dir)
+        remaining = asyncio.run(repo.list_enrollments(alias))
+        assert len(remaining) == 1
+
+
+class TestUnlockErrorBranches:
+    """Error branch coverage for unlock failure paths."""
+
+    def test_unlock_db_retrieve_failure_exits_clean(
+        self, home_with_key: WorthlessHome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exception during repo.retrieve -> exit_code=1 with WRTLS."""
+        from worthless.storage.repository import ShardRepository
+
+        async def _boom(self, _alias):
+            raise Exception("DB corrupt")
+
+        monkeypatch.setattr(
+            "worthless.storage.repository.ShardRepository.retrieve", _boom,
+        )
+
+        # Find the alias from the enrolled key
+        aliases = [f.name for f in home_with_key.shard_a_dir.iterdir() if f.is_file()]
+        assert len(aliases) == 1
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--alias", aliases[0]],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
+        assert "WRTLS" in result.output
+
+    def test_unlock_shard_a_read_failure_exits_clean(
+        self, home_with_key: WorthlessHome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PermissionError reading shard_a file -> exit_code=1."""
+        _real_read_bytes = Path.read_bytes
+
+        def _fail_read(self):
+            if "shard_a" in str(self):
+                raise PermissionError("permission denied")
+            return _real_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", _fail_read)
+
+        aliases = [f.name for f in home_with_key.shard_a_dir.iterdir() if f.is_file()]
+        assert len(aliases) == 1
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--alias", aliases[0]],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
