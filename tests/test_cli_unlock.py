@@ -370,7 +370,12 @@ class TestEnrollUnlockNullEnvPath:
 
 
 class TestUnlockMultiEnrollment:
-    """Unlock with same alias enrolled from multiple .env files."""
+    """Multi-enrollment unlock: same key enrolled from multiple .env files.
+
+    The ambiguity check (env_path=None -> error) is only reachable via the
+    library API, not the CLI (--env defaults to .env). Tests call _unlock_alias
+    directly to cover this internal contract.
+    """
 
     @pytest.fixture()
     def two_env_files(self, tmp_path: Path) -> tuple[Path, Path]:
@@ -391,7 +396,7 @@ class TestUnlockMultiEnrollment:
         assert len(shard_a_files) == 1  # same key → same alias
         return shard_a_files[0]
 
-    def test_unlock_multi_enrollment_no_env_raises(
+    def test_unlock_alias_multi_enrollment_no_env_raises(
         self, home_dir: WorthlessHome, two_env_files: tuple[Path, Path]
     ) -> None:
         """_unlock_alias with env_path=None errors when alias has multiple enrollments."""

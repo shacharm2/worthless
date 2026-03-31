@@ -7,7 +7,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from typer.testing import CliRunner
 
+from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 from worthless.cli.commands.up import _pid_path, _resolve_port
 from worthless.cli.process import (
@@ -16,6 +18,8 @@ from worthless.cli.process import (
     read_pid,
     write_pid,
 )
+
+runner = CliRunner()
 
 
 class TestUpDefaultPort:
@@ -102,3 +106,38 @@ class TestUpPidFileErrorBranches:
         write_pid(pid_path, 12345, 8787)
         info = read_pid(pid_path)
         assert info == (12345, 8787)
+
+
+class TestUpDaemonFlow:
+    """up --daemon starts a daemon process and writes a PID file."""
+
+    def test_daemon_mode_writes_pid(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """up --daemon writes PID file and exits 0 when healthy."""
+        mock_proc = MagicMock()
+        mock_proc.pid = 54321
+
+        monkeypatch.setattr(
+            "subprocess.Popen",
+            lambda *_a, **_kw: mock_proc,
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.poll_health",
+            lambda *_a, **_kw: True,
+        )
+
+        result = runner.invoke(
+            app,
+            ["up", "--daemon"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 0
+
+        pid_file = _pid_path(home_with_key)
+        assert pid_file.exists()
+        info = read_pid(pid_file)
+        assert info is not None
+        pid, port = info
+        assert pid == 54321
+        assert port == 8787

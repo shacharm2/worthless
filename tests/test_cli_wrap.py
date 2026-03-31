@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
 import textwrap
+import threading
+import time
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -206,3 +210,99 @@ class TestCleanupProxy:
         ]
         _cleanup_proxy(mock, timeout=0.01)
         mock.kill.assert_called()
+
+
+class TestWrapProxyCrashMidSession:
+    """wrap warns on stderr when proxy dies while child is still running."""
+
+    def test_proxy_crash_warns_and_child_continues(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When proxy crashes mid-session, warning is emitted and exit code is 0."""
+        proxy_waited = threading.Event()
+        warning_written = threading.Event()
+        captured_messages: list[str] = []
+
+        # -- Mock proxy: .wait() returns immediately (simulating crash)
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 99999
+
+        def proxy_wait(**_kw):
+            proxy_waited.set()
+            return 0
+
+        mock_proxy.wait.side_effect = proxy_wait
+        mock_proxy.poll.return_value = 0  # already dead after crash
+        mock_proxy.returncode = 0
+
+        # -- Mock child: .poll() returns None (alive) then 0 (done)
+        mock_child = MagicMock()
+        mock_child.pid = 99998
+        poll_values = iter([None, None, None, 0, 0, 0])
+        mock_child.poll.side_effect = lambda: next(poll_values, 0)
+
+        def child_wait(**_kw):
+            # Let the watcher thread detect proxy crash first
+            proxy_waited.wait(timeout=5)
+            time.sleep(0.15)
+            mock_child.returncode = 0
+            return 0
+
+        mock_child.wait.side_effect = child_wait
+        mock_child.returncode = 0
+
+        # Replace the sys module reference inside wrap so _watch_proxy
+        # writes to our capturing stderr, not the real one (which CliRunner
+        # may have replaced).
+        import worthless.cli.commands.wrap as wrap_mod
+
+        fake_sys = ModuleType("fake_sys")
+        # Copy all attributes from real sys
+        for attr in dir(sys):
+            try:
+                setattr(fake_sys, attr, getattr(sys, attr))
+            except (AttributeError, TypeError):
+                pass
+
+        class _CapturingStderr:
+            def write(self, msg: str) -> int:
+                captured_messages.append(msg)
+                if "proxy crashed" in msg:
+                    warning_written.set()
+                return len(msg)
+
+            def flush(self) -> None:
+                pass
+
+        fake_sys.stderr = _CapturingStderr()
+        monkeypatch.setattr(wrap_mod, "sys", fake_sys)
+
+        # Patch spawn_proxy -> returns mock proxy
+        monkeypatch.setattr(
+            wrap_mod, "spawn_proxy",
+            lambda **_kw: (mock_proxy, 9999),
+        )
+        # Patch poll_health -> healthy
+        monkeypatch.setattr(
+            wrap_mod, "poll_health",
+            lambda *_a, **_kw: True,
+        )
+        # Patch forward_signals -> no-op (can't killpg mock PIDs)
+        monkeypatch.setattr(
+            wrap_mod, "forward_signals",
+            lambda **_kw: None,
+        )
+        # Patch subprocess.Popen -> returns mock child
+        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        # Wait for watcher thread to write the warning
+        assert warning_written.wait(timeout=5), "Watcher thread did not emit warning"
+
+        assert result.exit_code == 0
+        combined = "".join(captured_messages)
+        assert "proxy crashed mid-session" in combined

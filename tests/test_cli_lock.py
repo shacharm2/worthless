@@ -276,7 +276,9 @@ class TestLockErrorBranches:
     def test_lock_env_rewrite_failure_compensates(
         self, home_dir: WorthlessHome, env_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """IOError on .env rewrite → shard_a deleted, DB enrollment deleted."""
+        """IOError on .env rewrite → shard_a deleted, DB enrollment deleted, .env unchanged."""
+        original_content = env_file.read_text()
+
         def _boom(*_args, **_kw):
             raise IOError("disk full")
 
@@ -299,6 +301,9 @@ class TestLockErrorBranches:
         repo = _repo(home_dir)
         aliases = asyncio.run(repo.list_keys())
         assert aliases == []
+
+        # .env unchanged after failed operation
+        assert env_file.read_text() == original_content
 
     def test_lock_symlink_env_refused(
         self, home_dir: WorthlessHome, tmp_path: Path
