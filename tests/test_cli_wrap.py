@@ -306,3 +306,43 @@ class TestWrapProxyCrashMidSession:
         assert result.exit_code == 0
         combined = "".join(captured_messages)
         assert "proxy crashed mid-session" in combined
+
+
+class TestWrapBootstrapFailure:
+    """Error branches for wrap bootstrap failures."""
+
+    def test_wrap_get_home_failure_exits_clean(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """OSError in get_home -> exit_code=1."""
+        def _boom():
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.get_home", _boom,
+        )
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(tmp_path / "nonexistent")},
+        )
+        assert result.exit_code == 1
+
+    def test_wrap_liveness_pipe_failure_exits_clean(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OSError in create_liveness_pipe -> exit_code=1."""
+        def _boom():
+            raise OSError("too many files")
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.create_liveness_pipe", _boom,
+        )
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1

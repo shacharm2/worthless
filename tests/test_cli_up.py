@@ -141,3 +141,87 @@ class TestUpDaemonFlow:
         pid, port = info
         assert pid == 54321
         assert port == 8787
+
+
+class TestUpErrorBranches:
+    """Error branch coverage for up command failure paths."""
+
+    def test_up_get_home_failure_exits_clean(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """OSError in get_home -> exit_code=1."""
+        def _boom():
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.get_home", _boom,
+        )
+
+        result = runner.invoke(
+            app,
+            ["up"],
+            env={"WORTHLESS_HOME": str(tmp_path / "nonexistent")},
+        )
+        assert result.exit_code == 1
+
+    def test_up_foreground_spawn_failure_exits_clean(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """RuntimeError in spawn_proxy -> exit_code=1 with WRTLS."""
+        def _boom(**_kw):
+            raise RuntimeError("bind failed")
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.spawn_proxy", _boom,
+        )
+
+        result = runner.invoke(
+            app,
+            ["up"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
+        assert "WRTLS" in result.output
+
+    def test_up_foreground_health_timeout_exits_clean(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """poll_health returns False -> exit_code=1, proxy terminated."""
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 99999
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.spawn_proxy",
+            lambda **_kw: (mock_proxy, 8787),
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.poll_health",
+            lambda *_a, **_kw: False,
+        )
+
+        result = runner.invoke(
+            app,
+            ["up"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
+        assert "WRTLS" in result.output
+        mock_proxy.terminate.assert_called()
+
+    def test_up_daemon_spawn_failure_exits_clean(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OSError in subprocess.Popen for daemon mode -> exit_code=1."""
+        def _fail_popen(*_a, **_kw):
+            raise OSError("too many processes")
+
+        monkeypatch.setattr("subprocess.Popen", _fail_popen)
+
+        result = runner.invoke(
+            app,
+            ["up", "--daemon"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1

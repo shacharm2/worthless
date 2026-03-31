@@ -393,7 +393,7 @@ class TestUnlockMultiEnrollment:
         _lock(env_a, home)
         _lock(env_b, home)
         shard_a_files = [f.name for f in home.shard_a_dir.iterdir() if f.is_file()]
-        assert len(shard_a_files) == 1  # same key → same alias
+        assert len(shard_a_files) == 1  # same key -> same alias
         return shard_a_files[0]
 
     def test_unlock_alias_multi_enrollment_no_env_raises(
@@ -439,3 +439,55 @@ class TestUnlockMultiEnrollment:
         repo = _repo(home_dir)
         remaining = asyncio.run(repo.list_enrollments(alias))
         assert len(remaining) == 1
+
+
+class TestUnlockErrorBranches:
+    """Error branch coverage for unlock failure paths."""
+
+    def test_unlock_db_retrieve_failure_exits_clean(
+        self, home_with_key: WorthlessHome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exception during repo.retrieve -> exit_code=1 with WRTLS."""
+        from worthless.storage.repository import ShardRepository
+
+        async def _boom(self, _alias):
+            raise Exception("DB corrupt")
+
+        monkeypatch.setattr(
+            "worthless.storage.repository.ShardRepository.retrieve", _boom,
+        )
+
+        # Find the alias from the enrolled key
+        aliases = [f.name for f in home_with_key.shard_a_dir.iterdir() if f.is_file()]
+        assert len(aliases) == 1
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--alias", aliases[0]],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
+        assert "WRTLS" in result.output
+
+    def test_unlock_shard_a_read_failure_exits_clean(
+        self, home_with_key: WorthlessHome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PermissionError reading shard_a file -> exit_code=1."""
+        _real_read_bytes = Path.read_bytes
+
+        def _fail_read(self):
+            if "shard_a" in str(self):
+                raise PermissionError("permission denied")
+            return _real_read_bytes(self)
+
+        monkeypatch.setattr(Path, "read_bytes", _fail_read)
+
+        aliases = [f.name for f in home_with_key.shard_a_dir.iterdir() if f.is_file()]
+        assert len(aliases) == 1
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--alias", aliases[0]],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
