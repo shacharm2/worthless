@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
@@ -24,12 +25,22 @@ def shannon_entropy(s: str) -> float:
     )
 
 
-def scan_env_keys(env_path: Path) -> list[tuple[str, str, str]]:
+def scan_env_keys(
+    env_path: Path,
+    is_decoy: Callable[[str], bool] | None = None,
+) -> list[tuple[str, str, str]]:
     """Find API keys in a ``.env`` file.
 
     Returns a list of ``(var_name, value, provider)`` tuples for lines
-    whose value matches a known provider prefix and has entropy above
-    the threshold (filtering out placeholders).
+    whose value matches a known provider prefix and is not a known decoy
+    or low-entropy placeholder.
+
+    Parameters
+    ----------
+    is_decoy:
+        Optional predicate that returns True for values that are known
+        decoys (checked via hash registry).  When provided, matching
+        values are skipped before the entropy check.
     """
     results: list[tuple[str, str, str]] = []
     text = env_path.read_text()
@@ -43,6 +54,8 @@ def scan_env_keys(env_path: Path) -> list[tuple[str, str, str]]:
         var_name = var_name.strip()
         value = raw_value.strip().strip("\"'")
         if not KEY_PATTERN.search(value):
+            continue
+        if is_decoy and is_decoy(value):
             continue
         if shannon_entropy(value) < ENTROPY_THRESHOLD:
             continue

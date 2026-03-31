@@ -299,6 +299,9 @@ class TestLockThenScan:
     def test_scan_shows_zero_unprotected_after_lock(
         self, home_dir: WorthlessHome, tmp_path: Path
     ) -> None:
+        import asyncio
+        from worthless.storage.repository import ShardRepository
+
         env = _make_env(tmp_path, "proj", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
@@ -306,9 +309,16 @@ class TestLockThenScan:
         r = runner.invoke(app, ["lock", "--env", str(env)], env=env_vars)
         assert r.exit_code == 0
 
-        # Scan the env file directly via the library (no CLI exit-code
-        # confusion from the scan command).
-        keys = scan_env_keys(env)
+        # Build decoy checker from the DB (WOR-31: decoys are high-entropy,
+        # so we need the hash registry to filter them)
+        repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+        asyncio.run(repo.initialize())
+        decoy_hashes = asyncio.run(repo.all_decoy_hashes())
+
+        def _is_decoy(value: str) -> bool:
+            return repo._compute_decoy_hash(value) in decoy_hashes
+
+        keys = scan_env_keys(env, is_decoy=_is_decoy)
         assert len(keys) == 0, f"Expected 0 unprotected keys after lock, got {keys}"
 
     def test_scan_cli_exit_zero_after_lock(

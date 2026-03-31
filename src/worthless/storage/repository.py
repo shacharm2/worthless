@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator, NamedTuple
@@ -9,7 +11,7 @@ from typing import AsyncIterator, NamedTuple
 import aiosqlite
 from cryptography.fernet import Fernet
 
-from worthless.storage.schema import init_db
+from worthless.storage.schema import init_db, migrate_db
 
 
 class EncryptedShard(NamedTuple):
@@ -71,6 +73,7 @@ class ShardRepository:
     def __init__(self, db_path: str, fernet_key: bytes) -> None:
         self._db_path = db_path
         self._fernet = Fernet(fernet_key)
+        self._fernet_key_bytes = fernet_key  # kept for HMAC-SHA256 decoy hashing
 
     @asynccontextmanager
     async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -80,8 +83,15 @@ class ShardRepository:
             yield db
 
     async def initialize(self) -> None:
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist, then run migrations."""
         await init_db(self._db_path)
+        await migrate_db(self._db_path)
+
+    def _compute_decoy_hash(self, value: str) -> str:
+        """Compute HMAC-SHA256 of *value* keyed with the Fernet key material."""
+        return hmac.new(
+            self._fernet_key_bytes, value.encode(), hashlib.sha256
+        ).hexdigest()
 
     # ------------------------------------------------------------------
     # Shard CRUD
@@ -309,3 +319,45 @@ class ShardRepository:
             )
             await db.commit()
             return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Decoy hash registry (WOR-31)
+    # ------------------------------------------------------------------
+
+    async def set_decoy_hash(
+        self, alias: str, env_path: str | None, decoy_value: str
+    ) -> None:
+        """Store the HMAC-SHA256 hash of *decoy_value* on the enrollment row."""
+        h = self._compute_decoy_hash(decoy_value)
+        async with self._connect() as db:
+            if env_path is None:
+                await db.execute(
+                    "UPDATE enrollments SET decoy_hash = ? "
+                    "WHERE key_alias = ? AND env_path IS NULL",
+                    (h, alias),
+                )
+            else:
+                await db.execute(
+                    "UPDATE enrollments SET decoy_hash = ? "
+                    "WHERE key_alias = ? AND env_path = ?",
+                    (h, alias, env_path),
+                )
+            await db.commit()
+
+    async def is_known_decoy(self, value: str) -> bool:
+        """Return True if *value* matches any stored decoy hash."""
+        h = self._compute_decoy_hash(value)
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT 1 FROM enrollments WHERE decoy_hash = ? LIMIT 1",
+                (h,),
+            )
+            return await cursor.fetchone() is not None
+
+    async def all_decoy_hashes(self) -> set[str]:
+        """Return the set of all non-NULL decoy_hash values (for batch checks)."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT decoy_hash FROM enrollments WHERE decoy_hash IS NOT NULL"
+            )
+            return {row[0] for row in await cursor.fetchall()}

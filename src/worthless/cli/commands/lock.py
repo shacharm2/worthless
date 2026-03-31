@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import os
 import re
@@ -14,6 +13,7 @@ import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, ensure_home, get_home
 from worthless.cli.console import get_console
+from worthless.cli.decoy import make_decoy
 from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.key_patterns import detect_prefix, detect_provider
@@ -31,23 +31,6 @@ def _make_alias(provider: str, api_key: str) -> str:
     return f"{provider}-{digest}"
 
 
-def _make_decoy(original: str, prefix: str, shard_a: bytes) -> str:
-    """Build a prefix-preserving decoy of the same length as *original*.
-
-    The decoy uses a low-entropy repeating pattern so that scan_env_keys()
-    filters it out on re-scan (Shannon entropy < 4.5 threshold), making
-    lock idempotent.  The 8-char hex digest gives the decoy a unique look
-    while keeping overall entropy low via the repeating 'WRTLS' filler.
-    """
-    suffix_len = len(original) - len(prefix)
-    # Use 8 hex chars from shard_a hash for some uniqueness, then fill with
-    # low-entropy repeating pattern to stay below the entropy threshold.
-    tag = hashlib.sha256(shard_a).hexdigest()[:8]  # nosec B303 — non-cryptographic fingerprint
-    filler = "WRTLS" * ((suffix_len // 5) + 2)
-    raw = tag + filler
-    return prefix + raw[:suffix_len]
-
-
 def _lock_keys(
     env_path: Path,
     home: WorthlessHome,
@@ -62,14 +45,21 @@ def _lock_keys(
     if env_path.is_symlink():
         raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"Refusing to follow symlink: {env_path}")
 
-    keys = scan_env_keys(env_path)
-    if not keys:
-        console.print_warning("No unprotected API keys found.")
-        return 0
-
     async def _lock_async() -> int:
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         await repo.initialize()
+
+        # Pre-fetch decoy hashes for sync predicate injection
+        decoy_hashes = await repo.all_decoy_hashes()
+
+        def _is_decoy(value: str) -> bool:
+            return repo._compute_decoy_hash(value) in decoy_hashes
+
+        keys = scan_env_keys(env_path, is_decoy=_is_decoy)
+        if not keys:
+            console.print_warning("No unprotected API keys found.")
+            return 0
+
         count = 0
 
         for var_name, value, detected_provider in keys:
@@ -106,8 +96,10 @@ def _lock_keys(
                     prefix = detect_prefix(value, provider)
                 except ValueError:
                     prefix = ""
-                decoy = _make_decoy(value, prefix, existing_shard_a)
+                decoy = make_decoy(provider, prefix)
                 rewrite_env_key(env_path, var_name, decoy)
+                env_str = str(env_path.resolve())
+                await repo.set_decoy_hash(alias, env_str, decoy)
                 count += 1
                 continue
 
@@ -143,8 +135,9 @@ def _lock_keys(
                 shard_a_written = True
 
                 # .env rewrite last
-                decoy = _make_decoy(value, prefix, bytes(sr.shard_a))
+                decoy = make_decoy(provider, prefix)
                 rewrite_env_key(env_path, var_name, decoy)
+                await repo.set_decoy_hash(alias, str(env_path.resolve()), decoy)
 
                 count += 1
             except Exception:

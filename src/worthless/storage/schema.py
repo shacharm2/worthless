@@ -42,12 +42,15 @@ CREATE TABLE IF NOT EXISTS enrollments (
     key_alias  TEXT NOT NULL REFERENCES shards(key_alias) ON DELETE CASCADE,
     var_name   TEXT NOT NULL,
     env_path   TEXT,
+    decoy_hash TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(key_alias, var_name, env_path)
 );
 
 CREATE INDEX IF NOT EXISTS idx_spend_log_alias ON spend_log (key_alias);
 CREATE INDEX IF NOT EXISTS idx_enrollments_alias ON enrollments (key_alias);
+CREATE INDEX IF NOT EXISTS idx_enrollments_decoy_hash
+    ON enrollments (decoy_hash) WHERE decoy_hash IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollments_null_path
     ON enrollments (key_alias, var_name) WHERE env_path IS NULL;
 """
@@ -60,3 +63,20 @@ async def init_db(db_path: str) -> None:
         await db.executescript(SCHEMA)
         await db.execute("PRAGMA journal_mode=WAL")
         await db.commit()
+
+
+async def migrate_db(db_path: str) -> None:
+    """Apply forward-only migrations for existing databases."""
+    async with aiosqlite.connect(db_path) as db:
+        # WOR-31: Add decoy_hash column to enrollments
+        cursor = await db.execute("PRAGMA table_info(enrollments)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "decoy_hash" not in columns:
+            await db.execute(
+                "ALTER TABLE enrollments ADD COLUMN decoy_hash TEXT"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_enrollments_decoy_hash "
+                "ON enrollments (decoy_hash) WHERE decoy_hash IS NOT NULL"
+            )
+            await db.commit()

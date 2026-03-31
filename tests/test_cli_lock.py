@@ -111,16 +111,14 @@ class TestLockCommand:
     def test_lock_prefix_preservation(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
-        """Decoy value should preserve prefix and match original length."""
-        original = env_file.read_text().strip().split("=", 1)[1]
-        original_len = len(original)
-
+        """Decoy value should preserve prefix and match provider format length (WOR-31)."""
         result = runner.invoke(app, ["lock", "--env", str(env_file)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
         assert result.exit_code == 0
 
         decoy = env_file.read_text().strip().split("=", 1)[1]
         assert decoy.startswith("sk-proj-")
-        assert len(decoy) == original_len
+        # WOR-31: decoys match provider format length (164 for OpenAI), not original
+        assert len(decoy) == 164
 
     def test_lock_multiple_keys(
         self, home_dir: WorthlessHome, multi_env_file: Path

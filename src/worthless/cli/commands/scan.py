@@ -12,10 +12,11 @@ from typing import Literal, Optional
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, ensure_home
+from worthless.cli.bootstrap import WorthlessHome, ensure_home, get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
+from worthless.storage.repository import ShardRepository
 
 
 def _find_git_dir() -> Path | None:
@@ -169,6 +170,41 @@ def _install_hook() -> None:
     hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _build_decoy_checker():
+    """Try to build an is_decoy predicate from the worthless DB.
+
+    Returns None if the DB is unavailable (CI/offline mode).
+    """
+    import asyncio
+
+    try:
+        home = get_home()
+    except Exception:
+        return None
+
+    if not home.db_path.exists():
+        return None
+
+    try:
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+
+        async def _load():
+            await repo.initialize()
+            return await repo.all_decoy_hashes()
+
+        decoy_hashes = asyncio.run(_load())
+    except Exception:
+        return None
+
+    if not decoy_hashes:
+        return None
+
+    def _is_decoy(value: str) -> bool:
+        return repo._compute_decoy_hash(value) in decoy_hashes
+
+    return _is_decoy
+
+
 def register_scan_commands(app: typer.Typer) -> None:
     """Register the scan command on the Typer app."""
 
@@ -216,8 +252,11 @@ def register_scan_commands(app: typer.Typer) -> None:
             else:
                 scan_paths = _collect_fast_paths(explicit)
 
+            # Build decoy checker from DB if available
+            is_decoy = _build_decoy_checker()
+
             # Run scan
-            findings = scan_files(scan_paths)
+            findings = scan_files(scan_paths, is_decoy=is_decoy)
 
             # Count unprotected
             unprotected = [f for f in findings if not f.is_protected]
