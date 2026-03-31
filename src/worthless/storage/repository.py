@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator, NamedTuple
 
 import aiosqlite
 from cryptography.fernet import Fernet
 
-from worthless.storage.schema import init_db
+from worthless.storage.schema import init_db, migrate_db
 
 
 class EncryptedShard(NamedTuple):
@@ -35,6 +37,7 @@ class EnrollmentRecord:
     key_alias: str
     var_name: str
     env_path: str | None = None
+    decoy_hash: str | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -71,6 +74,7 @@ class ShardRepository:
     def __init__(self, db_path: str, fernet_key: bytes) -> None:
         self._db_path = db_path
         self._fernet = Fernet(fernet_key)
+        self._fernet_key_bytes = fernet_key  # kept for HMAC-SHA256 decoy hashing
 
     @asynccontextmanager
     async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -80,8 +84,15 @@ class ShardRepository:
             yield db
 
     async def initialize(self) -> None:
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist, then run migrations."""
         await init_db(self._db_path)
+        await migrate_db(self._db_path)
+
+    def _compute_decoy_hash(self, value: str) -> str:
+        """Compute HMAC-SHA256 of *value* keyed with the Fernet key material."""
+        return hmac.new(
+            self._fernet_key_bytes, value.encode(), hashlib.sha256
+        ).hexdigest()
 
     # ------------------------------------------------------------------
     # Shard CRUD
@@ -250,20 +261,39 @@ class ShardRepository:
 
             if env_path is None:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path FROM enrollments "
+                    "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments "
                     "WHERE key_alias = ? LIMIT 1",
                     (alias,),
                 )
             else:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path FROM enrollments "
+                    "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments "
                     "WHERE key_alias = ? AND env_path = ?",
                     (alias, env_path),
                 )
             row = await cursor.fetchone()
             if row is None:
                 return None
-            return EnrollmentRecord(key_alias=row[0], var_name=row[1], env_path=row[2])
+            return EnrollmentRecord(
+                key_alias=row[0], var_name=row[1], env_path=row[2], decoy_hash=row[3],
+            )
+
+    async def find_enrollment_by_location(
+        self, var_name: str, env_path: str
+    ) -> EnrollmentRecord | None:
+        """Return the enrollment for *var_name* + *env_path*, or ``None``."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments "
+                "WHERE var_name = ? AND env_path = ?",
+                (var_name, env_path),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return EnrollmentRecord(
+                key_alias=row[0], var_name=row[1], env_path=row[2], decoy_hash=row[3],
+            )
 
     async def list_enrollments(self, alias: str | None = None) -> list[EnrollmentRecord]:
         """Return enrollment records, optionally filtered by *alias*."""
@@ -271,15 +301,18 @@ class ShardRepository:
 
             if alias is not None:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path FROM enrollments WHERE key_alias = ?",
+                    "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments WHERE key_alias = ?",
                     (alias,),
                 )
             else:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path FROM enrollments ORDER BY key_alias"
+                    "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments ORDER BY key_alias"
                 )
             rows = await cursor.fetchall()
-            return [EnrollmentRecord(key_alias=r[0], var_name=r[1], env_path=r[2]) for r in rows]
+            return [
+                EnrollmentRecord(key_alias=r[0], var_name=r[1], env_path=r[2], decoy_hash=r[3])
+                for r in rows
+            ]
 
     async def delete_enrollment(self, alias: str, env_path: str | None) -> bool:
         """Delete a single enrollment row. Returns True if deleted."""
@@ -309,3 +342,45 @@ class ShardRepository:
             )
             await db.commit()
             return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Decoy hash registry (WOR-31)
+    # ------------------------------------------------------------------
+
+    async def set_decoy_hash(
+        self, alias: str, env_path: str | None, decoy_value: str
+    ) -> None:
+        """Store the HMAC-SHA256 hash of *decoy_value* on the enrollment row."""
+        h = self._compute_decoy_hash(decoy_value)
+        async with self._connect() as db:
+            if env_path is None:
+                await db.execute(
+                    "UPDATE enrollments SET decoy_hash = ? "
+                    "WHERE key_alias = ? AND env_path IS NULL",
+                    (h, alias),
+                )
+            else:
+                await db.execute(
+                    "UPDATE enrollments SET decoy_hash = ? "
+                    "WHERE key_alias = ? AND env_path = ?",
+                    (h, alias, env_path),
+                )
+            await db.commit()
+
+    async def is_known_decoy(self, value: str) -> bool:
+        """Return True if *value* matches any stored decoy hash."""
+        h = self._compute_decoy_hash(value)
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT 1 FROM enrollments WHERE decoy_hash = ? LIMIT 1",
+                (h,),
+            )
+            return await cursor.fetchone() is not None
+
+    async def all_decoy_hashes(self) -> set[str]:
+        """Return the set of all non-NULL decoy_hash values (for batch checks)."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT decoy_hash FROM enrollments WHERE decoy_hash IS NOT NULL"
+            )
+            return {row[0] for row in await cursor.fetchall()}

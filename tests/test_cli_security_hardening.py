@@ -27,10 +27,11 @@ import pytest
 from cryptography.fernet import Fernet
 
 from worthless.cli.bootstrap import ensure_home
-from worthless.cli.commands.lock import _enroll_single, _lock_keys, _make_decoy
+from worthless.cli.commands.lock import _enroll_single, _lock_keys
+from worthless.cli.decoy import make_decoy
 from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys, shannon_entropy
 from worthless.cli.errors import WorthlessError
-from worthless.cli.key_patterns import ENTROPY_THRESHOLD
+from worthless.cli.key_patterns import ENTROPY_THRESHOLD, detect_prefix
 from worthless.cli.process import disable_core_dumps, spawn_proxy
 from worthless.cli.scanner import scan_files
 from worthless.crypto.splitter import split_key
@@ -297,43 +298,39 @@ class TestProviderGating:
 
 
 class TestEntropyFiltering:
-    """Low-entropy decoys must not be flagged by the scanner."""
+    """High-entropy decoys must be filtered by the hash registry, not entropy."""
 
-    def test_decoy_has_low_entropy(self) -> None:
-        """Decoys produced by _make_decoy must have entropy below threshold."""
-        original = "sk-proj-a3x7bK9mQ2rT4vU5wE1dF6gH8jL0pN2sR"
-        prefix = "sk-proj-"
-        shard_a = b"\xde\xad\xbe\xef" * 8
-        decoy = _make_decoy(original, prefix, shard_a)
+    def test_decoy_has_high_entropy(self) -> None:
+        """Decoys produced by make_decoy must have entropy ABOVE threshold (WOR-31)."""
+        decoy = make_decoy("openai", "sk-proj-")
         entropy = shannon_entropy(decoy)
-        assert entropy < ENTROPY_THRESHOLD, \
-            f"Decoy entropy {entropy:.2f} should be below threshold {ENTROPY_THRESHOLD}"
+        assert entropy > ENTROPY_THRESHOLD, \
+            f"Decoy entropy {entropy:.2f} should be above threshold {ENTROPY_THRESHOLD}"
 
-    def test_decoy_not_detected_by_scanner(self, tmp_path: Path) -> None:
-        """scan_files must not flag decoy values as real keys."""
-        original = "sk-proj-a3x7bK9mQ2rT4vU5wE1dF6gH8jL0pN2sR"
-        prefix = "sk-proj-"
-        shard_a = b"\xde\xad\xbe\xef" * 8
-        decoy = _make_decoy(original, prefix, shard_a)
+    def test_decoy_not_detected_by_scan_env_keys_with_predicate(self, tmp_path: Path) -> None:
+        """scan_env_keys must skip decoy values when is_decoy predicate is provided."""
+        decoy = make_decoy("openai", "sk-proj-")
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(f"OPENAI_API_KEY={decoy}\n")
+
+        # Without predicate, decoy IS detected (it's high entropy now)
+        results_no_pred = scan_env_keys(env_file)
+        assert len(results_no_pred) == 1, "High-entropy decoy should be detected without predicate"
+
+        # With predicate, decoy is filtered
+        results_with_pred = scan_env_keys(env_file, is_decoy=lambda v: v == decoy)
+        assert len(results_with_pred) == 0, "Decoy should be filtered by is_decoy predicate"
+
+    def test_decoy_detected_by_scanner_without_registry(self, tmp_path: Path) -> None:
+        """scan_files flags decoy values (they're high-entropy now — registry needed to filter)."""
+        decoy = make_decoy("openai", "sk-proj-")
 
         env_file = tmp_path / ".env"
         env_file.write_text(f"OPENAI_API_KEY={decoy}\n")
 
         findings = scan_files([env_file])
-        assert len(findings) == 0, f"Decoy should not be flagged, got: {findings}"
-
-    def test_decoy_not_detected_by_scan_env_keys(self, tmp_path: Path) -> None:
-        """scan_env_keys must skip decoy values (enabling lock idempotency)."""
-        original = "sk-proj-a3x7bK9mQ2rT4vU5wE1dF6gH8jL0pN2sR"
-        prefix = "sk-proj-"
-        shard_a = b"\xde\xad\xbe\xef" * 8
-        decoy = _make_decoy(original, prefix, shard_a)
-
-        env_file = tmp_path / ".env"
-        env_file.write_text(f"OPENAI_API_KEY={decoy}\n")
-
-        results = scan_env_keys(env_file)
-        assert len(results) == 0, f"Decoy should be filtered by entropy, got: {results}"
+        assert len(findings) == 1, "High-entropy decoy should be detected by scanner"
 
     def test_real_key_detected_by_scanner(self, tmp_path: Path) -> None:
         """Real high-entropy keys must be detected (control test)."""

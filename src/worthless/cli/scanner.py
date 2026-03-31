@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,16 +27,14 @@ class ScanFinding:
 
 def scan_files(
     paths: list[Path],
+    is_decoy: Callable[[str], bool] | None = None,
 ) -> list[ScanFinding]:
     """Scan files for API key patterns.
 
     Each file is read line-by-line. Matches with entropy below the
-    threshold are skipped (likely placeholders). If *enrollment_data*
-    is provided and contains the matched value, the finding is marked
-    ``is_protected=True``.
+    threshold are skipped (likely placeholders). If *is_decoy* is
+    provided, matching values are marked ``is_protected=True``.
     """
-    # TODO: Implement hash-based enrollment lookup for defense-in-depth.
-    # Currently decoy detection relies solely on entropy threshold.
     findings: list[ScanFinding] = []
 
     for path in paths:
@@ -55,7 +54,7 @@ def scan_files(
                 # Try to extract var_name from KEY=VALUE or KEY = "VALUE"
                 var_name = _extract_var_name(line, match.start())
 
-                is_protected = False
+                is_protected = bool(is_decoy and is_decoy(value))
 
                 findings.append(ScanFinding(
                     file=str(path),
