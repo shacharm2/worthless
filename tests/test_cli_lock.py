@@ -241,6 +241,83 @@ class TestLockNoMetaFiles:
         assert "ANTHROPIC_API_KEY" in var_names
 
 
+class TestLockErrorBranches:
+    """Error branch coverage for lock compensation paths."""
+
+    def test_lock_shard_a_write_failure_compensates(
+        self, home_dir: WorthlessHome, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PermissionError on shard_a write → DB enrollment rolled back, no orphans."""
+        _real_open = os.open
+
+        def _fail_shard_a(path, flags, *args, **kwargs):
+            if "shard_a" in str(path) and (flags & os.O_CREAT):
+                raise PermissionError(13, "Permission denied", path)
+            return _real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", _fail_shard_a)
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 1
+
+        # No orphan shard_a files
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
+        assert shard_a_files == []
+
+        # No enrollment in DB
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert aliases == []
+
+    def test_lock_env_rewrite_failure_compensates(
+        self, home_dir: WorthlessHome, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """IOError on .env rewrite → shard_a deleted, DB enrollment deleted."""
+        def _boom(*_args, **_kw):
+            raise IOError("disk full")
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.lock.rewrite_env_key", _boom,
+        )
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 1
+
+        # shard_a cleaned up
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
+        assert shard_a_files == []
+
+        # DB enrollment cleaned up
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert aliases == []
+
+    def test_lock_symlink_env_refused(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Lock refuses to follow symlinked .env files."""
+        real_env = tmp_path / "real.env"
+        real_env.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
+        link_env = tmp_path / "link.env"
+        link_env.symlink_to(real_env)
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(link_env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 1
+        assert "symlink" in result.output.lower()
+
+
 class TestEnrollCommand:
     """Tests for `worthless enroll`."""
 
