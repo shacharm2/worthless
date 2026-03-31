@@ -14,9 +14,9 @@ import typer
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, ensure_home, get_home
 from worthless.cli.console import get_console
 from worthless.cli.decoy import make_decoy
-from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys
+from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys, shannon_entropy
 from worthless.cli.errors import ErrorCode, WorthlessError
-from worthless.cli.key_patterns import detect_prefix, detect_provider
+from worthless.cli.key_patterns import ENTROPY_THRESHOLD, detect_prefix, detect_provider
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.crypto.splitter import split_key
 
@@ -25,10 +25,85 @@ from worthless.crypto.types import _zero_buf
 from worthless.storage.repository import ShardRepository, StoredShard
 
 
+# Pattern matching the literal "WRTLS" marker in old-format decoys.
+_OLD_DECOY_MARKER = "WRTLS"
+
+
 def _make_alias(provider: str, api_key: str) -> str:
     """Deterministic alias: provider + first 8 hex chars of sha256(key)."""
     digest = hashlib.sha256(api_key.encode()).hexdigest()[:8]  # nosec B303 — non-cryptographic fingerprint
     return f"{provider}-{digest}"
+
+
+async def _migrate_old_decoys(
+    env_path: Path,
+    repo: ShardRepository,
+) -> int:
+    """Upgrade old WRTLS-marker decoys to high-entropy CSPRNG format.
+
+    Old ``_make_decoy()`` generated values like
+    ``sk-proj-a1b2c3d4WRTLSWRTLSWRTLS...`` — low entropy, contains
+    the literal ``WRTLS`` substring.  These are invisible to
+    ``scan_env_keys()`` because their Shannon entropy falls below
+    ``ENTROPY_THRESHOLD``.
+
+    This function reads the ``.env`` file directly, identifies old
+    decoys by the ``WRTLS`` marker + low entropy, looks up the
+    matching enrollment, and replaces them with new format-correct
+    decoys.
+
+    Returns the number of decoys migrated.
+    """
+    console = get_console()
+    text = env_path.read_text()
+    env_str = str(env_path.resolve())
+    migrated = 0
+
+    for line in text.splitlines():
+        line_stripped = line.strip()
+        if not line_stripped or line_stripped.startswith("#"):
+            continue
+        if "=" not in line_stripped:
+            continue
+
+        var_name, _, raw_value = line_stripped.partition("=")
+        var_name = var_name.strip()
+        value = raw_value.strip().strip("\"'")
+
+        # Detect old decoys: must contain "WRTLS" AND have low entropy
+        if _OLD_DECOY_MARKER not in value:
+            continue
+        if shannon_entropy(value) >= ENTROPY_THRESHOLD:
+            continue
+
+        # Look up enrollment for this var_name + env_path
+        enrollment = await repo.find_enrollment_by_location(var_name, env_str)
+        if enrollment is None:
+            continue
+
+        # Only migrate if decoy_hash is not yet set (old decoys were
+        # created before the hash registry existed)
+        if enrollment.decoy_hash is not None:
+            continue
+
+        # Determine provider from the shard record
+        shard = await repo.fetch_encrypted(enrollment.key_alias)
+        if shard is None:
+            continue
+
+        provider = shard.provider
+        try:
+            prefix = detect_prefix(value, provider)
+        except ValueError:
+            prefix = ""
+
+        new_decoy = make_decoy(provider, prefix)
+        rewrite_env_key(env_path, var_name, new_decoy)
+        await repo.set_decoy_hash(enrollment.key_alias, env_str, new_decoy)
+        migrated += 1
+        console.print_success(f"Migrated old decoy for {var_name}")
+
+    return migrated
 
 
 def _lock_keys(
@@ -48,6 +123,9 @@ def _lock_keys(
     async def _lock_async() -> int:
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         await repo.initialize()
+
+        # Migrate old WRTLS-marker decoys before scanning
+        await _migrate_old_decoys(env_path, repo)
 
         # Pre-fetch decoy hashes for sync predicate injection
         decoy_hashes = await repo.all_decoy_hashes()

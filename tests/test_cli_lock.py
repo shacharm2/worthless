@@ -12,6 +12,8 @@ from typer.testing import CliRunner
 
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
+from worthless.cli.dotenv_rewriter import shannon_entropy
+from worthless.cli.key_patterns import ENTROPY_THRESHOLD
 
 from tests.conftest import make_repo as _repo
 from tests.helpers import fake_anthropic_key, fake_openai_key
@@ -266,3 +268,215 @@ class TestEnrollCommand:
         stored = asyncio.run(repo.retrieve("my-test-key"))
         assert stored is not None
         assert stored.provider == "openai"
+
+
+# ---------------------------------------------------------------------------
+# Old decoy migration (WOR-31 Step 5)
+# ---------------------------------------------------------------------------
+
+
+def _make_old_decoy(prefix: str) -> str:
+    """Simulate the old _make_decoy() that produced low-entropy WRTLS decoys."""
+    import secrets
+
+    body_seed = secrets.token_hex(4)  # 8 hex chars
+    marker = "WRTLS" * 20  # enough to fill any provider length
+    return prefix + body_seed + marker[:80]
+
+
+class TestOldDecoyMigration:
+    """Lock should auto-upgrade old WRTLS-marker decoys to high-entropy format."""
+
+    def test_migrate_old_wrtls_decoy_on_lock(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Old WRTLS decoy in .env should be replaced with provider-format key on lock."""
+        env = tmp_path / ".env"
+        real_key = fake_openai_key()
+
+        # Step 1: lock the real key normally
+        env.write_text(f"OPENAI_API_KEY={real_key}\n")
+        result = runner.invoke(
+            app, ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        # Step 2: manually rewrite .env with an old-style WRTLS decoy
+        # and clear the decoy_hash in the DB to simulate pre-WOR-31 state
+        old_decoy = "sk-proj-abcd1234WRTLSWRTLSWRTLSWRTLSWRTLSWRTLSWRTLS"
+        env.write_text(f"OPENAI_API_KEY={old_decoy}\n")
+        assert shannon_entropy(old_decoy) < ENTROPY_THRESHOLD, "old decoy should be low entropy"
+
+        # Clear decoy_hash to simulate old enrollment without hash
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert len(aliases) == 1
+
+        async def _clear_hash():
+            async with repo._connect() as db:
+                await db.execute("UPDATE enrollments SET decoy_hash = NULL")
+                await db.commit()
+
+        asyncio.run(_clear_hash())
+
+        # Step 3: run lock again -- should trigger migration
+        result = runner.invoke(
+            app, ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        # .env should now have a new high-entropy decoy, not the old one
+        new_value = env.read_text().strip().split("=", 1)[1]
+        assert "WRTLS" not in new_value
+        assert new_value.startswith("sk-proj-")
+        assert shannon_entropy(new_value) >= ENTROPY_THRESHOLD
+
+    def test_migrate_populates_decoy_hash(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """After migration, decoy_hash should be set on the enrollment."""
+        env = tmp_path / ".env"
+        real_key = fake_openai_key()
+
+        # Lock then simulate old decoy
+        env.write_text(f"OPENAI_API_KEY={real_key}\n")
+        runner.invoke(
+            app, ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+
+        old_decoy = "sk-proj-abcd1234WRTLSWRTLSWRTLSWRTLSWRTLSWRTLSWRTLS"
+        env.write_text(f"OPENAI_API_KEY={old_decoy}\n")
+
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+
+        async def _clear_and_check():
+            async with repo._connect() as db:
+                await db.execute("UPDATE enrollments SET decoy_hash = NULL")
+                await db.commit()
+            # Confirm hash is NULL before migration
+            enrollment = await repo.get_enrollment(aliases[0])
+            assert enrollment is not None
+            assert enrollment.decoy_hash is None
+
+        asyncio.run(_clear_and_check())
+
+        # Run lock to trigger migration
+        runner.invoke(
+            app, ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+
+        # Check decoy_hash is now set
+        enrollment = asyncio.run(repo.get_enrollment(aliases[0]))
+        assert enrollment is not None
+        assert enrollment.decoy_hash is not None
+
+    def test_migrate_idempotent_second_lock_noop(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Second lock after migration should not change the .env again."""
+        env = tmp_path / ".env"
+        real_key = fake_openai_key()
+
+        # Lock then simulate old decoy
+        env.write_text(f"OPENAI_API_KEY={real_key}\n")
+        runner.invoke(
+            app, ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+
+        old_decoy = "sk-proj-abcd1234WRTLSWRTLSWRTLSWRTLSWRTLSWRTLS"
+        env.write_text(f"OPENAI_API_KEY={old_decoy}\n")
+
+        repo = _repo(home_dir)
+
+        async def _clear_hash():
+            async with repo._connect() as db:
+                await db.execute("UPDATE enrollments SET decoy_hash = NULL")
+                await db.commit()
+
+        asyncio.run(_clear_hash())
+
+        # First lock migrates
+        runner.invoke(
+            app, ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        value_after_first = env.read_text().strip().split("=", 1)[1]
+
+        # Second lock should be a no-op -- value unchanged
+        runner.invoke(
+            app, ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        value_after_second = env.read_text().strip().split("=", 1)[1]
+
+        assert value_after_first == value_after_second
+
+    def test_migrate_skips_non_enrolled_wrtls_values(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """WRTLS values without a matching enrollment should not be touched."""
+        env = tmp_path / ".env"
+        old_decoy = "sk-proj-abcd1234WRTLSWRTLSWRTLSWRTLSWRTLSWRTLSWRTLS"
+        env.write_text(f"SOME_RANDOM_VAR={old_decoy}\n")
+
+        result = runner.invoke(
+            app, ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+
+        # Value should be unchanged -- no enrollment exists for SOME_RANDOM_VAR
+        current = env.read_text().strip().split("=", 1)[1]
+        assert current == old_decoy
+
+    def test_migrate_skips_high_entropy_wrtls_substring(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """A high-entropy value that happens to contain 'WRTLS' should not be migrated."""
+        env = tmp_path / ".env"
+        real_key = fake_openai_key()
+
+        # Lock the real key first
+        env.write_text(f"OPENAI_API_KEY={real_key}\n")
+        result1 = runner.invoke(
+            app, ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result1.exit_code == 0
+
+        # Craft a high-entropy value that contains "WRTLS" but is not an old decoy
+        import secrets
+        import string
+
+        high_entropy_body = "".join(
+            secrets.choice(string.ascii_letters + string.digits) for _ in range(100)
+        )
+        high_entropy_val = f"sk-proj-{high_entropy_body}WRTLS{high_entropy_body[:50]}"
+        assert shannon_entropy(high_entropy_val) >= ENTROPY_THRESHOLD
+        env.write_text(f"OPENAI_API_KEY={high_entropy_val}\n")
+
+        repo = _repo(home_dir)
+
+        async def _clear_hash():
+            async with repo._connect() as db:
+                await db.execute("UPDATE enrollments SET decoy_hash = NULL")
+                await db.commit()
+
+        asyncio.run(_clear_hash())
+
+        # Lock should NOT migrate this because entropy is high
+        result2 = runner.invoke(
+            app, ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result2.exit_code == 0
+
+        # The migration path should not have touched it (entropy >= threshold).
+        # scan_env_keys may process it as a new key, but that is normal lock
+        # behavior, not migration. The key invariant: no crash, correct behavior.

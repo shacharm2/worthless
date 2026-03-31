@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator, NamedTuple
 
 import aiosqlite
@@ -37,6 +37,7 @@ class EnrollmentRecord:
     key_alias: str
     var_name: str
     env_path: str | None = None
+    decoy_hash: str | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -260,20 +261,39 @@ class ShardRepository:
 
             if env_path is None:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path FROM enrollments "
+                    "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments "
                     "WHERE key_alias = ? LIMIT 1",
                     (alias,),
                 )
             else:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path FROM enrollments "
+                    "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments "
                     "WHERE key_alias = ? AND env_path = ?",
                     (alias, env_path),
                 )
             row = await cursor.fetchone()
             if row is None:
                 return None
-            return EnrollmentRecord(key_alias=row[0], var_name=row[1], env_path=row[2])
+            return EnrollmentRecord(
+                key_alias=row[0], var_name=row[1], env_path=row[2], decoy_hash=row[3],
+            )
+
+    async def find_enrollment_by_location(
+        self, var_name: str, env_path: str
+    ) -> EnrollmentRecord | None:
+        """Return the enrollment for *var_name* + *env_path*, or ``None``."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments "
+                "WHERE var_name = ? AND env_path = ?",
+                (var_name, env_path),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return EnrollmentRecord(
+                key_alias=row[0], var_name=row[1], env_path=row[2], decoy_hash=row[3],
+            )
 
     async def list_enrollments(self, alias: str | None = None) -> list[EnrollmentRecord]:
         """Return enrollment records, optionally filtered by *alias*."""
