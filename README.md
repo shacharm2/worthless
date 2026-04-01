@@ -61,13 +61,13 @@ asyncio.run(enroll_stub(
 ```bash
 # DEV ONLY — never use WORTHLESS_ALLOW_INSECURE in production
 WORTHLESS_FERNET_KEY="<paste key printed above>" WORTHLESS_ALLOW_INSECURE=true \
-  uv run uvicorn worthless.proxy.app:create_app --factory --port 8443
+  uv run uvicorn worthless.proxy.app:create_app --factory --port 8787
 ```
 
 ### Use it
 
 ```bash
-curl http://localhost:8443/v1/chat/completions \
+curl http://localhost:8787/v1/chat/completions \
   -H "x-worthless-alias: my-openai" \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "hello"}]}'
@@ -76,8 +76,8 @@ curl http://localhost:8443/v1/chat/completions \
 ### Health check
 
 ```bash
-curl http://localhost:8443/healthz   # liveness
-curl http://localhost:8443/readyz    # ready (DB connected, keys enrolled)
+curl http://localhost:8787/healthz   # liveness
+curl http://localhost:8787/readyz    # ready (DB connected, keys enrolled)
 ```
 
 ---
