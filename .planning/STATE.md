@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 04.1 context gathered
-last_updated: "2026-04-01T10:56:22.856Z"
-last_activity: 2026-03-27 — Completed 04-04 wrap/up commands (pipe death detection, ephemeral proxy, daemon mode)
+stopped_at: Completed 04.1-02-PLAN.md
+last_updated: "2026-04-01T13:43:36.926Z"
+last_activity: 2026-04-01 — Completed 04.1-01 code prerequisites (port standardization, wrap hardening, lint/test fixes)
 progress:
   total_phases: 8
   completed_phases: 5
-  total_plans: 13
-  completed_plans: 13
+  total_plans: 16
+  completed_plans: 15
   percent: 92
 ---
 
@@ -57,6 +57,7 @@ Progress: [█████████░] 92%
 | Phase 04-cli P04 | 5min | 2 tasks | 7 files |
 | Phase 04-cli P03 | 7min | 2 tasks | 7 files |
 | Phase 04.1 P01 | 10min | 2 tasks | 31 files |
+| Phase 04.1 P02 | 46min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -101,6 +102,9 @@ Recent decisions affecting current work:
 - [Phase 04.1-01]: Wrap OperationalError catch for pre-migration DBs without shards table
 - [Phase 04.1-01]: Import reordering: all imports before module-level code execution (conftest.py pattern)
 - [Phase 04.1-01]: StoredShard.zero() loop var renamed field->buf to avoid shadowing dataclass import
+- [Phase 04.1-02]: Forward-looking header name x-worthless-key used in all new docs (code rename in Plan 03)
+- [Phase 04.1-02]: worthless down omitted from quickstart — command does not exist yet, tracked as future feature
+- [Phase 04.1-02]: lock/unlock terminology enforced in all user-facing docs, enroll only in protocol/architecture docs
 
 ### Roadmap Evolution
 
@@ -119,6 +123,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-01T12:44:54Z
-Stopped at: Completed 04.1-01-PLAN.md
-Resume file: .planning/phases/04.1-post-cli-wave-1-overhaul/04.1-01-SUMMARY.md
+Last session: 2026-04-01T13:43:36.924Z
+Stopped at: Completed 04.1-02-PLAN.md
+Resume file: None
