@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 
 ## Current Position
 
-Phase: 04 of 5 (CLI)
-Plan: 4 of 4 in current phase
-Status: Executing Phase 04-cli
-Last activity: 2026-03-27 — Completed 04-04 wrap/up commands (pipe death detection, ephemeral proxy, daemon mode)
+Phase: 04.1 of 5 (Post-CLI Wave 1 Overhaul)
+Plan: 1 of 3 in current phase
+Status: Executing Phase 04.1-post-cli-wave-1-overhaul
+Last activity: 2026-04-01 — Completed 04.1-01 code prerequisites (port standardization, wrap hardening, lint/test fixes)
 
 Progress: [█████████░] 92%
 
@@ -56,6 +56,7 @@ Progress: [█████████░] 92%
 | Phase 04-cli P02 | 7min | 2 tasks | 8 files |
 | Phase 04-cli P04 | 5min | 2 tasks | 7 files |
 | Phase 04-cli P03 | 7min | 2 tasks | 7 files |
+| Phase 04.1 P01 | 10min | 2 tasks | 31 files |
 
 ## Accumulated Context
 
@@ -97,6 +98,9 @@ Recent decisions affecting current work:
 - [Phase 04-cli]: Pipe-based death detection via os.pipe() with WORTHLESS_LIVENESS_FD for robust proxy cleanup
 - [Phase 04-cli]: Exit codes follow ESLint/Semgrep convention: 0=clean, 1=unprotected, 2=error
 - [Phase 04-cli]: Proxy port discovered from PID file or WORTHLESS_PORT env var
+- [Phase 04.1-01]: Wrap OperationalError catch for pre-migration DBs without shards table
+- [Phase 04.1-01]: Import reordering: all imports before module-level code execution (conftest.py pattern)
+- [Phase 04.1-01]: StoredShard.zero() loop var renamed field->buf to avoid shadowing dataclass import
 
 ### Roadmap Evolution
 
@@ -115,6 +119,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-01T10:56:22.852Z
-Stopped at: Phase 04.1 context gathered
-Resume file: .planning/phases/04.1-post-cli-wave-1-overhaul/04.1-CONTEXT.md
+Last session: 2026-04-01T12:44:54Z
+Stopped at: Completed 04.1-01-PLAN.md
+Resume file: .planning/phases/04.1-post-cli-wave-1-overhaul/04.1-01-SUMMARY.md
