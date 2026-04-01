@@ -3,11 +3,11 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 04-03-PLAN.md
-last_updated: "2026-03-27T01:17:35.896Z"
+stopped_at: Phase 04.1 context gathered
+last_updated: "2026-04-01T10:56:22.856Z"
 last_activity: 2026-03-27 — Completed 04-04 wrap/up commands (pipe death detection, ephemeral proxy, daemon mode)
 progress:
-  total_phases: 6
+  total_phases: 8
   completed_phases: 5
   total_plans: 13
   completed_plans: 13
@@ -102,6 +102,7 @@ Recent decisions affecting current work:
 
 - Phase 03.1 inserted after Phase 3: Proxy Hardening (URGENT) — Fix 4 blockers and 7 high-severity findings from Phase 3 review
 - Phase 04.1 inserted after Phase 4: Post-CLI Wave 1 overhaul (URGENT) — Reconcile the Wave 1 story around the shipped CLI and restore honest support surfaces before Phase 5
+- Phase 04.2 inserted after Phase 04: Test Hardening (URGENT) — DRY consolidation, xdist speed, coverage gaps, live harness, fuzz targets, CI gate before Phase 5 security posture doc
 
 ### Pending Todos
 
@@ -114,6 +115,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-27T01:13:33.344Z
-Stopped at: Completed 04-03-PLAN.md
-Resume file: None
+Last session: 2026-04-01T10:56:22.852Z
+Stopped at: Phase 04.1 context gathered
+Resume file: .planning/phases/04.1-post-cli-wave-1-overhaul/04.1-CONTEXT.md
