@@ -8,11 +8,11 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, ensure_home, get_home
+from worthless.cli.bootstrap import get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
@@ -119,7 +119,10 @@ def _format_human(
 
     total = len(findings)
     lines.append("")
-    lines.append(f"Found {total} keys: {protected_count} protected, {unprotected_count} unprotected")
+    lines.append(
+        f"Found {total} keys: {protected_count} protected, "
+        f"{unprotected_count} unprotected"
+    )
 
     if unprotected_count > 0:
         if is_tty:
@@ -210,13 +213,29 @@ def register_scan_commands(app: typer.Typer) -> None:
 
     @app.command()
     def scan(
-        paths: Optional[list[Path]] = typer.Argument(None, help="Files to scan"),
-        deep: bool = typer.Option(False, "--deep", help="Extended scan (env vars, config files)"),
-        pre_commit: bool = typer.Option(False, "--pre-commit", help="Pre-commit hook mode"),
-        format_: str = typer.Option("text", "--format", "-f", help="Output format: text, sarif, json", show_choices=True),
-        show_suffix: bool = typer.Option(False, "--show-suffix", help="Show last 4 chars of keys"),
-        install_hook: bool = typer.Option(False, "--install-hook", help="Install git pre-commit hook"),
-        json_output: bool = typer.Option(False, "--json", help="Output JSON (alias for --format json)"),
+        paths: Optional[list[Path]] = typer.Argument(
+            None, help="Files to scan",
+        ),
+        deep: bool = typer.Option(
+            False, "--deep", help="Extended scan (env vars, config files)",
+        ),
+        pre_commit: bool = typer.Option(
+            False, "--pre-commit", help="Pre-commit hook mode",
+        ),
+        format_: str = typer.Option(
+            "text", "--format", "-f",
+            help="Output format: text, sarif, json",
+            show_choices=True,
+        ),
+        show_suffix: bool = typer.Option(
+            False, "--show-suffix", help="Show last 4 chars of keys",
+        ),
+        install_hook: bool = typer.Option(
+            False, "--install-hook", help="Install git pre-commit hook",
+        ),
+        json_output: bool = typer.Option(
+            False, "--json", help="Output JSON (alias for --format json)",
+        ),
     ) -> None:
         """Detect exposed API keys in files and environment."""
         console = get_console()
@@ -237,7 +256,10 @@ def register_scan_commands(app: typer.Typer) -> None:
             fmt = "json"
         if fmt not in ("text", "sarif", "json"):
             console.print_error(
-                WorthlessError(ErrorCode.SCAN_ERROR, f"Unknown format: {fmt!r} (use text, sarif, or json)")
+                WorthlessError(
+                    ErrorCode.SCAN_ERROR,
+                    f"Unknown format: {fmt!r} (use text, sarif, or json)",
+                )
             )
             raise typer.Exit(code=2)
 

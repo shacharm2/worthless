@@ -31,7 +31,7 @@ from worthless.cli.commands.lock import _enroll_single, _lock_keys
 from worthless.cli.decoy import make_decoy
 from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys, shannon_entropy
 from worthless.cli.errors import WorthlessError
-from worthless.cli.key_patterns import ENTROPY_THRESHOLD, detect_prefix
+from worthless.cli.key_patterns import ENTROPY_THRESHOLD
 from worthless.cli.process import disable_core_dumps, spawn_proxy
 from worthless.cli.scanner import scan_files
 from worthless.crypto.splitter import split_key
@@ -408,8 +408,14 @@ class TestAtomicWrites:
             calls.append(f"mkstemp:{result[1]}")
             return result
 
-        with patch("worthless.cli.dotenv_rewriter.os.replace", side_effect=tracking_replace):
-            with patch("worthless.cli.dotenv_rewriter.tempfile.mkstemp", side_effect=tracking_mkstemp):
+        with patch(
+            "worthless.cli.dotenv_rewriter.os.replace",
+            side_effect=tracking_replace,
+        ):
+            with patch(
+                "worthless.cli.dotenv_rewriter.tempfile.mkstemp",
+                side_effect=tracking_mkstemp,
+            ):
                 rewrite_env_key(env_file, "MY_KEY", "new_value")
 
         assert any("mkstemp" in c for c in calls), "Must use tempfile.mkstemp"

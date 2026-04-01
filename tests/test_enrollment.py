@@ -1,10 +1,7 @@
 """Tests for enrollment consolidation — .meta files replaced by SQLite enrollments table."""
 import asyncio
-import os
 import sqlite3
-from pathlib import Path
-import pytest
-from worthless.storage.repository import ShardRepository, StoredShard, EnrollmentRecord
+from worthless.storage.repository import ShardRepository, StoredShard
 from worthless.crypto.splitter import split_key
 
 
@@ -17,7 +14,7 @@ class TestForeignKeys:
         db_path = str(tmp_path / "test.db")
         asyncio.run(init_db(db_path))
         conn = sqlite3.connect(db_path)
-        result = conn.execute("PRAGMA foreign_keys").fetchone()
+        conn.execute("PRAGMA foreign_keys").fetchone()
         conn.close()
         # Note: PRAGMA is per-connection, so this checks the default
         # The real test is that CASCADE works (see below)
@@ -72,7 +69,11 @@ class TestEnrollmentCRUD:
                 nonce=bytearray(sr.nonce),
                 provider="openai",
             )
-            await repo.store_enrolled("test-alias", shard, var_name="OPENAI_API_KEY", env_path="/home/user/project/.env")
+            await repo.store_enrolled(
+                "test-alias", shard,
+                var_name="OPENAI_API_KEY",
+                env_path="/home/user/project/.env",
+            )
 
             # Verify shard stored
             retrieved = await repo.retrieve("test-alias")
@@ -128,9 +129,15 @@ class TestEnrollmentCRUD:
                 provider="openai",
             )
             # First env file
-            await repo.store_enrolled("test-alias", shard, var_name="KEY", env_path="/project-a/.env")
+            await repo.store_enrolled(
+                "test-alias", shard,
+                var_name="KEY", env_path="/project-a/.env",
+            )
             # Second env file — same alias, different path
-            await repo.store_enrolled("test-alias", shard, var_name="KEY", env_path="/project-b/.env")
+            await repo.store_enrolled(
+                "test-alias", shard,
+                var_name="KEY", env_path="/project-b/.env",
+            )
 
             enrollments = await repo.list_enrollments("test-alias")
             assert len(enrollments) == 2
@@ -160,6 +167,9 @@ class TestEnrollmentsTable:
         db_path = str(tmp_path / "test.db")
         asyncio.run(init_db(db_path))
         conn = sqlite3.connect(db_path)
-        tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        tables = [row[0] for row in rows]
         conn.close()
         assert "enrollments" in tables

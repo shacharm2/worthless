@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
-import stat
 from pathlib import Path
 
 import pytest
@@ -15,7 +14,6 @@ from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 from worthless.cli.dotenv_rewriter import shannon_entropy
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD
-from worthless.storage.repository import ShardRepository
 
 from tests.conftest import make_repo as _repo
 from tests.helpers import fake_anthropic_key, fake_openai_key
@@ -50,7 +48,10 @@ class TestLockCommand:
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
         """Lock should split key, write shard_a, store shard_b in DB, rewrite .env."""
-        result = runner.invoke(app, ["lock", "--env", str(env_file)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+        result = runner.invoke(
+            app, ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
         assert result.exit_code == 0, result.output
 
         # .env should be rewritten (different from original)
@@ -102,11 +103,17 @@ class TestLockCommand:
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
         """Running lock twice should skip already-enrolled keys."""
-        result1 = runner.invoke(app, ["lock", "--env", str(env_file)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+        result1 = runner.invoke(
+            app, ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
         assert result1.exit_code == 0
 
         # Second run -- should skip the already-enrolled key
-        result2 = runner.invoke(app, ["lock", "--env", str(env_file)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+        result2 = runner.invoke(
+            app, ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
         assert result2.exit_code == 0
         # Still only one shard_a file
         shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
@@ -116,7 +123,10 @@ class TestLockCommand:
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
         """Decoy value should preserve prefix and match provider format length (WOR-31)."""
-        result = runner.invoke(app, ["lock", "--env", str(env_file)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+        result = runner.invoke(
+            app, ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
         assert result.exit_code == 0
 
         decoy = env_file.read_text().strip().split("=", 1)[1]
@@ -146,7 +156,10 @@ class TestLockCommand:
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
         """Lock file should not exist after command completes."""
-        result = runner.invoke(app, ["lock", "--env", str(env_file)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+        result = runner.invoke(
+            app, ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
         assert result.exit_code == 0
         assert not home_dir.lock_file.exists()
 

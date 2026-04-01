@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import re
 import string
 from collections import Counter
 

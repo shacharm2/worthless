@@ -5,13 +5,12 @@ from __future__ import annotations
 import json
 import os
 import sys
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, ensure_home, resolve_home
+from worthless.cli.bootstrap import WorthlessHome, resolve_home
 from worthless.cli.console import get_console
 from worthless.cli.process import read_pid
 

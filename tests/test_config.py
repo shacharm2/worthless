@@ -148,8 +148,11 @@ class TestFernetFdFallback:
 
     def test_fernet_from_fd(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_FERNET_FD", "99")
-        with patch("worthless.proxy.config.os.read", return_value=b"  fd-secret-key  \n") as mock_read, \
-             patch("worthless.proxy.config.os.close") as mock_close:
+        with (
+            patch("worthless.proxy.config.os.read",
+                  return_value=b"  fd-secret-key  \n") as mock_read,
+            patch("worthless.proxy.config.os.close") as mock_close,
+        ):
             key = _read_fernet_key()
         assert key == "fd-secret-key"
         mock_read.assert_called_once_with(99, 4096)
@@ -181,7 +184,7 @@ class TestFernetFdFallback:
         """When both fd and env are set, fd wins."""
         monkeypatch.setenv("WORTHLESS_FERNET_FD", "7")
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-value")
-        with patch("worthless.proxy.config.os.read", return_value=b"fd-value") as mock_read, \
+        with patch("worthless.proxy.config.os.read", return_value=b"fd-value"), \
              patch("worthless.proxy.config.os.close"):
             key = _read_fernet_key()
         assert key == "fd-value"

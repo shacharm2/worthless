@@ -10,12 +10,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from pathlib import Path
-from typing import Optional
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, ensure_home, get_home
+from worthless.cli.bootstrap import WorthlessHome, get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.process import (

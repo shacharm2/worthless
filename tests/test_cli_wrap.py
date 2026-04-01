@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import io
 import os
 import subprocess
 import sys
-import textwrap
 import threading
 import time
 from pathlib import Path
 from types import ModuleType
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from typer.testing import CliRunner

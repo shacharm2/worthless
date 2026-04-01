@@ -448,7 +448,6 @@ class TestUnlockErrorBranches:
         self, home_with_key: WorthlessHome, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Exception during repo.retrieve -> exit_code=1 with WRTLS."""
-        from worthless.storage.repository import ShardRepository
 
         async def _boom(self, _alias):
             raise Exception("DB corrupt")

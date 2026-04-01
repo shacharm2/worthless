@@ -21,7 +21,6 @@ from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome, _STALE_LOCK_SECONDS
 from worthless.cli.commands.lock import _make_alias
 from worthless.cli.dotenv_rewriter import scan_env_keys
-from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.scanner import scan_files
 from worthless.crypto.splitter import reconstruct_key, split_key
 from worthless.storage.repository import ShardRepository, StoredShard
@@ -1092,7 +1091,10 @@ class TestLockRejectsSymlinkEnv:
 
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         r = runner.invoke(app, ["lock", "--env", str(link_env)], env=env_vars)
-        assert r.exit_code == 1, f"Expected exit 1 (symlink rejected), got {r.exit_code}: {r.output}"
+        assert r.exit_code == 1, (
+            f"Expected exit 1 (symlink rejected), "
+            f"got {r.exit_code}: {r.output}"
+        )
         assert "symlink" in r.output.lower()
 
 

@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 from typer.testing import CliRunner
 
 from worthless.cli.app import app
@@ -33,7 +31,8 @@ class TestStatusNoEnrollment:
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 0
-        assert "no keys enrolled" in result.stderr.lower() or "no keys enrolled" in result.stdout.lower()
+        output = (result.stderr + result.stdout).lower()
+        assert "no keys enrolled" in output
 
     def test_status_json_no_keys(self, home_dir: WorthlessHome) -> None:
         """Status --json with no enrollment returns empty keys array."""
@@ -129,7 +128,6 @@ class TestStatusProxy:
         pid_file.write_text("99999\n18787\n")
 
         # Mock httpx.get to return healthy response
-        import httpx
 
         class MockResponse:
             status_code = 200
@@ -156,7 +154,6 @@ class TestStatusProxy:
         pid_file = home_with_key.base_dir / "proxy.pid"
         pid_file.write_text("99999\n18787\n")
 
-        import httpx
 
         class MockResponse:
             status_code = 200

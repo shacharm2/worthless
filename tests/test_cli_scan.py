@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -15,7 +14,6 @@ from typer.testing import CliRunner
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 
-from tests.helpers import fake_key as _fake_key
 from tests.helpers import fake_openai_key as _fake_openai_key
 from tests.helpers import fake_anthropic_key as _fake_anthropic_key
 
@@ -68,7 +66,9 @@ class TestFakeKeyGuard:
 
     def test_fake_anthropic_key_matches_pattern(self) -> None:
         from worthless.cli.key_patterns import KEY_PATTERN
-        assert KEY_PATTERN.match(_fake_anthropic_key()), "fake anthropic key no longer matches KEY_PATTERN"
+        assert KEY_PATTERN.match(_fake_anthropic_key()), (
+            "fake anthropic key no longer matches KEY_PATTERN"
+        )
 
     def test_fake_anthropic_key_above_entropy_threshold(self) -> None:
         from worthless.cli.dotenv_rewriter import shannon_entropy
@@ -212,7 +212,7 @@ class TestScanInstallHook:
         hook.write_text("#!/bin/sh\necho existing\n")
         hook.chmod(0o755)
 
-        result = runner.invoke(
+        runner.invoke(
             app,
             ["scan", "--install-hook"],
             env={"GIT_DIR": str(tmp_path / ".git")},

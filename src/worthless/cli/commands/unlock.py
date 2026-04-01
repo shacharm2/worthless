@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 from typing import Optional
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, acquire_lock, ensure_home, get_home
+from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import rewrite_env_key
 from worthless.cli.errors import ErrorCode, WorthlessError
@@ -49,7 +48,10 @@ async def _unlock_alias(
     try:
         stored = await repo.retrieve(alias)
         if stored is None:
-            raise WorthlessError(ErrorCode.KEY_NOT_FOUND, f"Shard B not found in DB for alias: {alias}")
+            raise WorthlessError(
+                ErrorCode.KEY_NOT_FOUND,
+                f"Shard B not found in DB for alias: {alias}",
+            )
 
         # Read var_name from DB enrollment -- check for ambiguity
         env_str = str(env_path.resolve()) if env_path else None
