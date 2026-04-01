@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "worthless": {
+      "command": "worthless",
+      "args": ["up", "--port", "8787"],
+      "env": {}
+    }
+  },
+  "mcpProxy": {
+    "openai": {
+      "baseUrl": "http://localhost:8787"
+    },
+    "anthropic": {
+      "baseUrl": "http://localhost:8787"
+    }
+  }
+}
