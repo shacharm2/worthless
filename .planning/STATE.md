@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Phase 04.2 context gathered
-last_updated: "2026-04-02T14:33:55.465Z"
+stopped_at: Completed 04.2-01-PLAN.md
+last_updated: "2026-04-02T14:55:39.792Z"
 last_activity: 2026-04-02 — Completed 04.1-04 gap closure (test fix, README terminology, PROTOCOL.md link)
 progress:
   total_phases: 8
   completed_phases: 6
-  total_plans: 17
-  completed_plans: 17
+  total_plans: 20
+  completed_plans: 18
   percent: 100
 ---
 
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 
 ## Current Position
 
-Phase: 04.1 of 5 (Post-CLI Wave 1 Overhaul)
-Plan: 4 of 4 in current phase
-Status: Phase 04.1 Complete
-Last activity: 2026-04-02 — Completed 04.1-04 gap closure (test fix, README terminology, PROTOCOL.md link)
+Phase: 04.2 of 5 (Test Hardening)
+Plan: 1 of 3 in current phase
+Status: In Progress
+Last activity: 2026-04-02 — Completed 04.2-01 test infrastructure configuration
 
-Progress: [██████████] 100%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
@@ -60,6 +60,7 @@ Progress: [██████████] 100%
 | Phase 04.1 P02 | 46min | 3 tasks | 10 files |
 | Phase 04.1 P03 | 5min | 1 tasks | 3 files |
 | Phase 04.1 P04 | 3min | 2 tasks | 2 files |
+| Phase 04.2-test-hardening P01 | 4min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -110,6 +111,7 @@ Recent decisions affecting current work:
 - [Phase 04.1]: Header rename: mechanical sed sufficient for 3-file scope, no constant extraction needed
 - [Phase 04.1-04]: xdist temp file race fixed by isolating tempdir per test, not by stripping env keys
 - [Phase 04.1-04]: worthless enroll row removed from CLI table entirely per locked decision
+- [Phase 04.2-01]: Hypothesis CI profile uses derandomize=True and database=None for reproducible xdist-safe runs
 
 ### Roadmap Evolution
 
@@ -128,6 +130,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-02T14:33:55.460Z
-Stopped at: Phase 04.2 context gathered
-Resume file: .planning/phases/04.2-test-hardening/04.2-CONTEXT.md
+Last session: 2026-04-02T14:55:39.789Z
+Stopped at: Completed 04.2-01-PLAN.md
+Resume file: None
