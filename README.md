@@ -103,7 +103,6 @@ Every secrets tool protects the key until your app gets it. Worthless protects y
 ## What Worthless does NOT protect against
 
 - Memory inspection on a fully compromised host (same boundary as any process-level secret)
-- Supply-chain attacks that modify Worthless itself
 - Keys already leaked before locking -- lock your keys *before* they're exposed
 - Upstream provider outages or content safety
 
