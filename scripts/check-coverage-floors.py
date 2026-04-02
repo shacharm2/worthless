@@ -37,7 +37,7 @@ def main() -> int:
     # Check per-module floors
     seen_modules: set[str] = set()
     for pkg in root.findall(".//package"):
-        name = pkg.get("name", "").replace("/", ".")
+        name = pkg.get("name", "").replace("/", ".").removeprefix("src.")
         rate = float(pkg.get("line-rate", 0)) * 100
         for module, floor in FLOORS.items():
             if name == module or name.startswith(module + "."):
