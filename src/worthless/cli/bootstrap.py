@@ -95,7 +95,7 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
 
 
 def _init_db(home: WorthlessHome) -> None:
-    """Create the SQLite database using the canonical schema."""
+    """Create the SQLite database using the canonical schema and run migrations."""
     import sqlite3
 
     from worthless.storage.schema import SCHEMA
@@ -103,6 +103,29 @@ def _init_db(home: WorthlessHome) -> None:
     conn = sqlite3.connect(str(home.db_path))
     try:
         conn.execute("PRAGMA foreign_keys = ON")
+
+        # Run forward-only migrations BEFORE the full schema so that
+        # upgraded installs whose enrollments table pre-dates the
+        # decoy_hash column get it added before CREATE INDEX touches it.
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "enrollments" in tables:
+            cursor = conn.execute("PRAGMA table_info(enrollments)")
+            columns = {row[1] for row in cursor.fetchall()}
+            if "decoy_hash" not in columns:
+                try:
+                    conn.execute(
+                        "ALTER TABLE enrollments ADD COLUMN decoy_hash TEXT"
+                    )
+                    conn.commit()
+                except sqlite3.OperationalError as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+
         conn.executescript(SCHEMA)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.commit()

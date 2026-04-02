@@ -120,7 +120,10 @@ def _lock_keys(
         raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"File not found: {env_path}")
 
     if env_path.is_symlink():
-        raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"Refusing to follow symlink: {env_path}")
+        raise WorthlessError(
+            ErrorCode.ENV_NOT_FOUND,
+            f"Refusing to follow symlink: {env_path}",
+        )
 
     async def _lock_async() -> int:
         repo = ShardRepository(str(home.db_path), home.fernet_key)
@@ -169,7 +172,7 @@ def _lock_keys(
                 # Shard fully enrolled -- still need to:
                 # 1. Create enrollment for THIS var_name/env_path
                 # 2. Rewrite THIS .env line with a decoy
-                shard_a_path.read_bytes()
+                shard_a_path.read_bytes()  # validate file is readable
                 await repo.add_enrollment(
                     alias, var_name=var_name, env_path=str(env_path.resolve()),
                 )
@@ -264,7 +267,9 @@ def _enroll_single(
     """Enroll a single key (no .env scanning)."""
     _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
     if not _ALIAS_RE.match(alias):
-        raise WorthlessError(ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}")
+        raise WorthlessError(
+            ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}"
+        )
 
     async def _enroll_async():
         repo = ShardRepository(str(home.db_path), home.fernet_key)
@@ -275,7 +280,9 @@ def _enroll_single(
             nonce=bytearray(sr.nonce),
             provider=provider,
         )
-        await repo.store_enrolled(alias, stored, var_name=alias, env_path=None)
+        await repo.store_enrolled(
+            alias, stored, var_name=alias, env_path=None,
+        )
 
     sr = split_key(key.encode())
     try:
@@ -316,7 +323,9 @@ def register_lock_commands(app: typer.Typer) -> None:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc
         except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
+            console.print_error(
+                WorthlessError(ErrorCode.UNKNOWN, str(exc))
+            )
             raise typer.Exit(code=1) from exc
 
     @app.command()
@@ -357,5 +366,7 @@ def register_lock_commands(app: typer.Typer) -> None:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc
         except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
+            console.print_error(
+                WorthlessError(ErrorCode.UNKNOWN, str(exc))
+            )
             raise typer.Exit(code=1) from exc
