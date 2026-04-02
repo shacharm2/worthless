@@ -41,7 +41,7 @@ Check what's protected:
 
 ```console
 $ worthless status
-Enrolled keys:
+Locked keys:
   openai-69ccc444  openai  PROTECTED
 
 Proxy: not running
@@ -93,9 +93,8 @@ The proxy holds Shard B (encrypted). Your machine holds Shard A. On each API cal
 | `worthless wrap CMD` | Ephemeral proxy + run CMD with injected `BASE_URL` |
 | `worthless up` | Start proxy on port 8787 (foreground) |
 | `worthless up -d` | Start proxy in daemon mode |
-| `worthless status` | Show enrolled keys and proxy health |
+| `worthless status` | Show locked keys and proxy health |
 | `worthless scan` | Detect exposed API keys in files |
-| `worthless enroll` | Enroll a single key (scripting/CI primitive) |
 
 ## Positioning
 
@@ -112,7 +111,7 @@ Every secrets tool protects the key until your app gets it. Worthless protects y
 
 Cryptographic primitives: XOR secret sharing, HMAC-SHA256 commitment. No novel cryptography -- standard constructions only. Shard B is encrypted at rest with Fernet (AES-128-CBC + HMAC-SHA256).
 
-**No independent security audit has been performed yet.** See [SECURITY_RULES.md](SECURITY_RULES.md) for the crypto invariants that all contributions must preserve.
+**No independent security audit has been performed yet.** See [SECURITY_RULES.md](SECURITY_RULES.md) for the crypto invariants that all contributions must preserve. For wire protocol details (headers, endpoints, error codes), see [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## Pre-commit hook
 
