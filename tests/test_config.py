@@ -149,8 +149,10 @@ class TestFernetFdFallback:
     def test_fernet_from_fd(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_FERNET_FD", "99")
         with (
-            patch("worthless.proxy.config.os.read",
-                  return_value=b"  fd-secret-key  \n") as mock_read,
+            patch(
+                "worthless.proxy.config.os.read",
+                return_value=b"  fd-secret-key  \n",
+            ) as mock_read,
             patch("worthless.proxy.config.os.close") as mock_close,
         ):
             key = _read_fernet_key()

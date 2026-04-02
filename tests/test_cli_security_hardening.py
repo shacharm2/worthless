@@ -408,10 +408,7 @@ class TestAtomicWrites:
             calls.append(f"mkstemp:{result[1]}")
             return result
 
-        with patch(
-            "worthless.cli.dotenv_rewriter.os.replace",
-            side_effect=tracking_replace,
-        ):
+        with patch("worthless.cli.dotenv_rewriter.os.replace", side_effect=tracking_replace):
             with patch(
                 "worthless.cli.dotenv_rewriter.tempfile.mkstemp",
                 side_effect=tracking_mkstemp,

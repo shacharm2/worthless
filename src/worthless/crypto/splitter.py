@@ -43,8 +43,9 @@ def split_key(api_key: bytes) -> SplitResult:
     # Create HMAC commitment over the original key
     # mutmut: skip — token_bytes(None) defaults to 32; equivalent mutant
     nonce = bytearray(secrets.token_bytes(32))
-    # nosec B303 — HMAC-SHA256, not standalone
-    commitment = bytearray(hmac.new(nonce, api_key, hashlib.sha256).digest())
+    commitment = bytearray(
+        hmac.new(nonce, api_key, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256, not standalone
+    )
 
     return SplitResult(
         shard_a=shard_a,
@@ -91,7 +92,9 @@ def reconstruct_key(
 
     try:
         # Verify HMAC commitment
-        expected = bytearray(hmac.new(nonce, key, hashlib.sha256).digest())  # nosec B303 — HMAC-SHA256, not standalone
+        expected = bytearray(
+            hmac.new(nonce, key, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256, not standalone
+        )
         if not hmac.compare_digest(expected, commitment):
             raise ShardTamperedError("HMAC verification failed: shard data has been tampered with")
     except Exception:

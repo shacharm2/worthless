@@ -31,8 +31,10 @@ class TestStatusNoEnrollment:
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 0
-        output = (result.stderr + result.stdout).lower()
-        assert "no keys enrolled" in output
+        assert (
+            "no keys enrolled" in result.stderr.lower()
+            or "no keys enrolled" in result.stdout.lower()
+        )
 
     def test_status_json_no_keys(self, home_dir: WorthlessHome) -> None:
         """Status --json with no enrollment returns empty keys array."""

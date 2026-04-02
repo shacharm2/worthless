@@ -73,19 +73,27 @@ def register_up_commands(app: typer.Typer) -> None:
                 if info is not None:
                     existing_pid, existing_port = info
                     if check_pid(existing_pid):
+                        msg = (
+                            f"Proxy already running "
+                            f"(PID {existing_pid} "
+                            f"on port {existing_port}). "
+                            f"Stop it first or use "
+                            f"a different port."
+                        )
                         console.print_error(
                             WorthlessError(
                                 ErrorCode.PORT_IN_USE,
-                                f"Proxy already running "
-                                f"(PID {existing_pid} on port {existing_port}). "
-                                f"Stop it first or use a different port.",
+                                msg,
                             )
                         )
                         raise typer.Exit(code=1)
                     else:
                         # Stale PID file -- reclaim
                         cleanup_stale_pid(pid_file)
-                        console.print_warning(f"Reclaimed stale PID file (was PID {existing_pid})")
+                        console.print_warning(
+                            f"Reclaimed stale PID file "
+                            f"(was PID {existing_pid})"
+                        )
 
             # Disable core dumps
             disable_core_dumps()
