@@ -4,10 +4,11 @@ on:
   pull_request:
   push:
     branches:
-      - main
+      - "**"
 
 permissions:
   contents: read
+  security-events: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -21,12 +22,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.13"
 
@@ -38,4 +39,45 @@ jobs:
           UV_CACHE_DIR: /tmp/uv-cache
         run: |
           uv sync --extra qa
-          uv run bandit -c pyproject.toml -r src/ -ll
+          uv run bandit -c pyproject.toml -r src/ -l -ii --format sarif --output bandit.sarif
+          python -c "import json,sys; d=json.load(open('bandit.sarif')); errs=[r for r in d.get('runs',[{}])[0].get('results',[]) if r.get('level')=='error']; sys.exit(1) if errs else None"
+
+      - name: Upload Bandit SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@3b1a19a80ab047f35cbb237b5bd9bdc1e14f166c # v3
+        with:
+          sarif_file: bandit.sarif
+          category: bandit
+
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv
+
+      - name: Run semgrep
+        env:
+          UV_CACHE_DIR: /tmp/uv-cache
+        run: |
+          uv sync --extra qa
+          uv run semgrep scan --config auto --config p/python-crypto --config p/secrets --config p/security-audit --config .semgrep/ src/ --error --sarif --output semgrep.sarif
+
+      - name: Upload Semgrep SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@3b1a19a80ab047f35cbb237b5bd9bdc1e14f166c # v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep

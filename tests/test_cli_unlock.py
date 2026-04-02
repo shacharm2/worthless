@@ -556,6 +556,41 @@ class TestUnlockNoAliases:
         assert "no enrolled" in result.output.lower()
 
 
+# ------------------------------------------------------------------
+# WOR-74: Multi-key unlock scenarios
+# ------------------------------------------------------------------
+
+
+class TestUnlockMultipleKeys:
+    """WOR-74: unlock handles multiple enrolled keys, each reconstructs correctly."""
+
+    def test_unlock_multiple_keys_each_reconstructs(
+        self, home_dir: WorthlessHome, multi_env_file: Path
+    ) -> None:
+        """Lock two different keys, unlock all, verify both original values restored."""
+        original = multi_env_file.read_text()
+        _lock(multi_env_file, home_dir)
+
+        # Verify both keys are enrolled
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert len(aliases) == 2, f"Expected 2 enrolled keys, got {len(aliases)}"
+
+        # Unlock all
+        result = runner.invoke(
+            app,
+            ["unlock", "--env", str(multi_env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        # Both original keys restored
+        restored = multi_env_file.read_text()
+        assert _TEST_KEY in restored, "OpenAI key not restored after unlock"
+        assert _TEST_KEY_2 in restored, "Anthropic key not restored after unlock"
+        assert restored == original
+
+
 class TestListAliasesNoDir:
     """_list_aliases returns [] when shard_a_dir doesn't exist."""
 

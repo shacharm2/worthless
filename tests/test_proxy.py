@@ -208,22 +208,31 @@ class TestUniformAuth:
 
 
 class TestGateBeforeReconstruct:
+    @pytest.mark.parametrize(
+        "status_code, error_body, extra_headers",
+        [
+            (402, b'{"error": "spend cap exceeded"}', {}),
+            (429, b'{"error": "rate limit exceeded"}', {"Retry-After": "1"}),
+        ],
+        ids=["spend-cap", "rate-limit"],
+    )
     @respx.mock
-    async def test_spend_cap_denial_skips_reconstruct(self, proxy_app, enrolled_alias):
-        """When rules engine denies (spend cap), reconstruct_key is never called."""
+    async def test_denial_skips_reconstruct(
+        self, proxy_app, enrolled_alias, status_code, error_body, extra_headers
+    ):
+        """When rules engine denies, reconstruct_key is never called."""
         alias, shard_a_b64, _ = enrolled_alias
 
         with patch("worthless.proxy.app.reconstruct_key", wraps=None) as mock_reconstruct:
-            # Override the rules engine to deny
             proxy_app.state.rules_engine = type(
                 "MockEngine",
                 (),
                 {
                     "evaluate": AsyncMock(
                         return_value=ErrorResponse(
-                            status_code=402,
-                            body=b'{"error": "spend cap exceeded"}',
-                            headers={"content-type": "application/json"},
+                            status_code=status_code,
+                            body=error_body,
+                            headers={"content-type": "application/json", **extra_headers},
                         )
                     )
                 },
@@ -239,40 +248,7 @@ class TestGateBeforeReconstruct:
                     },
                     content=b'{"model": "gpt-4", "messages": []}',
                 )
-            assert resp.status_code == 402
-            mock_reconstruct.assert_not_called()
-
-    @respx.mock
-    async def test_rate_limit_denial_skips_reconstruct(self, proxy_app, enrolled_alias):
-        """When rules engine denies (rate limit), reconstruct_key is never called."""
-        alias, shard_a_b64, _ = enrolled_alias
-
-        with patch("worthless.proxy.app.reconstruct_key", wraps=None) as mock_reconstruct:
-            proxy_app.state.rules_engine = type(
-                "MockEngine",
-                (),
-                {
-                    "evaluate": AsyncMock(
-                        return_value=ErrorResponse(
-                            status_code=429,
-                            body=b'{"error": "rate limit exceeded"}',
-                            headers={"content-type": "application/json", "Retry-After": "1"},
-                        )
-                    )
-                },
-            )()
-
-            transport = httpx.ASGITransport(app=proxy_app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.post(
-                    "/v1/chat/completions",
-                    headers={
-                        "x-worthless-key": alias,
-                        "x-worthless-shard-a": shard_a_b64,
-                    },
-                    content=b'{"model": "gpt-4", "messages": []}',
-                )
-            assert resp.status_code == 429
+            assert resp.status_code == status_code
             mock_reconstruct.assert_not_called()
 
     @respx.mock
@@ -344,9 +320,9 @@ class TestTransparentRouting:
         sr = split_key(api_key)
 
         shard = StoredShard(
-            shard_b=bytes(sr.shard_b),
-            commitment=bytes(sr.commitment),
-            nonce=bytes(sr.nonce),
+            shard_b=bytearray(sr.shard_b),
+            commitment=bytearray(sr.commitment),
+            nonce=bytearray(sr.nonce),
             provider="anthropic",
         )
         await repo.store("ant-key", shard)
@@ -584,6 +560,53 @@ async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo, sample_api_
     yield app, alias, sr.shard_a
     await app.state.httpx_client.aclose()
     await db.close()
+
+
+# ------------------------------------------------------------------
+# Upstream errors — 502/504 (WOR-75)
+# ------------------------------------------------------------------
+
+
+class TestUpstreamErrors:
+    """WOR-75: Proxy returns sanitized errors when upstream fails."""
+
+    @pytest.mark.parametrize(
+        "side_effect, expected_status, leaked_text",
+        [
+            (httpx.ConnectError("Connection refused"), 502, "Connection refused"),
+            (httpx.ReadTimeout("Read timed out"), 504, "Read timed out"),
+            (httpx.HTTPError("Something broke"), 502, "Something broke"),
+        ],
+        ids=["connect-error-502", "timeout-504", "generic-502"],
+    )
+    @respx.mock
+    async def test_upstream_error_returns_sanitized_response(
+        self,
+        proxy_client: httpx.AsyncClient,
+        enrolled_alias,
+        side_effect: httpx.HTTPError,
+        expected_status: int,
+        leaked_text: str,
+    ):
+        """Upstream errors are mapped to correct status and internal details are not leaked."""
+        alias, shard_a_b64, _ = enrolled_alias
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=side_effect
+        )
+
+        resp = await proxy_client.post(
+            "/v1/chat/completions",
+            headers={
+                "x-worthless-key": alias,
+                "x-worthless-shard-a": shard_a_b64,
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == expected_status
+        assert "error" in resp.json()
+        assert leaked_text not in resp.text
 
 
 class TestTransparentProxy:

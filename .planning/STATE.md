@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Completed 04.1-04-PLAN.md — Phase 04.1 gap closure complete
-last_updated: "2026-04-02T06:51:51.106Z"
-last_activity: 2026-04-02 — Completed 04.1-04 gap closure (test fix, README terminology, PROTOCOL.md link)
+status: executing
+stopped_at: Completed 04.2-02-PLAN.md
+last_updated: "2026-04-02T15:03:24.743Z"
+last_activity: 2026-04-02 — Completed 04.2-02 test backlog (WOR-73/74/75/76) and carryover audit
 progress:
   total_phases: 8
-  completed_phases: 6
-  total_plans: 17
-  completed_plans: 17
-  percent: 100
+  completed_phases: 7
+  total_plans: 20
+  completed_plans: 20
+  percent: 90
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 
 ## Current Position
 
-Phase: 04.1 of 5 (Post-CLI Wave 1 Overhaul)
-Plan: 4 of 4 in current phase
-Status: Phase 04.1 Complete
-Last activity: 2026-04-02 — Completed 04.1-04 gap closure (test fix, README terminology, PROTOCOL.md link)
+Phase: 04.2 of 5 (Test Hardening)
+Plan: 2 of 3 in current phase
+Status: In Progress
+Last activity: 2026-04-02 — Completed 04.2-02 test backlog (WOR-73/74/75/76) and carryover audit
 
-Progress: [██████████] 100%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
@@ -60,6 +60,9 @@ Progress: [██████████] 100%
 | Phase 04.1 P02 | 46min | 3 tasks | 10 files |
 | Phase 04.1 P03 | 5min | 1 tasks | 3 files |
 | Phase 04.1 P04 | 3min | 2 tasks | 2 files |
+| Phase 04.2-test-hardening P01 | 4min | 2 tasks | 3 files |
+| Phase 04.2-test-hardening P03 | 2min | 2 tasks | 6 files |
+| Phase 04.2-test-hardening P02 | 5min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -110,6 +113,11 @@ Recent decisions affecting current work:
 - [Phase 04.1]: Header rename: mechanical sed sufficient for 3-file scope, no constant extraction needed
 - [Phase 04.1-04]: xdist temp file race fixed by isolating tempdir per test, not by stripping env keys
 - [Phase 04.1-04]: worthless enroll row removed from CLI table entirely per locked decision
+- [Phase 04.2-01]: Hypothesis CI profile uses derandomize=True and database=None for reproducible xdist-safe runs
+- [Phase 04.2-03]: 5-tier CI: push (fast gate) -> PR (coverage) -> scheduled (mutation) -> pre-release (full audit) -> manual (benchmarks)
+- [Phase 04.2-03]: Zero-secrets CI: only github.token used, no external API keys needed
+- [Phase 04.2-03]: py-cov-action for coverage PR comments (works with default github.token)
+- [Phase 04.2]: Flaky decoy test confirmed fixed by 04.1 6-sigma bounds -- no quarantine needed
 
 ### Roadmap Evolution
 
@@ -128,6 +136,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-02T05:51:47Z
-Stopped at: Completed 04.1-04-PLAN.md — Phase 04.1 gap closure complete
+Last session: 2026-04-02T15:03:24.740Z
+Stopped at: Completed 04.2-02-PLAN.md
 Resume file: None

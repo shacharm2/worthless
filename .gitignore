@@ -62,8 +62,11 @@ uv.lock
 
 # Test/coverage artifacts
 .coverage
+coverage.xml
 htmlcov/
 .hypothesis/
+testsprite_prd.md
+testsprite_tests/
 
 # Misc
 history.md

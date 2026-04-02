@@ -340,3 +340,39 @@ class TestUpExceptionHandlers:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
         assert result.exit_code == 1
+
+
+# ------------------------------------------------------------------
+# WOR-73: CliRunner tests for `up` command
+# ------------------------------------------------------------------
+
+
+class TestUpStartsProxyBackground:
+    """WOR-73: up starts proxy in background via CliRunner."""
+
+    def test_up_starts_proxy_background(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CliRunner invokes `up`, mocked subprocess confirms proxy launch."""
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 12345
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.spawn_proxy",
+            lambda **_kw: (mock_proxy, 8787),
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.poll_health",
+            lambda *_a, **_kw: True,
+        )
+        mock_proxy.wait.return_value = 0
+
+        result = runner.invoke(
+            app,
+            ["up"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 0, f"up failed: {result.output}"
+        # Proxy was actually spawned (spawn_proxy was called)
+        # The mock_proxy.wait was called, confirming the proxy lifecycle ran
+        mock_proxy.wait.assert_called()
