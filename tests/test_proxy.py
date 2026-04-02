@@ -592,17 +592,31 @@ async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo, sample_api_
 
 
 class TestUpstreamErrors:
-    """WOR-75: Proxy returns sanitized 502/504 when upstream fails."""
+    """WOR-75: Proxy returns sanitized errors when upstream fails."""
 
+    @pytest.mark.parametrize(
+        "side_effect, expected_status, leaked_text",
+        [
+            (httpx.ConnectError("Connection refused"), 502, "Connection refused"),
+            (httpx.ReadTimeout("Read timed out"), 504, "Read timed out"),
+            (httpx.HTTPError("Something broke"), 502, "Something broke"),
+        ],
+        ids=["connect-error-502", "timeout-504", "generic-502"],
+    )
     @respx.mock
-    async def test_proxy_upstream_502_connect_error(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    async def test_upstream_error_returns_sanitized_response(
+        self,
+        proxy_client: httpx.AsyncClient,
+        enrolled_alias,
+        side_effect: httpx.HTTPError,
+        expected_status: int,
+        leaked_text: str,
     ):
-        """respx returns ConnectError, proxy returns sanitized 502 to client."""
+        """Upstream errors are mapped to correct status and internal details are not leaked."""
         alias, shard_a_b64, _ = enrolled_alias
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
-            side_effect=httpx.ConnectError("Connection refused")
+            side_effect=side_effect
         )
 
         resp = await proxy_client.post(
@@ -614,59 +628,9 @@ class TestUpstreamErrors:
             },
             content=b'{"model": "gpt-4", "messages": []}',
         )
-        assert resp.status_code == 502
-        body = resp.json()
-        assert "error" in body
-        # Should not leak internal connection details
-        assert "Connection refused" not in resp.text
-
-    @respx.mock
-    async def test_proxy_upstream_504_timeout(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
-    ):
-        """respx returns TimeoutException, proxy returns sanitized 504 to client."""
-        alias, shard_a_b64, _ = enrolled_alias
-
-        respx.post("https://api.openai.com/v1/chat/completions").mock(
-            side_effect=httpx.ReadTimeout("Read timed out")
-        )
-
-        resp = await proxy_client.post(
-            "/v1/chat/completions",
-            headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
-                "content-type": "application/json",
-            },
-            content=b'{"model": "gpt-4", "messages": []}',
-        )
-        assert resp.status_code == 504
-        body = resp.json()
-        assert "error" in body
-        # Should not leak internal timeout details
-        assert "Read timed out" not in resp.text
-
-    @respx.mock
-    async def test_proxy_upstream_generic_http_error_returns_502(
-        self, proxy_client: httpx.AsyncClient, enrolled_alias
-    ):
-        """Generic HTTPError from upstream returns sanitized 502."""
-        alias, shard_a_b64, _ = enrolled_alias
-
-        respx.post("https://api.openai.com/v1/chat/completions").mock(
-            side_effect=httpx.HTTPError("Something broke")
-        )
-
-        resp = await proxy_client.post(
-            "/v1/chat/completions",
-            headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
-                "content-type": "application/json",
-            },
-            content=b'{"model": "gpt-4", "messages": []}',
-        )
-        assert resp.status_code == 502
+        assert resp.status_code == expected_status
+        assert "error" in resp.json()
+        assert leaked_text not in resp.text
 
 
 class TestTransparentProxy:
