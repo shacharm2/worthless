@@ -495,15 +495,17 @@ class TestUnlockErrorBranches:
     def test_unlock_no_shard_b_in_db_exits_clean(
         self, home_dir: WorthlessHome, tmp_path: Path
     ) -> None:
-        """shard_a exists but no shard_b in DB -> error."""
+        """shard_a exists but no shard_b in DB -> WRTLS-102 error."""
         import os
 
         # Create shard_a file without DB entry
         alias = "orphan-alias"
         shard_a_path = home_dir.shard_a_dir / alias
         fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.write(fd, b"fake-shard-data")
-        os.close(fd)
+        try:
+            os.write(fd, b"fake-shard-data")
+        finally:
+            os.close(fd)
 
         result = runner.invoke(
             app,
@@ -511,6 +513,7 @@ class TestUnlockErrorBranches:
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 1
+        assert "WRTLS" in result.output
 
     def test_unlock_no_enrollment_prints_key(
         self, home_dir: WorthlessHome, env_file: Path
@@ -522,8 +525,8 @@ class TestUnlockErrorBranches:
 
         alias = "no-enrollment"
         sr = split_key(_TEST_KEY.encode())
+        shard_a_path = home_dir.shard_a_dir / alias
         try:
-            shard_a_path = home_dir.shard_a_dir / alias
             fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
                 os.write(fd, bytes(sr.shard_a))

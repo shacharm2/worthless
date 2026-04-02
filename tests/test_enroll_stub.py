@@ -16,6 +16,13 @@ from tests.helpers import fake_openai_key
 _TEST_KEY = fake_openai_key()
 
 
+async def _retrieve(db_path: str, fernet_key: bytes, alias: str):
+    """Helper: init repo and retrieve a stored shard."""
+    r = ShardRepository(db_path, fernet_key)
+    await r.initialize()
+    return await r.retrieve(alias)
+
+
 class TestEnrollStub:
     """Core enroll_stub behaviour."""
 
@@ -32,30 +39,22 @@ class TestEnrollStub:
         asyncio.run(
             enroll_stub("test-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
         )
-        repo = ShardRepository(tmp_db_path, fernet_key)
-        stored = asyncio.run(repo.initialize() or repo.retrieve("test-alias"))
 
-        async def _get():
-            r = ShardRepository(tmp_db_path, fernet_key)
-            await r.initialize()
-            return await r.retrieve("test-alias")
-
-        stored = asyncio.run(_get())
+        stored = asyncio.run(_retrieve(tmp_db_path, fernet_key, "test-alias"))
         assert stored is not None
         assert stored.provider == "openai"
+        assert len(stored.shard_b) > 0
+        assert len(stored.commitment) > 0
+        assert len(stored.nonce) > 0
 
     def test_reconstruct_roundtrip(self, tmp_db_path: str, fernet_key: bytes) -> None:
         """shard_a + shard_b from DB reconstruct the original key."""
         shard_a = asyncio.run(
             enroll_stub("rt-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
         )
+        assert shard_a is not None
 
-        async def _get():
-            r = ShardRepository(tmp_db_path, fernet_key)
-            await r.initialize()
-            return await r.retrieve("rt-alias")
-
-        stored = asyncio.run(_get())
+        stored = asyncio.run(_retrieve(tmp_db_path, fernet_key, "rt-alias"))
         key_buf = reconstruct_key(
             bytearray(shard_a), stored.shard_b, stored.commitment, stored.nonce
         )
@@ -101,3 +100,16 @@ class TestEnrollStub:
         )
         assert nested.exists()
         assert (nested / "nested-alias").exists()
+
+    def test_duplicate_alias_raises(
+        self, tmp_db_path: str, fernet_key: bytes
+    ) -> None:
+        """Enrolling the same alias twice raises (DB uniqueness constraint)."""
+        asyncio.run(
+            enroll_stub("dup-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
+        )
+        with pytest.raises(Exception):
+            asyncio.run(
+                enroll_stub("dup-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
+            )
+

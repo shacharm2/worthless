@@ -246,6 +246,14 @@ class TestUpErrorBranches:
         )
         # Daemon mode warns on health timeout but doesn't fail
         assert result.exit_code == 0
+        assert "health check timed out" in result.output.lower()
+
+        # PID file should still be written (daemon stays running)
+        pid_file = _pid_path(home_with_key)
+        assert pid_file.exists()
+        info = read_pid(pid_file)
+        assert info is not None
+        assert info[0] == 54321
 
 
 class TestUpStalePidReclaim:
@@ -278,7 +286,7 @@ class TestUpStalePidReclaim:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
         assert result.exit_code == 0
-        assert "Reclaimed" in result.output or "running" in result.output.lower()
+        assert "Reclaimed" in result.output
 
     def test_live_pid_blocks_startup(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
@@ -293,7 +301,7 @@ class TestUpStalePidReclaim:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
         assert result.exit_code == 1
-        assert "already running" in result.output.lower() or "WRTLS" in result.output
+        assert "WRTLS-107" in result.output
 
 
 class TestUpExceptionHandlers:

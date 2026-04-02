@@ -355,15 +355,13 @@ class TestWrapNoEnrolledKeysError:
         self, home_dir, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """wrap with no enrolled keys prints KEY_NOT_FOUND error."""
-        from worthless.cli.bootstrap import ensure_home
-
         result = runner.invoke(
             app,
             ["wrap", "--", "echo", "hi"],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 1
-        assert "lock" in result.output.lower() or "WRTLS" in result.output
+        assert "WRTLS-102" in result.output
 
 
 class TestCleanupProxyWithWriteFd:
@@ -428,3 +426,18 @@ class TestWrapExceptionHandlers:
         )
         assert result.exit_code == 1
         assert "WRTLS" in result.output
+
+    def test_generic_exception_in_wrap_exits_clean(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Generic Exception raised inside wrap -> exit_code=1."""
+        def _boom():
+            raise ValueError("unexpected")
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.get_home", _boom)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+        )
+        assert result.exit_code == 1
