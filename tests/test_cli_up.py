@@ -225,3 +225,110 @@ class TestUpErrorBranches:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
         assert result.exit_code == 1
+
+    def test_up_daemon_health_timeout_warns(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Daemon mode: health timeout prints warning but exits 0."""
+        mock_proc = MagicMock()
+        mock_proc.pid = 54321
+
+        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_proc)
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.poll_health",
+            lambda *_a, **_kw: False,
+        )
+
+        result = runner.invoke(
+            app,
+            ["up", "--daemon"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        # Daemon mode warns on health timeout but doesn't fail
+        assert result.exit_code == 0
+
+
+class TestUpStalePidReclaim:
+    """up detects stale PID and reclaims via the CLI path."""
+
+    def test_stale_pid_reclaimed_via_cli(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Existing stale PID file is reclaimed, proxy starts normally."""
+        pid_file = _pid_path(home_with_key)
+        write_pid(pid_file, 99999999, 8787)
+
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 11111
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.spawn_proxy",
+            lambda **_kw: (mock_proxy, 8787),
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.poll_health",
+            lambda *_a, **_kw: True,
+        )
+        # Prevent blocking on proxy.wait()
+        mock_proxy.wait.return_value = 0
+
+        result = runner.invoke(
+            app,
+            ["up"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 0
+        assert "Reclaimed" in result.output or "running" in result.output.lower()
+
+    def test_live_pid_blocks_startup(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Existing live PID file prevents starting a new proxy."""
+        pid_file = _pid_path(home_with_key)
+        write_pid(pid_file, os.getpid(), 8787)  # current process = alive
+
+        result = runner.invoke(
+            app,
+            ["up"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
+        assert "already running" in result.output.lower() or "WRTLS" in result.output
+
+
+class TestUpExceptionHandlers:
+    """Cover the WorthlessError and generic Exception handlers."""
+
+    def test_worthless_error_in_up_exits_clean(
+        self, monkeypatch: pytest.MonkeyPatch, home_with_key
+    ) -> None:
+        """WorthlessError raised inside up -> exit_code=1."""
+        from worthless.cli.errors import ErrorCode, WorthlessError
+
+        def _boom():
+            raise WorthlessError(ErrorCode.UNKNOWN, "test error")
+
+        monkeypatch.setattr("worthless.cli.commands.up.get_home", _boom)
+
+        result = runner.invoke(
+            app,
+            ["up"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
+
+    def test_generic_exception_in_up_exits_clean(
+        self, monkeypatch: pytest.MonkeyPatch, home_with_key
+    ) -> None:
+        """Generic Exception raised inside up -> exit_code=1."""
+        def _boom():
+            raise ValueError("unexpected")
+
+        monkeypatch.setattr("worthless.cli.commands.up.get_home", _boom)
+
+        result = runner.invoke(
+            app,
+            ["up"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
