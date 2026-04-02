@@ -1,17 +1,7 @@
 {
-  "mcpServers": {
-    "worthless": {
-      "command": "worthless",
-      "args": ["up", "--port", "8787"],
-      "env": {}
-    }
-  },
-  "mcpProxy": {
-    "openai": {
-      "baseUrl": "http://localhost:8787"
-    },
-    "anthropic": {
-      "baseUrl": "http://localhost:8787"
-    }
+  "NOTE": "Worthless is an HTTP proxy, not an MCP server. Start it with: worthless up -d",
+  "environment": {
+    "OPENAI_BASE_URL": "http://localhost:8787",
+    "ANTHROPIC_BASE_URL": "http://localhost:8787"
   }
 }

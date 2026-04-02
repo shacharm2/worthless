@@ -1,6 +1,10 @@
-# Install -- Claude Code, Cursor, or Windsurf (MCP)
+# Install -- Claude Code, Cursor, or Windsurf
 
-Run the Worthless proxy locally, then point your MCP-compatible editor at it.
+Run the Worthless proxy locally, then point your editor's SDK at it.
+
+> [!NOTE]
+> Worthless is an HTTP proxy, not an MCP stdio server. Your editor talks to AI
+> providers through it via `BASE_URL` — no MCP registration needed.
 
 ## Prerequisites
 
@@ -12,64 +16,60 @@ worthless lock          # protect your .env keys
 
 ## Claude Code
 
-Add to `.mcp.json` in your project root:
-
-```json
-{
-  "mcpServers": {
-    "worthless": {
-      "command": "worthless",
-      "args": ["up", "--port", "8787"],
-      "env": {}
-    }
-  }
-}
-```
-
-Or copy from [`examples/mcp.json`](../examples/mcp.json).
-
-Set your environment so the SDK routes through the proxy:
+Option A — use `wrap` (recommended):
 
 ```bash
+worthless wrap claude    # starts proxy, injects BASE_URL, launches Claude Code
+```
+
+Option B — run the proxy separately:
+
+```bash
+worthless up -d          # start proxy in background on port 8787
 export OPENAI_BASE_URL=http://localhost:8787
 export ANTHROPIC_BASE_URL=http://localhost:8787
-```
-
-Or use `worthless wrap` to inject these automatically:
-
-```bash
-worthless wrap claude
+claude                   # SDK calls route through the proxy
 ```
 
 ## Cursor
 
-Cursor reads MCP config from `~/.cursor/mcp.json`. Use the same JSON as above.
+Start the proxy, then configure Cursor's environment:
 
 ```bash
-cp examples/mcp.json ~/.cursor/mcp.json
+worthless up -d
 ```
 
-Then set `OPENAI_BASE_URL=http://localhost:8787` in Cursor's environment settings.
+In Cursor settings, add:
+
+```
+OPENAI_BASE_URL=http://localhost:8787
+```
+
+Or use `worthless wrap cursor` if Cursor supports being launched from the command line.
 
 ## Windsurf
 
-Windsurf reads MCP config from `~/.windsurf/mcp.json`. Same JSON format.
+Start the proxy, then configure Windsurf's environment:
 
 ```bash
-cp examples/mcp.json ~/.windsurf/mcp.json
+worthless up -d
 ```
 
-Set `OPENAI_BASE_URL=http://localhost:8787` in Windsurf's environment configuration.
+In Windsurf settings, add:
+
+```
+OPENAI_BASE_URL=http://localhost:8787
+```
 
 ## How it works
 
 1. `worthless lock` splits your API key and replaces `.env` with a decoy
-2. `worthless up` (or `wrap`) starts a local proxy on port 8787
+2. `worthless up` (or `wrap`) starts a local HTTP proxy on port 8787
 3. Your editor's SDK calls hit `localhost:8787` instead of the provider directly
 4. The proxy reconstructs the real key in memory, makes the upstream call, and zeros the key
 
 Your editor works identically. Your key is never stored in plaintext.
 
 > [!NOTE]
-> **Planned: Cloud MCP Server.** A hosted MCP server that eliminates the need to
-> run a local proxy is planned. See the [roadmap](../ROADMAP.md) for timeline.
+> **Planned: Cloud proxy.** A hosted proxy that eliminates the need to run locally
+> is planned. See the [roadmap](../ROADMAP.md) for timeline.

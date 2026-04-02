@@ -1,5 +1,10 @@
 # Install -- GitHub Actions
 
+> [!CAUTION]
+> **Planned — not functional yet.** The workflow below is aspirational. `worthless lock`
+> reads `.env` files, not shell environment variables, so `OPENAI_API_KEY` injected via
+> GitHub Secrets is not picked up. Functional CI gate testing is tracked in Phase 04.2.
+
 Run Worthless in CI to protect API keys during test runs and scan for exposed secrets.
 
 ## Workflow
@@ -63,4 +68,3 @@ jobs:
 > [!NOTE]
 > **Planned: Hosted proxy in CI.** A hosted proxy service that eliminates the need
 > to install Worthless in each CI run is planned for a future release.
-> Functional CI gate testing is tracked in Phase 04.2.
