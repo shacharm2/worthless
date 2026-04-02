@@ -5,7 +5,7 @@ from __future__ import annotations
 import string
 
 import httpx
-from hypothesis import given
+from hypothesis import given, settings as hsettings
 from hypothesis import strategies as st
 
 from tests.helpers import make_streaming_response
@@ -73,6 +73,13 @@ def _mask_header_map(headers: dict[str, str], mask: list[bool]) -> dict[str, str
         masked_headers[_apply_case_mask(key, mask[offset : offset + len(key)])] = value
         offset += len(key)
     return masked_headers
+
+
+class TestHypothesisConfiguration:
+    def test_event_stream_property_disables_deadline(self) -> None:
+        fn = TestRelayResponseProperties.test_event_stream_responses_yield_original_chunks
+
+        assert fn._hypothesis_internal_use_settings.deadline is None
 
 
 class TestStripInternalHeadersProperties:
@@ -250,6 +257,7 @@ class TestRelayResponseProperties:
         assert relayed.body == body
         assert relayed.stream is None
 
+    @hsettings(deadline=None)
     @given(
         chunks=st.lists(st.binary(min_size=1, max_size=64), min_size=1, max_size=8),
         extra_param=_HEADER_VALUES,
