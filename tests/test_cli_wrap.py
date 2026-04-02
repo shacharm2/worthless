@@ -394,6 +394,23 @@ class TestCleanupProxyWithWriteFd:
         _cleanup_proxy(mock, write_fd=w_fd)
         os.close(r_fd)
 
+    def test_cleanup_live_proxy_with_write_fd(self) -> None:
+        """_cleanup_proxy closes write_fd then terminates live proxy."""
+        r_fd, w_fd = os.pipe()
+
+        mock = MagicMock()
+        mock.poll.return_value = None  # proxy still alive
+        mock.wait.return_value = 0
+
+        _cleanup_proxy(mock, write_fd=w_fd, timeout=0.01)
+
+        # write_fd closed
+        with pytest.raises(OSError):
+            os.fstat(w_fd)
+        # proxy terminated
+        mock.terminate.assert_called()
+        os.close(r_fd)
+
 
 class TestListEnrolledProvidersNoDB:
     """_list_enrolled_providers returns [] when DB doesn't exist."""
@@ -430,7 +447,7 @@ class TestWrapExceptionHandlers:
     def test_generic_exception_in_wrap_exits_clean(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Generic Exception raised inside wrap -> exit_code=1."""
+        """Generic Exception raised inside wrap -> exit_code=1 with WRTLS-199."""
         def _boom():
             raise ValueError("unexpected")
 
@@ -441,3 +458,5 @@ class TestWrapExceptionHandlers:
             ["wrap", "--", "echo", "hi"],
         )
         assert result.exit_code == 1
+        # Generic exceptions are wrapped in WRTLS-199 (UNKNOWN)
+        assert "WRTLS-199" in result.output

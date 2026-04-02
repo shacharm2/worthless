@@ -104,11 +104,13 @@ class TestEnrollStub:
     def test_duplicate_alias_raises(
         self, tmp_db_path: str, fernet_key: bytes
     ) -> None:
-        """Enrolling the same alias twice raises (DB uniqueness constraint)."""
+        """Enrolling the same alias twice raises IntegrityError."""
+        import sqlite3
+
         asyncio.run(
             enroll_stub("dup-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
         )
-        with pytest.raises(Exception):
+        with pytest.raises(sqlite3.IntegrityError):
             asyncio.run(
                 enroll_stub("dup-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
             )
