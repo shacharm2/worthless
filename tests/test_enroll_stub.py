@@ -14,6 +14,7 @@ from worthless.crypto.splitter import reconstruct_key
 from tests.helpers import fake_anthropic_key, fake_openai_key
 
 _TEST_KEY = fake_openai_key()
+_TEST_KEY_2 = fake_anthropic_key()
 
 
 async def _retrieve(db_path: str, fernet_key: bytes, alias: str):
@@ -119,8 +120,6 @@ class TestEnrollStub:
 # ------------------------------------------------------------------
 # WOR-74: Multi-key enrollment
 # ------------------------------------------------------------------
-
-_TEST_KEY_2 = fake_anthropic_key()
 
 
 class TestEnrollStubMultipleKeys:

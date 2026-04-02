@@ -39,8 +39,8 @@ jobs:
           UV_CACHE_DIR: /tmp/uv-cache
         run: |
           uv sync --extra qa
-          uv run bandit -c pyproject.toml -r src/ -l -ii
-          uv run bandit -c pyproject.toml -r src/ -l -ii --format sarif --output bandit.sarif || true
+          uv run bandit -c pyproject.toml -r src/ -l -ii --format sarif --output bandit.sarif
+          python -c "import json,sys; d=json.load(open('bandit.sarif')); errs=[r for r in d.get('runs',[{}])[0].get('results',[]) if r.get('level')=='error']; sys.exit(1) if errs else None"
 
       - name: Upload Bandit SARIF
         if: always()
@@ -73,8 +73,7 @@ jobs:
           UV_CACHE_DIR: /tmp/uv-cache
         run: |
           uv sync --extra qa
-          uv run semgrep scan --config auto --config p/python-crypto --config p/secrets --config p/security-audit --config .semgrep/ src/ --error --quiet
-          uv run semgrep scan --config auto --config p/python-crypto --config p/secrets --config p/security-audit --config .semgrep/ src/ --sarif --output semgrep.sarif || true
+          uv run semgrep scan --config auto --config p/python-crypto --config p/secrets --config p/security-audit --config .semgrep/ src/ --error --sarif --output semgrep.sarif
 
       - name: Upload Semgrep SARIF
         if: always()

@@ -208,22 +208,31 @@ class TestUniformAuth:
 
 
 class TestGateBeforeReconstruct:
+    @pytest.mark.parametrize(
+        "status_code, error_body, extra_headers",
+        [
+            (402, b'{"error": "spend cap exceeded"}', {}),
+            (429, b'{"error": "rate limit exceeded"}', {"Retry-After": "1"}),
+        ],
+        ids=["spend-cap", "rate-limit"],
+    )
     @respx.mock
-    async def test_spend_cap_denial_skips_reconstruct(self, proxy_app, enrolled_alias):
-        """When rules engine denies (spend cap), reconstruct_key is never called."""
+    async def test_denial_skips_reconstruct(
+        self, proxy_app, enrolled_alias, status_code, error_body, extra_headers
+    ):
+        """When rules engine denies, reconstruct_key is never called."""
         alias, shard_a_b64, _ = enrolled_alias
 
         with patch("worthless.proxy.app.reconstruct_key", wraps=None) as mock_reconstruct:
-            # Override the rules engine to deny
             proxy_app.state.rules_engine = type(
                 "MockEngine",
                 (),
                 {
                     "evaluate": AsyncMock(
                         return_value=ErrorResponse(
-                            status_code=402,
-                            body=b'{"error": "spend cap exceeded"}',
-                            headers={"content-type": "application/json"},
+                            status_code=status_code,
+                            body=error_body,
+                            headers={"content-type": "application/json", **extra_headers},
                         )
                     )
                 },
@@ -239,40 +248,7 @@ class TestGateBeforeReconstruct:
                     },
                     content=b'{"model": "gpt-4", "messages": []}',
                 )
-            assert resp.status_code == 402
-            mock_reconstruct.assert_not_called()
-
-    @respx.mock
-    async def test_rate_limit_denial_skips_reconstruct(self, proxy_app, enrolled_alias):
-        """When rules engine denies (rate limit), reconstruct_key is never called."""
-        alias, shard_a_b64, _ = enrolled_alias
-
-        with patch("worthless.proxy.app.reconstruct_key", wraps=None) as mock_reconstruct:
-            proxy_app.state.rules_engine = type(
-                "MockEngine",
-                (),
-                {
-                    "evaluate": AsyncMock(
-                        return_value=ErrorResponse(
-                            status_code=429,
-                            body=b'{"error": "rate limit exceeded"}',
-                            headers={"content-type": "application/json", "Retry-After": "1"},
-                        )
-                    )
-                },
-            )()
-
-            transport = httpx.ASGITransport(app=proxy_app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.post(
-                    "/v1/chat/completions",
-                    headers={
-                        "x-worthless-key": alias,
-                        "x-worthless-shard-a": shard_a_b64,
-                    },
-                    content=b'{"model": "gpt-4", "messages": []}',
-                )
-            assert resp.status_code == 429
+            assert resp.status_code == status_code
             mock_reconstruct.assert_not_called()
 
     @respx.mock
@@ -345,8 +321,8 @@ class TestTransparentRouting:
 
         shard = StoredShard(
             shard_b=bytearray(sr.shard_b),
-            commitment=bytes(sr.commitment),
-            nonce=bytes(sr.nonce),
+            commitment=bytearray(sr.commitment),
+            nonce=bytearray(sr.nonce),
             provider="anthropic",
         )
         await repo.store("ant-key", shard)
