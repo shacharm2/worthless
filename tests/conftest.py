@@ -26,12 +26,18 @@ if os.environ.get("MUTANT_UNDER_TEST"):
     )
     settings.load_profile("mutmut")
 
-# CI-fast profile: cap Hypothesis examples for speed in parallel/CI runs.
-# Activate with: HYPOTHESIS_PROFILE=ci-fast
-settings.register_profile("ci-fast", max_examples=50)
+# CI profile: cap Hypothesis examples, derandomize for reproducibility,
+# disable on-disk database for xdist compatibility.
+# Activate with: HYPOTHESIS_PROFILE=ci
+settings.register_profile(
+    "ci",
+    max_examples=50,
+    derandomize=True,
+    database=None,
+)
 
-if os.environ.get("HYPOTHESIS_PROFILE") == "ci-fast":
-    settings.load_profile("ci-fast")
+if os.environ.get("HYPOTHESIS_PROFILE") == "ci":
+    settings.load_profile("ci")
 
 
 def make_repo(home: WorthlessHome) -> ShardRepository:
@@ -59,21 +65,11 @@ def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
     sr = split_key(key.encode())
     try:
         alias = "openai-a1b2c3d4"
-        shard_a_path = home_dir.shard_a_dir / alias
-        fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(fd, bytes(sr.shard_a))
-        finally:
-            os.close(fd)
+        write_shard_a(home_dir, alias, bytes(sr.shard_a))
 
-        repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+        repo = make_repo(home_dir)
         asyncio.run(repo.initialize())
-        stored = StoredShard(
-            shard_b=bytearray(sr.shard_b),
-            commitment=bytearray(sr.commitment),
-            nonce=bytearray(sr.nonce),
-            provider="openai",
-        )
+        stored = stored_shard_from_split(sr, provider="openai")
         asyncio.run(
             repo.store_enrolled(
                 alias,
