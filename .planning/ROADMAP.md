@@ -123,10 +123,10 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. SECURITY_POSTURE.md exists with protection status for each architectural invariant and its confidence level
   2. Known limitations of the Python PoC (memory model, GC non-determinism) are explicitly documented with the planned Rust mitigation path
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 05-01: TBD
+- [ ] 05-01-PLAN.md — Validation smoke test + SECURITY_POSTURE.md self-assessment document
 
 ## Progress
 
