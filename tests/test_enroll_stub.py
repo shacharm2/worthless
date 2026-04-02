@@ -11,7 +11,7 @@ from worthless.cli.enroll_stub import enroll_stub
 from worthless.storage.repository import ShardRepository
 from worthless.crypto.splitter import reconstruct_key
 
-from tests.helpers import fake_openai_key
+from tests.helpers import fake_anthropic_key, fake_openai_key
 
 _TEST_KEY = fake_openai_key()
 
@@ -114,4 +114,62 @@ class TestEnrollStub:
             asyncio.run(
                 enroll_stub("dup-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
             )
+
+
+# ------------------------------------------------------------------
+# WOR-74: Multi-key enrollment
+# ------------------------------------------------------------------
+
+_TEST_KEY_2 = fake_anthropic_key()
+
+
+class TestEnrollStubMultipleKeys:
+    """WOR-74: enroll_stub handles multi-key enrollment."""
+
+    def test_enroll_two_keys_both_stored(
+        self, tmp_db_path: str, fernet_key: bytes
+    ) -> None:
+        """Enrolling two different keys results in both being stored and retrievable."""
+        shard_a_1 = asyncio.run(
+            enroll_stub("key-openai", _TEST_KEY, "openai", tmp_db_path, fernet_key)
+        )
+        shard_a_2 = asyncio.run(
+            enroll_stub("key-anthropic", _TEST_KEY_2, "anthropic", tmp_db_path, fernet_key)
+        )
+
+        assert isinstance(shard_a_1, bytes)
+        assert isinstance(shard_a_2, bytes)
+
+        # Both are retrievable
+        stored_1 = asyncio.run(_retrieve(tmp_db_path, fernet_key, "key-openai"))
+        stored_2 = asyncio.run(_retrieve(tmp_db_path, fernet_key, "key-anthropic"))
+
+        assert stored_1 is not None
+        assert stored_2 is not None
+        assert stored_1.provider == "openai"
+        assert stored_2.provider == "anthropic"
+
+    def test_multi_key_reconstruct_roundtrip(
+        self, tmp_db_path: str, fernet_key: bytes
+    ) -> None:
+        """Both enrolled keys reconstruct correctly to their original values."""
+        shard_a_1 = asyncio.run(
+            enroll_stub("rt-openai", _TEST_KEY, "openai", tmp_db_path, fernet_key)
+        )
+        shard_a_2 = asyncio.run(
+            enroll_stub("rt-anthropic", _TEST_KEY_2, "anthropic", tmp_db_path, fernet_key)
+        )
+
+        stored_1 = asyncio.run(_retrieve(tmp_db_path, fernet_key, "rt-openai"))
+        stored_2 = asyncio.run(_retrieve(tmp_db_path, fernet_key, "rt-anthropic"))
+
+        key_1 = reconstruct_key(
+            bytearray(shard_a_1), stored_1.shard_b, stored_1.commitment, stored_1.nonce
+        )
+        key_2 = reconstruct_key(
+            bytearray(shard_a_2), stored_2.shard_b, stored_2.commitment, stored_2.nonce
+        )
+
+        assert key_1.decode() == _TEST_KEY
+        assert key_2.decode() == _TEST_KEY_2
 

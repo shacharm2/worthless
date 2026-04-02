@@ -458,3 +458,64 @@ class TestWrapExceptionHandlers:
         assert result.exit_code == 1
         # Generic exceptions are wrapped in WRTLS-199 (UNKNOWN)
         assert "WRTLS-199" in result.output
+
+
+# ------------------------------------------------------------------
+# WOR-73: CliRunner tests for `wrap` command
+# ------------------------------------------------------------------
+
+
+class TestWrapSetsEnvAndRunsCommand:
+    """WOR-73: wrap sets env vars and runs child command via CliRunner."""
+
+    def test_wrap_sets_env_and_runs_command(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CliRunner invokes `wrap`, confirms env vars set and subprocess called."""
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 55555
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+
+        mock_child = MagicMock()
+        mock_child.pid = 55556
+        mock_child.poll.return_value = 0
+        mock_child.returncode = 0
+        mock_child.wait.return_value = 0
+
+        captured_env: dict[str, str] = {}
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.spawn_proxy",
+            lambda **_kw: (mock_proxy, 9999),
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.poll_health",
+            lambda *_a, **_kw: True,
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.forward_signals",
+            lambda **_kw: None,
+        )
+
+        _real_popen = subprocess.Popen
+
+        def _capture_popen(*args, **kwargs):
+            env = kwargs.get("env", {})
+            captured_env.update(env)
+            return mock_child
+
+        monkeypatch.setattr("subprocess.Popen", _capture_popen)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 0, f"wrap failed: {result.output}"
+
+        # Verify env vars were injected for the enrolled provider
+        assert "OPENAI_BASE_URL" in captured_env, (
+            "wrap should inject OPENAI_BASE_URL for enrolled openai key"
+        )
+        assert "127.0.0.1" in captured_env["OPENAI_BASE_URL"]

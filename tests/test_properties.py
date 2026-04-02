@@ -1,10 +1,11 @@
-"""Property-based tests for adapter invariants."""
+"""Property-based tests for adapter invariants and crypto roundtrips."""
 
 from __future__ import annotations
 
 import string
 
 import httpx
+import pytest
 from hypothesis import given, settings as hsettings
 from hypothesis import strategies as st
 
@@ -12,6 +13,7 @@ from tests.helpers import make_streaming_response
 from worthless.adapters.anthropic import DEFAULT_ANTHROPIC_VERSION, AnthropicAdapter
 from worthless.adapters.openai import OpenAIAdapter
 from worthless.adapters.types import AdapterRequest, relay_response, strip_internal_headers
+from worthless.crypto.splitter import reconstruct_key, split_key
 
 _HOP_BY_HOP_HEADERS = (
     "connection",
@@ -277,3 +279,41 @@ class TestRelayResponseProperties:
         collected = await _collect_streaming_chunks(upstream)
 
         assert collected == chunks
+
+
+# ------------------------------------------------------------------
+# WOR-76: Split/reconstruct roundtrip property tests
+# ------------------------------------------------------------------
+
+
+class TestSplitReconstructProperties:
+    """WOR-76: Hypothesis roundtrip property tests for split/reconstruct."""
+
+    @given(key=st.binary(min_size=16, max_size=128))
+    @hsettings(max_examples=200)
+    def test_split_reconstruct_roundtrip_property(self, key: bytes) -> None:
+        """For arbitrary key bytes (16-128 len), split then reconstruct equals original."""
+        sr = split_key(key)
+        try:
+            result = reconstruct_key(sr.shard_a, sr.shard_b, sr.commitment, sr.nonce)
+            assert bytes(result) == key, (
+                f"Roundtrip failed: reconstructed {result!r} != original {key!r}"
+            )
+        finally:
+            sr.zero()
+
+    def test_split_reconstruct_empty_key_rejected(self) -> None:
+        """Zero-length key raises ValueError."""
+        with pytest.raises(ValueError, match="empty"):
+            split_key(b"")
+
+    @given(key=st.binary(min_size=1, max_size=15))
+    @hsettings(max_examples=50)
+    def test_split_reconstruct_short_keys(self, key: bytes) -> None:
+        """Short keys (1-15 bytes) also roundtrip correctly."""
+        sr = split_key(key)
+        try:
+            result = reconstruct_key(sr.shard_a, sr.shard_b, sr.commitment, sr.nonce)
+            assert bytes(result) == key
+        finally:
+            sr.zero()
