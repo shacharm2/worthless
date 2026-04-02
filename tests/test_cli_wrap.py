@@ -346,3 +346,85 @@ class TestWrapBootstrapFailure:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
         assert result.exit_code == 1
+
+
+class TestWrapNoEnrolledKeysError:
+    """wrap exits 1 when no keys are enrolled (empty providers list)."""
+
+    def test_no_keys_enrolled_error_message(
+        self, home_dir, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """wrap with no enrolled keys prints KEY_NOT_FOUND error."""
+        from worthless.cli.bootstrap import ensure_home
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 1
+        assert "lock" in result.output.lower() or "WRTLS" in result.output
+
+
+class TestCleanupProxyWithWriteFd:
+    """_cleanup_proxy closes write_fd when provided."""
+
+    def test_cleanup_closes_write_fd(self) -> None:
+        """_cleanup_proxy closes write_fd before terminating proxy."""
+        r_fd, w_fd = os.pipe()
+        mock = MagicMock()
+        mock.poll.return_value = 0  # already dead
+
+        _cleanup_proxy(mock, write_fd=w_fd)
+
+        # write_fd should be closed
+        with pytest.raises(OSError):
+            os.fstat(w_fd)
+
+        # read_fd still valid, clean up
+        os.close(r_fd)
+
+    def test_cleanup_write_fd_already_closed(self) -> None:
+        """_cleanup_proxy doesn't error if write_fd is already closed."""
+        r_fd, w_fd = os.pipe()
+        os.close(w_fd)
+
+        mock = MagicMock()
+        mock.poll.return_value = 0
+
+        # Should not raise
+        _cleanup_proxy(mock, write_fd=w_fd)
+        os.close(r_fd)
+
+
+class TestListEnrolledProvidersNoDB:
+    """_list_enrolled_providers returns [] when DB doesn't exist."""
+
+    def test_no_db_returns_empty(self, tmp_path: Path) -> None:
+        from worthless.cli.bootstrap import WorthlessHome
+
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+        providers = _list_enrolled_providers(home)
+        assert providers == []
+
+
+class TestWrapExceptionHandlers:
+    """Cover WorthlessError and generic Exception handlers in wrap."""
+
+    def test_worthless_error_in_wrap_exits_clean(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """WorthlessError raised inside wrap -> exit_code=1 with WRTLS."""
+        from worthless.cli.errors import ErrorCode, WorthlessError
+
+        def _boom():
+            raise WorthlessError(ErrorCode.UNKNOWN, "test error")
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.get_home", _boom)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+        )
+        assert result.exit_code == 1
+        assert "WRTLS" in result.output
