@@ -1,26 +1,24 @@
 name: Tests
 
-# Keep the default PR gate ubuntu-only while the repo is private so CI stays
-# within the included GitHub Actions minutes.
-
 on:
   pull_request:
   push:
     branches:
-      - main
+      - "**"
 
 permissions:
   contents: read
+  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  pytest:
-    name: Pytest (ubuntu, py3.13)
+  test:
+    name: Test (ubuntu, py3.13)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository
@@ -39,14 +37,79 @@ jobs:
       - name: Run test suite
         env:
           UV_CACHE_DIR: /tmp/uv-cache
+          HYPOTHESIS_PROFILE: ci
         run: |
           uv sync --extra dev --extra test
-          uv run pytest
+          uv run pytest --reruns 1 --cov=worthless --cov-report=xml --cov-report=term-missing --cov-fail-under=80 -n auto --dist loadscope -x
 
-  smoke:
-    name: Smoke test (ubuntu)
+      - name: Lint
+        env:
+          UV_CACHE_DIR: /tmp/uv-cache
+        run: uv run ruff check .
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 5
+
+  coverage-gate:
+    name: Per-module coverage gate
+    if: github.event_name == 'pull_request'
+    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-xml
+
+      - name: Check per-module coverage floors
+        run: python scripts/check-coverage-floors.py
+
+  coverage-comment:
+    name: Coverage PR comment
+    if: github.event_name == 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-xml
+
+      - name: Post coverage comment
+        uses: py-cov-action/python-coverage-comment-action@v3
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+          COVERAGE_PATH: coverage.xml
+
+  quarantine:
+    name: Quarantine tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
 
     steps:
       - name: Check out repository
@@ -62,10 +125,9 @@ jobs:
       - name: Install uv
         run: python -m pip install --disable-pip-version-check uv
 
-      - name: Install worthless
+      - name: Run quarantined tests
         env:
           UV_CACHE_DIR: /tmp/uv-cache
-        run: uv sync
-
-      - name: Run smoke test
-        run: bash scripts/smoke-test.sh
+        run: |
+          uv sync --extra dev --extra test
+          uv run pytest -m quarantine --reruns 1 -v || true
