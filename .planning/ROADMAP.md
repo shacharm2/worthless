@@ -138,5 +138,5 @@ Phases execute in numeric order. Phases 1 and 2 can be executed in parallel.
 | 3. Proxy Service | 2/2 | Complete | 2026-03-20 |
 | 03.1. Proxy Hardening | 0/3 | Complete    | 2026-03-21 |
 | 4. CLI | 4/4 | Complete   | 2026-03-27 |
-| 04.1. Post-CLI Wave 1 overhaul | 4/4 | Complete   | 2026-04-02 |
+| 04.1. Post-CLI Wave 1 overhaul | 4/4 | Complete    | 2026-04-02 |
 | 5. Security Posture Documentation | 0/1 | Not started | - |
