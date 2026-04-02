@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 ## Current Position
 
 Phase: 04.1 of 5 (Post-CLI Wave 1 Overhaul)
-Plan: 3 of 3 in current phase
+Plan: 4 of 4 in current phase
 Status: Phase 04.1 Complete
-Last activity: 2026-04-01 — Completed 04.1-03 header rename (x-worthless-alias to x-worthless-key)
+Last activity: 2026-04-02 — Completed 04.1-04 gap closure (test fix, README terminology, PROTOCOL.md link)
 
 Progress: [██████████] 100%
 
@@ -59,6 +59,7 @@ Progress: [██████████] 100%
 | Phase 04.1 P01 | 10min | 2 tasks | 31 files |
 | Phase 04.1 P02 | 46min | 3 tasks | 10 files |
 | Phase 04.1 P03 | 5min | 1 tasks | 3 files |
+| Phase 04.1 P04 | 3min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -107,6 +108,8 @@ Recent decisions affecting current work:
 - [Phase 04.1-02]: worthless down omitted from quickstart — command does not exist yet, tracked as future feature
 - [Phase 04.1-02]: lock/unlock terminology enforced in all user-facing docs, enroll only in protocol/architecture docs
 - [Phase 04.1]: Header rename: mechanical sed sufficient for 3-file scope, no constant extraction needed
+- [Phase 04.1-04]: xdist temp file race fixed by isolating tempdir per test, not by stripping env keys
+- [Phase 04.1-04]: worthless enroll row removed from CLI table entirely per locked decision
 
 ### Roadmap Evolution
 
@@ -125,6 +128,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-01T14:04:43Z
-Stopped at: Completed 04.1-03-PLAN.md — Phase 04.1 complete
+Last session: 2026-04-02T05:51:47Z
+Stopped at: Completed 04.1-04-PLAN.md — Phase 04.1 gap closure complete
 Resume file: None

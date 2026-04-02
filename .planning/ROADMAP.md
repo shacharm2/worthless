@@ -96,7 +96,7 @@ Plans:
 **Goal:** Reconcile all docs, examples, and port references to match the shipped CLI so the product story is honest and consistent. Fix code bugs, rewrite README quickstart-first with real terminal output, create wire protocol doc, and rename x-worthless-alias header to x-worthless-key.
 **Requirements**: 04.1a-BUG, 04.1a-LINT, 04.1a-PORT, 04.1a-TEST, 04.1b-README, 04.1b-DOCS, 04.1b-EXAMPLES, 04.1b-PRECOMMIT, 04.1b-WALKTHROUGH, 04.1c-RENAME
 **Depends on:** Phase 4
-**Plans:** 4 plans (3 complete + 1 gap closure)
+**Plans:** 4/4 plans complete
 
 Plans:
 - [x] 04.1-01-PLAN.md — Code prerequisites: port standardization (8787), wrap crash fix, ruff lint errors, test failures
@@ -138,5 +138,5 @@ Phases execute in numeric order. Phases 1 and 2 can be executed in parallel.
 | 3. Proxy Service | 2/2 | Complete | 2026-03-20 |
 | 03.1. Proxy Hardening | 0/3 | Complete    | 2026-03-21 |
 | 4. CLI | 4/4 | Complete   | 2026-03-27 |
-| 04.1. Post-CLI Wave 1 overhaul | 3/4 | Gap closure | 2026-04-01 |
+| 04.1. Post-CLI Wave 1 overhaul | 4/4 | Complete   | 2026-04-02 |
 | 5. Security Posture Documentation | 0/1 | Not started | - |
