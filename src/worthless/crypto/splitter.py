@@ -41,8 +41,10 @@ def split_key(api_key: bytes) -> SplitResult:
     shard_b = mask
 
     # Create HMAC commitment over the original key
-    nonce = bytearray(secrets.token_bytes(32))  # mutmut: skip — token_bytes(None) defaults to 32; equivalent mutant
-    commitment = bytearray(hmac.new(nonce, api_key, hashlib.sha256).digest())  # nosec B303 — HMAC-SHA256, not standalone
+    # mutmut: skip — token_bytes(None) defaults to 32; equivalent mutant
+    nonce = bytearray(secrets.token_bytes(32))
+    # nosec B303 — HMAC-SHA256, not standalone
+    commitment = bytearray(hmac.new(nonce, api_key, hashlib.sha256).digest())
 
     return SplitResult(
         shard_a=shard_a,

@@ -15,14 +15,13 @@ from typing import Optional
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, ensure_home, get_home
+from worthless.cli.bootstrap import WorthlessHome, get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.process import (
     check_pid,
     cleanup_stale_pid,
     disable_core_dumps,
-    forward_signals,
     poll_health,
     read_pid,
     spawn_proxy,
@@ -77,7 +76,8 @@ def register_up_commands(app: typer.Typer) -> None:
                         console.print_error(
                             WorthlessError(
                                 ErrorCode.PORT_IN_USE,
-                                f"Proxy already running (PID {existing_pid} on port {existing_port}). "
+                                f"Proxy already running "
+                                f"(PID {existing_pid} on port {existing_port}). "
                                 f"Stop it first or use a different port.",
                             )
                         )

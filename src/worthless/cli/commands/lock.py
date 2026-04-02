@@ -11,18 +11,17 @@ from typing import Optional
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, acquire_lock, ensure_home, get_home
+from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
 from worthless.cli.decoy import make_decoy
 from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys, shannon_entropy
 from worthless.cli.errors import ErrorCode, WorthlessError
-from worthless.cli.key_patterns import ENTROPY_THRESHOLD, detect_prefix, detect_provider
+from worthless.cli.key_patterns import ENTROPY_THRESHOLD, detect_prefix
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.crypto.splitter import split_key
+from worthless.storage.repository import ShardRepository, StoredShard
 
 _SUPPORTED_PROVIDERS = frozenset(_PROVIDER_ENV_MAP.keys())
-from worthless.crypto.types import _zero_buf
-from worthless.storage.repository import ShardRepository, StoredShard
 
 
 # Pattern matching the literal "WRTLS" marker in old-format decoys.
@@ -149,7 +148,8 @@ def _lock_keys(
             # Only enroll providers that wrap can redirect
             if provider not in _SUPPORTED_PROVIDERS:
                 console.print_warning(
-                    f"Skipping {var_name}: provider {provider!r} not yet supported for proxy redirect"
+                    f"Skipping {var_name}: provider {provider!r} "
+                    "not yet supported for proxy redirect"
                 )
                 continue
 
@@ -169,7 +169,7 @@ def _lock_keys(
                 # Shard fully enrolled -- still need to:
                 # 1. Create enrollment for THIS var_name/env_path
                 # 2. Rewrite THIS .env line with a decoy
-                existing_shard_a = shard_a_path.read_bytes()
+                shard_a_path.read_bytes()
                 await repo.add_enrollment(
                     alias, var_name=var_name, env_path=str(env_path.resolve()),
                 )
@@ -322,7 +322,10 @@ def register_lock_commands(app: typer.Typer) -> None:
     @app.command()
     def enroll(
         alias: str = typer.Option(..., "--alias", "-a", help="Key alias"),
-        key: Optional[str] = typer.Option(None, "--key", "-k", help="API key (use --key-stdin instead to avoid shell history)"),
+        key: Optional[str] = typer.Option(
+            None, "--key", "-k",
+            help="API key (use --key-stdin instead to avoid shell history)",
+        ),
         key_stdin: bool = typer.Option(False, "--key-stdin", help="Read API key from stdin"),
         provider: str = typer.Option(..., "--provider", "-p", help="Provider name"),
     ) -> None:
@@ -335,12 +338,16 @@ def register_lock_commands(app: typer.Typer) -> None:
         if key_stdin:
             actual_key = sys.stdin.readline().strip()
             if not actual_key:
-                console.print_error(WorthlessError(ErrorCode.KEY_NOT_FOUND, "No key provided on stdin"))
+                console.print_error(
+                    WorthlessError(ErrorCode.KEY_NOT_FOUND, "No key provided on stdin")
+                )
                 raise typer.Exit(code=1)
         elif key:
             actual_key = key
         else:
-            console.print_error(WorthlessError(ErrorCode.KEY_NOT_FOUND, "Provide --key or --key-stdin"))
+            console.print_error(
+                WorthlessError(ErrorCode.KEY_NOT_FOUND, "Provide --key or --key-stdin")
+            )
             raise typer.Exit(code=1)
 
         try:

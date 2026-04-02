@@ -1,0 +1,7 @@
+{
+  "NOTE": "Worthless is an HTTP proxy, not an MCP server. Start it with: worthless up -d",
+  "environment": {
+    "OPENAI_BASE_URL": "http://localhost:8787",
+    "ANTHROPIC_BASE_URL": "http://localhost:8787"
+  }
+}

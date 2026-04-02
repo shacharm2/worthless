@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
-
 import os
 
 import pytest
 from cryptography.fernet import Fernet
 from hypothesis import HealthCheck, settings
+
+from tests.helpers import fake_openai_key
+from worthless.cli.bootstrap import WorthlessHome, ensure_home
+from worthless.crypto import SplitResult, split_key
+from worthless.storage.repository import ShardRepository, StoredShard
 
 # Suppress differing_executors health check ONLY when running under mutmut.
 # Mutmut runs tests from its mutants/ directory with a different rootdir,
@@ -26,12 +30,6 @@ settings.register_profile("ci-fast", max_examples=50)
 
 if os.environ.get("HYPOTHESIS_PROFILE") == "ci-fast":
     settings.load_profile("ci-fast")
-
-from worthless.cli.bootstrap import WorthlessHome, ensure_home
-from worthless.crypto import SplitResult, split_key
-from worthless.storage.repository import ShardRepository, StoredShard
-
-from tests.helpers import fake_anthropic_key, fake_openai_key
 
 
 def make_repo(home: WorthlessHome) -> ShardRepository:

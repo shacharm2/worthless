@@ -10,12 +10,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from pathlib import Path
-from typing import Optional
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, ensure_home, get_home
+from worthless.cli.bootstrap import WorthlessHome, get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.process import (
@@ -34,7 +32,11 @@ _PROVIDER_ENV_MAP: dict[str, str] = {
 
 
 def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
-    """List providers from the DB shards table."""
+    """List providers from the DB shards table.
+
+    Returns an empty list when the database does not exist, the shards
+    table is missing (pre-migration DB), or the table is empty.
+    """
     import sqlite3
 
     if not home.db_path.exists():
@@ -43,7 +45,10 @@ def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
     conn = sqlite3.connect(str(home.db_path))
     try:
         rows = conn.execute("SELECT DISTINCT provider FROM shards").fetchall()
-        return sorted(r[0] for r in rows)
+        return sorted(r[0] for r in rows if r[0] is not None)
+    except sqlite3.OperationalError:
+        # Table may not exist in a pre-migration database
+        return []
     finally:
         conn.close()
 

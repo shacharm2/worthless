@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 import pytest
@@ -101,7 +100,7 @@ class TestRewriteEnvKey:
 
         env_file = tmp_path / ".env"
         env_file.write_text('KEY=old\n')
-        inode_before = env_file.stat().st_ino
+        env_file.stat().st_ino
         rewrite_env_key(env_file, "KEY", "new")
         # os.replace creates a new inode on most filesystems
         content = env_file.read_text()

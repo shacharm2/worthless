@@ -276,7 +276,7 @@ class TestSSEStreaming:
             await client.post(
                 "/v1/chat/completions",
                 headers={
-                    "x-worthless-alias": alias,
+                    "x-worthless-key": alias,
                     "x-worthless-shard-a": shard_a_b64,
                     "content-type": "application/json",
                 },
@@ -324,7 +324,7 @@ class TestSSEStreaming:
                 resp = await client.post(
                     "/v1/chat/completions",
                     headers={
-                        "x-worthless-alias": alias,
+                        "x-worthless-key": alias,
                         "x-worthless-shard-a": shard_a_b64,
                         "content-type": "application/json",
                     },
@@ -353,7 +353,7 @@ class TestSSEStreaming:
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -406,7 +406,7 @@ class TestGateBeforeDecrypt:
             await client.post(
                 "/v1/chat/completions",
                 headers={
-                    "x-worthless-alias": alias,
+                    "x-worthless-key": alias,
                     "x-worthless-shard-a": shard_a_b64,
                     "content-type": "application/json",
                 },
@@ -448,7 +448,7 @@ class TestGateBeforeDecrypt:
             resp = await client.post(
                 "/v1/chat/completions",
                 headers={
-                    "x-worthless-alias": alias,
+                    "x-worthless-key": alias,
                     "x-worthless-shard-a": shard_a_b64,
                 },
                 content=b'{"model": "gpt-4", "messages": []}',
@@ -490,7 +490,7 @@ class TestByteArrayZeroing:
             await client.post(
                 "/v1/chat/completions",
                 headers={
-                    "x-worthless-alias": alias,
+                    "x-worthless-key": alias,
                     "x-worthless-shard-a": shard_a_b64,
                     "content-type": "application/json",
                 },
@@ -533,7 +533,7 @@ class TestReconstructFailureZeroing:
                 resp = await client.post(
                     "/v1/chat/completions",
                     headers={
-                        "x-worthless-alias": alias,
+                        "x-worthless-key": alias,
                         "x-worthless-shard-a": shard_a_b64,
                         "content-type": "application/json",
                     },
@@ -583,7 +583,7 @@ class TestAsyncFileIO:
                 resp = await client.post(
                     "/v1/chat/completions",
                     headers={
-                        "x-worthless-alias": alias,
+                        "x-worthless-key": alias,
                         "content-type": "application/json",
                     },
                     content=b'{"model": "gpt-4", "messages": []}',
@@ -610,7 +610,7 @@ class TestErrorHandling:
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -630,7 +630,7 @@ class TestErrorHandling:
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -652,7 +652,7 @@ class TestErrorHandling:
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -676,7 +676,7 @@ class TestInvalidShardA:
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": "!!!not-valid-base64!!!",
                 "content-type": "application/json",
             },
@@ -713,7 +713,7 @@ class TestUpstreamSanitization:
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -740,7 +740,7 @@ class TestUpstreamSanitization:
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -787,7 +787,7 @@ class TestUpstreamSanitizationAnthropic:
             resp = await client.post(
                 "/v1/messages",
                 headers={
-                    "x-worthless-alias": alias,
+                    "x-worthless-key": alias,
                     "x-worthless-shard-a": shard_a_b64,
                     "content-type": "application/json",
                 },
@@ -831,7 +831,7 @@ class TestPathNormalization:
         resp = await proxy_client.post(
             "/v1/chat/completions?foo=bar",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -854,7 +854,7 @@ class TestPathNormalization:
         resp = await proxy_client.post(
             "/v1/chat/completions?a=1?b=2",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -868,7 +868,7 @@ class TestPathNormalization:
         resp = await proxy_client.post(
             "/v2/something/else",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
             },
             content=b"{}",
@@ -881,7 +881,7 @@ class TestPathNormalization:
         resp = await proxy_client.post(
             "/",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
             },
             content=b"{}",
@@ -898,7 +898,7 @@ class TestAntiEnumeration:
         resp = await proxy_client.post(
             "/v1/unknown",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
             },
             content=b"{}",
@@ -914,7 +914,7 @@ class TestAntiEnumeration:
         r2 = await proxy_client.post(
             "/v1/unknown",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
             },
             content=b"{}",
@@ -947,7 +947,7 @@ class TestMeteringResilience:
             resp = await proxy_client.post(
                 "/v1/chat/completions",
                 headers={
-                    "x-worthless-alias": alias,
+                    "x-worthless-key": alias,
                     "x-worthless-shard-a": shard_a_b64,
                     "content-type": "application/json",
                 },
@@ -1018,7 +1018,7 @@ class TestBodySizeLimit:
             "/v1/chat/completions",
             headers={
                 "content-length": str(11 * 1024 * 1024),
-                "x-worthless-alias": "test",
+                "x-worthless-key": "test",
                 "x-worthless-shard-a": "dGVzdA==",
             },
             content=b"x",  # actual body doesn't matter, header is checked
@@ -1035,7 +1035,7 @@ class TestBodySizeLimit:
             "/v1/chat/completions",
             headers={
                 "content-length": "100",
-                "x-worthless-alias": "test",
+                "x-worthless-key": "test",
             },
             content=b"x" * 100,
         )
@@ -1047,7 +1047,7 @@ class TestBodySizeLimit:
         resp = await body_limit_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": "test",
+                "x-worthless-key": "test",
             },
             content=b"small body",
         )

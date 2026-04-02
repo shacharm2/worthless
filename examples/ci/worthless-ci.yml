@@ -1,0 +1,36 @@
+name: Worthless CI Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  protect-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install worthless from source
+        run: |
+          git clone https://github.com/shacharm2/worthless /tmp/worthless
+          cd /tmp/worthless && uv pip install -e . --system
+
+      - name: Lock API keys
+        run: worthless lock
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Run tests through proxy
+        run: worthless wrap pytest
+
+      - name: Scan for exposed keys
+        run: worthless scan --pre-commit

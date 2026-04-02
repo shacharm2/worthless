@@ -1,192 +1,144 @@
 # Worthless
 
-**We make your API keys worthless to steal.**
+**Make your API keys worthless to steal.**
 
-Your API key is split into two shards using XOR secret sharing. One half stays on your machine. One half is encrypted at rest on the proxy. Neither half alone reveals anything about the key — this is information-theoretic security, not just encryption.
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
+![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green)
+![Status: Pre-release](https://img.shields.io/badge/status-pre--release-orange)
+![Tests: passing](https://img.shields.io/badge/tests-passing-brightgreen)
 
-The key only reconstructs in memory, server-side, for the duration of a single upstream API call — then zeroed.
+Your API key is split into two shards. One stays on your machine. One is encrypted on the proxy. Neither half reveals the key -- this is information-theoretic security, not just encryption. The key only reconstructs in memory for a single API call, then is zeroed. If the spend cap is hit, the key never forms at all.
 
-```
-Your code → Worthless proxy → [cap check] → [key reconstructs] → OpenAI / Anthropic
-                                    ↓
-                              If cap hit: stops here.
-                              Key never forms.
-```
+> [!NOTE]
+> **Pre-release software.** Worthless is under active development. The CLI works
+> for local development. Hosted proxy, PyPI package, and one-click deploys are
+> coming. See [SECURITY_RULES.md](SECURITY_RULES.md) for crypto constraints.
 
----
-
-## Install
-
-- [Solo developer](docs/install-solo.md)
-- [Claude Code / Cursor / Windsurf (MCP)](docs/install-mcp.md)
-- [OpenClaw](docs/install-openclaw.md)
-- [Self-hosted](docs/install-self-hosted.md)
-- [Teams](docs/install-teams.md)
-- [From source (development)](#from-source)
-
----
-
-## From Source
-
-**Requires Python 3.12+**
+## Quickstart
 
 ```bash
 git clone https://github.com/shacharm2/worthless && cd worthless
-uv sync --extra dev --extra test
+uv pip install -e .
 ```
 
-### Enroll an API key
+Create a `.env` with an API key, then lock it:
 
-```python
-import asyncio
-from pathlib import Path
-from cryptography.fernet import Fernet
-from worthless.cli.enroll_stub import enroll_stub
-
-fernet_key = Fernet.generate_key()
-print(f"Save this key: {fernet_key.decode()}")
-
-asyncio.run(enroll_stub(
-    alias="my-openai",
-    api_key="sk-your-openai-key-here",
-    provider="openai",
-    db_path=str(Path.home() / ".worthless" / "worthless.db"),
-    fernet_key=fernet_key,
-    shard_a_dir=str(Path.home() / ".worthless" / "shard_a"),
-))
+```console
+$ worthless lock
+1 key(s) protected.
 ```
 
-### Start the proxy
+Your `.env` now contains a decoy -- format-correct, but cryptographically useless. Run your code through the proxy:
+
+```console
+$ worthless wrap python -c "import os; print(os.environ.get('OPENAI_BASE_URL', 'not set'))"
+OPENAI_BASE_URL=http://127.0.0.1:51799
+```
+
+`wrap` started an ephemeral proxy, injected `OPENAI_BASE_URL` so your SDK routes through it, ran your command, and cleaned up. Your code didn't change.
+
+Check what's protected:
+
+```console
+$ worthless status
+Locked keys:
+  openai-69ccc444  openai  PROTECTED
+
+Proxy: not running
+```
+
+### Undo everything
+
+```console
+$ worthless unlock
+1 key(s) restored.
+```
+
+Your original key is back in `.env`. No shards, no proxy, no trace.
+
+## What just happened
+
+`worthless wrap` is shorthand for:
 
 ```bash
-# DEV ONLY — never use WORTHLESS_ALLOW_INSECURE in production
-WORTHLESS_FERNET_KEY="<paste key printed above>" WORTHLESS_ALLOW_INSECURE=true \
-  uv run uvicorn worthless.proxy.app:create_app --factory --port 8443
+worthless up                    # start proxy on localhost:8787
+export OPENAI_BASE_URL=http://127.0.0.1:8787
+python your_app.py              # SDK calls route through proxy
 ```
 
-### Use it
+The proxy holds Shard B (encrypted). Your machine holds Shard A. On each API call, the proxy XOR-reconstructs the real key in memory, makes the upstream call, and zeros the key. If the spend cap fires, reconstruction never happens.
 
-```bash
-curl http://localhost:8443/v1/chat/completions \
-  -H "x-worthless-alias: my-openai" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "hello"}]}'
-```
-
-### Health check
-
-```bash
-curl http://localhost:8443/healthz   # liveness
-curl http://localhost:8443/readyz    # ready (DB connected, keys enrolled)
-```
-
----
-
-## How It Works
+## How it works
 
 ```
-Client                     Proxy                        Provider
-  │                          │                             │
-  │  x-worthless-alias       │                             │
-  │  x-worthless-shard-a     │                             │
-  │ ──────────────────────►  │                             │
-  │                          │  1. Authenticate (alias)    │
-  │                          │  2. Gate (rules engine)     │
-  │                          │  3. Reconstruct key (XOR)   │
-  │                          │  4. Upstream call ──────────►│
-  │                          │  5. Zero key from memory    │
-  │                    ◄──── │  6. Relay response    ◄──── │
+  .env (decoy)     Your machine         Proxy              Provider
+       |               |                  |                    |
+       |          Shard A (file)    Shard B (encrypted)        |
+       |               |                  |                    |
+       |               +--- XOR merge --->|                    |
+       |                           real key (in memory)        |
+       |                                  |--- API call ------>|
+       |                           key zeroed                  |
+       |                                  |<-- response -------|
 ```
 
-**Key invariant:** Step 2 (gate) always runs before step 3 (reconstruct). If the rules engine denies the request, the key is never reconstructed. Zero key material touched.
+**Key invariant:** The rules engine (rate limit, spend cap) evaluates *before* the key is reconstructed. If denied, zero key material is touched.
 
----
+## CLI reference
 
-## What Worthless Protects
+| Command | Description |
+|---------|-------------|
+| `worthless lock` | Scan `.env`, split keys, replace with decoys |
+| `worthless unlock` | Restore original keys from shards |
+| `worthless wrap CMD` | Ephemeral proxy + run CMD with injected `BASE_URL` |
+| `worthless up` | Start proxy on port 8787 (foreground) |
+| `worthless up -d` | Start proxy in daemon mode |
+| `worthless status` | Show locked keys and proxy health |
+| `worthless scan` | Detect exposed API keys in files |
 
-- ✅ API key stolen from GitHub, `.env` file, or client-side JS
-- ✅ Agent or script running a billing loop overnight
-- ✅ Contractor or team member exceeding their budget
-- ✅ Stolen key used by an attacker to rack up charges
+## Positioning
 
-## What Worthless Does Not Protect
+Every secrets tool protects the key until your app gets it. Worthless protects you after it leaks.
 
-- ❌ Full machine compromise (same boundary as 1Password)
-- ❌ Upstream LLM provider outages
-- ❌ Content safety or prompt injection
+## What Worthless does NOT protect against
 
----
+- Memory inspection on a fully compromised host (same boundary as any process-level secret)
+- Supply-chain attacks that modify Worthless itself
+- Keys already leaked before locking -- lock your keys *before* they're exposed
+- Upstream provider outages or content safety
 
-## Configuration
+## Security
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `WORTHLESS_FERNET_KEY` | *(required)* | Fernet key for encrypting Shard B at rest |
-| `WORTHLESS_DB_PATH` | `~/.worthless/worthless.db` | SQLite database path |
-| `WORTHLESS_SHARD_A_DIR` | `~/.worthless/shard_a` | Directory for file-based Shard A loading |
-| `WORTHLESS_RATE_LIMIT_RPS` | `100.0` | Default rate limit (requests/second per IP) |
-| `WORTHLESS_UPSTREAM_TIMEOUT` | `120.0` | Upstream timeout for non-streaming (seconds) |
-| `WORTHLESS_STREAMING_TIMEOUT` | `300.0` | Upstream timeout for streaming (seconds) |
-| `WORTHLESS_ALLOW_INSECURE` | `false` | Allow shard headers over non-TLS (dev only) |
+Cryptographic primitives: XOR secret sharing, HMAC-SHA256 commitment. No novel cryptography -- standard constructions only. Shard B is encrypted at rest with Fernet (AES-128-CBC + HMAC-SHA256).
 
----
+**No independent security audit has been performed yet.** See [SECURITY_RULES.md](SECURITY_RULES.md) for the crypto invariants that all contributions must preserve. For wire protocol details (headers, endpoints, error codes), see [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
-## Providers
+## Pre-commit hook
 
-| Provider | Endpoint | Status |
-|----------|----------|--------|
-| OpenAI | `/v1/chat/completions` | ✅ Streaming + non-streaming |
-| Anthropic | `/v1/messages` | ✅ Streaming + non-streaming |
-
----
-
-## Security Model
-
-Three architectural invariants:
-
-1. **Gate before reconstruct** — The rules engine evaluates every request before Shard B is decrypted. Denied requests never touch key material.
-2. **Transparent routing** — Setting `BASE_URL` to the proxy causes API calls to route through it. The proxy is invisible to provider SDKs.
-3. **Server-side only** — The reconstructed key is used for the upstream call and never appears in any response.
-
-All auth failures return an identical `401` body to prevent key enumeration.
-
-See [docs/security-model.md](docs/security-model.md) for the full threat model and known limitations.
-
----
-
-## Architecture
-
-```
-src/worthless/
-├── crypto/          # XOR splitting, HMAC commitment, memory zeroing
-├── adapters/        # Provider request/response transforms, SSE relay
-├── proxy/           # FastAPI proxy, rules engine, metering
-├── storage/         # Encrypted shard persistence (Fernet + SQLite)
-└── cli/             # Enrollment stub (more commands coming)
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/shacharm2/worthless
+    rev: main
+    hooks:
+      - id: worthless-scan
 ```
 
----
+Catches unprotected API keys before they reach git history.
 
 ## Development
 
 ```bash
-uv sync --extra dev --extra test --extra qa
-uv run pytest              # full suite
-uv run ruff check .        # lint
+git clone https://github.com/shacharm2/worthless && cd worthless
+uv sync --extra dev --extra test
+uv run pytest
+uv run ruff check .
 ```
-
----
 
 ## Contributing
 
-PRs welcome. Any PR that violates the three architectural invariants will be closed regardless of other merits. Read [docs/security-model.md](docs/security-model.md) first.
-
----
+PRs welcome. Any PR that violates the three security invariants (gate-before-reconstruct, transparent routing, server-side only) will be closed regardless of other merits. Read [SECURITY_RULES.md](SECURITY_RULES.md) before touching crypto code.
 
 ## License
 
 AGPL-3.0. See [LICENSE](LICENSE).
-
----
-
-*"A kill switch, not an alert."*

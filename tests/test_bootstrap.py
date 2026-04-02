@@ -68,7 +68,7 @@ class TestEnsureHome:
 
 class TestLocking:
     def test_acquire_lock(self, tmp_path: Path):
-        from worthless.cli.bootstrap import WorthlessHome, acquire_lock, ensure_home
+        from worthless.cli.bootstrap import acquire_lock, ensure_home
 
         home = ensure_home(base_dir=tmp_path / ".worthless")
         with acquire_lock(home):

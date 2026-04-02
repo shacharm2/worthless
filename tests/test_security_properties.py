@@ -9,17 +9,15 @@ upstream error sanitization.
 from __future__ import annotations
 
 import ast
-import hmac as _hmac
 import inspect
 import json
-import string
 import textwrap
 
 from hypothesis import given, assume, settings as hsettings
 from hypothesis import strategies as st
 
 from worthless.crypto.splitter import reconstruct_key, secure_key, split_key
-from worthless.crypto.types import SplitResult, _zero_buf
+from worthless.crypto.types import _zero_buf
 from worthless.exceptions import ShardTamperedError
 from worthless.storage.repository import EncryptedShard, StoredShard
 

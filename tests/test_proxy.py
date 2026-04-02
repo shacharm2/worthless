@@ -157,7 +157,7 @@ class TestUniformAuth:
     async def test_unknown_alias_returns_401(self, proxy_client: httpx.AsyncClient, enrolled_alias):
         resp = await proxy_client.post(
             "/v1/chat/completions",
-            headers={"x-worthless-alias": "nonexistent"},
+            headers={"x-worthless-key": "nonexistent"},
             content=b"{}",
         )
         assert resp.status_code == 401
@@ -175,7 +175,7 @@ class TestUniformAuth:
 
         resp = await proxy_client.post(
             "/v1/chat/completions",
-            headers={"x-worthless-alias": alias},
+            headers={"x-worthless-key": alias},
             content=b"{}",
         )
         assert resp.status_code == 401
@@ -187,7 +187,7 @@ class TestUniformAuth:
         # Unknown alias
         r2 = await proxy_client.post(
             "/v1/chat/completions",
-            headers={"x-worthless-alias": "nonexistent"},
+            headers={"x-worthless-key": "nonexistent"},
             content=b"{}",
         )
         assert r1.status_code == r2.status_code == 401
@@ -196,7 +196,7 @@ class TestUniformAuth:
     async def test_alias_path_traversal_rejected(self, proxy_client: httpx.AsyncClient):
         resp = await proxy_client.post(
             "/v1/chat/completions",
-            headers={"x-worthless-alias": "../../etc/passwd"},
+            headers={"x-worthless-key": "../../etc/passwd"},
             content=b"{}",
         )
         assert resp.status_code == 401
@@ -234,7 +234,7 @@ class TestGateBeforeReconstruct:
                 resp = await client.post(
                     "/v1/chat/completions",
                     headers={
-                        "x-worthless-alias": alias,
+                        "x-worthless-key": alias,
                         "x-worthless-shard-a": shard_a_b64,
                     },
                     content=b'{"model": "gpt-4", "messages": []}',
@@ -267,7 +267,7 @@ class TestGateBeforeReconstruct:
                 resp = await client.post(
                     "/v1/chat/completions",
                     headers={
-                        "x-worthless-alias": alias,
+                        "x-worthless-key": alias,
                         "x-worthless-shard-a": shard_a_b64,
                     },
                     content=b'{"model": "gpt-4", "messages": []}',
@@ -293,7 +293,7 @@ class TestGateBeforeReconstruct:
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -324,7 +324,7 @@ class TestTransparentRouting:
         await proxy_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -371,7 +371,7 @@ class TestTransparentRouting:
             await client.post(
                 "/v1/messages",
                 headers={
-                    "x-worthless-alias": "ant-key",
+                    "x-worthless-key": "ant-key",
                     "x-worthless-shard-a": shard_a_b64,
                     "content-type": "application/json",
                 },
@@ -387,7 +387,7 @@ class TestTransparentRouting:
         resp = await proxy_client.post(
             "/v1/unknown",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
             },
             content=b"{}",
@@ -417,7 +417,7 @@ class TestKeyNotInResponse:
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -448,7 +448,7 @@ class TestKeyNotInResponse:
         resp = await proxy_client.post(
             "/v1/chat/completions",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
                 "content-type": "application/json",
             },
@@ -489,7 +489,7 @@ class TestSecurity:
             resp = await client.post(
                 "/v1/chat/completions",
                 headers={
-                    "x-worthless-alias": alias,
+                    "x-worthless-key": alias,
                     "x-worthless-shard-a": shard_a_b64,
                 },
                 content=b"{}",
@@ -506,7 +506,7 @@ class TestSecurity:
         resp = await proxy_client.post(
             "/v1/unknown?foo=bar",
             headers={
-                "x-worthless-alias": alias,
+                "x-worthless-key": alias,
                 "x-worthless-shard-a": shard_a_b64,
             },
             content=b"{}",
@@ -621,7 +621,7 @@ class TestTransparentProxy:
     @pytest.mark.asyncio
     @respx.mock
     async def test_explicit_alias_header_preferred(self, openai_enrolled_proxy):
-        """Explicit x-worthless-alias header should take precedence over inference."""
+        """Explicit x-worthless-key header should take precedence over inference."""
         app, alias, shard_a = openai_enrolled_proxy
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
@@ -633,7 +633,7 @@ class TestTransparentProxy:
                 "http://testserver/v1/chat/completions",
                 json={"model": "gpt-4", "messages": []},
                 headers={
-                    "x-worthless-alias": alias,
+                    "x-worthless-key": alias,
                     "x-worthless-shard-a": base64.b64encode(bytes(shard_a)).decode(),
                 },
             )

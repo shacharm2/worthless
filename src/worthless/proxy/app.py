@@ -62,7 +62,7 @@ def _uniform_401() -> Response:
 
 
 def _infer_alias_from_path(clean_path: str, settings: "ProxySettings") -> str | None:
-    """Infer alias from request path when x-worthless-alias header is absent.
+    """Infer alias from request path when x-worthless-key header is absent.
 
     Maps the path to a provider via the adapter registry, then scans
     shard_a_dir for a unique matching alias (format: ``provider-hash8``).
@@ -89,7 +89,7 @@ def _infer_alias_from_path(clean_path: str, settings: "ProxySettings") -> str | 
     if len(matches) > 1:
         logger.warning(
             "Ambiguous alias inference: %d aliases for provider %r. "
-            "Use x-worthless-alias header or enroll only one key per provider.",
+            "Use x-worthless-key header or enroll only one key per provider.",
             len(matches), provider,
         )
     return None
@@ -254,7 +254,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         clean_path = "/" + path.split("?")[0].lstrip("/")
 
         # (b) Validate alias header present, or infer from path
-        alias = request.headers.get("x-worthless-alias")
+        alias = request.headers.get("x-worthless-key")
         if not alias:
             alias = _infer_alias_from_path(clean_path, settings)
         if not alias:

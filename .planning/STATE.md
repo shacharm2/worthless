@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Phase 04.1 context gathered
-last_updated: "2026-04-01T10:56:22.856Z"
-last_activity: 2026-03-27 — Completed 04-04 wrap/up commands (pipe death detection, ephemeral proxy, daemon mode)
+status: completed
+stopped_at: Completed 04.1-04-PLAN.md — Phase 04.1 gap closure complete
+last_updated: "2026-04-02T06:51:51.106Z"
+last_activity: 2026-04-02 — Completed 04.1-04 gap closure (test fix, README terminology, PROTOCOL.md link)
 progress:
   total_phases: 8
-  completed_phases: 5
-  total_plans: 13
-  completed_plans: 13
-  percent: 92
+  completed_phases: 6
+  total_plans: 17
+  completed_plans: 17
+  percent: 100
 ---
 
 # Project State
@@ -25,12 +25,12 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 
 ## Current Position
 
-Phase: 04 of 5 (CLI)
+Phase: 04.1 of 5 (Post-CLI Wave 1 Overhaul)
 Plan: 4 of 4 in current phase
-Status: Executing Phase 04-cli
-Last activity: 2026-03-27 — Completed 04-04 wrap/up commands (pipe death detection, ephemeral proxy, daemon mode)
+Status: Phase 04.1 Complete
+Last activity: 2026-04-02 — Completed 04.1-04 gap closure (test fix, README terminology, PROTOCOL.md link)
 
-Progress: [█████████░] 92%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -56,6 +56,10 @@ Progress: [█████████░] 92%
 | Phase 04-cli P02 | 7min | 2 tasks | 8 files |
 | Phase 04-cli P04 | 5min | 2 tasks | 7 files |
 | Phase 04-cli P03 | 7min | 2 tasks | 7 files |
+| Phase 04.1 P01 | 10min | 2 tasks | 31 files |
+| Phase 04.1 P02 | 46min | 3 tasks | 10 files |
+| Phase 04.1 P03 | 5min | 1 tasks | 3 files |
+| Phase 04.1 P04 | 3min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -97,6 +101,15 @@ Recent decisions affecting current work:
 - [Phase 04-cli]: Pipe-based death detection via os.pipe() with WORTHLESS_LIVENESS_FD for robust proxy cleanup
 - [Phase 04-cli]: Exit codes follow ESLint/Semgrep convention: 0=clean, 1=unprotected, 2=error
 - [Phase 04-cli]: Proxy port discovered from PID file or WORTHLESS_PORT env var
+- [Phase 04.1-01]: Wrap OperationalError catch for pre-migration DBs without shards table
+- [Phase 04.1-01]: Import reordering: all imports before module-level code execution (conftest.py pattern)
+- [Phase 04.1-01]: StoredShard.zero() loop var renamed field->buf to avoid shadowing dataclass import
+- [Phase 04.1-02]: Forward-looking header name x-worthless-key used in all new docs (code rename in Plan 03)
+- [Phase 04.1-02]: worthless down omitted from quickstart — command does not exist yet, tracked as future feature
+- [Phase 04.1-02]: lock/unlock terminology enforced in all user-facing docs, enroll only in protocol/architecture docs
+- [Phase 04.1]: Header rename: mechanical sed sufficient for 3-file scope, no constant extraction needed
+- [Phase 04.1-04]: xdist temp file race fixed by isolating tempdir per test, not by stripping env keys
+- [Phase 04.1-04]: worthless enroll row removed from CLI table entirely per locked decision
 
 ### Roadmap Evolution
 
@@ -115,6 +128,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-01T10:56:22.852Z
-Stopped at: Phase 04.1 context gathered
-Resume file: .planning/phases/04.1-post-cli-wave-1-overhaul/04.1-CONTEXT.md
+Last session: 2026-04-02T05:51:47Z
+Stopped at: Completed 04.1-04-PLAN.md — Phase 04.1 gap closure complete
+Resume file: None

@@ -58,8 +58,8 @@ class StoredShard:
 
     def zero(self) -> None:
         """Zero all cryptographic fields in place (SR-02)."""
-        for field in (self.shard_b, self.commitment, self.nonce):
-            field[:] = b"\x00" * len(field)
+        for buf in (self.shard_b, self.commitment, self.nonce):
+            buf[:] = b"\x00" * len(buf)
 
 
 class ShardRepository:
@@ -222,7 +222,8 @@ class ShardRepository:
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
-                "INSERT OR IGNORE INTO shards (key_alias, shard_b_enc, commitment, nonce, provider) "
+                "INSERT OR IGNORE INTO shards "
+                "(key_alias, shard_b_enc, commitment, nonce, provider) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (alias, shard_b_enc, bytes(shard.commitment), bytes(shard.nonce), shard.provider),
             )
@@ -301,12 +302,14 @@ class ShardRepository:
 
             if alias is not None:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments WHERE key_alias = ?",
+                    "SELECT key_alias, var_name, env_path, decoy_hash "
+                    "FROM enrollments WHERE key_alias = ?",
                     (alias,),
                 )
             else:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments ORDER BY key_alias"
+                    "SELECT key_alias, var_name, env_path, decoy_hash "
+                    "FROM enrollments ORDER BY key_alias"
                 )
             rows = await cursor.fetchall()
             return [
