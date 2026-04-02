@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 from cryptography.fernet import Fernet
 from hypothesis import HealthCheck, settings
 
-from tests.helpers import fake_openai_key
 from worthless.cli.bootstrap import WorthlessHome, ensure_home
 from worthless.crypto import SplitResult, split_key
 from worthless.storage.repository import ShardRepository, StoredShard
+
+from tests.helpers import fake_openai_key
 
 # Suppress differing_executors health check ONLY when running under mutmut.
 # Mutmut runs tests from its mutants/ directory with a different rootdir,

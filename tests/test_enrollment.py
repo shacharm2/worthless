@@ -35,7 +35,10 @@ class TestForeignKeys:
                 nonce=bytearray(sr.nonce),
                 provider="openai",
             )
-            await repo.store_enrolled("test-alias", shard, var_name="API_KEY", env_path="/tmp/.env")
+            await repo.store_enrolled(
+                "test-alias", shard,
+                var_name="API_KEY", env_path="/tmp/.env",
+            )
 
             # Verify enrollment exists
             enrollments = await repo.list_enrollments("test-alias")
@@ -81,7 +84,9 @@ class TestEnrollmentCRUD:
             assert retrieved.provider == "openai"
 
             # Verify enrollment stored
-            enrollment = await repo.get_enrollment("test-alias", "/home/user/project/.env")
+            enrollment = await repo.get_enrollment(
+                "test-alias", "/home/user/project/.env",
+            )
             assert enrollment is not None
             assert enrollment.var_name == "OPENAI_API_KEY"
             assert enrollment.env_path == "/home/user/project/.env"
@@ -104,7 +109,10 @@ class TestEnrollmentCRUD:
                 nonce=bytearray(sr.nonce),
                 provider="openai",
             )
-            await repo.store_enrolled("test-alias", shard, var_name="API_KEY", env_path=None)
+            await repo.store_enrolled(
+                "test-alias", shard,
+                var_name="API_KEY", env_path=None,
+            )
 
             enrollment = await repo.get_enrollment("test-alias")
             assert enrollment is not None
@@ -167,9 +175,11 @@ class TestEnrollmentsTable:
         db_path = str(tmp_path / "test.db")
         asyncio.run(init_db(db_path))
         conn = sqlite3.connect(db_path)
-        rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-        tables = [row[0] for row in rows]
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        ]
         conn.close()
         assert "enrollments" in tables

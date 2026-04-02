@@ -1092,8 +1092,7 @@ class TestLockRejectsSymlinkEnv:
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         r = runner.invoke(app, ["lock", "--env", str(link_env)], env=env_vars)
         assert r.exit_code == 1, (
-            f"Expected exit 1 (symlink rejected), "
-            f"got {r.exit_code}: {r.output}"
+            f"Expected exit 1 (symlink rejected), got {r.exit_code}: {r.output}"
         )
         assert "symlink" in r.output.lower()
 

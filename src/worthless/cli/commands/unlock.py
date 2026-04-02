@@ -40,7 +40,10 @@ async def _unlock_alias(
     shard_a_path = home.shard_a_dir / alias
 
     if not shard_a_path.exists():
-        raise WorthlessError(ErrorCode.KEY_NOT_FOUND, f"Shard A not found for alias: {alias}")
+        raise WorthlessError(
+            ErrorCode.KEY_NOT_FOUND,
+            f"Shard A not found for alias: {alias}",
+        )
 
     shard_a = bytearray(shard_a_path.read_bytes())
     stored = None

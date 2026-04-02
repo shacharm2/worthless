@@ -48,9 +48,9 @@ class TestLockCommand:
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
         """Lock should split key, write shard_a, store shard_b in DB, rewrite .env."""
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         result = runner.invoke(
-            app, ["lock", "--env", str(env_file)],
-            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+            app, ["lock", "--env", str(env_file)], env=env_vars,
         )
         assert result.exit_code == 0, result.output
 
@@ -103,29 +103,30 @@ class TestLockCommand:
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
         """Running lock twice should skip already-enrolled keys."""
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         result1 = runner.invoke(
-            app, ["lock", "--env", str(env_file)],
-            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+            app, ["lock", "--env", str(env_file)], env=env_vars,
         )
         assert result1.exit_code == 0
 
         # Second run -- should skip the already-enrolled key
         result2 = runner.invoke(
-            app, ["lock", "--env", str(env_file)],
-            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+            app, ["lock", "--env", str(env_file)], env=env_vars,
         )
         assert result2.exit_code == 0
         # Still only one shard_a file
-        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
+        shard_a_files = [
+            f for f in home_dir.shard_a_dir.iterdir() if f.is_file()
+        ]
         assert len(shard_a_files) == 1
 
     def test_lock_prefix_preservation(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
         """Decoy value should preserve prefix and match provider format length (WOR-31)."""
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         result = runner.invoke(
-            app, ["lock", "--env", str(env_file)],
-            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+            app, ["lock", "--env", str(env_file)], env=env_vars,
         )
         assert result.exit_code == 0
 
@@ -156,9 +157,9 @@ class TestLockCommand:
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
         """Lock file should not exist after command completes."""
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         result = runner.invoke(
-            app, ["lock", "--env", str(env_file)],
-            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+            app, ["lock", "--env", str(env_file)], env=env_vars,
         )
         assert result.exit_code == 0
         assert not home_dir.lock_file.exists()
@@ -593,7 +594,10 @@ class TestOldDecoyMigration:
         high_entropy_body = "".join(
             secrets.choice(string.ascii_letters + string.digits) for _ in range(100)
         )
-        high_entropy_val = f"sk-proj-{high_entropy_body}WRTLS{high_entropy_body[:50]}"
+        high_entropy_val = (
+            f"sk-proj-{high_entropy_body}WRTLS"
+            f"{high_entropy_body[:50]}"
+        )
         assert shannon_entropy(high_entropy_val) >= ENTROPY_THRESHOLD
         env.write_text(f"OPENAI_API_KEY={high_entropy_val}\n")
 

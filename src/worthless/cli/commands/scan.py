@@ -110,7 +110,10 @@ def _format_human(
                 pass
 
         var_part = f" ({f.var_name})" if f.var_name else ""
-        lines.append(f"  {f.file}:{f.line}  {f.provider}{var_part}  {status}  {preview}")
+        lines.append(
+            f"  {f.file}:{f.line}  {f.provider}{var_part}"
+            f"  {status}  {preview}"
+        )
 
         if f.is_protected:
             protected_count += 1
@@ -152,7 +155,9 @@ def _install_hook() -> None:
     """Write or append worthless scan to .git/hooks/pre-commit."""
     git_dir = _find_git_dir()
     if git_dir is None:
-        raise WorthlessError(ErrorCode.SCAN_ERROR, "No .git directory found")
+        raise WorthlessError(
+            ErrorCode.SCAN_ERROR, "No .git directory found"
+        )
 
     hooks_dir = git_dir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
@@ -170,7 +175,10 @@ def _install_hook() -> None:
         hook_path.write_text(f"#!/bin/sh\n{snippet}")
 
     # Make executable
-    hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    hook_path.chmod(
+        hook_path.stat().st_mode
+        | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    )
 
 
 def _build_decoy_checker():
@@ -228,13 +236,16 @@ def register_scan_commands(app: typer.Typer) -> None:
             show_choices=True,
         ),
         show_suffix: bool = typer.Option(
-            False, "--show-suffix", help="Show last 4 chars of keys",
+            False, "--show-suffix",
+            help="Show last 4 chars of keys",
         ),
         install_hook: bool = typer.Option(
-            False, "--install-hook", help="Install git pre-commit hook",
+            False, "--install-hook",
+            help="Install git pre-commit hook",
         ),
         json_output: bool = typer.Option(
-            False, "--json", help="Output JSON (alias for --format json)",
+            False, "--json",
+            help="Output JSON (alias for --format json)",
         ),
     ) -> None:
         """Detect exposed API keys in files and environment."""

@@ -225,10 +225,17 @@ class ShardRepository:
                 "INSERT OR IGNORE INTO shards "
                 "(key_alias, shard_b_enc, commitment, nonce, provider) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (alias, shard_b_enc, bytes(shard.commitment), bytes(shard.nonce), shard.provider),
+                (
+                    alias,
+                    shard_b_enc,
+                    bytes(shard.commitment),
+                    bytes(shard.nonce),
+                    shard.provider,
+                ),
             )
             await db.execute(
-                "INSERT OR IGNORE INTO enrollments (key_alias, var_name, env_path) "
+                "INSERT OR IGNORE INTO enrollments "
+                "(key_alias, var_name, env_path) "
                 "VALUES (?, ?, ?)",
                 (alias, var_name, env_path),
             )
@@ -296,7 +303,9 @@ class ShardRepository:
                 key_alias=row[0], var_name=row[1], env_path=row[2], decoy_hash=row[3],
             )
 
-    async def list_enrollments(self, alias: str | None = None) -> list[EnrollmentRecord]:
+    async def list_enrollments(
+        self, alias: str | None = None,
+    ) -> list[EnrollmentRecord]:
         """Return enrollment records, optionally filtered by *alias*."""
         async with self._connect() as db:
 
@@ -313,7 +322,12 @@ class ShardRepository:
                 )
             rows = await cursor.fetchall()
             return [
-                EnrollmentRecord(key_alias=r[0], var_name=r[1], env_path=r[2], decoy_hash=r[3])
+                EnrollmentRecord(
+                    key_alias=r[0],
+                    var_name=r[1],
+                    env_path=r[2],
+                    decoy_hash=r[3],
+                )
                 for r in rows
             ]
 

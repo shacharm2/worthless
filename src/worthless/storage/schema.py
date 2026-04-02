@@ -72,11 +72,15 @@ async def migrate_db(db_path: str) -> None:
         cursor = await db.execute("PRAGMA table_info(enrollments)")
         columns = {row[1] for row in await cursor.fetchall()}
         if "decoy_hash" not in columns:
-            await db.execute(
-                "ALTER TABLE enrollments ADD COLUMN decoy_hash TEXT"
-            )
-            await db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_enrollments_decoy_hash "
-                "ON enrollments (decoy_hash) WHERE decoy_hash IS NOT NULL"
-            )
-            await db.commit()
+            try:
+                await db.execute(
+                    "ALTER TABLE enrollments ADD COLUMN decoy_hash TEXT"
+                )
+                await db.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_enrollments_decoy_hash "
+                    "ON enrollments (decoy_hash) WHERE decoy_hash IS NOT NULL"
+                )
+                await db.commit()
+            except Exception as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise

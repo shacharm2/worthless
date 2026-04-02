@@ -101,10 +101,11 @@ def spawn_proxy(
         fernet_fd = r_fd
 
     # Build subprocess environment
+    insecure = env.get("WORTHLESS_ALLOW_INSECURE", "true")
     full_env = {
         **os.environ,
         **env,
-        "WORTHLESS_ALLOW_INSECURE": env.get("WORTHLESS_ALLOW_INSECURE", "true"),
+        "WORTHLESS_ALLOW_INSECURE": insecure,
     }
     if fernet_fd is not None:
         full_env["WORTHLESS_FERNET_FD"] = str(fernet_fd)
@@ -136,7 +137,6 @@ def spawn_proxy(
 
 def _parse_uvicorn_port(proc: subprocess.Popen, timeout: float = 15.0) -> int:
     """Read uvicorn stdout until we find the port announcement."""
-    time.monotonic() + timeout
     assert proc.stdout is not None
 
     # Read output in a thread so we can impose a deadline
