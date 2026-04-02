@@ -491,3 +491,77 @@ class TestUnlockErrorBranches:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
         assert result.exit_code == 1
+
+    def test_unlock_no_shard_b_in_db_exits_clean(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """shard_a exists but no shard_b in DB -> WRTLS-102 error."""
+        from tests.conftest import write_shard_a
+
+        alias = "orphan-alias"
+        write_shard_a(home_dir, alias, b"fake-shard-data")
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--alias", alias],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 1
+        assert "WRTLS" in result.output
+
+    def test_unlock_no_enrollment_prints_key(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        """Unlock alias with no enrollment record prints key to stdout."""
+        from worthless.crypto.splitter import split_key
+        from worthless.storage.repository import StoredShard
+        from tests.conftest import write_shard_a
+
+        alias = "no-enrollment"
+        sr = split_key(_TEST_KEY.encode())
+        try:
+            write_shard_a(home_dir, alias, bytes(sr.shard_a))
+
+            # Store shard_b in DB but with no enrollment
+            repo = _repo(home_dir)
+            stored = StoredShard(
+                shard_b=bytearray(sr.shard_b),
+                commitment=bytearray(sr.commitment),
+                nonce=bytearray(sr.nonce),
+                provider="openai",
+            )
+            asyncio.run(repo.store(alias, stored))
+        finally:
+            sr.zero()
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--alias", alias],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+        assert _TEST_KEY in result.output
+
+
+class TestUnlockNoAliases:
+    """unlock with no enrolled keys prints warning."""
+
+    def test_unlock_empty_home_warns(self, home_dir: WorthlessHome) -> None:
+        """unlock on empty home prints 'No enrolled keys found.'"""
+        result = runner.invoke(
+            app,
+            ["unlock"],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+        assert "no enrolled" in result.output.lower()
+
+
+class TestListAliasesNoDir:
+    """_list_aliases returns [] when shard_a_dir doesn't exist."""
+
+    def test_no_shard_a_dir(self, tmp_path: Path) -> None:
+        from worthless.cli.commands.unlock import _list_aliases
+
+        home = WorthlessHome(base_dir=tmp_path / "nonexistent-home")
+        assert _list_aliases(home) == []

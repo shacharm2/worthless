@@ -1,0 +1,117 @@
+"""Tests for enroll_stub.py (WOR-74)."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import pytest
+
+from worthless.cli.enroll_stub import enroll_stub
+from worthless.storage.repository import ShardRepository
+from worthless.crypto.splitter import reconstruct_key
+
+from tests.helpers import fake_openai_key
+
+_TEST_KEY = fake_openai_key()
+
+
+async def _retrieve(db_path: str, fernet_key: bytes, alias: str):
+    """Helper: init repo and retrieve a stored shard."""
+    r = ShardRepository(db_path, fernet_key)
+    await r.initialize()
+    return await r.retrieve(alias)
+
+
+class TestEnrollStub:
+    """Core enroll_stub behaviour."""
+
+    def test_returns_shard_a_bytes(self, tmp_db_path: str, fernet_key: bytes) -> None:
+        """enroll_stub returns shard_a bytes for the caller to store."""
+        shard_a = asyncio.run(
+            enroll_stub("test-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
+        )
+        assert isinstance(shard_a, bytes)
+        assert len(shard_a) > 0
+
+    def test_shard_b_stored_in_db(self, tmp_db_path: str, fernet_key: bytes) -> None:
+        """enroll_stub stores shard_b in the database."""
+        asyncio.run(
+            enroll_stub("test-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
+        )
+
+        stored = asyncio.run(_retrieve(tmp_db_path, fernet_key, "test-alias"))
+        assert stored is not None
+        assert stored.provider == "openai"
+        assert len(stored.shard_b) > 0
+        assert len(stored.commitment) > 0
+        assert len(stored.nonce) > 0
+
+    def test_reconstruct_roundtrip(self, tmp_db_path: str, fernet_key: bytes) -> None:
+        """shard_a + shard_b from DB reconstruct the original key."""
+        shard_a = asyncio.run(
+            enroll_stub("rt-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
+        )
+        assert shard_a is not None
+
+        stored = asyncio.run(_retrieve(tmp_db_path, fernet_key, "rt-alias"))
+        key_buf = reconstruct_key(
+            bytearray(shard_a), stored.shard_b, stored.commitment, stored.nonce
+        )
+        assert key_buf.decode() == _TEST_KEY
+
+    def test_writes_shard_a_file_when_dir_given(
+        self, tmp_db_path: str, fernet_key: bytes, tmp_path: Path
+    ) -> None:
+        """When shard_a_dir is provided, enroll_stub writes the file."""
+        shard_a_dir = tmp_path / "shard_a"
+        shard_a = asyncio.run(
+            enroll_stub(
+                "file-alias", _TEST_KEY, "openai",
+                tmp_db_path, fernet_key,
+                shard_a_dir=str(shard_a_dir),
+            )
+        )
+        shard_a_path = shard_a_dir / "file-alias"
+        assert shard_a_path.exists()
+        assert shard_a_path.read_bytes() == shard_a
+
+    def test_no_shard_a_file_without_dir(
+        self, tmp_db_path: str, fernet_key: bytes, tmp_path: Path
+    ) -> None:
+        """Without shard_a_dir, no file is written."""
+        shard_a_dir = tmp_path / "shard_a"
+        asyncio.run(
+            enroll_stub("no-file", _TEST_KEY, "openai", tmp_db_path, fernet_key)
+        )
+        assert not shard_a_dir.exists()
+
+    def test_creates_shard_a_dir_if_missing(
+        self, tmp_db_path: str, fernet_key: bytes, tmp_path: Path
+    ) -> None:
+        """shard_a_dir is created if it doesn't exist."""
+        nested = tmp_path / "deep" / "nested" / "shard_a"
+        asyncio.run(
+            enroll_stub(
+                "nested-alias", _TEST_KEY, "openai",
+                tmp_db_path, fernet_key,
+                shard_a_dir=str(nested),
+            )
+        )
+        assert nested.exists()
+        assert (nested / "nested-alias").exists()
+
+    def test_duplicate_alias_raises(
+        self, tmp_db_path: str, fernet_key: bytes
+    ) -> None:
+        """Enrolling the same alias twice raises IntegrityError."""
+        import sqlite3
+
+        asyncio.run(
+            enroll_stub("dup-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            asyncio.run(
+                enroll_stub("dup-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
+            )
+
