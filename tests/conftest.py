@@ -36,8 +36,17 @@ settings.register_profile(
     database=None,
 )
 
-if os.environ.get("HYPOTHESIS_PROFILE") == "ci":
-    settings.load_profile("ci")
+# Extended profile: thorough property testing for scheduled runs.
+# Activate with: HYPOTHESIS_PROFILE=extended
+settings.register_profile(
+    "extended",
+    max_examples=500,
+    database=None,
+)
+
+_profile = os.environ.get("HYPOTHESIS_PROFILE")
+if _profile in ("ci", "extended"):
+    settings.load_profile(_profile)
 
 
 def make_repo(home: WorthlessHome) -> ShardRepository:

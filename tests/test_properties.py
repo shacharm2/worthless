@@ -295,7 +295,8 @@ class TestSplitReconstructProperties:
         """For arbitrary key bytes (16-128 len), split then reconstruct equals original."""
         sr = split_key(key)
         try:
-            result = reconstruct_key(sr.shard_a, sr.shard_b, sr.commitment, sr.nonce)
+            shard_a_copy = bytearray(sr.shard_a)
+            result = reconstruct_key(shard_a_copy, sr.shard_b, sr.commitment, sr.nonce)
             assert bytes(result) == key, (
                 f"Roundtrip failed: reconstructed {result!r} != original {key!r}"
             )
@@ -313,7 +314,8 @@ class TestSplitReconstructProperties:
         """Short keys (1-15 bytes) also roundtrip correctly."""
         sr = split_key(key)
         try:
-            result = reconstruct_key(sr.shard_a, sr.shard_b, sr.commitment, sr.nonce)
+            shard_a_copy = bytearray(sr.shard_a)
+            result = reconstruct_key(shard_a_copy, sr.shard_b, sr.commitment, sr.nonce)
             assert bytes(result) == key
         finally:
             sr.zero()

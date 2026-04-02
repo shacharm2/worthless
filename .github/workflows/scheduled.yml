@@ -16,12 +16,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.13"
 
@@ -42,12 +42,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.13"
 
@@ -57,7 +57,7 @@ jobs:
       - name: Run property tests
         env:
           UV_CACHE_DIR: /tmp/uv-cache
-          HYPOTHESIS_PROFILE: ci
+          HYPOTHESIS_PROFILE: extended
         run: |
           uv sync --extra dev --extra test
           uv run pytest tests/test_properties.py tests/test_security_properties.py -x --no-header -q -s
@@ -66,15 +66,16 @@ jobs:
     name: Contract tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    continue-on-error: true
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.13"
 
@@ -86,4 +87,4 @@ jobs:
           UV_CACHE_DIR: /tmp/uv-cache
         run: |
           uv sync --extra dev --extra test --extra qa
-          uv run pytest -m contract -x --no-header -q || true
+          uv run pytest -m contract -x --no-header -q

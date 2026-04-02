@@ -29,12 +29,12 @@ runner = CliRunner()
 class TestWrapEnvInjection:
     """wrap injects BASE_URL env vars for enrolled providers."""
 
-    def test_child_env_has_base_url(self, tmp_path: Path):
+    def test_child_env_has_base_url(self):
         """wrap should inject OPENAI_BASE_URL into child environment."""
         child_env = _build_child_env(port=9999, providers=["openai"])
         assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:9999"
 
-    def test_child_env_anthropic(self, tmp_path: Path):
+    def test_child_env_anthropic(self):
         """wrap should inject ANTHROPIC_BASE_URL for anthropic provider."""
         child_env = _build_child_env(port=8888, providers=["anthropic"])
         assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888"
@@ -497,8 +497,6 @@ class TestWrapSetsEnvAndRunsCommand:
             "worthless.cli.commands.wrap.forward_signals",
             lambda **_kw: None,
         )
-
-        _real_popen = subprocess.Popen
 
         def _capture_popen(*args, **kwargs):
             env = kwargs.get("env", {})

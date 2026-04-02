@@ -344,7 +344,7 @@ class TestTransparentRouting:
         sr = split_key(api_key)
 
         shard = StoredShard(
-            shard_b=bytes(sr.shard_b),
+            shard_b=bytearray(sr.shard_b),
             commitment=bytes(sr.commitment),
             nonce=bytes(sr.nonce),
             provider="anthropic",

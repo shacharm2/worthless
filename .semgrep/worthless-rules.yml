@@ -1,0 +1,68 @@
+rules:
+  # SR-01: Key material must use bytearray, not bytes
+  - id: sr01-key-material-not-bytearray
+    patterns:
+      - pattern: bytes($ARG)
+      - metavariable-regex:
+          metavariable: $ARG
+          regex: ".*(shard|key|secret|material).*"
+    message: >
+      SR-01 violation: key material must be stored in a mutable bytearray
+      so it can be securely zeroed after use. Replace bytes($ARG) with
+      bytearray($ARG).
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: "CWE-316: Cleartext Storage of Sensitive Information in Memory"
+
+  # SR-07: Constant-time comparison required for MACs/digests
+  - id: sr07-timing-safe-compare
+    patterns:
+      - pattern: $LEFT == $RIGHT
+      - metavariable-regex:
+          metavariable: $LEFT
+          regex: ".*(mac|tag|digest|hmac).*"
+    message: >
+      SR-07 violation: use hmac.compare_digest() instead of == for
+      comparing MACs, tags, or digests to prevent timing side-channels.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: "CWE-208: Observable Timing Discrepancy"
+
+  - id: sr07-timing-safe-compare-rhs
+    patterns:
+      - pattern: $LEFT == $RIGHT
+      - metavariable-regex:
+          metavariable: $RIGHT
+          regex: ".*(mac|tag|digest|hmac).*"
+    message: >
+      SR-07 violation: use hmac.compare_digest() instead of == for
+      comparing MACs, tags, or digests to prevent timing side-channels.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: "CWE-208: Observable Timing Discrepancy"
+
+  # SR-08: CSPRNG only — flag stdlib random in crypto files
+  - id: sr08-no-weak-random
+    pattern: random.$FUNC(...)
+    paths:
+      include:
+        - "**/crypto/**"
+        - "**/shard*"
+        - "**/key*"
+        - "**/secret*"
+        - "**/encrypt*"
+        - "**/decrypt*"
+    message: >
+      SR-08 violation: do not use the random module in cryptographic code.
+      Use secrets or os.urandom() for cryptographically secure randomness.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: "CWE-338: Use of Cryptographically Weak PRNG"
