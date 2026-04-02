@@ -109,7 +109,7 @@ Plans:
 **Goal:** Stabilize, extend, and wire the test suite into a 5-tier CI model with coverage gates, flaky quarantine, and GHA workflows -- the last quality gate before v1 release work begins
 **Requirements**: WOR-73, WOR-74, WOR-75, WOR-76, WOR-78, WOR-79, CI-T1, CI-T2, CI-T3, CI-T4, CI-T5
 **Depends on:** Phase 04.1
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 - [ ] 04.2-01-PLAN.md — Test infra config: xdist loadscope, rerunfailures, coverage parallel, Hypothesis CI profile, conftest DRY, coverage floor script
@@ -141,5 +141,5 @@ Phases execute in numeric order. Phases 1 and 2 can be executed in parallel.
 | 03.1. Proxy Hardening | 0/3 | Complete    | 2026-03-21 |
 | 4. CLI | 4/4 | Complete   | 2026-03-27 |
 | 04.1. Post-CLI Wave 1 overhaul | 4/4 | Complete    | 2026-04-02 |
-| 04.2. Test Hardening | 2/3 | In Progress|  |
+| 04.2. Test Hardening | 3/3 | Complete   | 2026-04-02 |
 | 5. Security Posture Documentation | 0/1 | Not started | - |
