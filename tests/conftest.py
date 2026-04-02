@@ -160,6 +160,17 @@ def assert_zeroed(buf: bytearray) -> None:
     assert all(b == 0 for b in buf), f"Buffer not zeroed: {buf[:8].hex()}..."
 
 
+def write_shard_a(home: WorthlessHome, alias: str, data: bytes) -> Path:
+    """Write a shard_a file with 0o600 perms. Returns the file path."""
+    shard_a_path = home.shard_a_dir / alias
+    fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    return shard_a_path
+
+
 # ------------------------------------------------------------------
 # Storage-layer fixtures (Phase 1)
 # ------------------------------------------------------------------
