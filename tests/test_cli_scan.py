@@ -332,11 +332,12 @@ class TestScanDeep:
     ) -> None:
         """Deep scan should clean up its env dump temp file."""
         monkeypatch.chdir(tmp_path)
-        before = set(Path(tempfile.gettempdir()).glob("worthless-env-*"))
+        # Isolate temp dir so xdist workers don't interfere with glob
+        iso_tmp = tmp_path / "tmpdir"
+        iso_tmp.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(iso_tmp))
         runner.invoke(app, ["scan", "--deep"])
-        after = set(Path(tempfile.gettempdir()).glob("worthless-env-*"))
-        # No new temp files should remain
-        leaked = after - before
+        leaked = list(iso_tmp.glob("worthless-env-*"))
         assert len(leaked) == 0, f"Leaked temp files: {leaked}"
 
 
