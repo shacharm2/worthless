@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: completed
-stopped_at: Completed 04.2-01-PLAN.md
+stopped_at: Completed 04.2-03-PLAN.md
 last_updated: "2026-04-02T14:55:39.792Z"
 last_activity: 2026-04-02 — Completed 04.1-04 gap closure (test fix, README terminology, PROTOCOL.md link)
 progress:
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-03-14)
 ## Current Position
 
 Phase: 04.2 of 5 (Test Hardening)
-Plan: 1 of 3 in current phase
+Plan: 3 of 3 in current phase
 Status: In Progress
-Last activity: 2026-04-02 — Completed 04.2-01 test infrastructure configuration
+Last activity: 2026-04-02 — Completed 04.2-03 CI pipeline (5-tier GHA workflows)
 
 Progress: [█████████░] 90%
 
@@ -61,6 +61,7 @@ Progress: [█████████░] 90%
 | Phase 04.1 P03 | 5min | 1 tasks | 3 files |
 | Phase 04.1 P04 | 3min | 2 tasks | 2 files |
 | Phase 04.2-test-hardening P01 | 4min | 2 tasks | 3 files |
+| Phase 04.2-test-hardening P03 | 2min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -112,6 +113,9 @@ Recent decisions affecting current work:
 - [Phase 04.1-04]: xdist temp file race fixed by isolating tempdir per test, not by stripping env keys
 - [Phase 04.1-04]: worthless enroll row removed from CLI table entirely per locked decision
 - [Phase 04.2-01]: Hypothesis CI profile uses derandomize=True and database=None for reproducible xdist-safe runs
+- [Phase 04.2-03]: 5-tier CI: push (fast gate) -> PR (coverage) -> scheduled (mutation) -> pre-release (full audit) -> manual (benchmarks)
+- [Phase 04.2-03]: Zero-secrets CI: only github.token used, no external API keys needed
+- [Phase 04.2-03]: py-cov-action for coverage PR comments (works with default github.token)
 
 ### Roadmap Evolution
 
@@ -130,6 +134,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-02T14:55:39.789Z
-Stopped at: Completed 04.2-01-PLAN.md
+Last session: 2026-04-02T14:59:20Z
+Stopped at: Completed 04.2-03-PLAN.md
 Resume file: None
