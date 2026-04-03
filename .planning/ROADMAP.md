@@ -16,7 +16,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 2: Provider Adapters** - OpenAI and Anthropic request/response transformers with SSE streaming
 - [ ] **Phase 3: Proxy Service** - FastAPI proxy with gate-before-reconstruct and transparent routing
 - [x] **Phase 4: CLI** - Enroll, wrap, status, and scan commands for the 90-second setup experience (completed 2026-03-27)
-- [ ] **Phase 5: Security Posture Documentation** - Honest documentation of protection status, confidence levels, and known limitations
+- [x] **Phase 5: Security Posture Documentation** - Honest documentation of protection status, confidence levels, and known limitations (completed 2026-04-03)
 
 ## Phase Details
 
@@ -123,10 +123,11 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. SECURITY_POSTURE.md exists with protection status for each architectural invariant and its confidence level
   2. Known limitations of the Python PoC (memory model, GC non-determinism) are explicitly documented with the planned Rust mitigation path
-**Plans**: 1 plan
+**Plans**: 2 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — Validation smoke test + SECURITY_POSTURE.md self-assessment document
+- [ ] 05-01-PLAN.md — Close enforcement test gaps (Inv 3, SR-07, SR-08), SECURITY.md disclosure policy, smoke test scaffold
+- [ ] 05-02-PLAN.md — Write complete SECURITY_POSTURE.md self-assessment document
 
 ## Progress
 
@@ -142,4 +143,4 @@ Phases execute in numeric order. Phases 1 and 2 can be executed in parallel.
 | 4. CLI | 4/4 | Complete   | 2026-03-27 |
 | 04.1. Post-CLI Wave 1 overhaul | 4/4 | Complete    | 2026-04-02 |
 | 04.2. Test Hardening | 3/3 | Complete   | 2026-04-02 |
-| 5. Security Posture Documentation | 0/1 | Not started | - |
+| 5. Security Posture Documentation | 2/2 | Complete   | 2026-04-03 |
