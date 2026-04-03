@@ -12,7 +12,7 @@ import hashlib
 import hmac
 import secrets
 from contextlib import contextmanager
-from typing import Generator
+from collections.abc import Generator
 
 from worthless.crypto.types import SplitResult, _zero_buf
 from worthless.exceptions import ShardTamperedError
@@ -37,7 +37,7 @@ def split_key(api_key: bytes) -> SplitResult:
     mask = bytearray(secrets.token_bytes(len(api_key)))
 
     # XOR the key with the mask to produce shard_a
-    shard_a = bytearray(a ^ b for a, b in zip(api_key, mask))
+    shard_a = bytearray(a ^ b for a, b in zip(api_key, mask, strict=True))
     shard_b = mask
 
     # Create HMAC commitment over the original key
@@ -87,7 +87,7 @@ def reconstruct_key(
         raise ValueError(f"Shard length mismatch: shard_a={len(shard_a)}, shard_b={len(shard_b)}")
 
     # Reconstruct the key via XOR
-    key = bytearray(a ^ b for a, b in zip(shard_a, shard_b))
+    key = bytearray(a ^ b for a, b in zip(shard_a, shard_b, strict=True))
     expected = bytearray()
 
     try:

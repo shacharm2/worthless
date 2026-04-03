@@ -98,12 +98,12 @@ def rewrite_env_key(env_path: Path, var_name: str, new_value: str) -> None:
         os.write(fd, "".join(new_lines).encode())
         os.close(fd)
         fd_closed = True
-        os.replace(tmp_path, str(env_path))
+        Path(tmp_path).replace(env_path)
     except BaseException:
         if not fd_closed:
             os.close(fd)
         try:
-            os.unlink(tmp_path)
+            Path(tmp_path).unlink(missing_ok=True)
         except OSError:
             pass
         raise

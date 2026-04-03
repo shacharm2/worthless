@@ -104,7 +104,7 @@ class SpendCapRule:
                 # Ensure lock is released on inner error
                 try:
                     await self.db.execute("ROLLBACK")
-                except Exception:
+                except Exception:  # noqa: S110 — ROLLBACK on error path; if it fails, re-raise original anyway
                     pass
                 raise
         except Exception:

@@ -6,7 +6,6 @@ used by integration tests and early development to enroll keys directly.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from worthless.crypto.splitter import split_key
@@ -52,7 +51,7 @@ async def enroll_stub(
     shard_a = bytes(sr.shard_a)
 
     if shard_a_dir:
-        os.makedirs(shard_a_dir, exist_ok=True)
+        Path(shard_a_dir).mkdir(parents=True, exist_ok=True)
         shard_a_path = Path(shard_a_dir) / alias
         shard_a_path.write_bytes(shard_a)
 

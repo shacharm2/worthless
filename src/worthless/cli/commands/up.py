@@ -11,7 +11,6 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -52,7 +51,7 @@ def register_up_commands(app: typer.Typer) -> None:
 
     @app.command()
     def up(
-        port: Optional[int] = typer.Option(
+        port: int | None = typer.Option(
             None, "--port", "-p", help="Port to bind (default: 8787 or WORTHLESS_PORT)"
         ),
         daemon: bool = typer.Option(

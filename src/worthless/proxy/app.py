@@ -61,7 +61,7 @@ def _uniform_401() -> Response:
     )
 
 
-def _infer_alias_from_path(clean_path: str, settings: "ProxySettings") -> str | None:
+def _infer_alias_from_path(clean_path: str, settings: ProxySettings) -> str | None:
     """Infer alias from request path when x-worthless-key header is absent.
 
     Maps the path to a provider via the adapter registry, then scans

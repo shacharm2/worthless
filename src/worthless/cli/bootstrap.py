@@ -8,7 +8,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Generator
+from collections.abc import Generator
 
 from cryptography.fernet import Fernet
 
@@ -60,8 +60,8 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
         home.shard_a_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
         # Ensure permissions are correct even if dir already existed
-        os.chmod(home.base_dir, 0o700)
-        os.chmod(home.shard_a_dir, 0o700)
+        home.base_dir.chmod(0o700)
+        home.shard_a_dir.chmod(0o700)
 
         # Generate Fernet key if missing
         if not home.fernet_key_path.exists():
@@ -133,7 +133,7 @@ def _init_db(home: WorthlessHome) -> None:
         conn.close()
 
     # Restrict DB file permissions
-    os.chmod(str(home.db_path), 0o600)
+    home.db_path.chmod(0o600)
 
 
 @contextmanager
@@ -152,7 +152,7 @@ def acquire_lock(home: WorthlessHome) -> Generator[None, None, None]:
             ErrorCode.LOCK_IN_PROGRESS,
             "Another worthless operation is in progress. "
             "Remove ~/.worthless/.lock-in-progress if stale.",
-        )
+        ) from None  # FileExistsError context is not useful to callers
     try:
         yield
     finally:

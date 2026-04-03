@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -113,7 +112,7 @@ def register_unlock_commands(app: typer.Typer) -> None:
 
     @app.command()
     def unlock(
-        alias: Optional[str] = typer.Option(
+        alias: str | None = typer.Option(
             None, "--alias", "-a", help="Specific alias to unlock (default: all)"
         ),
         env: Path = typer.Option(

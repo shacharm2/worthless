@@ -8,7 +8,6 @@ import stat
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -55,7 +54,7 @@ def _collect_deep_paths(explicit_paths: list[Path]) -> tuple[list[Path], Path | 
     tmp_path: Path | None = None
 
     for pattern in ["*.yml", "*.yaml", "*.toml", "*.json"]:
-        for p in Path(".").glob(pattern):
+        for p in Path().glob(pattern):
             if p.is_file() and p not in paths:
                 paths.append(p)
 
@@ -70,7 +69,7 @@ def _collect_deep_paths(explicit_paths: list[Path]) -> tuple[list[Path], Path | 
         except Exception:
             try:
                 os.close(fd)
-            except Exception:
+            except Exception:  # noqa: S110 — fd cleanup on error path; can't recover usefully
                 pass
 
     return paths, tmp_path
@@ -106,7 +105,7 @@ def _format_human(
                         if preview.startswith(value[:4]):
                             preview = f.value_preview + "..." + value[-4:]
                             break
-            except Exception:
+            except Exception:  # noqa: S110 — best-effort preview; display failure is non-critical
                 pass
 
         var_part = f" ({f.var_name})" if f.var_name else ""
@@ -221,7 +220,7 @@ def register_scan_commands(app: typer.Typer) -> None:
 
     @app.command()
     def scan(
-        paths: Optional[list[Path]] = typer.Argument(
+        paths: list[Path] | None = typer.Argument(
             None, help="Files to scan",
         ),
         deep: bool = typer.Option(

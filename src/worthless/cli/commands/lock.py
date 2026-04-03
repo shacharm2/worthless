@@ -7,7 +7,6 @@ import hashlib
 import os
 import re
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -309,7 +308,7 @@ def register_lock_commands(app: typer.Typer) -> None:
         env: Path = typer.Option(
             Path(".env"), "--env", "-e", help="Path to .env file"
         ),
-        provider: Optional[str] = typer.Option(
+        provider: str | None = typer.Option(
             None, "--provider", "-p", help="Override provider auto-detection"
         ),
     ) -> None:
@@ -331,7 +330,7 @@ def register_lock_commands(app: typer.Typer) -> None:
     @app.command()
     def enroll(
         alias: str = typer.Option(..., "--alias", "-a", help="Key alias"),
-        key: Optional[str] = typer.Option(
+        key: str | None = typer.Option(
             None, "--key", "-k",
             help="API key (use --key-stdin instead to avoid shell history)",
         ),

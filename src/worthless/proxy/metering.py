@@ -40,7 +40,7 @@ def extract_usage_openai(data: bytes) -> int:
                     return chunk["usage"].get("total_tokens", 0)
             except (json.JSONDecodeError, ValueError):
                 continue
-    except Exception:
+    except Exception:  # noqa: S110 — best-effort SSE decode; malformed response must not raise
         pass
 
     return 0
@@ -71,7 +71,7 @@ def extract_usage_anthropic(data: bytes) -> int:
                         except (json.JSONDecodeError, ValueError):
                             pass
                         break
-    except Exception:
+    except Exception:  # noqa: S110 — best-effort SSE decode; malformed response must not raise
         pass
 
     return 0

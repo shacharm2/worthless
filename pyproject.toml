@@ -110,7 +110,31 @@ target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "TID"]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "TID",  # flake8-tidy-imports (bans random module, CRYP-04)
+    "S",    # flake8-bandit (SAST — mirrors bandit checks inline)
+    "B",    # flake8-bugbear (subtle bugs: mutable defaults, assert in prod, etc.)
+    "UP",   # pyupgrade (modern Python idioms, smaller attack surface)
+    "PTH",  # flake8-use-pathlib (pathlib over os.path, avoids traversal surprises)
+]
+ignore = [
+    # B008: Typer's API *requires* function calls in argument defaults (typer.Option, typer.Argument)
+    # This is an intentional framework pattern, not a bug. See: https://typer.tiangolo.com/
+    "B008",
+    # S603: subprocess call with sys.executable + hardcoded args is not untrusted input.
+    # All subprocess.Popen calls in this codebase use sys.executable with a fixed arg list.
+    "S603",
+    # S101: assert used as internal pre-condition guards (e.g. proc.stdout is not None),
+    # not as user-facing validation. Acceptable in non-public internal helpers.
+    "S101",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files: assert is standard pytest style; S110 (try/except/pass) acceptable in test helpers
+"tests/**" = ["S101", "S110", "B"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "random".msg = "Use the 'secrets' module for cryptographic randomness. The 'random' module is banned (CRYP-04)."
