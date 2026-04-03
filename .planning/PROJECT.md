@@ -12,39 +12,46 @@ A developer installs Worthless and goes back to work with a quiet mind. Their AP
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ XOR split-key proxy — key is split client-side, reconstructed per-request server-side, never exists as a complete string at rest — v1.0
+- ✓ CLI enrollment — `worthless lock` splits a key into Shard A (client) + Shard B (server), confirms protection — v1.0
+- ✓ CLI wrap — `worthless wrap` configures env vars so API calls route through the proxy transparently — v1.0
+- ✓ Local proxy — runs on localhost, in-process reconstruction, zero cloud dependency — v1.0
+- ✓ Terminal confirmation — `worthless status` shows protected keys and proxy health — v1.0
+- ✓ Stack-agnostic — works for any language that makes HTTP calls via BASE_URL override — v1.0
+- ✓ OpenAI + Anthropic provider support — v1.0
+- ✓ Three architectural invariants enforced: client-side splitting, gate before reconstruction, server-side direct upstream call — v1.0 (Enforced tier, evidence-backed)
 
 ### Active
 
-- [ ] XOR split-key proxy — key is split client-side, reconstructed per-request server-side, never exists as a complete string at rest
-- [ ] CLI enrollment — `worthless enroll` splits a key into Shard A (client) + Shard B (server), confirms protection
-- [ ] CLI wrap — `worthless wrap` configures env vars so API calls route through the proxy transparently
-- [ ] Local proxy — runs on localhost, in-process reconstruction, zero cloud dependency for dogfood
-- [ ] Terminal confirmation — after install, clear output: "N keys found, all protected. Done." then silence
-- [ ] Stack-agnostic — works for Python, Node, Go, Rust, any language that makes HTTP calls to LLM providers
-- [ ] OpenAI + Anthropic provider support
-- [ ] Three architectural invariants enforced: client-side splitting, gate before reconstruction, server-side direct upstream call
+- [ ] MCP server — Claude Code / Cursor / Windsurf integration
+- [ ] Docker Compose / Railway / Render deploy configs
+- [ ] Rules engine: model_allowlist, token_budget, time_window rules
+- [ ] `worthless keys` command for listing protected keys
+- [ ] `worthless daemon` background proxy mode
+- [ ] Redis hot-path metering
+- [ ] Email + Slack alerts for spend velocity
+- [ ] `worthless scan` pre-commit hook wiring
+- [ ] SKILL.md agent discovery file
 
 ### Out of Scope
 
-- Hosted spend cap enforcement — future work, not in initial scope
-- MCP server — Claude Code / Cursor integration (after core proxy works)
-- Dashboard UI — future work
-- Team management — future work
-- Docker Compose / Railway / Render deploy — after local works
-- Anomaly detection — future work
+- Dashboard UI — SaaS, worthless-cloud repo
+- Team management UI — SaaS, worthless-cloud repo
+- Hosted spend cap enforcement — requires cloud infrastructure
 - SSO/SAML, response caching, load balancing, content filtering
 - Gemini support — stretch goal
+- Anomaly detection beyond spend velocity — Pro+ tier
 
 ## Context
 
 - **Origin:** $82,314 Gemini API key theft (February 2026). Three-person team in Mexico, $180/month bill, 48 hours later facing bankruptcy. Google cited shared responsibility model.
 - **Market gap:** Every competitor (Portkey, Helicone, LiteLLM, Infisical, Vault) protects the key. None eliminate it. "Zero Standing API Keys" is unoccupied territory.
-- **Brand:** The name IS the pitch. "Worthless" is the strategic asset — the negative word is the value proposition. Simultaneously a honeypot and actual production key that's worth nothing.
+- **Brand:** The name IS the pitch. "Worthless" is the strategic asset — the negative word is the value proposition.
 - **Positioning:** "Stolen? So what." / "No key. No breach. No bill." / "They protect the key. We eliminate it."
 - **Target:** Solo dev dogfood first → OpenClaw user second → small teams third.
 - **Build order:** PoC (Python + SQLite) → Harden (Rust reconstruction) → Attack (pen-test).
-- **PRD:** Maintained separately — read-only reference, GSD phases are source of truth.
+- **Current state:** v1.0 shipped (2026-04-03). 4,399 LOC Python, 38 source files. Tech stack: Python 3.12, FastAPI, aiosqlite, cryptography (Fernet). All 3 architectural invariants at Enforced confidence tier. 5-tier CI pipeline with coverage gates.
+- **Known limitations:** Python GC non-determinism for memory zeroing (documented in SECURITY_POSTURE.md, Rust mitigation planned). `api_key.decode()` creates immutable str copy in proxy (PoC limitation).
 
 ## Constraints
 
@@ -58,10 +65,16 @@ A developer installs Worthless and goes back to work with a quiet mind. Their AP
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Python-first PoC, Rust later | Ship fast, harden later — build order from CLAUDE.md | — Pending |
-| Local-only for dogfood | Simplest path to validation, no infra dependency | — Pending |
-| Split-key + proxy, not just proxy | Eliminating the key is the differentiator, not just capping spend | — Pending |
-| No spend cap in dogfood | Cap requires hosted proxy — honest about what local can/can't do | — Pending |
+| Python-first PoC, Rust later | Ship fast, harden later — build order from CLAUDE.md | ✓ Good — shipped in 19 days |
+| Local-only for dogfood | Simplest path to validation, no infra dependency | ✓ Good — zero cloud dependency |
+| Split-key + proxy, not just proxy | Eliminating the key is the differentiator, not just capping spend | ✓ Good — core differentiator validated |
+| No spend cap in dogfood | Cap requires hosted proxy — honest about what local can/can't do | ✓ Good — spend_cap rule works locally with SQLite |
+| Frozen dataclasses over Pydantic | Less overhead for adapter layer, immutable by default | ✓ Good |
+| Fernet for shard encryption at rest | stdlib-adjacent, good enough for PoC, no key management burden | ✓ Good |
+| Gate-before-reconstruct split | fetch_encrypted + decrypt_shard enables rules to deny before any KMS | ✓ Good — core invariant |
+| lock/unlock terminology over enroll | User-facing language matches mental model of "locking" a key | ✓ Good |
+| 5-tier CI (not 2-tier) | Separate fast gate from full audit prevents developer friction | ✓ Good |
+| Evidence-backed security posture | Confidence tiers (Enforced/Best-effort/Planned) with test citations | ✓ Good — honest documentation |
 
 ---
-*Last updated: 2026-03-14 after initialization*
+*Last updated: 2026-04-03 after v1.0 milestone*
