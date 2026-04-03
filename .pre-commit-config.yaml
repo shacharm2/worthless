@@ -78,6 +78,7 @@ repos:
         entry: uv run vulture src/ --min-confidence 80
         pass_filenames: false
         files: '\.py$'
+        stages: [pre-push]
 
   # Xenon: cyclomatic complexity ceiling (fail if any function hits grade D+)
   - repo: local
@@ -88,6 +89,7 @@ repos:
         entry: uv run xenon src/ --max-absolute C --max-modules B --max-average A
         pass_filenames: false
         files: '\.py$'
+        stages: [pre-push]
 
   # Actionlint: GitHub Actions YAML syntax and logic errors
   - repo: https://github.com/rhysd/actionlint
