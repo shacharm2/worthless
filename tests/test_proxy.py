@@ -111,6 +111,11 @@ async def proxy_client(proxy_app):
 
 
 class TestHealthEndpoints:
+    async def test_root_returns_ok(self, proxy_client: httpx.AsyncClient):
+        resp = await proxy_client.get("/")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
     async def test_healthz_returns_ok(self, proxy_client: httpx.AsyncClient):
         resp = await proxy_client.get("/healthz")
         assert resp.status_code == 200

@@ -229,6 +229,10 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
 
     # ---- Health endpoints (no auth) ----
 
+    @app.get("/")
+    async def root():
+        return {"status": "ok"}
+
     @app.get("/healthz")
     async def healthz():
         return {"status": "ok"}
