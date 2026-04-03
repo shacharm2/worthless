@@ -68,6 +68,15 @@ htmlcov/
 testsprite_prd.md
 testsprite_tests/
 
+# Milestone phase archives (full history in git, only summaries tracked)
+.planning/milestones/v1.0-phases/**
+!.planning/milestones/v1.0-phases/**/
+!.planning/milestones/v1.0-phases/**/*-SUMMARY.md
+
+# Research artifacts (one-time use, keep in git history)
+.planning/research/
+.planning/codebase/
+
 # Misc
 history.md
 .gitnexus
