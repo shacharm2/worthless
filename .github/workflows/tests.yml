@@ -46,6 +46,11 @@ jobs:
           UV_CACHE_DIR: /tmp/uv-cache
         run: uv run ruff check .
 
+      - name: Type check
+        env:
+          UV_CACHE_DIR: /tmp/uv-cache
+        run: uv run pyright
+
       - name: Upload coverage artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

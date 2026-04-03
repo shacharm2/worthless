@@ -58,6 +58,17 @@ repos:
       - id: codespell
         args: ["--skip=*.lock,*.json", "--ignore-words-list=shard,shards,te"]
 
+  # Pyright: static type checking (basic mode src/, strict on crypto/)
+  - repo: local
+    hooks:
+      - id: pyright
+        name: "types: pyright (basic mode)"
+        language: system
+        entry: uv run pyright
+        pass_filenames: false
+        files: '\.py$'
+        stages: [pre-push]   # too slow for commit-time; runs on push like pip-audit
+
   # ── 4. Security SAST ───────────────────────────────────────────
   # Bandit: fast Python SAST. Semgrep deferred to CI (needs network for --config auto).
   - repo: https://github.com/PyCQA/bandit
