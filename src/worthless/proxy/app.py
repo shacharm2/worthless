@@ -230,25 +230,25 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
     # ---- Health endpoints (no auth) ----
 
     @app.get("/")
-    async def root():
+    async def root() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/healthz")
-    async def healthz():
+    async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/readyz")
-    async def readyz(request: Request):
+    async def readyz(request: Request) -> Response:
         repo: ShardRepository = request.app.state.repo
         keys = await repo.list_keys()
         if not keys:
             return JSONResponse(status_code=503, content={"status": "no keys enrolled"})
-        return {"status": "ok"}
+        return JSONResponse(status_code=200, content={"status": "ok"})
 
     # ---- Catch-all proxy route ----
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-    async def proxy_request(request: Request, path: str):  # noqa: C901
+    async def proxy_request(request: Request, path: str) -> Response:  # noqa: C901
         settings: ProxySettings = request.app.state.settings
         repo: ShardRepository = request.app.state.repo
         rules_engine: RulesEngine = request.app.state.rules_engine

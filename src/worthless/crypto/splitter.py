@@ -14,7 +14,7 @@ import secrets
 from contextlib import contextmanager
 from collections.abc import Generator
 
-from worthless.crypto.types import SplitResult, _zero_buf
+from worthless.crypto.types import SplitResult, zero_buf
 from worthless.exceptions import ShardTamperedError
 
 
@@ -98,10 +98,10 @@ def reconstruct_key(
         if not hmac.compare_digest(expected, commitment):
             raise ShardTamperedError("HMAC verification failed: shard data has been tampered with")
     except Exception:
-        _zero_buf(key)
+        zero_buf(key)
         raise
     finally:
-        _zero_buf(expected)
+        zero_buf(expected)
 
     return key
 
@@ -127,9 +127,9 @@ def secure_key(key_buf: bytearray) -> Generator[bytearray, None, None]:
     Raises:
         TypeError: If key_buf is not a bytearray.
     """
-    if not isinstance(key_buf, bytearray):
+    if not isinstance(key_buf, bytearray):  # type: ignore[reportUnnecessaryIsInstance] — runtime guard for untyped callers
         raise TypeError(f"secure_key requires a bytearray, got {type(key_buf).__name__}")
     try:
         yield key_buf
     finally:
-        _zero_buf(key_buf)
+        zero_buf(key_buf)

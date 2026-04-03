@@ -22,6 +22,7 @@ dev = [
     "pre-commit>=4.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pyright>=1.1",
     "ruff>=0.8",
 ]
 test = [
@@ -53,9 +54,14 @@ fuzz = [
 [dependency-groups]
 dev = [
     {include-group = "test"},
+    "cyclonedx-bom>=7.3.0",
     "deptry>=0.22",
+    "pip-licenses>=5.5.5",
     "pre-commit>=4.0",
+    "pyright>=1.1",
     "ruff>=0.8",
+    "vulture>=2.16",
+    "xenon>=0.9.3",
 ]
 test = [
     "hypothesis>=6.0",
@@ -164,3 +170,13 @@ also_copy = [
     "src/worthless/storage",
     "src/worthless.egg-info",
 ]
+
+[tool.pyright]
+pythonVersion = "3.12"
+pythonPlatform = "Linux"
+include = ["src"]
+exclude = ["**/__pycache__"]
+# Basic mode catches real type errors without requiring full annotation coverage
+typeCheckingMode = "basic"
+# Strict mode on the crypto module — typed boundaries are a security guarantee
+strict = ["src/worthless/crypto"]

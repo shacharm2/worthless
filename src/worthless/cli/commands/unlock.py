@@ -13,7 +13,7 @@ from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import rewrite_env_key
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.crypto.splitter import reconstruct_key
-from worthless.crypto.types import _zero_buf
+from worthless.crypto.types import zero_buf
 from worthless.storage.repository import ShardRepository
 
 
@@ -100,9 +100,9 @@ async def _unlock_alias(
 
             return key_str
         finally:
-            _zero_buf(key_buf)
+            zero_buf(key_buf)
     finally:
-        _zero_buf(shard_a)
+        zero_buf(shard_a)
         if stored is not None:
             stored.zero()
 

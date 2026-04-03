@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-def _zero_buf(buf: bytearray) -> None:
+def zero_buf(buf: bytearray) -> None:
     """Zero a bytearray in-place (SR-02).
 
     Uses ``bytearray(n)`` which maps to a single ``calloc``/``memset`` in
@@ -43,7 +43,7 @@ class SplitResult:
         defense-in-depth — minimises residual crypto context in memory.
         """
         for buf in (self.shard_a, self.shard_b, self.commitment, self.nonce):
-            _zero_buf(buf)
+            zero_buf(buf)
 
     def __repr__(self) -> str:
         return (
