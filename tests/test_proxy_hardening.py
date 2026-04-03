@@ -13,6 +13,7 @@ import asyncio
 import base64
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -921,6 +922,136 @@ class TestAntiEnumeration:
         )
         assert r1.status_code == r2.status_code == 401
         assert r1.content == r2.content
+
+    async def test_all_failure_modes_return_byte_identical_401(
+        self,
+        proxy_client: httpx.AsyncClient,
+        enrolled_alias,
+        proxy_settings: ProxySettings,
+    ):
+        """All _uniform_401() code paths return byte-identical responses.
+
+        Exercises 8 of 9 failure modes. The 9th (malformed header keys with
+        null/CR/LF bytes) cannot be triggered through httpx — it validates
+        header names client-side. That path requires raw ASGI scope injection.
+        """
+        alias, shard_a_b64, _ = enrolled_alias
+        responses: list[tuple[str, httpx.Response]] = []
+
+        # 1. Missing alias (no header, no inferrable alias)
+        r = await proxy_client.post("/v1/chat/completions", content=b"{}")
+        responses.append(("missing_alias", r))
+
+        # 2. Path traversal alias
+        r = await proxy_client.post(
+            "/v1/chat/completions",
+            headers={"x-worthless-key": "../../etc/passwd"},
+            content=b"{}",
+        )
+        responses.append(("path_traversal", r))
+
+        # 3. Unknown alias (not in DB)
+        r = await proxy_client.post(
+            "/v1/chat/completions",
+            headers={"x-worthless-key": "nonexistent-alias"},
+            content=b"{}",
+        )
+        responses.append(("unknown_alias", r))
+
+        # 4. Invalid base64 in shard_a header
+        r = await proxy_client.post(
+            "/v1/chat/completions",
+            headers={"x-worthless-key": alias, "x-worthless-shard-a": "!!!not-base64!!!"},
+            content=b"{}",
+        )
+        responses.append(("invalid_base64_shard", r))
+
+        # 5. Missing shard_a (no header, no file on disk)
+        # Safe with pytest-xdist: tmp_path is per-test, so shard_a_dir is isolated
+        shard_a_file = Path(proxy_settings.shard_a_dir) / alias
+        shard_a_backup = shard_a_file.read_bytes()
+        shard_a_file.unlink()
+        try:
+            r = await proxy_client.post(
+                "/v1/chat/completions",
+                headers={"x-worthless-key": alias},
+                content=b"{}",
+            )
+            responses.append(("missing_shard_a", r))
+        finally:
+            shard_a_file.write_bytes(shard_a_backup)
+
+        # 6. Unknown endpoint (no adapter match)
+        r = await proxy_client.post(
+            "/v1/totally-unknown-endpoint",
+            headers={"x-worthless-key": alias, "x-worthless-shard-a": shard_a_b64},
+            content=b"{}",
+        )
+        responses.append(("unknown_endpoint", r))
+
+        # 7. POST to root path (no adapter match for /)
+        r = await proxy_client.post(
+            "/",
+            headers={"x-worthless-key": alias, "x-worthless-shard-a": shard_a_b64},
+            content=b"{}",
+        )
+        responses.append(("post_root", r))
+
+        # 8. Reconstruction failure (mock reconstruct_key to raise)
+        with patch("worthless.proxy.app.reconstruct_key", side_effect=ValueError("tampered")):
+            r = await proxy_client.post(
+                "/v1/chat/completions",
+                headers={"x-worthless-key": alias, "x-worthless-shard-a": shard_a_b64},
+                content=b"{}",
+            )
+        responses.append(("reconstruct_failure", r))
+
+        # Assert ALL return 401 with byte-identical bodies
+        reference_label, reference = responses[0]
+        for label, resp in responses:
+            assert resp.status_code == 401, f"{label}: expected 401, got {resp.status_code}"
+            assert resp.content == reference.content, (
+                f"{label} body differs from {reference_label}"
+            )
+
+    async def test_tls_enforcement_returns_identical_401(
+        self, proxy_settings: ProxySettings, repo, enrolled_alias
+    ):
+        """TLS enforcement failure returns the same 401 as other failure modes."""
+        tls_settings = replace(proxy_settings, allow_insecure=False)
+        app = create_app(tls_settings)
+        db = await aiosqlite.connect(proxy_settings.db_path)
+        try:
+            app.state.db = db
+            app.state.repo = repo
+            app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
+            app.state.rules_engine = RulesEngine(rules=[])
+
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                alias, shard_a_b64, _ = enrolled_alias
+
+                # TLS failure: x-forwarded-proto: http with allow_insecure=False
+                # NOTE: if TLS check switches to request.scope["scheme"] (XFP trust fix),
+                # this test still passes (ASGI transport defaults scheme to "http") but
+                # the x-forwarded-proto header becomes irrelevant. Update trigger accordingly.
+                r_tls = await client.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "x-worthless-key": alias,
+                        "x-worthless-shard-a": shard_a_b64,
+                        "x-forwarded-proto": "http",
+                    },
+                    content=b"{}",
+                )
+                # Reference: missing alias (known uniform 401)
+                r_ref = await client.post("/v1/chat/completions", content=b"{}")
+
+            assert r_tls.status_code == 401
+            assert r_tls.content == r_ref.content
+        finally:
+            await app.state.httpx_client.aclose()
+            await db.close()
 
 
 # ------------------------------------------------------------------
