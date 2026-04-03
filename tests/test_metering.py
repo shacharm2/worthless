@@ -7,7 +7,6 @@ import json
 import pytest
 
 from worthless.proxy.metering import (
-    UsageInfo,
     extract_usage_anthropic,
     extract_usage_openai,
     record_spend,

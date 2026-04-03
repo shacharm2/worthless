@@ -397,7 +397,10 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 tokens = usage.total_tokens if usage else 0
                 model = usage.model if usage else None
                 if usage is None:
-                    logger.warning("Token extraction failed for alias=%s provider=%s", alias, provider)
+                    logger.warning(
+                        "Token extraction failed for alias=%s provider=%s",
+                        alias, provider,
+                    )
                 try:
                     await record_spend(settings.db_path, alias, tokens, model, provider)
                 except Exception:
