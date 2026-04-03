@@ -221,3 +221,49 @@ async def test_record_spend(tmp_path):
     assert row[0] == 100
     assert row[1] == "gpt-4"
     assert row[2] == "openai"
+
+
+@pytest.mark.asyncio
+async def test_record_spend_zero_token_audit_row(tmp_path):
+    """When extraction returns None, record_spend still inserts a 0-token audit row."""
+    import aiosqlite
+
+    from worthless.storage.schema import SCHEMA
+
+    db_path = str(tmp_path / "test.db")
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.commit()
+
+    # Simulate what _do_record_spend does when extraction fails
+    usage = extract_usage_openai(b"not valid json at all")
+    assert usage is None
+
+    tokens = usage.total_tokens if usage else 0
+    model = usage.model if usage else None
+    await record_spend(db_path, alias="k1", tokens=tokens, model=model, provider="openai")
+
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            "SELECT tokens, model FROM spend_log WHERE key_alias = ?",
+            ("k1",),
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert row[0] == 0, "Failed extraction should record 0 tokens for audit"
+    assert row[1] is None
+
+
+def test_extraction_failure_is_distinguishable_from_zero_usage():
+    """None (extraction failed) is distinct from UsageInfo(total_tokens=0) (legit zero)."""
+    # Extraction failure
+    assert extract_usage_openai(b"garbage") is None
+
+    # Legitimate zero usage (usage block present but tokens=0)
+    data = json.dumps(
+        {"usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, "model": "gpt-4"}
+    ).encode()
+    result = extract_usage_openai(data)
+    assert result is not None
+    assert result.total_tokens == 0
+    assert result.model == "gpt-4"
