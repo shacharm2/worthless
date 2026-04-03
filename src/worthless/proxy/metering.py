@@ -71,7 +71,6 @@ def _find_sse_event_data(
                         return json.loads(data_line[6:])
                     except (json.JSONDecodeError, ValueError):
                         return None
-                    break
     return None
 
 
