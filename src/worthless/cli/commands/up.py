@@ -18,6 +18,7 @@ from worthless.cli.bootstrap import WorthlessHome, get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.process import (
+    build_proxy_env,
     check_pid,
     cleanup_stale_pid,
     disable_core_dumps,
@@ -98,11 +99,7 @@ def register_up_commands(app: typer.Typer) -> None:
             disable_core_dumps()
 
             # Build proxy env
-            proxy_env = {
-                "WORTHLESS_DB_PATH": str(home.db_path),
-                "WORTHLESS_FERNET_KEY": home.fernet_key.decode(),
-                "WORTHLESS_SHARD_A_DIR": str(home.shard_a_dir),
-            }
+            proxy_env = build_proxy_env(home)
 
             if daemon:
                 _start_daemon(proxy_env, actual_port, pid_file, console)

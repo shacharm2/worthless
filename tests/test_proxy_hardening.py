@@ -49,6 +49,7 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettin
         streaming_timeout=30.0,
         allow_insecure=True,
         shard_a_dir=shard_a_dir,
+        allow_alias_inference=True,
     )
 
 
@@ -1236,3 +1237,225 @@ class TestCORSDenial:
             headers={"origin": "https://evil.com"},
         )
         assert "access-control-allow-origin" not in resp.headers
+
+
+# ==================================================================
+# Auth collapse: alias inference, shard fallback, TLS header trust
+# ==================================================================
+
+
+@pytest.fixture()
+async def attack_scenario(tmp_db_path: str, fernet_key: bytes, tmp_path, sample_api_key_bytes: bytes):
+    """Enrolled key with shard_a on disk, secure defaults (inference off, TLS required)."""
+    from worthless.crypto import split_key
+    from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
+    from worthless.storage.repository import ShardRepository, StoredShard
+
+    alias = "openai-abcd1234"
+    sr = split_key(sample_api_key_bytes)
+
+    shard_a_dir = str(tmp_path / "shard_a")
+    settings = ProxySettings(
+        db_path=tmp_db_path,
+        fernet_key=fernet_key.decode(),
+        allow_insecure=False,
+        shard_a_dir=shard_a_dir,
+    )
+
+    repo = ShardRepository(tmp_db_path, fernet_key)
+    await repo.initialize()
+
+    shard = StoredShard(
+        shard_b=bytearray(sr.shard_b),
+        commitment=bytearray(sr.commitment),
+        nonce=bytearray(sr.nonce),
+        provider="openai",
+    )
+    await repo.store(alias, shard)
+
+    os.makedirs(shard_a_dir, exist_ok=True)
+    with open(os.path.join(shard_a_dir, alias), "wb") as f:
+        f.write(bytes(sr.shard_a))
+
+    app = create_app(settings)
+    db = await aiosqlite.connect(tmp_db_path)
+    app.state.db = db
+    app.state.repo = repo
+    app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
+    app.state.rules_engine = RulesEngine(
+        rules=[
+            SpendCapRule(db=db),
+            RateLimitRule(default_rps=100.0, db_path=tmp_db_path),
+        ]
+    )
+
+    shard_a_b64 = base64.b64encode(bytes(sr.shard_a)).decode()
+    yield app, alias, shard_a_b64, settings
+    await app.state.httpx_client.aclose()
+    await db.close()
+
+
+class TestAuthCollapse:
+    """Verify that alias inference, shard_a file fallback, and TLS header trust
+    cannot be chained to reconstruct API keys without credentials."""
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_unauthenticated_request_cannot_reconstruct_key(self, attack_scenario):
+        """Bare request with spoofed XFP and no auth headers must not reach upstream."""
+        app, alias, shard_a_b64, settings = attack_scenario
+
+        upstream = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": [{"message": {"content": "pwned"}}]})
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers={
+                    "x-forwarded-proto": "https",
+                },
+                json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 401, (
+            f"Attack succeeded! Got {resp.status_code} — "
+            "unauthenticated request reconstructed an API key."
+        )
+        assert not upstream.called, "Upstream was called — key was reconstructed without auth"
+
+    @pytest.mark.asyncio
+    async def test_spoofed_xfp_does_not_bypass_tls(self, attack_scenario):
+        """X-Forwarded-Proto: https over plain HTTP must be rejected."""
+        app, alias, shard_a_b64, settings = attack_scenario
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers={
+                    "x-worthless-key": alias,
+                    "x-worthless-shard-a": shard_a_b64,
+                    "x-forwarded-proto": "https",
+                },
+                json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 401, (
+            f"Spoofed X-Forwarded-Proto bypassed TLS! Got {resp.status_code}."
+        )
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_real_tls_connection_accepted(self, attack_scenario):
+        """Request over real HTTPS (scope scheme=https) passes TLS check."""
+        app, alias, shard_a_b64, settings = attack_scenario
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": []})
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers={
+                    "x-worthless-key": alias,
+                    "x-worthless-shard-a": shard_a_b64,
+                },
+                json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_alias_inference_blocked_by_default(self, attack_scenario):
+        """With allow_alias_inference=False (default), missing header → 401."""
+        app, alias, shard_a_b64, settings = attack_scenario
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers={"x-worthless-shard-a": shard_a_b64},
+                json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_alias_inference_works_when_opted_in(
+        self, tmp_db_path, fernet_key, tmp_path, sample_api_key_bytes
+    ):
+        """With allow_alias_inference=True, missing header infers alias from path."""
+        from worthless.crypto import split_key
+        from worthless.proxy.rules import RulesEngine
+        from worthless.storage.repository import ShardRepository, StoredShard
+
+        alias = "openai-abcd1234"
+        sr = split_key(sample_api_key_bytes)
+
+        shard_a_dir = str(tmp_path / "shard_a")
+        settings = ProxySettings(
+            db_path=tmp_db_path,
+            fernet_key=fernet_key.decode(),
+            allow_insecure=True,
+            shard_a_dir=shard_a_dir,
+            allow_alias_inference=True,
+        )
+
+        repo = ShardRepository(tmp_db_path, fernet_key)
+        await repo.initialize()
+
+        shard = StoredShard(
+            shard_b=bytearray(sr.shard_b),
+            commitment=bytearray(sr.commitment),
+            nonce=bytearray(sr.nonce),
+            provider="openai",
+        )
+        await repo.store(alias, shard)
+
+        os.makedirs(shard_a_dir, exist_ok=True)
+        with open(os.path.join(shard_a_dir, alias), "wb") as f:
+            f.write(bytes(sr.shard_a))
+
+        app = create_app(settings)
+        db = await aiosqlite.connect(tmp_db_path)
+        app.state.db = db
+        app.state.repo = repo
+        app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
+        app.state.rules_engine = RulesEngine(rules=[])
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": []})
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers={
+                    "x-worthless-shard-a": base64.b64encode(bytes(sr.shard_a)).decode(),
+                },
+                json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 200
+        await app.state.httpx_client.aclose()
+        await db.close()
+
+    @pytest.mark.asyncio
+    async def test_no_auth_headers_rejected_before_shard_load(self, attack_scenario):
+        """With inference disabled, bare request is rejected before shard_a fallback."""
+        app, alias, shard_a_b64, settings = attack_scenario
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 401

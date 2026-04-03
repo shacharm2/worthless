@@ -8,6 +8,7 @@ has been violated — treat as a P0.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -246,3 +247,119 @@ class TestKeyBufZeroedAfterDispatch:
 
         assert ref is key_buf, "secure_key must not replace the object"
         assert_zeroed(ref)
+
+
+# ---------------------------------------------------------------------------
+# Invariant #3: Reconstructed key consumed ONLY inside secure_key context
+# ---------------------------------------------------------------------------
+
+
+class TestInvariant3ServerSideContainment:
+    """Invariant #3: The reconstructed key is used inside a secure_key context
+    manager and never escapes the with-block.
+
+    This AST test verifies that proxy/app.py calls reconstruct_key and then
+    consumes the result exclusively within ``with secure_key(...) as k:``.
+    The key buffer must not be passed to any function outside that block.
+    """
+
+    def test_reconstruct_result_flows_through_secure_key(self) -> None:
+        """AST scan: reconstruct_key result is wrapped by secure_key in proxy/app.py.
+
+        Verifies the server-side containment pattern: the variable holding
+        the reconstructed key (key_buf) appears as an argument to secure_key().
+        """
+        proxy_app = _SRC_ROOT / "proxy" / "app.py"
+        assert proxy_app.exists(), "proxy/app.py not found"
+        _, tree = _get_cached(proxy_app)
+
+        # Find all `with secure_key(X) as Y:` statements and collect X names
+        secure_key_args: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.With):
+                for item in node.items:
+                    call = item.context_expr
+                    if (
+                        isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Name)
+                        and call.func.id == "secure_key"
+                        and call.args
+                        and isinstance(call.args[0], ast.Name)
+                    ):
+                        secure_key_args.add(call.args[0].id)
+
+        assert secure_key_args, (
+            "proxy/app.py has no 'with secure_key(var)' — "
+            "reconstructed key is not contained (Invariant #3 violation)"
+        )
+
+        # Find all calls to reconstruct_key and collect their assignment targets
+        reconstruct_targets: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                if (
+                    isinstance(value, ast.Call)
+                    and isinstance(value.func, ast.Name)
+                    and value.func.id == "reconstruct_key"
+                ):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            reconstruct_targets.add(target.id)
+
+        assert reconstruct_targets, (
+            "proxy/app.py never assigns the result of reconstruct_key() — "
+            "cannot verify containment (Invariant #3)"
+        )
+
+        # The reconstruct_key result variable must flow into secure_key
+        uncontained = reconstruct_targets - secure_key_args
+        assert not uncontained, (
+            f"reconstruct_key result variable(s) {uncontained} are never passed to "
+            f"secure_key() — key material escapes the containment boundary "
+            f"(Invariant #3 violation)"
+        )
+
+    def test_key_not_used_outside_secure_key_block(self) -> None:
+        """AST scan: the secure_key alias (k) is only used inside the with-block.
+
+        Ensures the ``as k`` variable from ``with secure_key(key_buf) as k:``
+        is not referenced after the with-block exits.
+        """
+        proxy_app = _SRC_ROOT / "proxy" / "app.py"
+        assert proxy_app.exists(), "proxy/app.py not found"
+        source, tree = _get_cached(proxy_app)
+
+        # Collect the alias names from `with secure_key(...) as ALIAS:`
+        # and the line range of each with-block
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.With):
+                continue
+            for item in node.items:
+                call = item.context_expr
+                if not (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id == "secure_key"
+                ):
+                    continue
+
+                alias = item.optional_vars
+                if not isinstance(alias, ast.Name):
+                    continue
+
+                alias_name = alias.id
+                with_end_line = node.end_lineno or node.lineno
+
+                # Scan the entire module for uses of alias_name AFTER the with-block
+                lines = source.splitlines()
+                for lineno_0, line in enumerate(lines[with_end_line:], start=with_end_line + 1):
+                    stripped = line.lstrip()
+                    if stripped.startswith("#"):
+                        continue
+                    if re.search(rf"\b{alias_name}\b", line):
+                        pytest.fail(
+                            f"proxy/app.py:{lineno_0} references '{alias_name}' after "
+                            f"secure_key block ends at line {with_end_line} — "
+                            f"key material may escape containment (Invariant #3)"
+                        )

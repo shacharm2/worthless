@@ -53,6 +53,10 @@ class ProxySettings:
     shard_a_dir: str = field(
         default_factory=lambda: os.environ.get("WORTHLESS_SHARD_A_DIR", _default_shard_a_dir())
     )
+    allow_alias_inference: bool = field(
+        default_factory=lambda: os.environ.get("WORTHLESS_ALLOW_ALIAS_INFERENCE", "").lower()
+        in ("1", "true", "yes")
+    )
     max_request_bytes: int = field(
         default_factory=lambda: int(
             os.environ.get("WORTHLESS_MAX_REQUEST_BYTES", str(10 * 1024 * 1024))

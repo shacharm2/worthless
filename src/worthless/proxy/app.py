@@ -259,7 +259,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
 
         # (b) Validate alias header present, or infer from path
         alias = request.headers.get("x-worthless-key")
-        if not alias:
+        if not alias and settings.allow_alias_inference:
             alias = _infer_alias_from_path(clean_path, settings)
         if not alias:
             return _uniform_401()
@@ -270,7 +270,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
 
         # (d) TLS enforcement
         if not settings.allow_insecure:
-            proto = request.headers.get("x-forwarded-proto", "http")
+            proto = request.scope.get("scheme", "http")
             if proto != "https":
                 return _uniform_401()
 

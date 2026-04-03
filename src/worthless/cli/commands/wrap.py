@@ -17,6 +17,7 @@ from worthless.cli.bootstrap import WorthlessHome, get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.process import (
+    build_proxy_env,
     create_liveness_pipe,
     disable_core_dumps,
     forward_signals,
@@ -140,11 +141,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
             read_fd, write_fd = create_liveness_pipe()
 
             # Build proxy environment
-            proxy_env = {
-                "WORTHLESS_DB_PATH": str(home.db_path),
-                "WORTHLESS_FERNET_KEY": home.fernet_key.decode(),
-                "WORTHLESS_SHARD_A_DIR": str(home.shard_a_dir),
-            }
+            proxy_env = build_proxy_env(home)
 
             # Spawn proxy on random port
             try:

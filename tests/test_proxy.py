@@ -37,6 +37,7 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettin
         streaming_timeout=30.0,
         allow_insecure=True,
         shard_a_dir=shard_a_dir,
+        allow_alias_inference=True,
     )
 
 
