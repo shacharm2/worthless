@@ -7,10 +7,10 @@
 
 ### Cryptography
 
-- [ ] **CRYP-01**: Key is split into Shard A (client) + Shard B (server) using XOR with `secrets.token_bytes()`
-- [ ] **CRYP-02**: HMAC commitment verifies shard integrity on reconstruction
-- [ ] **CRYP-03**: Reconstructed key stored in `bytearray`, zeroed after use (documented as best-effort in Python)
-- [ ] **CRYP-04**: `secrets` module enforced, `random` module banned via lint rule
+- [x] **CRYP-01**: Key is split into Shard A (client) + Shard B (server) using XOR with `secrets.token_bytes()`
+- [x] **CRYP-02**: HMAC commitment verifies shard integrity on reconstruction
+- [x] **CRYP-03**: Reconstructed key stored in `bytearray`, zeroed after use (documented as best-effort in Python)
+- [x] **CRYP-04**: `secrets` module enforced, `random` module banned via lint rule
 - [x] **CRYP-05**: Rules engine evaluates request BEFORE Shard B is decrypted (gate-before-reconstruct)
 
 ### Proxy
@@ -30,8 +30,8 @@
 
 ### Storage
 
-- [ ] **STOR-01**: Shard B encrypted at rest (aiosqlite)
-- [ ] **STOR-02**: Enrollment metadata persisted locally
+- [x] **STOR-01**: Shard B encrypted at rest (aiosqlite)
+- [x] **STOR-02**: Enrollment metadata persisted locally
 
 ### Documentation
 
@@ -75,10 +75,10 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CRYP-01 | Phase 1 | Pending |
-| CRYP-02 | Phase 1 | Pending |
-| CRYP-03 | Phase 1 | Pending |
-| CRYP-04 | Phase 1 | Pending |
+| CRYP-01 | Phase 1 | Complete |
+| CRYP-02 | Phase 1 | Complete |
+| CRYP-03 | Phase 1 | Complete |
+| CRYP-04 | Phase 1 | Complete |
 | CRYP-05 | Phase 3 | Complete |
 | PROX-01 | Phase 2 | Complete |
 | PROX-02 | Phase 2 | Complete |
@@ -89,8 +89,8 @@
 | CLI-02 | Phase 4 | Complete |
 | CLI-03 | Phase 4 | Complete |
 | CLI-04 | Phase 4 | Complete |
-| STOR-01 | Phase 1 | Pending |
-| STOR-02 | Phase 1 | Pending |
+| STOR-01 | Phase 1 | Complete |
+| STOR-02 | Phase 1 | Complete |
 | DOCS-01 | Phase 5 | Complete |
 
 **Coverage:**
@@ -100,4 +100,4 @@
 
 ---
 *Requirements defined: 2026-03-14*
-*Last updated: 2026-03-14 after roadmap creation*
+*Last updated: 2026-04-03 after v1.0 milestone audit*
