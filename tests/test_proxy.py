@@ -9,6 +9,7 @@ Tests prove the three architectural invariants:
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -47,8 +48,6 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings, sample_api_key_byt
     from worthless.crypto import split_key
     from worthless.storage.repository import StoredShard
 
-    import os
-
     alias = "test-key"
     sr = split_key(sample_api_key_bytes)
 
@@ -61,10 +60,10 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings, sample_api_key_byt
     await repo.store(alias, shard)
 
     # Write shard_a to file as fallback
-    shard_a_dir = proxy_settings.shard_a_dir
-    os.makedirs(shard_a_dir, exist_ok=True)
-    shard_a_path = os.path.join(shard_a_dir, alias)
-    with open(shard_a_path, "wb") as f:
+    shard_a_dir = Path(proxy_settings.shard_a_dir)
+    shard_a_dir.mkdir(parents=True, exist_ok=True)
+    shard_a_path = shard_a_dir / alias
+    with shard_a_path.open("wb") as f:
         f.write(bytes(sr.shard_a))
 
     shard_a_b64 = base64.b64encode(bytes(sr.shard_a)).decode()
@@ -173,11 +172,9 @@ class TestUniformAuth:
     ):
         alias, _, _ = enrolled_alias
         # Remove the shard_a file so neither header nor file provides shard_a
-        import os
-
-        shard_a_path = os.path.join(proxy_app.state.settings.shard_a_dir, alias)
-        if os.path.exists(shard_a_path):
-            os.remove(shard_a_path)
+        shard_a_path = Path(proxy_app.state.settings.shard_a_dir) / alias
+        if shard_a_path.exists():
+            shard_a_path.unlink()
 
         resp = await proxy_client.post(
             "/v1/chat/completions",
@@ -335,10 +332,9 @@ class TestTransparentRouting:
 
         shard_a_b64 = base64.b64encode(bytes(sr.shard_a)).decode()
 
-        import os
-
-        os.makedirs(proxy_settings.shard_a_dir, exist_ok=True)
-        with open(os.path.join(proxy_settings.shard_a_dir, "ant-key"), "wb") as f:
+        shard_a_dir = Path(proxy_settings.shard_a_dir)
+        shard_a_dir.mkdir(parents=True, exist_ok=True)
+        with (shard_a_dir / "ant-key").open("wb") as f:
             f.write(bytes(sr.shard_a))
 
         route = respx.post("https://api.anthropic.com/v1/messages").mock(
@@ -529,8 +525,6 @@ class TestSettingsValidation:
 @pytest.fixture()
 async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo, sample_api_key_bytes: bytes):
     """Proxy app with an openai key enrolled using the provider-hash alias format."""
-    import os
-
     import aiosqlite
 
     from worthless.crypto import split_key
@@ -547,9 +541,9 @@ async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo, sample_api_
     )
     await repo.store(alias, shard)
 
-    shard_a_dir = proxy_settings.shard_a_dir
-    os.makedirs(shard_a_dir, exist_ok=True)
-    with open(os.path.join(shard_a_dir, alias), "wb") as f:
+    shard_a_dir = Path(proxy_settings.shard_a_dir)
+    shard_a_dir.mkdir(parents=True, exist_ok=True)
+    with (shard_a_dir / alias).open("wb") as f:
         f.write(bytes(sr.shard_a))
 
     app = create_app(proxy_settings)

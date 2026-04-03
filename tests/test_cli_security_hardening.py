@@ -211,7 +211,7 @@ class TestFernetKeyNotInEnv:
         """After spawn_proxy processes the env dict, WORTHLESS_FERNET_KEY must be popped."""
         env = {
             "WORTHLESS_FERNET_KEY": Fernet.generate_key().decode(),
-            "WORTHLESS_DB_PATH": "/tmp/fake.db",
+            "WORTHLESS_DB_PATH": "/tmp/fake.db",  # noqa: S108
         }
         env_copy = dict(env)
         captured_env = {}
@@ -231,7 +231,7 @@ class TestFernetKeyNotInEnv:
         """WORTHLESS_FERNET_FD must be set in env when a Fernet key is provided."""
         env = {
             "WORTHLESS_FERNET_KEY": Fernet.generate_key().decode(),
-            "WORTHLESS_DB_PATH": "/tmp/fake.db",
+            "WORTHLESS_DB_PATH": "/tmp/fake.db",  # noqa: S108
         }
         captured_env = {}
 

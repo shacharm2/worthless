@@ -235,10 +235,10 @@ async def test_set_and_check_decoy_hash(
     """After set_decoy_hash, is_known_decoy returns True."""
     shard = stored_shard_from_split(sample_split_result)
     await repo.store_enrolled(
-        "test-alias", shard, var_name="API_KEY", env_path="/tmp/.env"
+        "test-alias", shard, var_name="API_KEY", env_path="/tmp/.env"  # noqa: S108
     )
     decoy_value = "sk-proj-fake-decoy-value-1234567890"
-    await repo.set_decoy_hash("test-alias", "/tmp/.env", decoy_value)
+    await repo.set_decoy_hash("test-alias", "/tmp/.env", decoy_value)  # noqa: S108
 
     assert await repo.is_known_decoy(decoy_value) is True
     assert await repo.is_known_decoy("different-value") is False

@@ -135,7 +135,7 @@ class TestOpenAILive:
 
         # Wrap + real LLM call
         proc = subprocess.run(
-            ["worthless", "wrap", "--", sys.executable, "-c", _OPENAI_CHILD],
+            ["worthless", "wrap", "--", sys.executable, "-c", _OPENAI_CHILD],  # noqa: S607
             env={**os.environ, "WORTHLESS_HOME": str(worthless_home)},
             timeout=90,
             capture_output=True,
@@ -194,7 +194,7 @@ class TestAnthropicLive:
 
         # Wrap + real LLM call
         proc = subprocess.run(
-            ["worthless", "wrap", "--", sys.executable, "-c", _ANTHROPIC_CHILD],
+            ["worthless", "wrap", "--", sys.executable, "-c", _ANTHROPIC_CHILD],  # noqa: S607
             env={**os.environ, "WORTHLESS_HOME": str(worthless_home)},
             timeout=90,
             capture_output=True,

@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import os
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -67,10 +66,10 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings, sample_api_key_byt
     )
     await repo.store(alias, shard)
 
-    shard_a_dir = proxy_settings.shard_a_dir
-    os.makedirs(shard_a_dir, exist_ok=True)
-    shard_a_path = os.path.join(shard_a_dir, alias)
-    with open(shard_a_path, "wb") as f:
+    shard_a_dir = Path(proxy_settings.shard_a_dir)
+    shard_a_dir.mkdir(parents=True, exist_ok=True)
+    shard_a_path = shard_a_dir / alias
+    with shard_a_path.open("wb") as f:
         f.write(bytes(sr.shard_a))
 
     shard_a_b64 = base64.b64encode(bytes(sr.shard_a)).decode()
@@ -1275,8 +1274,8 @@ async def attack_scenario(
     )
     await repo.store(alias, shard)
 
-    os.makedirs(shard_a_dir, exist_ok=True)
-    with open(os.path.join(shard_a_dir, alias), "wb") as f:
+    Path(shard_a_dir).mkdir(parents=True, exist_ok=True)
+    with (Path(shard_a_dir) / alias).open("wb") as f:
         f.write(bytes(sr.shard_a))
 
     app = create_app(settings)
@@ -1419,8 +1418,8 @@ class TestAuthCollapse:
         )
         await repo.store(alias, shard)
 
-        os.makedirs(shard_a_dir, exist_ok=True)
-        with open(os.path.join(shard_a_dir, alias), "wb") as f:
+        Path(shard_a_dir).mkdir(parents=True, exist_ok=True)
+        with (Path(shard_a_dir) / alias).open("wb") as f:
             f.write(bytes(sr.shard_a))
 
         app = create_app(settings)

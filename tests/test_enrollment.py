@@ -37,7 +37,7 @@ class TestForeignKeys:
             )
             await repo.store_enrolled(
                 "test-alias", shard,
-                var_name="API_KEY", env_path="/tmp/.env",
+                var_name="API_KEY", env_path="/tmp/.env",  # noqa: S108
             )
 
             # Verify enrollment exists

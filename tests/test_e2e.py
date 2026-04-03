@@ -178,7 +178,7 @@ class TestWrapProxiesRequest:
 
         # Run wrap as a real subprocess — spawns proxy, runs child, cleans up
         proc = subprocess.run(
-            [
+            [  # noqa: S607
                 "worthless", "wrap", "--",
                 sys.executable, "-c", _CHILD_SCRIPT,
             ],

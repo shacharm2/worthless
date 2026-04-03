@@ -466,7 +466,7 @@ class TestScanFindGitDir:
     ) -> None:
         """--install-hook with no .git anywhere in parents -> exit 2."""
         # Use /tmp which has no .git in any parent
-        monkeypatch.chdir("/tmp")
+        monkeypatch.chdir("/tmp")  # noqa: S108
         monkeypatch.delenv("GIT_DIR", raising=False)
         result = runner.invoke(app, ["scan", "--install-hook"], catch_exceptions=False)
         assert result.exit_code == 2
@@ -643,7 +643,7 @@ class TestFormatHumanBranches:
         from worthless.cli.scanner import ScanFinding
 
         finding = ScanFinding(
-            file="/tmp/x.env", line=1, var_name="KEY",
+            file="/tmp/x.env", line=1, var_name="KEY",  # noqa: S108
             provider="openai", is_protected=False, value_preview="sk-p****",
         )
         output = _format_human([finding], show_suffix=False, is_tty=True)
@@ -655,7 +655,7 @@ class TestFormatHumanBranches:
         from worthless.cli.scanner import ScanFinding
 
         finding = ScanFinding(
-            file="/tmp/x.env", line=1, var_name="KEY",
+            file="/tmp/x.env", line=1, var_name="KEY",  # noqa: S108
             provider="openai", is_protected=False, value_preview="sk-p****",
         )
         output = _format_human([finding], show_suffix=False, is_tty=False)

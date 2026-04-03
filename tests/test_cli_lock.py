@@ -296,7 +296,7 @@ class TestLockErrorBranches:
         original_content = env_file.read_text()
 
         def _boom(*_args, **_kw):
-            raise IOError("disk full")
+            raise OSError("disk full")
 
         monkeypatch.setattr(
             "worthless.cli.commands.lock.rewrite_env_key", _boom,

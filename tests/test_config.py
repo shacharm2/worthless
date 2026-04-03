@@ -71,9 +71,9 @@ class TestCustomValues:
     """Env vars should override defaults."""
 
     def test_custom_db_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("WORTHLESS_DB_PATH", "/tmp/custom.db")
+        monkeypatch.setenv("WORTHLESS_DB_PATH", "/tmp/custom.db")  # noqa: S108
         s = ProxySettings()
-        assert s.db_path == "/tmp/custom.db"
+        assert s.db_path == "/tmp/custom.db"  # noqa: S108
 
     def test_custom_rate_limit_rps(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_RATE_LIMIT_RPS", "42.5")
@@ -91,9 +91,9 @@ class TestCustomValues:
         assert s.streaming_timeout == 600.0
 
     def test_custom_shard_a_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("WORTHLESS_SHARD_A_DIR", "/tmp/shards")
+        monkeypatch.setenv("WORTHLESS_SHARD_A_DIR", "/tmp/shards")  # noqa: S108
         s = ProxySettings()
-        assert s.shard_a_dir == "/tmp/shards"
+        assert s.shard_a_dir == "/tmp/shards"  # noqa: S108
 
     def test_custom_max_request_bytes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_MAX_REQUEST_BYTES", "1024")

@@ -84,7 +84,7 @@ def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
                 alias,
                 stored,
                 var_name="OPENAI_API_KEY",
-                env_path="/tmp/.env",
+                env_path="/tmp/.env",  # noqa: S108
             )
         )
     finally:
