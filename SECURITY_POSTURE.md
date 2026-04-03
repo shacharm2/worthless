@@ -42,7 +42,8 @@ Three architectural invariants protect this claim. All three are **Enforced** (C
 
 | Term | Definition |
 |------|-----------|
-| **Shard A** | Client-held half of the split key (XOR mask applied to the original key). Never sent to the server. Stored in the user's `.env` as a low-entropy decoy or in the OS keychain. |
+| **Shard A** | Client-held half of the split key (original key XOR'd with a CSPRNG mask). High-entropy output — never sent to the server. Stored locally in the OS keychain or an encrypted file. |
+| **Decoy** | Low-entropy placeholder value written to `.env` after enrollment, replacing the original API key so that tools expecting an `*_API_KEY` variable do not complain. The decoy is not a shard and has no cryptographic relationship to the real key. |
 | **Shard B** | Server-held half of the split key (the random XOR mask). Encrypted at rest with Fernet. Combined with Shard A only during reconstruction. |
 | **Commitment** | HMAC-SHA256 digest binding the original key to both shards. Used to detect tampering during reconstruction. |
 | **Nonce** | Random 32-byte value used as the HMAC key for the commitment. Generated via `secrets.token_bytes` (CSPRNG). |
@@ -269,7 +270,7 @@ Worthless does **not** protect against:
 | SR-02 | Explicit zeroing | 3 | `test_invariants::TestKeyBufZeroedAfterDispatch` (proxy flow + failure path), `test_security_properties::TestZeroAfterUse` | `src/worthless/crypto/types.py::_zero_buf`, `src/worthless/crypto/splitter.py::secure_key` |
 | SR-03 | Gate before decrypt | 2 | `test_security_properties::TestGateBeforeDecrypt` (4 tests: source ordering, encrypted type, no-decrypt AST, deny-prevents-decrypt) | `src/worthless/proxy/app.py` (create_app handler: evaluate -> deny check -> decrypt_shard), `src/worthless/storage/repository.py` (fetch_encrypted / decrypt_shard split) |
 | SR-04 | Zero telemetry on secrets | 3 | `test_security_properties::TestReprRedaction` (4 Hypothesis tests: SplitResult repr/str, StoredShard, EncryptedShard) | `src/worthless/crypto/types.py::SplitResult.__repr__`, `src/worthless/storage/repository.py::StoredShard.__repr__`, `src/worthless/storage/repository.py::EncryptedShard.__repr__` |
-| SR-05 | Logging denylist | 2, 3 | `test_security_properties::TestSanitizeNeverLeaksMessage` (4 Hypothesis tests: message replacement, binary, valid JSON, type preservation) | `src/worthless/proxy/app.py::_sanitize_upstream_error` |
+| SR-05 | Logging denylist | 2, 3 | `test_security_properties::TestSanitizeNeverLeaksMessage` (4 Hypothesis tests: message replacement, binary, valid JSON, type preservation) (error sanitization only; no full log capture test) | `src/worthless/proxy/app.py::_sanitize_upstream_error` |
 | SR-06 | Sidecar isolation | 3 | None (Planned — Python PoC is in-process) | Architecture decision; Rust hardening delivers true process isolation |
 | SR-07 | Constant-time compare | 1, 2, 3 | `test_security_properties::TestSR07ConstantTimeCompare` (3 tests: files exist, compare_digest usage, no equality on digest vars) | `src/worthless/crypto/splitter.py::reconstruct_key` (`hmac.compare_digest`) |
 | SR-08 | CSPRNG only | 1 | `test_security_properties::TestSR08CSPRNGOnly` (parametrized AST scan + crypto usage check) | `src/worthless/crypto/splitter.py` (`secrets.token_bytes`), Ruff TID251 lint rule bans `random` module |
@@ -324,13 +325,25 @@ Worthless does **not** protect against:
 
 ### Key Lifecycle: No Bulk Rotation
 
-**What it means:** There is no `worthless revoke` command and no bulk rotation mechanism in V1. If a breach is detected, each affected key must be manually re-enrolled via `worthless lock`.
+**What it means:** There is no `worthless revoke` command and no bulk rotation mechanism in V1. If a breach is detected, each affected key must be manually re-enrolled via `worthless enroll`.
 
 **Attacker prerequisites:** N/A — this is an operational limitation, not an exploitable vulnerability.
 
 **Risk level:** Medium (operational). A large-scale breach affecting many keys would require manual re-enrollment of each one.
 
 **Rust mitigation:** Bulk rotation CLI command and API endpoint planned for V2.
+
+### Memory Safety: `api_key.decode()` Creates Immutable str Copy
+
+**What it means:** In `src/worthless/proxy/app.py`, the reconstructed `bytearray` key buffer is decoded to a `str` (`api_key.decode()`) before being passed to httpx as an Authorization header value. Python `str` objects are immutable and cannot be zeroed — the copy persists in the managed heap until the garbage collector reclaims it.
+
+**Realistic exploit narrative:** Same as GC non-determinism — an attacker with code execution in the FastAPI process could scan the heap for the decoded string. The `secure_key` context manager zeros the `bytearray` source, but the `str` copy is beyond reach.
+
+**Attacker prerequisites:** Code execution in the FastAPI process.
+
+**Risk level:** Medium. The `str` copy has an unbounded lifetime in the managed heap. This is noted in code comments but has no programmatic mitigation in the Python PoC.
+
+**Rust mitigation:** The Rust reconstruction service uses stack-allocated byte buffers with `zeroize` — no string conversion required. The HTTP client accepts byte slices directly.
 
 ### Shard B Data-at-Rest: Fernet Encryption
 
@@ -364,7 +377,7 @@ Worthless does **not** protect against:
 
 **Response procedure:**
 1. Rotate the Fernet key (invalidates all encrypted Shard B values)
-2. Re-enroll all affected keys via `worthless lock` (generates new shards)
+2. Re-enroll all affected keys via `worthless enroll` (generates new shards)
 3. Revoke the compromised API keys at the provider (OpenAI, Anthropic dashboard)
 4. No bulk rotation in V1 — each key must be re-enrolled individually
 
@@ -410,12 +423,13 @@ Worthless is licensed under the GNU Affero General Public License v3 (AGPLv3). F
 | Risk | Severity | Limitation Reference | Mitigation Status |
 |------|----------|---------------------|-------------------|
 | GC retains intermediate key copies | Medium | [Memory Safety: GC Non-Determinism](#memory-safety-gc-non-determinism) | Best-effort (primary buffer zeroed; intermediates at GC mercy) |
+| `api_key.decode()` creates immutable str copy | Medium | [Memory Safety: `api_key.decode()` Creates Immutable str Copy](#memory-safety-api_keydecode-creates-immutable-str-copy) | Gap — Python `str` cannot be zeroed; Rust eliminates string conversion |
 | Key pages swappable to disk | Low | [Memory Safety: No mlock](#memory-safety-no-mlock) | Planned (Rust `mlock`) |
 | In-process reconstruction shares memory | Medium | [Process Isolation: In-Process Reconstruction](#process-isolation-in-process-reconstruction) | Planned (Rust distroless container) |
 | No bulk key rotation | Medium | [Key Lifecycle: No Bulk Rotation](#key-lifecycle-no-bulk-rotation) | Planned (V2) |
 | No protocol versioning for shard schema | Low | [Cryptographic Agility: No Protocol Versioning](#cryptographic-agility-no-protocol-versioning) | Gap — requires schema migration |
 | Fernet key on proxy host | Medium | [Shard B Data-at-Rest](#shard-b-data-at-rest-fernet-encryption) | Accepted (non-goal: compromised proxy) |
-| No gate denial audit log | Low | [Forensic Logging](#forensic-logging) | Gap — logging not implemented |
+| No gate denial audit log | Medium | [Forensic Logging](#forensic-logging) | Gap — logging not implemented |
 | Zeroing may be elided (theoretical) | Low | [Memory Safety: No Compiler Barrier](#memory-safety-no-compiler-barrier) | Best-effort (CPython does not optimize away in practice) |
 
 ---

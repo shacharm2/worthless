@@ -49,12 +49,6 @@ class TestSecurityMd:
 
 
 @_skip_no_posture
-class TestSecurityPostureExists:
-    def test_security_posture_exists(self) -> None:
-        assert _POSTURE_PATH.exists()
-
-
-@_skip_no_posture
 class TestSecurityPostureStructure:
     """Validate required sections and content in SECURITY_POSTURE.md."""
 
@@ -131,12 +125,7 @@ class TestSecurityPostureStructure:
 
     def test_has_trust_boundary_diagram(self) -> None:
         text = _posture_text()
-        has_diagram = (
-            "Trust Boundary" in text
-            or "trust boundary" in text
-            or "┌" in text
-            or "```" in text
-        )
+        has_diagram = "Trust Boundary" in text or "trust boundary" in text
         assert has_diagram, (
             "SECURITY_POSTURE.md must have a trust boundary diagram"
         )
@@ -166,9 +155,9 @@ class TestSecurityPostureStructure:
         )
 
     def test_no_compliance_overclaiming(self) -> None:
-        text = _posture_text()
+        text = _posture_text().lower()
         overclaims = []
-        for claim in ("SOC 2 certified", "FIPS validated", "ISO 27001 certified"):
+        for claim in ("soc 2 certified", "fips validated", "iso 27001 certified"):
             if claim in text:
                 overclaims.append(claim)
         assert not overclaims, (

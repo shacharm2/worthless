@@ -563,12 +563,40 @@ def _collect_all_python_files() -> list[Path]:
     return sorted(_SRC_ROOT.rglob("*.py"))
 
 
+def _operand_has_suspect_name(
+    operand: ast.expr,
+    suspect_names: frozenset[str],
+) -> str | None:
+    """Return the suspect name if the operand is a bare name or attribute in the set.
+
+    Checks both ``ast.Name`` (e.g. ``digest == x``) and ``ast.Attribute``
+    (e.g. ``self.commitment == other``, ``obj.digest == value``).
+
+    Returns the matched name string or ``None``.
+    """
+    if isinstance(operand, ast.Name) and operand.id in suspect_names:
+        return operand.id
+    if isinstance(operand, ast.Attribute) and operand.attr in suspect_names:
+        return operand.attr
+    return None
+
+
 class TestSR07ConstantTimeCompare:
     """SR-07: All digest/hash comparisons must use hmac.compare_digest.
 
     Files that import hmac must use hmac.compare_digest for comparisons,
     never == or != on digest values. This prevents timing side-channel attacks.
+
+    Limitation: detection relies on a heuristic name set (_SUSPECT_NAMES).
+    Code that stores digests in variables with non-suspect names (e.g.
+    ``computed_hmac``, ``stored_hmac``) will bypass detection. When adding
+    new digest-handling code, either use a name from the suspect set or
+    extend _SUSPECT_NAMES accordingly.
     """
+
+    _SUSPECT_NAMES: frozenset[str] = frozenset(
+        {"digest", "commitment", "expected", "mac", "expected_commitment"}
+    )
 
     def _find_hmac_files(self) -> list[Path]:
         """Find all source files that import or use the hmac module."""
@@ -593,9 +621,8 @@ class TestSR07ConstantTimeCompare:
         Only flags files that both compute a digest AND compare it against
         another value using == or != in Python code. Files that compute
         digests for storage, lookup, or return (without in-Python comparison)
-        are not flagged — the comparison happens in SQL or downstream.
+        are not flagged -- the comparison happens in SQL or downstream.
         """
-        suspect_names = {"digest", "commitment", "expected", "mac", "expected_commitment"}
         for py_file in self._find_hmac_files():
             source = py_file.read_text()
             tree = ast.parse(source)
@@ -621,7 +648,7 @@ class TestSR07ConstantTimeCompare:
                         if isinstance(op, (ast.Eq, ast.NotEq)):
                             all_operands = [node.left, *node.comparators]
                             for operand in all_operands:
-                                if isinstance(operand, ast.Name) and operand.id in suspect_names:
+                                if _operand_has_suspect_name(operand, self._SUSPECT_NAMES):
                                     compares_digest_with_eq = True
 
             if not calls_digest:
@@ -642,10 +669,10 @@ class TestSR07ConstantTimeCompare:
         """AST scan: files using hmac must not use == or != on variables
         named 'digest', 'commitment', 'expected', or 'mac'.
 
-        This is a heuristic — it catches the most common patterns of
-        insecure digest comparison.
+        This is a heuristic -- it catches the most common patterns of
+        insecure digest comparison. See the class docstring for known
+        limitations around variable renaming.
         """
-        suspect_names = {"digest", "commitment", "expected", "mac", "expected_commitment"}
         for py_file in self._find_hmac_files():
             source = py_file.read_text()
             tree = ast.parse(source)
@@ -661,9 +688,10 @@ class TestSR07ConstantTimeCompare:
                     # Check left side and comparators for suspect names
                     all_operands = [node.left, *node.comparators]
                     for operand in all_operands:
-                        if isinstance(operand, ast.Name) and operand.id in suspect_names:
+                        matched = _operand_has_suspect_name(operand, self._SUSPECT_NAMES)
+                        if matched:
                             pytest.fail(
-                                f"{rel}:{node.lineno} compares '{operand.id}' with "
+                                f"{rel}:{node.lineno} compares '{matched}' with "
                                 f"{'==' if isinstance(op, ast.Eq) else '!='} — "
                                 f"use hmac.compare_digest instead (SR-07 violation)"
                             )
