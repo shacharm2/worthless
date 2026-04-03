@@ -347,21 +347,17 @@ Worthless does **not** protect against:
 
 ### Shard B Data-at-Rest: Fernet Encryption
 
-**What it is:** Shard B is encrypted at rest using Fernet (AES-128-CBC + HMAC-SHA256) from the `cryptography` library. The Fernet key is derived from configuration and stored on the proxy host.
-
-**Evidence:** `src/worthless/storage/repository.py::ShardRepository.__init__` initializes `self._fernet = Fernet(fernet_key)`. `store()` calls `self._fernet.encrypt(bytes(shard.shard_b))`. `decrypt_shard()` calls `self._fernet.decrypt(encrypted.shard_b_enc)`.
-
-**Status:** Implemented and operational. Shard B is never stored in plaintext.
-
-**Limitation:** The Fernet key itself resides on the proxy host filesystem or environment. Compromise of the proxy host exposes the Fernet key and thus all encrypted Shard B values. This is documented as a non-goal (compromised proxy server).
+**What it means:** Shard B is encrypted at rest using Fernet, and the Fernet key resides on the proxy host's filesystem or environment. If an attacker gains access to the host, the Fernet key is exposed. However, Shard A is never present, so the full API key remains safe.
+**Attacker prerequisites:** Full shell/root access to the proxy host machine.
+**Risk level:** Low. Compromise of the proxy server is an explicit non-goal. Shard B alone cannot be used to reconstruct the keys.
+**Mitigation path:** None for V1. Future phases may explore hardware security modules (HSMs) or external KMS, but the underlying assumption that the proxy host is secure remains central.
 
 ### Cryptographic Agility: No Protocol Versioning
 
-**What it means:** The shard storage schema (`shards` table) has no version column. The XOR + HMAC-SHA256 scheme is the only supported protocol. Upgrading to a different scheme (e.g., during Rust hardening or MPC upgrade) requires a migration that touches every stored shard.
-
-**Risk level:** Low (operational). Protocol upgrades are infrequent, but without versioning, rolling upgrades are impossible — all shards must be migrated atomically.
-
-**Mitigation path:** Add a `protocol_version` column to the `shards` table (default 1). The reconstruction code path branches on version, enabling gradual migration. Small code change, high credibility gain for the XOR -> Rust -> MPC upgrade path.
+**What it means:** The shard storage schema (`shards` table) has no version column. The XOR + HMAC-SHA256 scheme is the only supported protocol. Upgrading to a different scheme requires a migration that touches every stored shard.
+**Attacker prerequisites:** N/A (operational limitation).
+**Risk level:** Low (operational). Protocol upgrades are infrequent, but without versioning, rolling upgrades are impossible.
+**Mitigation path:** Add a `protocol_version` column to the `shards` table (default 1). The reconstruction code path branches on version, enabling gradual migration.
 
 ---
 

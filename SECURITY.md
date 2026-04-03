@@ -8,7 +8,7 @@
 
 ## Reporting a Vulnerability
 
-We take security seriously. Worthless exists to protect API keys — a vulnerability here has real consequences.
+I take security seriously. Worthless exists to protect API keys — a vulnerability here has real consequences.
 
 ### How to Report
 
@@ -38,17 +38,14 @@ Vulnerabilities in the following areas are in scope:
 - Denial of service against the self-hosted proxy (it's your infrastructure)
 - Social engineering
 - Attacks requiring physical access to the host machine
-- Issues in dependencies (report upstream; we'll update promptly)
+- Issues in dependencies (report upstream; I'll update promptly)
 
-## Safe Harbor
+## Testing Guidelines
 
-We support safe harbor for security researchers who:
+As an open-source project, you are encouraged to audit and test the code. Please ensure you:
 
-- Make a good-faith effort to avoid privacy violations, data destruction, or service disruption
-- Only interact with accounts you own or with explicit permission
-- Report vulnerabilities through the channels above before public disclosure
-
-We will not pursue legal action against researchers who follow these guidelines.
+- Only test against infrastructure and accounts that you own or have explicit permission to test against.
+- Report vulnerabilities through the channels above before discussing them publicly, giving me time to patch the code.
 
 ## Preferred Languages
 
