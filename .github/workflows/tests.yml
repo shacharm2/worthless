@@ -51,6 +51,16 @@ jobs:
           UV_CACHE_DIR: /tmp/uv-cache
         run: uv run pyright
 
+      - name: Dead code (vulture)
+        env:
+          UV_CACHE_DIR: /tmp/uv-cache
+        run: uv run vulture src/ --min-confidence 80
+
+      - name: Complexity (xenon)
+        env:
+          UV_CACHE_DIR: /tmp/uv-cache
+        run: uv run xenon src/ --max-absolute C --max-modules B --max-average A
+
       - name: Upload coverage artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -54,10 +54,14 @@ fuzz = [
 [dependency-groups]
 dev = [
     {include-group = "test"},
+    "cyclonedx-bom>=7.3.0",
     "deptry>=0.22",
+    "pip-licenses>=5.5.5",
     "pre-commit>=4.0",
     "pyright>=1.1",
     "ruff>=0.8",
+    "vulture>=2.16",
+    "xenon>=0.9.3",
 ]
 test = [
     "hypothesis>=6.0",
