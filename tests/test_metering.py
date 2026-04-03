@@ -7,6 +7,7 @@ import json
 import pytest
 
 from worthless.proxy.metering import (
+    UsageInfo,
     extract_usage_anthropic,
     extract_usage_openai,
     record_spend,
@@ -19,48 +20,56 @@ from worthless.proxy.metering import (
 
 
 def test_extract_usage_openai_json():
-    """Standard JSON response with usage.total_tokens."""
+    """Standard JSON response with usage.total_tokens and model."""
     data = json.dumps(
         {
             "id": "chatcmpl-abc",
+            "model": "gpt-4",
             "choices": [{"message": {"content": "Hello"}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
         }
     ).encode()
-    assert extract_usage_openai(data) == 30
+    result = extract_usage_openai(data)
+    assert result is not None
+    assert result.total_tokens == 30
+    assert result.model == "gpt-4"
 
 
 def test_extract_usage_openai_sse():
     """SSE stream with final chunk containing usage field."""
     chunks = (
-        b"data: " + json.dumps({"choices": [{"delta": {"content": "Hi"}}]}).encode() + b"\n\n"
+        b"data: " + json.dumps({"choices": [{"delta": {"content": "Hi"}}], "model": "gpt-4o"}).encode() + b"\n\n"
         b"data: "
         + json.dumps(
             {
                 "choices": [{"delta": {}}],
+                "model": "gpt-4o",
                 "usage": {"prompt_tokens": 5, "completion_tokens": 15, "total_tokens": 20},
             }
         ).encode()
         + b"\n\n"
         b"data: [DONE]\n\n"
     )
-    assert extract_usage_openai(chunks) == 20
+    result = extract_usage_openai(chunks)
+    assert result is not None
+    assert result.total_tokens == 20
+    assert result.model == "gpt-4o"
 
 
 def test_extract_usage_openai_missing():
-    """No usage field -> return 0."""
+    """No usage field -> return None."""
     data = json.dumps({"id": "chatcmpl-abc", "choices": []}).encode()
-    assert extract_usage_openai(data) == 0
+    assert extract_usage_openai(data) is None
 
 
 def test_extract_usage_openai_empty():
-    """Empty bytes -> return 0."""
-    assert extract_usage_openai(b"") == 0
+    """Empty bytes -> return None."""
+    assert extract_usage_openai(b"") is None
 
 
 def test_extract_usage_openai_malformed():
-    """Malformed JSON -> return 0 (no crash)."""
-    assert extract_usage_openai(b"{not valid json") == 0
+    """Malformed JSON -> return None (no crash)."""
+    assert extract_usage_openai(b"{not valid json") is None
 
 
 # ---------------------------------------------------------------------------
@@ -69,8 +78,20 @@ def test_extract_usage_openai_malformed():
 
 
 def test_extract_usage_anthropic_message_delta():
-    """SSE with message_delta event containing usage.output_tokens."""
+    """SSE with message_start + message_delta: total = input + output."""
     sse_data = (
+        b"event: message_start\n"
+        b"data: "
+        + json.dumps(
+            {
+                "type": "message_start",
+                "message": {
+                    "model": "claude-3-5-sonnet-20241022",
+                    "usage": {"input_tokens": 15},
+                },
+            }
+        ).encode()
+        + b"\n\n"
         b"event: content_block_delta\n"
         b'data: {"type": "content_block_delta", "delta": {"text": "Hi"}}\n\n'
         b"event: message_delta\n"
@@ -83,26 +104,29 @@ def test_extract_usage_anthropic_message_delta():
         ).encode()
         + b"\n\n"
     )
-    assert extract_usage_anthropic(sse_data) == 42
+    result = extract_usage_anthropic(sse_data)
+    assert result is not None
+    assert result.total_tokens == 57  # 15 input + 42 output
+    assert result.model == "claude-3-5-sonnet-20241022"
 
 
 def test_extract_usage_anthropic_missing():
-    """No message_delta event -> return 0."""
+    """No message_delta event -> return None."""
     sse_data = (
         b"event: content_block_delta\n"
         b'data: {"type": "content_block_delta", "delta": {"text": "Hi"}}\n\n'
     )
-    assert extract_usage_anthropic(sse_data) == 0
+    assert extract_usage_anthropic(sse_data) is None
 
 
 def test_extract_usage_anthropic_empty():
-    """Empty bytes -> return 0."""
-    assert extract_usage_anthropic(b"") == 0
+    """Empty bytes -> return None."""
+    assert extract_usage_anthropic(b"") is None
 
 
 def test_extract_usage_anthropic_malformed():
-    """Malformed data -> return 0 (no crash)."""
-    assert extract_usage_anthropic(b"event: message_delta\ndata: broken{json\n\n") == 0
+    """Malformed data -> return None (no crash)."""
+    assert extract_usage_anthropic(b"event: message_delta\ndata: broken{json\n\n") is None
 
 
 def test_extract_usage_anthropic_multi_delta_returns_last():
@@ -110,6 +134,12 @@ def test_extract_usage_anthropic_multi_delta_returns_last():
     delta_1 = json.dumps({"type": "message_delta", "usage": {"output_tokens": 10}}).encode()
     delta_2 = json.dumps({"type": "message_delta", "usage": {"output_tokens": 42}}).encode()
     sse_data = (
+        b"event: message_start\n"
+        b"data: "
+        + json.dumps(
+            {"type": "message_start", "message": {"model": "claude-3-haiku-20240307", "usage": {"input_tokens": 8}}}
+        ).encode()
+        + b"\n\n"
         b"event: message_delta\n"
         b"data: " + delta_1 + b"\n\n"
         b"event: content_block_delta\n"
@@ -117,7 +147,49 @@ def test_extract_usage_anthropic_multi_delta_returns_last():
         b"event: message_delta\n"
         b"data: " + delta_2 + b"\n\n"
     )
-    assert extract_usage_anthropic(sse_data) == 42
+    result = extract_usage_anthropic(sse_data)
+    assert result is not None
+    assert result.total_tokens == 50  # 8 input + 42 output (last delta)
+    assert result.model == "claude-3-haiku-20240307"
+
+
+def test_extract_usage_anthropic_delta_only_no_start():
+    """message_delta without message_start: output tokens only, no model."""
+    sse_data = (
+        b"event: message_delta\n"
+        b"data: "
+        + json.dumps({"type": "message_delta", "usage": {"output_tokens": 25}}).encode()
+        + b"\n\n"
+    )
+    result = extract_usage_anthropic(sse_data)
+    assert result is not None
+    assert result.total_tokens == 25
+    assert result.model is None
+
+
+def test_extract_usage_openai_sse_no_usage_in_any_chunk():
+    """SSE stream where no chunk contains a usage field → None."""
+    chunks = (
+        b"data: " + json.dumps({"choices": [{"delta": {"content": "Hi"}}], "model": "gpt-4o"}).encode() + b"\n\n"
+        b"data: " + json.dumps({"choices": [{"delta": {}}], "model": "gpt-4o"}).encode() + b"\n\n"
+        b"data: [DONE]\n\n"
+    )
+    assert extract_usage_openai(chunks) is None
+
+
+def test_extract_usage_openai_json_no_model():
+    """OpenAI JSON without model field: tokens extracted, model is None."""
+    data = json.dumps(
+        {
+            "id": "chatcmpl-abc",
+            "choices": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+        }
+    ).encode()
+    result = extract_usage_openai(data)
+    assert result is not None
+    assert result.total_tokens == 30
+    assert result.model is None
 
 
 # ---------------------------------------------------------------------------

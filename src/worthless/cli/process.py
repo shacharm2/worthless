@@ -31,8 +31,6 @@ _UVICORN_PORT_RE = re.compile(r"Uvicorn running on http://[\d.]+:(\d+)")
 
 def build_proxy_env(home: "WorthlessHome") -> dict[str, str]:
     """Build the environment dict for spawning a proxy process."""
-    from worthless.cli.bootstrap import WorthlessHome  # noqa: F811
-
     return {
         "WORTHLESS_DB_PATH": str(home.db_path),
         "WORTHLESS_FERNET_KEY": home.fernet_key.decode(),

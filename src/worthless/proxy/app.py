@@ -388,6 +388,21 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     media_type="application/json",
                 )
 
+            async def _do_record_spend(data: bytes):
+                """Extract usage and record spend — shared by streaming and non-streaming."""
+                if provider == "anthropic":
+                    usage = extract_usage_anthropic(data)
+                else:
+                    usage = extract_usage_openai(data)
+                tokens = usage.total_tokens if usage else 0
+                model = usage.model if usage else None
+                if usage is None:
+                    logger.warning("Token extraction failed for alias=%s provider=%s", alias, provider)
+                try:
+                    await record_spend(settings.db_path, alias, tokens, model, provider)
+                except Exception:
+                    logger.warning("Failed to record spend for alias=%s", alias)
+
             if adapter_resp.is_streaming and adapter_resp.stream is not None:
                 # B-1: SSE streaming with metering and cleanup
                 collected_chunks: list[bytes] = []
@@ -402,17 +417,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                         await upstream_resp.aclose()  # type: ignore[union-attr]
 
                 async def _record_metering():
-                    full_data = b"".join(collected_chunks)
-                    if provider == "anthropic":
-                        tokens = extract_usage_anthropic(full_data)
-                    else:
-                        tokens = extract_usage_openai(full_data)
-                    if tokens > 0:
-                        # M-9/M-10: Metering resilience
-                        try:
-                            await record_spend(settings.db_path, alias, tokens, None, provider)
-                        except Exception:
-                            logger.warning("Failed to record spend for alias=%s", alias)
+                    await _do_record_spend(b"".join(collected_chunks))
 
                 return StreamingResponse(
                     _stream_with_metering(),
@@ -424,23 +429,12 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 # Non-streaming: read body, close response, extract usage
                 await upstream_resp.aclose()
 
-                if provider == "anthropic":
-                    tokens = extract_usage_anthropic(adapter_resp.body)
-                else:
-                    tokens = extract_usage_openai(adapter_resp.body)
-
-                async def _record_nonstream_metering():
-                    try:
-                        await record_spend(settings.db_path, alias, tokens, None, provider)
-                    except Exception:
-                        logger.warning("Failed to record spend for alias=%s", alias)
-
                 return Response(
                     content=adapter_resp.body,
                     status_code=adapter_resp.status_code,
                     headers=clean_headers,
                     media_type=clean_headers.get("content-type", "application/json"),
-                    background=BackgroundTask(_record_nonstream_metering) if tokens > 0 else None,
+                    background=BackgroundTask(_do_record_spend, adapter_resp.body),
                 )
         finally:
             # B-3: Zero all shard material after request completes
