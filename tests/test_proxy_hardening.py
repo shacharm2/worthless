@@ -1245,7 +1245,9 @@ class TestCORSDenial:
 
 
 @pytest.fixture()
-async def attack_scenario(tmp_db_path: str, fernet_key: bytes, tmp_path, sample_api_key_bytes: bytes):
+async def attack_scenario(
+    tmp_db_path: str, fernet_key: bytes, tmp_path, sample_api_key_bytes: bytes,
+):
     """Enrolled key with shard_a on disk, secure defaults (inference off, TLS required)."""
     from worthless.crypto import split_key
     from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule

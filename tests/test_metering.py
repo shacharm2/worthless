@@ -38,7 +38,9 @@ def test_extract_usage_openai_json():
 def test_extract_usage_openai_sse():
     """SSE stream with final chunk containing usage field."""
     chunks = (
-        b"data: " + json.dumps({"choices": [{"delta": {"content": "Hi"}}], "model": "gpt-4o"}).encode() + b"\n\n"
+        b"data: "
+        + json.dumps({"choices": [{"delta": {"content": "Hi"}}], "model": "gpt-4o"}).encode()
+        + b"\n\n"
         b"data: "
         + json.dumps(
             {
@@ -137,7 +139,10 @@ def test_extract_usage_anthropic_multi_delta_returns_last():
         b"event: message_start\n"
         b"data: "
         + json.dumps(
-            {"type": "message_start", "message": {"model": "claude-3-haiku-20240307", "usage": {"input_tokens": 8}}}
+            {
+                "type": "message_start",
+                "message": {"model": "claude-3-haiku-20240307", "usage": {"input_tokens": 8}},
+            }
         ).encode()
         + b"\n\n"
         b"event: message_delta\n"
@@ -170,8 +175,12 @@ def test_extract_usage_anthropic_delta_only_no_start():
 def test_extract_usage_openai_sse_no_usage_in_any_chunk():
     """SSE stream where no chunk contains a usage field → None."""
     chunks = (
-        b"data: " + json.dumps({"choices": [{"delta": {"content": "Hi"}}], "model": "gpt-4o"}).encode() + b"\n\n"
-        b"data: " + json.dumps({"choices": [{"delta": {}}], "model": "gpt-4o"}).encode() + b"\n\n"
+        b"data: "
+        + json.dumps({"choices": [{"delta": {"content": "Hi"}}], "model": "gpt-4o"}).encode()
+        + b"\n\n"
+        b"data: "
+        + json.dumps({"choices": [{"delta": {}}], "model": "gpt-4o"}).encode()
+        + b"\n\n"
         b"data: [DONE]\n\n"
     )
     assert extract_usage_openai(chunks) is None
