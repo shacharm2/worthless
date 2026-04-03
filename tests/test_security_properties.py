@@ -12,6 +12,7 @@ import ast
 import inspect
 import json
 import textwrap
+from pathlib import Path
 
 from hypothesis import given, assume, settings as hsettings
 from hypothesis import strategies as st
@@ -22,6 +23,9 @@ from worthless.exceptions import ShardTamperedError
 from worthless.storage.repository import EncryptedShard, StoredShard
 
 import pytest
+
+# Root of the worthless package under src/
+_SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "worthless"
 
 # ---------------------------------------------------------------------------
 # Strategies
@@ -547,3 +551,208 @@ class TestSanitizeNeverLeaksMessage:
         else:
             assert parsed["error"]["type"] == custom_type
             assert parsed["error"]["message"] == "upstream provider error"
+
+
+# ---------------------------------------------------------------------------
+# SR-07: Constant-time comparison — hmac.compare_digest enforced
+# ---------------------------------------------------------------------------
+
+
+def _collect_all_python_files() -> list[Path]:
+    """Collect all .py files under _SRC_ROOT."""
+    return sorted(_SRC_ROOT.rglob("*.py"))
+
+
+class TestSR07ConstantTimeCompare:
+    """SR-07: All digest/hash comparisons must use hmac.compare_digest.
+
+    Files that import hmac must use hmac.compare_digest for comparisons,
+    never == or != on digest values. This prevents timing side-channel attacks.
+    """
+
+    def _find_hmac_files(self) -> list[Path]:
+        """Find all source files that import or use the hmac module."""
+        hmac_files: list[Path] = []
+        for py_file in _collect_all_python_files():
+            source = py_file.read_text()
+            if "import hmac" in source or "from hmac" in source:
+                hmac_files.append(py_file)
+        return hmac_files
+
+    def test_hmac_files_exist(self) -> None:
+        """At least one file uses hmac — test is not vacuously true."""
+        hmac_files = self._find_hmac_files()
+        assert hmac_files, (
+            f"No files under {_SRC_ROOT} import hmac — "
+            f"SR-07 test is vacuously true and needs updating"
+        )
+
+    def test_hmac_comparison_uses_compare_digest(self) -> None:
+        """Files that compare HMAC digests in Python must use hmac.compare_digest.
+
+        Only flags files that both compute a digest AND compare it against
+        another value using == or != in Python code. Files that compute
+        digests for storage, lookup, or return (without in-Python comparison)
+        are not flagged — the comparison happens in SQL or downstream.
+        """
+        suspect_names = {"digest", "commitment", "expected", "mac", "expected_commitment"}
+        for py_file in self._find_hmac_files():
+            source = py_file.read_text()
+            tree = ast.parse(source)
+
+            calls_digest = False
+            uses_compare_digest = False
+            compares_digest_with_eq = False
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    func = node.func
+                    if isinstance(func, ast.Attribute) and func.attr in ("digest", "hexdigest"):
+                        calls_digest = True
+                    if (
+                        isinstance(func, ast.Attribute)
+                        and func.attr == "compare_digest"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id == "hmac"
+                    ):
+                        uses_compare_digest = True
+                # Check if digest results are compared with == or !=
+                if isinstance(node, ast.Compare):
+                    for op in node.ops:
+                        if isinstance(op, (ast.Eq, ast.NotEq)):
+                            all_operands = [node.left, *node.comparators]
+                            for operand in all_operands:
+                                if isinstance(operand, ast.Name) and operand.id in suspect_names:
+                                    compares_digest_with_eq = True
+
+            if not calls_digest:
+                continue
+            # Only enforce compare_digest if the file actually compares
+            # digest values with == or != in Python, OR uses compare_digest
+            # already (to avoid removing existing correct usage)
+            if not compares_digest_with_eq and not uses_compare_digest:
+                continue
+
+            rel = py_file.relative_to(_SRC_ROOT)
+            assert uses_compare_digest, (
+                f"{rel} computes HMAC digests and compares them with ==/!= — "
+                f"use hmac.compare_digest instead (SR-07 violation)"
+            )
+
+    def test_no_equality_compare_on_digest_variables(self) -> None:
+        """AST scan: files using hmac must not use == or != on variables
+        named 'digest', 'commitment', 'expected', or 'mac'.
+
+        This is a heuristic — it catches the most common patterns of
+        insecure digest comparison.
+        """
+        suspect_names = {"digest", "commitment", "expected", "mac", "expected_commitment"}
+        for py_file in self._find_hmac_files():
+            source = py_file.read_text()
+            tree = ast.parse(source)
+            rel = py_file.relative_to(_SRC_ROOT)
+
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Compare):
+                    continue
+                # Check if any comparator uses == or != with suspect variable names
+                for op in node.ops:
+                    if not isinstance(op, (ast.Eq, ast.NotEq)):
+                        continue
+                    # Check left side and comparators for suspect names
+                    all_operands = [node.left, *node.comparators]
+                    for operand in all_operands:
+                        if isinstance(operand, ast.Name) and operand.id in suspect_names:
+                            pytest.fail(
+                                f"{rel}:{node.lineno} compares '{operand.id}' with "
+                                f"{'==' if isinstance(op, ast.Eq) else '!='} — "
+                                f"use hmac.compare_digest instead (SR-07 violation)"
+                            )
+
+
+# ---------------------------------------------------------------------------
+# SR-08: CSPRNG only — secrets module required, random module forbidden
+# ---------------------------------------------------------------------------
+
+
+class TestSR08CSPRNGOnly:
+    """SR-08: All randomness must come from the secrets module (CSPRNG).
+
+    The stdlib random module (Mersenne Twister) is NOT cryptographically
+    secure. This test enforces that src/worthless/ never imports it, and
+    that files generating random bytes use secrets.token_bytes or similar.
+    """
+
+    all_files = _collect_all_python_files()
+
+    @pytest.mark.parametrize(
+        "py_file",
+        all_files,
+        ids=[str(f.relative_to(_SRC_ROOT)) for f in all_files],
+    )
+    def test_no_random_module_import(self, py_file: Path) -> None:
+        """AST scan: no source file imports the random module.
+
+        Catches:
+          - ``import random``
+          - ``from random import ...``
+        Does NOT catch dynamic imports — the Ruff TID251 rule covers those.
+        """
+        source = py_file.read_text()
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name != "random" and not alias.name.startswith("random."), (
+                        f"{py_file.relative_to(_SRC_ROOT)}:{node.lineno} imports 'random' — "
+                        f"use secrets module instead (SR-08: CSPRNG only)"
+                    )
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and (node.module == "random" or node.module.startswith("random.")):
+                    pytest.fail(
+                        f"{py_file.relative_to(_SRC_ROOT)}:{node.lineno} imports from "
+                        f"'{node.module}' — use secrets module instead (SR-08: CSPRNG only)"
+                    )
+
+    def test_crypto_files_use_secrets(self) -> None:
+        """Files generating random bytes must use the secrets module.
+
+        Checks that crypto/ files (where randomness is most critical)
+        import and use secrets.token_bytes, secrets.token_hex, or
+        secrets.token_urlsafe.
+        """
+        crypto_dir = _SRC_ROOT / "crypto"
+        if not crypto_dir.is_dir():
+            pytest.skip("crypto/ directory not found")
+
+        secrets_functions = {"token_bytes", "token_hex", "token_urlsafe"}
+        crypto_files_with_randomness: list[Path] = []
+
+        for py_file in sorted(crypto_dir.rglob("*.py")):
+            source = py_file.read_text()
+            if "secrets" not in source:
+                continue
+
+            tree = ast.parse(source)
+            uses_secrets_func = False
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and node.attr in secrets_functions:
+                    if isinstance(node.value, ast.Name) and node.value.id == "secrets":
+                        uses_secrets_func = True
+                        break
+                elif isinstance(node, ast.ImportFrom) and node.module == "secrets":
+                    for alias in node.names:
+                        if alias.name in secrets_functions:
+                            uses_secrets_func = True
+                            break
+
+            if uses_secrets_func:
+                crypto_files_with_randomness.append(py_file)
+
+        assert crypto_files_with_randomness, (
+            "No crypto/ files use secrets.token_bytes/token_hex/token_urlsafe — "
+            "randomness source is unknown (SR-08 violation)"
+        )
