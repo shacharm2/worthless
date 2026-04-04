@@ -1,0 +1,32 @@
+services:
+  proxy:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      # Bind to localhost only; use a reverse proxy for external access
+      - "127.0.0.1:8787:8787"
+    env_file: docker-compose.env
+    volumes:
+      - worthless-data:/data
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  worthless-data:

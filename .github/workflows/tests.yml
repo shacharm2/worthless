@@ -81,7 +81,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          REPORT=$(uv run coverage report --skip-covered --skip-empty) || true
+          if ! REPORT=$(uv run coverage report --skip-covered --skip-empty); then
+            echo "::warning::coverage report failed (exit $?)"
+            exit 0
+          fi
           TOTAL=$(echo "$REPORT" | tail -1 | awk '{print $NF}')
           if ! [[ "$TOTAL" =~ ^[0-9]+%$ ]]; then
             echo "::warning::Could not parse coverage total: '$TOTAL'"
