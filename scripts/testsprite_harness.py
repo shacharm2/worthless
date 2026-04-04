@@ -170,10 +170,41 @@ async def _anthropic_sse_stream():
     yield _sse("message_stop", {"type": "message_stop"})
 
 
+MOCK_MODELS_RESPONSE = {
+    "object": "list",
+    "data": [
+        {"id": "gpt-4", "object": "model", "owned_by": "openai"},
+        {"id": "gpt-3.5-turbo", "object": "model", "owned_by": "openai"},
+    ],
+}
+
+
+async def mock_models(request: Request) -> JSONResponse:
+    """TestSprite probes /v1/models for discovery."""
+    return JSONResponse(MOCK_MODELS_RESPONSE)
+
+
+async def mock_catchall(request: Request) -> JSONResponse:
+    """Return provider-shaped 404 for unknown paths (not Starlette's HTML 404)."""
+    return JSONResponse(
+        {
+            "error": {
+                "message": f"Unknown endpoint: {request.url.path}",
+                "type": "invalid_request_error",
+                "param": None,
+                "code": None,
+            }
+        },
+        status_code=404,
+    )
+
+
 mock_app = Starlette(
     routes=[
         Route("/v1/chat/completions", mock_openai, methods=["POST"]),
         Route("/v1/messages", mock_anthropic, methods=["POST"]),
+        Route("/v1/models", mock_models, methods=["GET"]),
+        Route("/{path:path}", mock_catchall),
     ]
 )
 
@@ -203,6 +234,12 @@ async def enroll_fake_keys(db_path: str, fernet_key: bytes, shard_a_dir: str) ->
 def patch_upstream_urls() -> None:
     _oai_mod.UPSTREAM_URL = f"{MOCK_UPSTREAM}/v1/chat/completions"
     _anth_mod.UPSTREAM_URL = f"{MOCK_UPSTREAM}/v1/messages"
+
+    # Guard: fail loud if a refactor makes adapters capture URL at init time
+    assert MOCK_UPSTREAM in _oai_mod.UPSTREAM_URL, (
+        "OpenAI adapter UPSTREAM_URL not patched — adapters may cache URL at import"
+    )
+    assert MOCK_UPSTREAM in _anth_mod.UPSTREAM_URL, "Anthropic adapter UPSTREAM_URL not patched"
     log.info("Patched UPSTREAM_URL -> %s", MOCK_UPSTREAM)
 
 
