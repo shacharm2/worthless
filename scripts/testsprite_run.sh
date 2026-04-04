@@ -13,4 +13,4 @@ set -a
 source "$REPO_ROOT/.env"
 set +a
 
-exec npx -y @testsprite/mcp-server generateCodeAndExecute "$@"
+exec npx -y @testsprite/testsprite-mcp@latest generateCodeAndExecute "$@"
