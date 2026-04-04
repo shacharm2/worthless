@@ -164,3 +164,21 @@ class TestRevokePathTraversal:
     def test_valid_alias_accepted(self, home_dir: WorthlessHome) -> None:
         result = _invoke_revoke("openai-abc123", home_dir)
         assert result.exit_code == 0  # not found, but no validation error
+
+
+class TestRevokeDebugMode:
+    """--debug should surface full tracebacks instead of sanitized messages."""
+
+    def test_debug_mode_shows_traceback(self) -> None:
+        with patch(
+            "worthless.cli.commands.revoke._revoke_key",
+            side_effect=RuntimeError("internal boom"),
+        ):
+            result = runner.invoke(app, ["--debug", "revoke", "--alias", "test-key"])
+        assert result.exit_code != 0
+        # In debug mode the full traceback should be visible.
+        # CliRunner mixes stderr into stdout by default.
+        output = result.output or ""
+        assert "Traceback" in output or "internal boom" in output, (
+            f"Expected traceback in debug output, got:\n{output}"
+        )

@@ -11,7 +11,7 @@ import typer
 
 from worthless.cli.bootstrap import acquire_lock, get_home
 from worthless.cli.console import get_console
-from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
+from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.storage.repository import ShardRepository
 
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -84,16 +84,9 @@ def register_revoke_commands(app: typer.Typer) -> None:
     """Register the revoke command on the Typer app."""
 
     @app.command()
+    @error_boundary
     def revoke(
         alias: str = typer.Option(..., "--alias", "-a", help="Alias of the key to revoke"),
     ) -> None:
         """Permanently revoke an enrolled API key."""
-        console = get_console()
-        try:
-            _revoke_key(alias)
-        except WorthlessError as exc:
-            console.print_error(exc)
-            raise typer.Exit(code=1) from exc
-        except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, sanitize_exception(exc)))
-            raise typer.Exit(code=1) from exc
+        _revoke_key(alias)
