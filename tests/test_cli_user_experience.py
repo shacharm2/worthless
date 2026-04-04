@@ -36,6 +36,12 @@ _ANTHROPIC_KEY = fake_anthropic_key()
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent scan from picking up the project-root .env."""
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture()
 def env_with_openai(tmp_path: Path) -> Path:
     """Create a .env with one OpenAI key."""

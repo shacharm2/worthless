@@ -38,6 +38,12 @@ _ANTHROPIC_KEY = fake_anthropic_key()
 # ---- Fixtures ---------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent scan from picking up the project-root .env."""
+    monkeypatch.chdir(tmp_path)
+
+
 def _make_env(tmp_path: Path, name: str, content: str) -> Path:
     """Create an env file under a named subdirectory (simulates separate projects)."""
     proj = tmp_path / name

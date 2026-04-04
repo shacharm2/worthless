@@ -14,10 +14,8 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import atexit
 import json
 import logging
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -209,41 +207,39 @@ def patch_upstream_urls() -> None:
 
 
 async def main() -> None:
-    tmpdir = tempfile.mkdtemp(prefix="worthless-testsprite-")
-    atexit.register(shutil.rmtree, tmpdir, ignore_errors=True)
-    db_path = str(Path(tmpdir) / "worthless.db")
-    shard_a_dir = str(Path(tmpdir) / "shard_a")
-    fernet_key = Fernet.generate_key()
+    with tempfile.TemporaryDirectory(prefix="worthless-testsprite-") as tmpdir:
+        db_path = str(Path(tmpdir) / "worthless.db")
+        shard_a_dir = str(Path(tmpdir) / "shard_a")
+        fernet_key = Fernet.generate_key()
 
-    log.info("TestSprite harness — tmp=%s", tmpdir)
+        log.info("TestSprite harness — tmp=%s", tmpdir)
 
-    await enroll_fake_keys(db_path, fernet_key, shard_a_dir)
-    patch_upstream_urls()
-    settings = ProxySettings(
-        db_path=db_path,
-        fernet_key=fernet_key.decode(),
-        shard_a_dir=shard_a_dir,
-        allow_insecure=True,
-        allow_alias_inference=True,
-        default_rate_limit_rps=100.0,
-    )
-    proxy_app = create_app(settings)
+        await enroll_fake_keys(db_path, fernet_key, shard_a_dir)
+        patch_upstream_urls()
+        settings = ProxySettings(
+            db_path=db_path,
+            fernet_key=fernet_key.decode(),
+            shard_a_dir=shard_a_dir,
+            allow_insecure=True,
+            allow_alias_inference=True,
+            default_rate_limit_rps=100.0,
+        )
+        proxy_app = create_app(settings)
 
-    # 4. Start both servers
-    log.info("Starting mock upstream on :%d", MOCK_PORT)
-    log.info("Starting real proxy on :%d", PROXY_PORT)
+        log.info("Starting mock upstream on :%d", MOCK_PORT)
+        log.info("Starting real proxy on :%d", PROXY_PORT)
 
-    mock_server = uvicorn.Server(
-        uvicorn.Config(mock_app, host="127.0.0.1", port=MOCK_PORT, log_level="warning")
-    )
-    proxy_server = uvicorn.Server(
-        uvicorn.Config(proxy_app, host="127.0.0.1", port=PROXY_PORT, log_level="info")
-    )
+        mock_server = uvicorn.Server(
+            uvicorn.Config(mock_app, host="127.0.0.1", port=MOCK_PORT, log_level="warning")
+        )
+        proxy_server = uvicorn.Server(
+            uvicorn.Config(proxy_app, host="127.0.0.1", port=PROXY_PORT, log_level="info")
+        )
 
-    await asyncio.gather(
-        mock_server.serve(),
-        proxy_server.serve(),
-    )
+        await asyncio.gather(
+            mock_server.serve(),
+            proxy_server.serve(),
+        )
 
 
 if __name__ == "__main__":

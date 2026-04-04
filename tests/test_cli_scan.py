@@ -25,6 +25,12 @@ runner = CliRunner(mix_stderr=False)
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent scan from picking up the project-root .env."""
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture()
 def env_with_real_key(tmp_path: Path) -> Path:
     """Create a .env with a real (unprotected) OpenAI key."""
