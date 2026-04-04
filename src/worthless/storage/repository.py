@@ -109,12 +109,14 @@ class ShardRepository:
         Accepts bytearray or bytes for shard_b (converts to bytes for Fernet).
         Raises ``aiosqlite.IntegrityError`` if *alias* already exists.
         """
-        shard_b_enc = self._fernet.encrypt(bytes(shard.shard_b))  # nosemgrep: sr01-key-material-not-bytearray
+        # nosemgrep: sr01-key-material-not-bytearray (ephemeral bytes for Fernet/sqlite I/O)
+        shard_b_enc = self._fernet.encrypt(bytes(shard.shard_b))
         async with self._connect() as db:
             await db.execute(
                 "INSERT INTO shards (key_alias, shard_b_enc, commitment, nonce, provider) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (alias, shard_b_enc, bytes(shard.commitment), bytes(shard.nonce), shard.provider),  # nosemgrep: sr01-key-material-not-bytearray
+                # nosemgrep: sr01-key-material-not-bytearray
+                (alias, shard_b_enc, bytes(shard.commitment), bytes(shard.nonce), shard.provider),
             )
             await db.commit()
 
@@ -219,7 +221,8 @@ class ShardRepository:
         If the shard already exists (same alias), only the enrollment row
         is inserted.
         """
-        shard_b_enc = self._fernet.encrypt(bytes(shard.shard_b))  # nosemgrep: sr01-key-material-not-bytearray
+        # nosemgrep: sr01-key-material-not-bytearray (ephemeral bytes for Fernet/sqlite I/O)
+        shard_b_enc = self._fernet.encrypt(bytes(shard.shard_b))
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
@@ -229,8 +232,8 @@ class ShardRepository:
                 (
                     alias,
                     shard_b_enc,
-                    bytes(shard.commitment),  # nosemgrep: sr01-key-material-not-bytearray
-                    bytes(shard.nonce),  # nosemgrep: sr01-key-material-not-bytearray
+                    bytes(shard.commitment),  # nosemgrep
+                    bytes(shard.nonce),  # nosemgrep
                     shard.provider,
                 ),
             )
