@@ -78,9 +78,28 @@ jobs:
       - name: Post coverage comment
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: py-cov-action/python-coverage-comment-action@4c2eefcda8b94596768855a80ac94edc61aba669 # v3
-        with:
-          GITHUB_TOKEN: ${{ github.token }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TOTAL=$(uv run python -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('coverage.xml')
+          rate = float(tree.getroot().attrib['line-rate']) * 100
+          print(f'{rate:.1f}')
+          ")
+          BODY=$(cat <<EOF
+          ### Coverage Report
+          **Total line coverage: ${TOTAL}%**
+          <details><summary>Per-package breakdown</summary>
+
+          \`\`\`
+          $(uv run coverage report --skip-covered --skip-empty 2>/dev/null || echo "run coverage report manually")
+          \`\`\`
+          </details>
+          EOF
+          )
+          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" --edit-last || \
+          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
 
   coverage-gate:
     name: Per-module coverage gate
