@@ -115,12 +115,13 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: coverage-xml
+          path: coverage-data
 
       - name: Post coverage comment
         uses: py-cov-action/python-coverage-comment-action@4c2eefcda8b94596768855a80ac94edc61aba669 # v3
         with:
           GITHUB_TOKEN: ${{ github.token }}
-          COVERAGE_PATH: coverage.xml
+          COVERAGE_PATH: coverage-data/
 
   quarantine:
     name: Quarantine tests
