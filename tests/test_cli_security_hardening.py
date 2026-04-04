@@ -9,17 +9,15 @@ Covers attack vectors from 5 security reviews:
 - Provider gating (unsupported providers rejected)
 - Low-entropy decoy filtering
 - Alias validation (alphanumeric, dash, underscore only)
-- Atomic .env rewriting (tempfile + os.replace)
+- Atomic .env rewriting (delegated to python-dotenv)
 - Core dump suppression (RLIMIT_CORE)
 """
 
 from __future__ import annotations
 
-import os
 import resource
 import sqlite3
 import stat
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -399,33 +397,24 @@ class TestAliasValidation:
 class TestAtomicWrites:
     """dotenv rewriter must use tempfile + os.replace, not direct write."""
 
-    def test_rewrite_uses_os_replace(self, tmp_path: Path) -> None:
-        """Verify atomic write pattern: tempfile.mkstemp + os.replace."""
+    def test_rewrite_is_atomic(self, tmp_path: Path) -> None:
+        """Verify rewrite doesn't corrupt the file on success.
+
+        python-dotenv's set_key uses an atomic rewrite context manager
+        (temp file + os.replace). We verify the outcome: inode changes
+        (proving a new file was swapped in) and content is correct.
+        """
         env_file = tmp_path / ".env"
         env_file.write_text("MY_KEY=old_value\n")
+        inode_before = env_file.stat().st_ino
 
-        calls: list[str] = []
-        original_replace = os.replace
-        original_mkstemp = tempfile.mkstemp
+        rewrite_env_key(env_file, "MY_KEY", "new_value")
 
-        def tracking_replace(src, dst):
-            calls.append(f"replace:{src}->{dst}")
-            return original_replace(src, dst)
-
-        def tracking_mkstemp(**kwargs):
-            result = original_mkstemp(**kwargs)
-            calls.append(f"mkstemp:{result[1]}")
-            return result
-
-        with patch("worthless.cli.dotenv_rewriter.os.replace", side_effect=tracking_replace):
-            with patch(
-                "worthless.cli.dotenv_rewriter.tempfile.mkstemp",
-                side_effect=tracking_mkstemp,
-            ):
-                rewrite_env_key(env_file, "MY_KEY", "new_value")
-
-        assert any("mkstemp" in c for c in calls), "Must use tempfile.mkstemp"
-        assert any("replace" in c for c in calls), "Must use os.replace for atomicity"
+        content = env_file.read_text()
+        assert "new_value" in content
+        # Atomic replace creates a new inode on most filesystems
+        inode_after = env_file.stat().st_ino
+        assert inode_before != inode_after, "Atomic write should create a new file (new inode)"
 
     def test_rewrite_preserves_content_on_success(self, tmp_path: Path) -> None:
         """After rewrite, file must have the new value and other lines intact."""

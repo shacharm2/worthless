@@ -1,0 +1,300 @@
+"""Proxy HTTP surface contract tests.
+
+These tests start the real proxy with a mock upstream and hit it over HTTP,
+validating the external interface contract that TestSprite confirmed works.
+They run in CI and break the build if the contract is violated.
+
+Requires: the proxy + mock upstream to be running (handled by the
+``live_proxy`` fixture which reuses the harness machinery).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+import httpx
+import pytest
+import uvicorn
+from cryptography.fernet import Fernet
+
+from tests.helpers import fake_anthropic_key, fake_openai_key
+from worthless.cli.enroll_stub import enroll_stub
+from worthless.proxy.app import create_app
+from worthless.proxy.config import ProxySettings
+
+# Import mock app from harness (same mock upstream)
+import worthless.adapters.anthropic as _anth_mod
+import worthless.adapters.openai as _oai_mod
+
+# Inline the mock app to avoid importing scripts/ with sys.path hacks
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+
+MOCK_OPENAI_RESPONSE = {
+    "id": "chatcmpl-contract-test",
+    "object": "chat.completion",
+    "created": 1700000000,
+    "model": "gpt-4",
+    "choices": [
+        {
+            "index": 0,
+            "message": {"role": "assistant", "content": "contract test"},
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+}
+
+MOCK_ANTHROPIC_RESPONSE = {
+    "id": "msg-contract-test",
+    "type": "message",
+    "role": "assistant",
+    "content": [{"type": "text", "text": "contract test"}],
+    "model": "claude-3-5-sonnet-20241022",
+    "stop_reason": "end_turn",
+    "usage": {"input_tokens": 5, "output_tokens": 3},
+}
+
+
+async def _mock_openai(request: Request) -> JSONResponse:
+    return JSONResponse(MOCK_OPENAI_RESPONSE)
+
+
+async def _mock_anthropic(request: Request) -> JSONResponse:
+    return JSONResponse(MOCK_ANTHROPIC_RESPONSE)
+
+
+async def _mock_catchall(request: Request) -> JSONResponse:
+    return JSONResponse(
+        {"error": {"message": f"Unknown: {request.url.path}", "type": "invalid_request_error"}},
+        status_code=404,
+    )
+
+
+_mock_app = Starlette(
+    routes=[
+        Route("/v1/chat/completions", _mock_openai, methods=["POST"]),
+        Route("/v1/messages", _mock_anthropic, methods=["POST"]),
+        Route("/{path:path}", _mock_catchall),
+    ]
+)
+
+MOCK_PORT = 19000
+PROXY_PORT = 18000
+
+
+@pytest.fixture(scope="module")
+def live_proxy():
+    """Start mock upstream + real proxy, yield base URL, tear down."""
+    tmpdir = tempfile.mkdtemp(prefix="worthless-contract-")
+    db_path = str(Path(tmpdir) / "worthless.db")
+    shard_a_dir = str(Path(tmpdir) / "shard_a")
+    fernet_key = Fernet.generate_key()
+
+    # Enroll fake keys
+    async def _enroll():
+        for provider, key_fn in [("openai", fake_openai_key), ("anthropic", fake_anthropic_key)]:
+            await enroll_stub(
+                alias=f"{provider}-contract",
+                api_key=key_fn(),
+                provider=provider,
+                db_path=db_path,
+                fernet_key=fernet_key,
+                shard_a_dir=shard_a_dir,
+            )
+
+    asyncio.run(_enroll())
+
+    # Patch upstream URLs to mock
+    mock_upstream = f"http://127.0.0.1:{MOCK_PORT}"
+    _oai_mod.UPSTREAM_URL = f"{mock_upstream}/v1/chat/completions"
+    _anth_mod.UPSTREAM_URL = f"{mock_upstream}/v1/messages"
+
+    # Create proxy app
+    settings = ProxySettings(
+        db_path=db_path,
+        fernet_key=fernet_key.decode(),
+        shard_a_dir=shard_a_dir,
+        allow_insecure=True,
+        allow_alias_inference=True,
+        default_rate_limit_rps=100.0,
+    )
+    proxy_app = create_app(settings)
+
+    # Start both servers in background threads
+    mock_server = uvicorn.Server(
+        uvicorn.Config(_mock_app, host="127.0.0.1", port=MOCK_PORT, log_level="error")
+    )
+    proxy_server = uvicorn.Server(
+        uvicorn.Config(proxy_app, host="127.0.0.1", port=PROXY_PORT, log_level="error")
+    )
+
+    mock_thread = threading.Thread(target=mock_server.run, daemon=True)
+    proxy_thread = threading.Thread(target=proxy_server.run, daemon=True)
+    mock_thread.start()
+    proxy_thread.start()
+
+    # Wait for servers to be ready
+    base_url = f"http://127.0.0.1:{PROXY_PORT}"
+    for _ in range(30):
+        try:
+            httpx.get(f"{base_url}/healthz", timeout=1.0)
+            break
+        except httpx.ConnectError:
+            time.sleep(0.2)
+    else:
+        raise RuntimeError("Proxy did not start within 6 seconds")
+
+    yield base_url
+
+    # Teardown
+    mock_server.should_exit = True
+    proxy_server.should_exit = True
+    mock_thread.join(timeout=3)
+    proxy_thread.join(timeout=3)
+
+    import shutil
+
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Health endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestHealthEndpoints:
+    def test_root_returns_200(self, live_proxy: str) -> None:
+        r = httpx.get(f"{live_proxy}/")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
+    def test_healthz_returns_200(self, live_proxy: str) -> None:
+        r = httpx.get(f"{live_proxy}/healthz")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
+    def test_readyz_returns_200(self, live_proxy: str) -> None:
+        r = httpx.get(f"{live_proxy}/readyz")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# OpenAI proxy
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAIProxy:
+    def test_chat_completions_returns_200(self, live_proxy: str) -> None:
+        r = httpx.post(
+            f"{live_proxy}/v1/chat/completions",
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert "choices" in body
+        assert "usage" in body
+
+    def test_chat_completions_no_worthless_headers_leaked(self, live_proxy: str) -> None:
+        r = httpx.post(
+            f"{live_proxy}/v1/chat/completions",
+            json={"model": "gpt-4", "messages": []},
+        )
+        assert r.status_code == 200
+        for header in r.headers:
+            assert not header.lower().startswith("x-worthless-"), (
+                f"Internal header leaked: {header}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Anthropic proxy
+# ---------------------------------------------------------------------------
+
+
+class TestAnthropicProxy:
+    def test_messages_returns_200(self, live_proxy: str) -> None:
+        r = httpx.post(
+            f"{live_proxy}/v1/messages",
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert "content" in body
+        assert "usage" in body
+
+    def test_messages_no_worthless_headers_leaked(self, live_proxy: str) -> None:
+        r = httpx.post(
+            f"{live_proxy}/v1/messages",
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 100,
+            },
+        )
+        assert r.status_code == 200
+        for header in r.headers:
+            assert not header.lower().startswith("x-worthless-"), (
+                f"Internal header leaked: {header}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Anti-enumeration (uniform 401)
+# ---------------------------------------------------------------------------
+
+
+class TestAntiEnumeration:
+    @pytest.mark.parametrize(
+        "method,path",
+        [
+            ("GET", "/v1/models"),
+            ("GET", "/nonexistent/path"),
+            ("POST", "/v1/embeddings"),
+            ("GET", "/admin"),
+            ("GET", "/.env"),
+        ],
+    )
+    def test_unknown_paths_return_uniform_401(
+        self, live_proxy: str, method: str, path: str
+    ) -> None:
+        r = httpx.request(method, f"{live_proxy}{path}")
+        assert r.status_code == 401, f"{method} {path} returned {r.status_code}"
+        body = r.json()
+        assert body["error"]["type"] == "authentication_error"
+
+    def test_all_401s_have_identical_body(self, live_proxy: str) -> None:
+        bodies = []
+        for path in ["/v1/models", "/nonexistent", "/admin", "/.env"]:
+            r = httpx.get(f"{live_proxy}{path}")
+            assert r.status_code == 401
+            bodies.append(r.text)
+        assert len(set(bodies)) == 1, "401 responses differ — anti-enumeration broken"
+
+
+# ---------------------------------------------------------------------------
+# Response format
+# ---------------------------------------------------------------------------
+
+
+class TestResponseFormat:
+    def test_health_returns_json_content_type(self, live_proxy: str) -> None:
+        r = httpx.get(f"{live_proxy}/healthz")
+        assert "application/json" in r.headers.get("content-type", "")
+
+    def test_401_returns_json_content_type(self, live_proxy: str) -> None:
+        r = httpx.get(f"{live_proxy}/v1/models")
+        assert r.status_code == 401
+        assert "application/json" in r.headers.get("content-type", "")
