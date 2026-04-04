@@ -12,6 +12,7 @@ import base64
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import aiosqlite
 import httpx
 import pytest
 import respx
@@ -73,7 +74,6 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings, sample_api_key_byt
 @pytest.fixture()
 async def proxy_app(proxy_settings: ProxySettings, repo):
     """A proxy app with state pre-initialized (ASGITransport skips lifespan)."""
-    import aiosqlite
 
     from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 
@@ -121,17 +121,20 @@ class TestHealthEndpoints:
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
-    async def test_readyz_returns_503_when_no_keys(
+    async def test_readyz_returns_200_when_no_keys(
         self, proxy_settings: ProxySettings, tmp_db_path, fernet_key
     ):
-        """readyz should return 503 when no keys are enrolled."""
+        """readyz returns 200 even with no keys — must not leak enrollment state."""
+        import aiosqlite
+
         from worthless.proxy.rules import RulesEngine
         from worthless.storage.repository import ShardRepository
 
         app = create_app(proxy_settings)
-        # Manually set state for ASGITransport
         empty_repo = ShardRepository(tmp_db_path, fernet_key)
         await empty_repo.initialize()
+        db = await aiosqlite.connect(proxy_settings.db_path)
+        app.state.db = db
         app.state.repo = empty_repo
         app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
         app.state.rules_engine = RulesEngine(rules=[])
@@ -139,8 +142,9 @@ class TestHealthEndpoints:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/readyz")
-            assert resp.status_code == 503
+            assert resp.status_code == 200
         await app.state.httpx_client.aclose()
+        await db.close()
 
     async def test_readyz_returns_200_with_keys(
         self, proxy_client: httpx.AsyncClient, enrolled_alias
@@ -525,7 +529,6 @@ class TestSettingsValidation:
 @pytest.fixture()
 async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo, sample_api_key_bytes: bytes):
     """Proxy app with an openai key enrolled using the provider-hash alias format."""
-    import aiosqlite
 
     from worthless.crypto import split_key
     from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
