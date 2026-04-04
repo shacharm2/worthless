@@ -376,6 +376,20 @@ class ShardRepository:
             await db.commit()
             return cursor.rowcount > 0
 
+    async def revoke_all(self, alias: str) -> bool:
+        """Atomically delete all DB records for *alias* in one transaction.
+
+        Deletes spend_log, enrollment_config, and shards (CASCADE to enrollments).
+        Returns True if the shard existed.
+        """
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute("DELETE FROM spend_log WHERE key_alias = ?", (alias,))
+            await db.execute("DELETE FROM enrollment_config WHERE key_alias = ?", (alias,))
+            cursor = await db.execute("DELETE FROM shards WHERE key_alias = ?", (alias,))
+            await db.commit()
+            return cursor.rowcount > 0
+
     # ------------------------------------------------------------------
     # Decoy hash registry (WOR-31)
     # ------------------------------------------------------------------

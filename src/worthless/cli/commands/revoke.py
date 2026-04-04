@@ -1,9 +1,10 @@
-"""Revoke command -- securely delete an enrolled key (shard_a + DB records)."""
+"""Revoke command -- wipe an enrolled key (shard_a + DB records)."""
 
 from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 
 import typer
@@ -13,42 +14,42 @@ from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.storage.repository import ShardRepository
 
+_ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
 
 async def _revoke_async(alias: str, repo: ShardRepository, shard_a_dir: Path) -> bool:
-    """Delete shard, enrollments, spend_log, and shard_a file.
+    """Delete all DB records and wipe shard_a file for *alias*.
 
     Returns True if anything was deleted, False if alias not found anywhere.
+
+    Note: zeroing shard_a is best-effort on CoW filesystems (APFS, btrfs).
+    Full-disk encryption is the real mitigation for data-at-rest.
     """
     shard_a_path = shard_a_dir / alias
-    found_anything = False
 
     # Check DB for the shard
     db_shard = await repo.fetch_encrypted(alias)
-    if db_shard is not None:
-        found_anything = True
 
-    # Check shard_a file
+    # Check shard_a file (refuse symlinks)
     shard_a_exists = shard_a_path.exists() and not shard_a_path.is_symlink()
-    if shard_a_exists:
-        found_anything = True
 
-    if not found_anything:
+    if db_shard is None and not shard_a_exists:
         return False
 
-    # 1. Delete spend_log entries (no CASCADE from shards table)
-    await repo.delete_spend_log(alias)
+    # Atomic DB cleanup: spend_log + enrollment_config + shard (CASCADE) in one txn
+    await repo.revoke_all(alias)
 
-    # 2. Delete enrollment_config (no CASCADE from shards table)
-    await repo.delete_enrollment_config(alias)
-
-    # 3. Delete shard + cascaded enrollments from DB
-    await repo.delete_enrolled(alias)
-
-    # 4. Securely delete shard_a: zero contents, then unlink
+    # Best-effort wipe of shard_a: zero contents, then unlink.
+    # O_NOFOLLOW prevents TOCTOU symlink race between is_symlink() check and open.
     if shard_a_exists:
         size = shard_a_path.stat().st_size
         if size > 0:
-            fd = os.open(str(shard_a_path), os.O_WRONLY)
+            try:
+                fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_NOFOLLOW)
+            except OSError:
+                # Symlink appeared between check and open, or permission error — skip wipe
+                shard_a_path.unlink(missing_ok=True)
+                return True
             try:
                 os.write(fd, b"\x00" * size)
                 os.fsync(fd)
@@ -61,6 +62,9 @@ async def _revoke_async(alias: str, repo: ShardRepository, shard_a_dir: Path) ->
 
 def _revoke_key(alias: str) -> None:
     """Core revoke logic."""
+    if not _ALIAS_RE.match(alias):
+        raise WorthlessError(ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}")
+
     console = get_console()
     home = get_home()
 
@@ -86,7 +90,7 @@ def register_revoke_commands(app: typer.Typer) -> None:
     def revoke(
         alias: str = typer.Option(..., "--alias", "-a", help="Alias of the key to revoke"),
     ) -> None:
-        """Permanently revoke an enrolled API key (secure deletion)."""
+        """Permanently revoke an enrolled API key."""
         console = get_console()
         try:
             _revoke_key(alias)

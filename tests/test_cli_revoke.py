@@ -144,3 +144,23 @@ class TestRevokeCleanupSpendLog:
 
         _invoke_revoke("openai-a1b2c3d4", home_with_key)
         assert asyncio.run(_count_spend()) == 0
+
+
+class TestRevokePathTraversal:
+    """Alias must be validated to prevent path traversal attacks."""
+
+    def test_path_traversal_rejected(self, home_dir: WorthlessHome) -> None:
+        result = _invoke_revoke("../../etc/passwd", home_dir)
+        assert result.exit_code == 1
+
+    def test_dotdot_rejected(self, home_dir: WorthlessHome) -> None:
+        result = _invoke_revoke("../fernet.key", home_dir)
+        assert result.exit_code == 1
+
+    def test_slash_rejected(self, home_dir: WorthlessHome) -> None:
+        result = _invoke_revoke("foo/bar", home_dir)
+        assert result.exit_code == 1
+
+    def test_valid_alias_accepted(self, home_dir: WorthlessHome) -> None:
+        result = _invoke_revoke("openai-abc123", home_dir)
+        assert result.exit_code == 0  # not found, but no validation error
