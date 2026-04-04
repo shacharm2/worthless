@@ -14,7 +14,7 @@ from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
 from worthless.cli.decoy import make_decoy
 from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys, shannon_entropy
-from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, detect_prefix
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.crypto.splitter import split_key
@@ -243,7 +243,7 @@ def _lock_keys(
                     raise
                 raise WorthlessError(
                     ErrorCode.SHARD_STORAGE_FAILED,
-                    f"Failed to protect key: {exc}",
+                    sanitize_exception(exc, generic="failed to protect key"),
                 ) from exc
             finally:
                 sr.zero()
@@ -324,7 +324,7 @@ def register_lock_commands(app: typer.Typer) -> None:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc
         except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
+            console.print_error(WorthlessError(ErrorCode.UNKNOWN, sanitize_exception(exc)))
             raise typer.Exit(code=1) from exc
 
     @app.command()
@@ -367,5 +367,5 @@ def register_lock_commands(app: typer.Typer) -> None:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc
         except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
+            console.print_error(WorthlessError(ErrorCode.UNKNOWN, sanitize_exception(exc)))
             raise typer.Exit(code=1) from exc

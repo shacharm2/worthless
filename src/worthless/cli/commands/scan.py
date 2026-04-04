@@ -13,7 +13,7 @@ import typer
 
 from worthless.cli.bootstrap import get_home
 from worthless.cli.console import get_console
-from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
 from worthless.storage.repository import ShardRepository
 
@@ -323,8 +323,9 @@ def register_scan_commands(app: typer.Typer) -> None:
             console.print_error(exc)
             raise typer.Exit(code=2) from exc
         except Exception as exc:
-            if not console.quiet:
-                sys.stderr.write(f"Scan error: {type(exc).__name__}: {exc}\n")
+            console.print_error(
+                WorthlessError(ErrorCode.SCAN_ERROR, sanitize_exception(exc, generic="scan failed"))
+            )
             raise typer.Exit(code=2) from exc
         finally:
             if tmp_file is not None:

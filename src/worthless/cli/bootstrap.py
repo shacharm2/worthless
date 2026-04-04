@@ -12,7 +12,7 @@ from collections.abc import Generator
 
 from cryptography.fernet import Fernet
 
-from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 
 _DEFAULT_BASE = Path.home() / ".worthless"
 _STALE_LOCK_SECONDS = 300  # 5 minutes
@@ -79,7 +79,7 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
     except OSError as exc:
         raise WorthlessError(
             ErrorCode.BOOTSTRAP_FAILED,
-            f"Failed to initialise ~/.worthless: {exc}",
+            sanitize_exception(exc, generic="failed to initialise home directory"),
         ) from exc
 
     # Initialise database (idempotent — CREATE TABLE IF NOT EXISTS)
@@ -88,7 +88,7 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
     except (OSError, sqlite3.DatabaseError) as exc:
         raise WorthlessError(
             ErrorCode.SHARD_STORAGE_FAILED,
-            f"Failed to initialise database: {exc}",
+            sanitize_exception(exc, generic="failed to initialise database"),
         ) from exc
 
     return home
