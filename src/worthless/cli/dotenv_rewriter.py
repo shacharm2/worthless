@@ -69,13 +69,16 @@ def rewrite_env_key(env_path: Path, var_name: str, new_value: str) -> None:
     found = False
     new_lines: list[str] = []
 
-    pattern = re.compile(rf"^{re.escape(var_name)}\s*=")
+    # Match optional 'export' prefix to stay in sync with python-dotenv's parser.
+    pattern = re.compile(rf"^(?:export\s+)?{re.escape(var_name)}\s*=")
 
     for line in lines:
         if pattern.match(line.lstrip()):
-            # Preserve any trailing newline from the original line
+            # Preserve any trailing newline and export prefix from the original line
             eol = "\n" if line.endswith("\n") else ""
-            new_lines.append(f"{var_name}={new_value}{eol}")
+            stripped = line.lstrip()
+            prefix = "export " if stripped.startswith("export ") else ""
+            new_lines.append(f"{prefix}{var_name}={new_value}{eol}")
             found = True
         else:
             new_lines.append(line)

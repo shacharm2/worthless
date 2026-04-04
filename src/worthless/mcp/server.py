@@ -132,6 +132,7 @@ async def worthless_scan(
             scan_paths = _collect_fast_paths(explicit)
 
         is_decoy = await _build_decoy_checker_async()
+        decoy_checker_available = is_decoy is not None
         findings = scan_files(scan_paths, is_decoy=is_decoy)
 
         items = [
@@ -157,6 +158,7 @@ async def worthless_scan(
                     "protected": protected,
                     "unprotected": unprotected,
                 },
+                "decoy_checker_available": decoy_checker_available,
             }
         )
     finally:

@@ -112,3 +112,39 @@ class TestRewriteEnvKey:
         rewrite_env_key(env_file, "KEY", "new_value")
         content = env_file.read_text()
         assert "new_value" in content
+
+
+class TestScanRewriteParity:
+    """Verify scan_env_keys and rewrite_env_key agree on var names.
+
+    scan uses python-dotenv (dotenv_values), rewrite uses regex.
+    These must parse the same var names or lock breaks.
+    """
+
+    def test_quoted_value_roundtrip(self, tmp_path: Path):
+        """scan finds a quoted key, rewrite can replace it."""
+        from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys
+
+        fake_key = "sk-proj-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0" * 2
+        env_file = tmp_path / ".env"
+        env_file.write_text(f'OPENAI_API_KEY="{fake_key}"\n')
+        results = scan_env_keys(env_file)
+        assert len(results) == 1
+        var_name = results[0][0]
+        # rewrite must find the same var_name
+        rewrite_env_key(env_file, var_name, "decoy_value")
+        assert "decoy_value" in env_file.read_text()
+
+    def test_export_prefix_roundtrip(self, tmp_path: Path):
+        """scan finds an export-prefixed key, rewrite can replace it."""
+        from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys
+
+        fake_key = "sk-proj-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0" * 2
+        env_file = tmp_path / ".env"
+        env_file.write_text(f"export OPENAI_API_KEY={fake_key}\n")
+        results = scan_env_keys(env_file)
+        assert len(results) == 1
+        var_name = results[0][0]
+        # rewrite must find the same var_name
+        rewrite_env_key(env_file, var_name, "decoy_value")
+        assert "decoy_value" in env_file.read_text()
