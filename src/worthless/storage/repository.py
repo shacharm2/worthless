@@ -362,32 +362,19 @@ class ShardRepository:
             await db.commit()
             return cursor.rowcount > 0
 
-    async def delete_spend_log(self, alias: str) -> int:
-        """Delete all spend_log entries for *alias*. Returns rows deleted."""
-        async with self._connect() as db:
-            cursor = await db.execute("DELETE FROM spend_log WHERE key_alias = ?", (alias,))
-            await db.commit()
-            return cursor.rowcount
-
-    async def delete_enrollment_config(self, alias: str) -> bool:
-        """Delete enrollment_config for *alias*. Returns True if deleted."""
-        async with self._connect() as db:
-            cursor = await db.execute("DELETE FROM enrollment_config WHERE key_alias = ?", (alias,))
-            await db.commit()
-            return cursor.rowcount > 0
-
     async def revoke_all(self, alias: str) -> bool:
         """Atomically delete all DB records for *alias* in one transaction.
 
         Deletes spend_log, enrollment_config, and shards (CASCADE to enrollments).
         Returns True if the shard existed.
         """
-        async with self._connect() as db:
+        async with aiosqlite.connect(self._db_path, isolation_level=None) as db:
+            await db.execute("PRAGMA foreign_keys = ON")
             await db.execute("BEGIN IMMEDIATE")
             await db.execute("DELETE FROM spend_log WHERE key_alias = ?", (alias,))
             await db.execute("DELETE FROM enrollment_config WHERE key_alias = ?", (alias,))
             cursor = await db.execute("DELETE FROM shards WHERE key_alias = ?", (alias,))
-            await db.commit()
+            await db.execute("COMMIT")
             return cursor.rowcount > 0
 
     # ------------------------------------------------------------------

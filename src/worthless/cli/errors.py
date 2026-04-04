@@ -20,7 +20,6 @@ class ErrorCode(IntEnum):
     SCAN_ERROR = 106
     PORT_IN_USE = 107
     WRAP_CHILD_FAILED = 108
-    REVOKE_NOT_FOUND = 109
     UNKNOWN = 199
 
 
@@ -44,5 +43,5 @@ def sanitize_exception(exc: Exception, *, generic: str = "an internal error occu
     logged at DEBUG level so operators can diagnose with ``--verbose`` or
     log-level configuration.
     """
-    logger.debug("Sanitized exception (%s): %s", type(exc).__name__, exc)
+    logger.debug("Sanitized exception: %s", type(exc).__name__)
     return generic

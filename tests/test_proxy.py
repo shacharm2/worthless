@@ -125,8 +125,6 @@ class TestHealthEndpoints:
         self, proxy_settings: ProxySettings, tmp_db_path, fernet_key
     ):
         """readyz returns 200 even with no keys — must not leak enrollment state."""
-        import aiosqlite
-
         from worthless.proxy.rules import RulesEngine
         from worthless.storage.repository import ShardRepository
 

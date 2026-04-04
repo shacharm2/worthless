@@ -42,19 +42,19 @@ async def _revoke_async(alias: str, repo: ShardRepository, shard_a_dir: Path) ->
     # Best-effort wipe of shard_a: zero contents, then unlink.
     # O_NOFOLLOW prevents TOCTOU symlink race between is_symlink() check and open.
     if shard_a_exists:
-        size = shard_a_path.stat().st_size
-        if size > 0:
-            try:
-                fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_NOFOLLOW)
-            except OSError:
-                # Symlink appeared between check and open, or permission error — skip wipe
-                shard_a_path.unlink(missing_ok=True)
-                return True
-            try:
+        try:
+            fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_NOFOLLOW)
+        except OSError:
+            # Symlink appeared between check and open, or permission error — skip wipe
+            shard_a_path.unlink(missing_ok=True)
+            return True
+        try:
+            size = os.fstat(fd).st_size
+            if size > 0:
                 os.write(fd, b"\x00" * size)
                 os.fsync(fd)
-            finally:
-                os.close(fd)
+        finally:
+            os.close(fd)
         shard_a_path.unlink()
 
     return True
