@@ -270,7 +270,7 @@ async def main() -> None:
             uvicorn.Config(mock_app, host="127.0.0.1", port=MOCK_PORT, log_level="warning")
         )
         proxy_server = uvicorn.Server(
-            uvicorn.Config(proxy_app, host="127.0.0.1", port=PROXY_PORT, log_level="info")
+            uvicorn.Config(proxy_app, host="0.0.0.0", port=PROXY_PORT, log_level="info")  # noqa: S104 — test harness only
         )
 
         await asyncio.gather(
