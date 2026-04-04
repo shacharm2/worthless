@@ -16,7 +16,7 @@ import threading
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, get_home
-from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
+from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
 from worthless.cli.process import (
     build_proxy_env,
     create_liveness_pipe,
@@ -146,7 +146,8 @@ def register_wrap_commands(app: typer.Typer) -> None:
             os.close(read_fd)
             os.close(write_fd)
             raise WorthlessError(
-                ErrorCode.PROXY_UNREACHABLE, f"Failed to start proxy: {exc}"
+                ErrorCode.PROXY_UNREACHABLE,
+                sanitize_exception(exc, generic="failed to start proxy"),
             ) from exc
 
         # Close read_fd in parent (proxy has it)
@@ -172,7 +173,8 @@ def register_wrap_commands(app: typer.Typer) -> None:
         except Exception as exc:
             _cleanup_proxy(proxy, write_fd)
             raise WorthlessError(
-                ErrorCode.WRAP_CHILD_FAILED, f"Failed to start child: {exc}"
+                ErrorCode.WRAP_CHILD_FAILED,
+                sanitize_exception(exc, generic="failed to start child process"),
             ) from exc
 
         # Register signal forwarding
