@@ -34,10 +34,7 @@ def env_file(tmp_path: Path) -> Path:
 def multi_env_file(tmp_path: Path) -> Path:
     """Create a .env with two API keys."""
     env = tmp_path / ".env"
-    env.write_text(
-        f"OPENAI_API_KEY={_TEST_KEY}\n"
-        f"ANTHROPIC_API_KEY={_TEST_KEY_2}\n"
-    )
+    env.write_text(f"OPENAI_API_KEY={_TEST_KEY}\nANTHROPIC_API_KEY={_TEST_KEY_2}\n")
     return env
 
 
@@ -54,9 +51,7 @@ def _lock(env_file: Path, home: WorthlessHome) -> None:
 class TestUnlockCommand:
     """Tests for `worthless unlock`."""
 
-    def test_round_trip_lock_unlock(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
+    def test_round_trip_lock_unlock(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """Lock then unlock should restore identical .env content."""
         original = env_file.read_text()
         _lock(env_file, home_dir)
@@ -72,9 +67,7 @@ class TestUnlockCommand:
         assert result.exit_code == 0, result.output
         assert env_file.read_text() == original
 
-    def test_unlock_specific_alias(
-        self, home_dir: WorthlessHome, multi_env_file: Path
-    ) -> None:
+    def test_unlock_specific_alias(self, home_dir: WorthlessHome, multi_env_file: Path) -> None:
         """Unlock with --alias should only unlock that specific key."""
         _lock(multi_env_file, home_dir)
 
@@ -95,9 +88,7 @@ class TestUnlockCommand:
         remaining = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
         assert len(remaining) == 1
 
-    def test_unlock_all_aliases(
-        self, home_dir: WorthlessHome, multi_env_file: Path
-    ) -> None:
+    def test_unlock_all_aliases(self, home_dir: WorthlessHome, multi_env_file: Path) -> None:
         """Unlock without --alias should unlock all enrolled keys."""
         original = multi_env_file.read_text()
         _lock(multi_env_file, home_dir)
@@ -118,9 +109,7 @@ class TestUnlockCommand:
         aliases = asyncio.run(repo.list_keys())
         assert aliases == []
 
-    def test_unlock_missing_alias_errors(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
+    def test_unlock_missing_alias_errors(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """Unlock with nonexistent alias should exit with error."""
         result = runner.invoke(
             app,
@@ -148,9 +137,7 @@ class TestUnlockCommand:
         # Key should appear in output
         assert _TEST_KEY in result.output
 
-    def test_shards_cleaned_up_after_unlock(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
+    def test_shards_cleaned_up_after_unlock(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """After unlock, shard_a files and DB entries should be removed."""
         _lock(env_file, home_dir)
 
@@ -173,9 +160,7 @@ class TestUnlockCommand:
 class TestUnlockFromDB:
     """Unlock reads var_name from DB enrollment, not .meta file."""
 
-    def test_unlock_reads_var_name_from_db(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
+    def test_unlock_reads_var_name_from_db(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """Unlock should read var_name from enrollments table, not .meta."""
         original = env_file.read_text()
         _lock(env_file, home_dir)
@@ -218,9 +203,7 @@ class TestUnlockFromDB:
         enrollments = asyncio.run(repo.list_enrollments())
         assert enrollments == []
 
-    def test_unlock_no_meta_files_remain(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
+    def test_unlock_no_meta_files_remain(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """After full lock/unlock cycle, no .meta files should exist."""
         _lock(env_file, home_dir)
 
@@ -239,9 +222,7 @@ class TestUnlockFromDB:
 class TestDecoyHashClearedOnUnlock:
     """WOR-31: unlock must clear the decoy_hash so is_known_decoy returns False."""
 
-    def test_decoy_hash_cleared_after_unlock(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
+    def test_decoy_hash_cleared_after_unlock(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """Lock stores a decoy hash; unlock deletes enrollment so hash is gone."""
         original = env_file.read_text()
         _lock(env_file, home_dir)
@@ -275,7 +256,6 @@ class TestDecoyHashClearedOnUnlock:
 
         # Original key restored
         assert env_file.read_text() == original
-
 
     def test_multi_env_unlock_one_keeps_other_hash(
         self, home_dir: WorthlessHome, tmp_path: Path
@@ -386,9 +366,7 @@ class TestUnlockMultiEnrollment:
         env_b.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
         return env_a, env_b
 
-    def _lock_both(
-        self, env_a: Path, env_b: Path, home: WorthlessHome
-    ) -> str:
+    def _lock_both(self, env_a: Path, env_b: Path, home: WorthlessHome) -> str:
         """Lock same key via two env files, return the alias."""
         _lock(env_a, home)
         _lock(env_b, home)
@@ -453,7 +431,8 @@ class TestUnlockErrorBranches:
             raise Exception("DB corrupt")
 
         monkeypatch.setattr(
-            "worthless.storage.repository.ShardRepository.retrieve", _boom,
+            "worthless.storage.repository.ShardRepository.retrieve",
+            _boom,
         )
 
         # Find the alias from the enrolled key
@@ -508,9 +487,7 @@ class TestUnlockErrorBranches:
         assert result.exit_code == 1
         assert "WRTLS" in result.output
 
-    def test_unlock_no_enrollment_prints_key(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
+    def test_unlock_no_enrollment_prints_key(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """Unlock alias with no enrollment record prints key to stdout."""
         from worthless.crypto.splitter import split_key
         from worthless.storage.repository import StoredShard

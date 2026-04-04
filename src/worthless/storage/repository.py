@@ -91,9 +91,7 @@ class ShardRepository:
 
     def _compute_decoy_hash(self, value: str) -> str:
         """Compute HMAC-SHA256 of *value* keyed with the Fernet key material."""
-        return hmac.new(
-            self._fernet_key_bytes, value.encode(), hashlib.sha256
-        ).hexdigest()
+        return hmac.new(self._fernet_key_bytes, value.encode(), hashlib.sha256).hexdigest()
 
     # ------------------------------------------------------------------
     # Shard CRUD
@@ -168,9 +166,7 @@ class ShardRepository:
     async def delete(self, alias: str) -> bool:
         """Delete the shard record for *alias*. Returns True if deleted."""
         async with self._connect() as db:
-            cursor = await db.execute(
-                "DELETE FROM shards WHERE key_alias = ?", (alias,)
-            )
+            cursor = await db.execute("DELETE FROM shards WHERE key_alias = ?", (alias,))
             await db.commit()
             return cursor.rowcount > 0
 
@@ -270,7 +266,6 @@ class ShardRepository:
         first enrollment for the alias (useful when only one exists).
         """
         async with self._connect() as db:
-
             if env_path is None:
                 cursor = await db.execute(
                     "SELECT key_alias, var_name, env_path, decoy_hash FROM enrollments "
@@ -287,7 +282,10 @@ class ShardRepository:
             if row is None:
                 return None
             return EnrollmentRecord(
-                key_alias=row[0], var_name=row[1], env_path=row[2], decoy_hash=row[3],
+                key_alias=row[0],
+                var_name=row[1],
+                env_path=row[2],
+                decoy_hash=row[3],
             )
 
     async def find_enrollment_by_location(
@@ -304,15 +302,18 @@ class ShardRepository:
             if row is None:
                 return None
             return EnrollmentRecord(
-                key_alias=row[0], var_name=row[1], env_path=row[2], decoy_hash=row[3],
+                key_alias=row[0],
+                var_name=row[1],
+                env_path=row[2],
+                decoy_hash=row[3],
             )
 
     async def list_enrollments(
-        self, alias: str | None = None,
+        self,
+        alias: str | None = None,
     ) -> list[EnrollmentRecord]:
         """Return enrollment records, optionally filtered by *alias*."""
         async with self._connect() as db:
-
             if alias is not None:
                 cursor = await db.execute(
                     "SELECT key_alias, var_name, env_path, decoy_hash "
@@ -357,10 +358,7 @@ class ShardRepository:
         Returns True if deleted.
         """
         async with self._connect() as db:
-
-            cursor = await db.execute(
-                "DELETE FROM shards WHERE key_alias = ?", (alias,)
-            )
+            cursor = await db.execute("DELETE FROM shards WHERE key_alias = ?", (alias,))
             await db.commit()
             return cursor.rowcount > 0
 
@@ -368,9 +366,7 @@ class ShardRepository:
     # Decoy hash registry (WOR-31)
     # ------------------------------------------------------------------
 
-    async def set_decoy_hash(
-        self, alias: str, env_path: str | None, decoy_value: str
-    ) -> None:
+    async def set_decoy_hash(self, alias: str, env_path: str | None, decoy_value: str) -> None:
         """Store the HMAC-SHA256 hash of *decoy_value* on the enrollment row."""
         h = self._compute_decoy_hash(decoy_value)
         async with self._connect() as db:
@@ -382,8 +378,7 @@ class ShardRepository:
                 )
             else:
                 await db.execute(
-                    "UPDATE enrollments SET decoy_hash = ? "
-                    "WHERE key_alias = ? AND env_path = ?",
+                    "UPDATE enrollments SET decoy_hash = ? WHERE key_alias = ? AND env_path = ?",
                     (h, alias, env_path),
                 )
             await db.commit()

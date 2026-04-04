@@ -50,7 +50,9 @@ class TestLockCommand:
         """Lock should split key, write shard_a, store shard_b in DB, rewrite .env."""
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         result = runner.invoke(
-            app, ["lock", "--env", str(env_file)], env=env_vars,
+            app,
+            ["lock", "--env", str(env_file)],
+            env=env_vars,
         )
         assert result.exit_code == 0, result.output
 
@@ -74,9 +76,7 @@ class TestLockCommand:
         aliases = asyncio.run(repo.list_keys())
         assert len(aliases) == 1
 
-    def test_lock_no_env_file_exits_error(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_lock_no_env_file_exits_error(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Lock with nonexistent .env should exit with error code."""
         result = runner.invoke(
             app,
@@ -85,9 +85,7 @@ class TestLockCommand:
         )
         assert result.exit_code == 1
 
-    def test_lock_no_api_keys_exits_zero(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_lock_no_api_keys_exits_zero(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Lock with .env that has no API keys should print message and exit 0."""
         env = tmp_path / ".env"
         env.write_text("DATABASE_URL=postgres://localhost/db\n")
@@ -99,34 +97,34 @@ class TestLockCommand:
         assert result.exit_code == 0
         assert "No unprotected" in result.output or "no unprotected" in result.output.lower()
 
-    def test_lock_idempotent_skips_enrolled(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
+    def test_lock_idempotent_skips_enrolled(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """Running lock twice should skip already-enrolled keys."""
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         result1 = runner.invoke(
-            app, ["lock", "--env", str(env_file)], env=env_vars,
+            app,
+            ["lock", "--env", str(env_file)],
+            env=env_vars,
         )
         assert result1.exit_code == 0
 
         # Second run -- should skip the already-enrolled key
         result2 = runner.invoke(
-            app, ["lock", "--env", str(env_file)], env=env_vars,
+            app,
+            ["lock", "--env", str(env_file)],
+            env=env_vars,
         )
         assert result2.exit_code == 0
         # Still only one shard_a file
-        shard_a_files = [
-            f for f in home_dir.shard_a_dir.iterdir() if f.is_file()
-        ]
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
         assert len(shard_a_files) == 1
 
-    def test_lock_prefix_preservation(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
+    def test_lock_prefix_preservation(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """Decoy value should preserve prefix and match provider format length (WOR-31)."""
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         result = runner.invoke(
-            app, ["lock", "--env", str(env_file)], env=env_vars,
+            app,
+            ["lock", "--env", str(env_file)],
+            env=env_vars,
         )
         assert result.exit_code == 0
 
@@ -135,9 +133,7 @@ class TestLockCommand:
         # WOR-31: decoys match provider format length (164 for OpenAI), not original
         assert len(decoy) == 164
 
-    def test_lock_multiple_keys(
-        self, home_dir: WorthlessHome, multi_env_file: Path
-    ) -> None:
+    def test_lock_multiple_keys(self, home_dir: WorthlessHome, multi_env_file: Path) -> None:
         """Lock should process all API keys in .env."""
         result = runner.invoke(
             app,
@@ -159,14 +155,14 @@ class TestLockCommand:
         """Lock file should not exist after command completes."""
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         result = runner.invoke(
-            app, ["lock", "--env", str(env_file)], env=env_vars,
+            app,
+            ["lock", "--env", str(env_file)],
+            env=env_vars,
         )
         assert result.exit_code == 0
         assert not home_dir.lock_file.exists()
 
-    def test_lock_with_provider_override(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_lock_with_provider_override(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """--provider flag should override auto-detection."""
         env = tmp_path / ".env"
         env.write_text(f"MY_KEY={fake_openai_key()}\n")
@@ -189,9 +185,7 @@ class TestLockCommand:
 class TestLockNoMetaFiles:
     """Lock should NOT create .meta files (consolidated into SQLite)."""
 
-    def test_lock_creates_no_meta_files(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
+    def test_lock_creates_no_meta_files(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """After lock, shard_a_dir should contain NO .meta files."""
         result = runner.invoke(
             app,
@@ -217,9 +211,7 @@ class TestLockNoMetaFiles:
         meta_files = [f for f in home_dir.shard_a_dir.iterdir() if f.name.endswith(".meta")]
         assert meta_files == [], f"Found .meta files: {[f.name for f in meta_files]}"
 
-    def test_lock_stores_enrollment_in_db(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
+    def test_lock_stores_enrollment_in_db(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """Lock should store var_name and env_path in enrollments table."""
         result = runner.invoke(
             app,
@@ -299,7 +291,8 @@ class TestLockErrorBranches:
             raise OSError("disk full")
 
         monkeypatch.setattr(
-            "worthless.cli.commands.lock.rewrite_env_key", _boom,
+            "worthless.cli.commands.lock.rewrite_env_key",
+            _boom,
         )
 
         result = runner.invoke(
@@ -321,9 +314,7 @@ class TestLockErrorBranches:
         # .env unchanged after failed operation
         assert env_file.read_text() == original_content
 
-    def test_lock_symlink_env_refused(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_lock_symlink_env_refused(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Lock refuses to follow symlinked .env files."""
         real_env = tmp_path / "real.env"
         real_env.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
@@ -347,7 +338,8 @@ class TestLockErrorBranches:
             raise sqlite3.DatabaseError("disk I/O error")
 
         monkeypatch.setattr(
-            "worthless.storage.repository.ShardRepository.store_enrolled", _boom,
+            "worthless.storage.repository.ShardRepository.store_enrolled",
+            _boom,
         )
 
         result = runner.invoke(
@@ -367,7 +359,8 @@ class TestLockErrorBranches:
             raise OSError("permission denied")
 
         monkeypatch.setattr(
-            "worthless.cli.commands.lock.scan_env_keys", _boom,
+            "worthless.cli.commands.lock.scan_env_keys",
+            _boom,
         )
 
         result = runner.invoke(
@@ -381,17 +374,18 @@ class TestLockErrorBranches:
 class TestEnrollCommand:
     """Tests for `worthless enroll`."""
 
-    def test_enroll_explicit_args(
-        self, home_dir: WorthlessHome
-    ) -> None:
+    def test_enroll_explicit_args(self, home_dir: WorthlessHome) -> None:
         """Enroll with explicit alias, key, and provider."""
         result = runner.invoke(
             app,
             [
                 "enroll",
-                "--alias", "my-test-key",
-                "--key", fake_openai_key(),
-                "--provider", "openai",
+                "--alias",
+                "my-test-key",
+                "--key",
+                fake_openai_key(),
+                "--provider",
+                "openai",
             ],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
@@ -424,9 +418,7 @@ def _make_old_decoy(prefix: str) -> str:
 class TestOldDecoyMigration:
     """Lock should auto-upgrade old WRTLS-marker decoys to high-entropy format."""
 
-    def test_migrate_old_wrtls_decoy_on_lock(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_migrate_old_wrtls_decoy_on_lock(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Old WRTLS decoy in .env should be replaced with provider-format key on lock."""
         env = tmp_path / ".env"
         real_key = fake_openai_key()
@@ -434,7 +426,8 @@ class TestOldDecoyMigration:
         # Step 1: lock the real key normally
         env.write_text(f"OPENAI_API_KEY={real_key}\n")
         result = runner.invoke(
-            app, ["lock", "--env", str(env)],
+            app,
+            ["lock", "--env", str(env)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 0, result.output
@@ -459,7 +452,8 @@ class TestOldDecoyMigration:
 
         # Step 3: run lock again -- should trigger migration
         result = runner.invoke(
-            app, ["lock", "--env", str(env)],
+            app,
+            ["lock", "--env", str(env)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 0, result.output
@@ -470,9 +464,7 @@ class TestOldDecoyMigration:
         assert new_value.startswith("sk-proj-")
         assert shannon_entropy(new_value) >= ENTROPY_THRESHOLD
 
-    def test_migrate_populates_decoy_hash(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_migrate_populates_decoy_hash(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """After migration, decoy_hash should be set on the enrollment."""
         env = tmp_path / ".env"
         real_key = fake_openai_key()
@@ -480,7 +472,8 @@ class TestOldDecoyMigration:
         # Lock then simulate old decoy
         env.write_text(f"OPENAI_API_KEY={real_key}\n")
         runner.invoke(
-            app, ["lock", "--env", str(env)],
+            app,
+            ["lock", "--env", str(env)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
 
@@ -503,7 +496,8 @@ class TestOldDecoyMigration:
 
         # Run lock to trigger migration
         runner.invoke(
-            app, ["lock", "--env", str(env)],
+            app,
+            ["lock", "--env", str(env)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
 
@@ -522,7 +516,8 @@ class TestOldDecoyMigration:
         # Lock then simulate old decoy
         env.write_text(f"OPENAI_API_KEY={real_key}\n")
         runner.invoke(
-            app, ["lock", "--env", str(env)],
+            app,
+            ["lock", "--env", str(env)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
 
@@ -540,14 +535,16 @@ class TestOldDecoyMigration:
 
         # First lock migrates
         runner.invoke(
-            app, ["lock", "--env", str(env)],
+            app,
+            ["lock", "--env", str(env)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         value_after_first = env.read_text().strip().split("=", 1)[1]
 
         # Second lock should be a no-op -- value unchanged
         runner.invoke(
-            app, ["lock", "--env", str(env)],
+            app,
+            ["lock", "--env", str(env)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         value_after_second = env.read_text().strip().split("=", 1)[1]
@@ -563,7 +560,8 @@ class TestOldDecoyMigration:
         env.write_text(f"SOME_RANDOM_VAR={old_decoy}\n")
 
         result = runner.invoke(
-            app, ["lock", "--env", str(env)],
+            app,
+            ["lock", "--env", str(env)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 0
@@ -582,7 +580,8 @@ class TestOldDecoyMigration:
         # Lock the real key first
         env.write_text(f"OPENAI_API_KEY={real_key}\n")
         result1 = runner.invoke(
-            app, ["lock", "--env", str(env)],
+            app,
+            ["lock", "--env", str(env)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result1.exit_code == 0
@@ -594,10 +593,7 @@ class TestOldDecoyMigration:
         high_entropy_body = "".join(
             secrets.choice(string.ascii_letters + string.digits) for _ in range(100)
         )
-        high_entropy_val = (
-            f"sk-proj-{high_entropy_body}WRTLS"
-            f"{high_entropy_body[:50]}"
-        )
+        high_entropy_val = f"sk-proj-{high_entropy_body}WRTLS{high_entropy_body[:50]}"
         assert shannon_entropy(high_entropy_val) >= ENTROPY_THRESHOLD
         env.write_text(f"OPENAI_API_KEY={high_entropy_val}\n")
 
@@ -612,7 +608,8 @@ class TestOldDecoyMigration:
 
         # Lock should NOT migrate this because entropy is high
         result2 = runner.invoke(
-            app, ["lock", "--env", str(env)],
+            app,
+            ["lock", "--env", str(env)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result2.exit_code == 0

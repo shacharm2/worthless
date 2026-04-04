@@ -109,10 +109,7 @@ def _format_human(
                 pass
 
         var_part = f" ({f.var_name})" if f.var_name else ""
-        lines.append(
-            f"  {f.file}:{f.line}  {f.provider}{var_part}"
-            f"  {status}  {preview}"
-        )
+        lines.append(f"  {f.file}:{f.line}  {f.provider}{var_part}  {status}  {preview}")
 
         if f.is_protected:
             protected_count += 1
@@ -122,8 +119,7 @@ def _format_human(
     total = len(findings)
     lines.append("")
     lines.append(
-        f"Found {total} keys: {protected_count} protected, "
-        f"{unprotected_count} unprotected"
+        f"Found {total} keys: {protected_count} protected, {unprotected_count} unprotected"
     )
 
     if unprotected_count > 0:
@@ -139,14 +135,16 @@ def _format_json_findings(findings: list[ScanFinding]) -> str:
     """Format findings as JSON array."""
     items = []
     for f in findings:
-        items.append({
-            "file": f.file,
-            "line": f.line,
-            "var_name": f.var_name,
-            "provider": f.provider,
-            "is_protected": f.is_protected,
-            "value_preview": f.value_preview,
-        })
+        items.append(
+            {
+                "file": f.file,
+                "line": f.line,
+                "var_name": f.var_name,
+                "provider": f.provider,
+                "is_protected": f.is_protected,
+                "value_preview": f.value_preview,
+            }
+        )
     return json.dumps(items, indent=2) + "\n"
 
 
@@ -154,9 +152,7 @@ def _install_hook() -> None:
     """Write or append worthless scan to .git/hooks/pre-commit."""
     git_dir = _find_git_dir()
     if git_dir is None:
-        raise WorthlessError(
-            ErrorCode.SCAN_ERROR, "No .git directory found"
-        )
+        raise WorthlessError(ErrorCode.SCAN_ERROR, "No .git directory found")
 
     hooks_dir = git_dir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
@@ -174,10 +170,7 @@ def _install_hook() -> None:
         hook_path.write_text(f"#!/bin/sh\n{snippet}")
 
     # Make executable
-    hook_path.chmod(
-        hook_path.stat().st_mode
-        | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-    )
+    hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def _build_decoy_checker():
@@ -221,29 +214,39 @@ def register_scan_commands(app: typer.Typer) -> None:
     @app.command()
     def scan(
         paths: list[Path] | None = typer.Argument(
-            None, help="Files to scan",
+            None,
+            help="Files to scan",
         ),
         deep: bool = typer.Option(
-            False, "--deep", help="Extended scan (env vars, config files)",
+            False,
+            "--deep",
+            help="Extended scan (env vars, config files)",
         ),
         pre_commit: bool = typer.Option(
-            False, "--pre-commit", help="Pre-commit hook mode",
+            False,
+            "--pre-commit",
+            help="Pre-commit hook mode",
         ),
         format_: str = typer.Option(
-            "text", "--format", "-f",
+            "text",
+            "--format",
+            "-f",
             help="Output format: text, sarif, json",
             show_choices=True,
         ),
         show_suffix: bool = typer.Option(
-            False, "--show-suffix",
+            False,
+            "--show-suffix",
             help="Show last 4 chars of keys",
         ),
         install_hook: bool = typer.Option(
-            False, "--install-hook",
+            False,
+            "--install-hook",
             help="Install git pre-commit hook",
         ),
         json_output: bool = typer.Option(
-            False, "--json",
+            False,
+            "--json",
             help="Output JSON (alias for --format json)",
         ),
     ) -> None:

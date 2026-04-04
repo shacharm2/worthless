@@ -236,9 +236,7 @@ class TestKeyBufZeroedAfterDispatch:
     def test_key_buf_zeroed_on_dispatch_failure(self) -> None:
         """secure_key zeros key_buf even when the upstream call fails."""
         result = split_key(b"sk-test-key-1234567890abcdef")
-        key_buf = reconstruct_key(
-            result.shard_a, result.shard_b, result.commitment, result.nonce
-        )
+        key_buf = reconstruct_key(result.shard_a, result.shard_b, result.commitment, result.nonce)
         ref = key_buf
 
         with pytest.raises(ConnectionError):

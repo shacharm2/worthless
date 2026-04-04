@@ -1,4 +1,5 @@
 """Tests for enrollment consolidation — .meta files replaced by SQLite enrollments table."""
+
 import asyncio
 import sqlite3
 from worthless.storage.repository import ShardRepository, StoredShard
@@ -11,6 +12,7 @@ class TestForeignKeys:
     def test_foreign_keys_enabled_in_schema_init(self, tmp_path):
         """init_db enables foreign keys."""
         from worthless.storage.schema import init_db
+
         db_path = str(tmp_path / "test.db")
         asyncio.run(init_db(db_path))
         conn = sqlite3.connect(db_path)
@@ -21,9 +23,11 @@ class TestForeignKeys:
 
     def test_cascade_deletes_enrollments(self, tmp_path):
         """Deleting a shard row cascades to enrollments."""
+
         async def _test():
             db_path = str(tmp_path / "test.db")
             from cryptography.fernet import Fernet
+
             key = Fernet.generate_key()
             repo = ShardRepository(db_path, key)
             await repo.initialize()
@@ -36,8 +40,10 @@ class TestForeignKeys:
                 provider="openai",
             )
             await repo.store_enrolled(
-                "test-alias", shard,
-                var_name="API_KEY", env_path="/tmp/.env",  # noqa: S108
+                "test-alias",
+                shard,
+                var_name="API_KEY",
+                env_path="/tmp/.env",  # noqa: S108
             )
 
             # Verify enrollment exists
@@ -58,9 +64,11 @@ class TestEnrollmentCRUD:
 
     def test_store_enrolled_creates_both(self, tmp_path):
         """store_enrolled creates shard row AND enrollment row atomically."""
+
         async def _test():
             db_path = str(tmp_path / "test.db")
             from cryptography.fernet import Fernet
+
             key = Fernet.generate_key()
             repo = ShardRepository(db_path, key)
             await repo.initialize()
@@ -73,7 +81,8 @@ class TestEnrollmentCRUD:
                 provider="openai",
             )
             await repo.store_enrolled(
-                "test-alias", shard,
+                "test-alias",
+                shard,
                 var_name="OPENAI_API_KEY",
                 env_path="/home/user/project/.env",
             )
@@ -85,7 +94,8 @@ class TestEnrollmentCRUD:
 
             # Verify enrollment stored
             enrollment = await repo.get_enrollment(
-                "test-alias", "/home/user/project/.env",
+                "test-alias",
+                "/home/user/project/.env",
             )
             assert enrollment is not None
             assert enrollment.var_name == "OPENAI_API_KEY"
@@ -95,9 +105,11 @@ class TestEnrollmentCRUD:
 
     def test_store_enrolled_null_env_path(self, tmp_path):
         """enroll command has no env_path — should work with None."""
+
         async def _test():
             db_path = str(tmp_path / "test.db")
             from cryptography.fernet import Fernet
+
             key = Fernet.generate_key()
             repo = ShardRepository(db_path, key)
             await repo.initialize()
@@ -110,8 +122,10 @@ class TestEnrollmentCRUD:
                 provider="openai",
             )
             await repo.store_enrolled(
-                "test-alias", shard,
-                var_name="API_KEY", env_path=None,
+                "test-alias",
+                shard,
+                var_name="API_KEY",
+                env_path=None,
             )
 
             enrollment = await repo.get_enrollment("test-alias")
@@ -122,9 +136,11 @@ class TestEnrollmentCRUD:
 
     def test_multi_env_same_alias(self, tmp_path):
         """Same key in two .env files creates two enrollment rows."""
+
         async def _test():
             db_path = str(tmp_path / "test.db")
             from cryptography.fernet import Fernet
+
             key = Fernet.generate_key()
             repo = ShardRepository(db_path, key)
             await repo.initialize()
@@ -138,13 +154,17 @@ class TestEnrollmentCRUD:
             )
             # First env file
             await repo.store_enrolled(
-                "test-alias", shard,
-                var_name="KEY", env_path="/project-a/.env",
+                "test-alias",
+                shard,
+                var_name="KEY",
+                env_path="/project-a/.env",
             )
             # Second env file — same alias, different path
             await repo.store_enrolled(
-                "test-alias", shard,
-                var_name="KEY", env_path="/project-b/.env",
+                "test-alias",
+                shard,
+                var_name="KEY",
+                env_path="/project-b/.env",
             )
 
             enrollments = await repo.list_enrollments("test-alias")
@@ -161,6 +181,7 @@ class TestDBPermissions:
     def test_db_created_with_0600(self, tmp_path):
         """Database file should be created with 0600 permissions."""
         from worthless.cli.bootstrap import ensure_home
+
         home = ensure_home(tmp_path / ".worthless")
         mode = oct(home.db_path.stat().st_mode & 0o777)
         assert mode == "0o600"
@@ -172,14 +193,13 @@ class TestEnrollmentsTable:
     def test_enrollments_table_exists(self, tmp_path):
         """Schema includes enrollments table."""
         from worthless.storage.schema import init_db
+
         db_path = str(tmp_path / "test.db")
         asyncio.run(init_db(db_path))
         conn = sqlite3.connect(db_path)
         tables = [
             row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         ]
         conn.close()
         assert "enrollments" in tables

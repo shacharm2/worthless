@@ -591,9 +591,7 @@ class TestUpstreamErrors:
         """Upstream errors are mapped to correct status and internal details are not leaked."""
         alias, shard_a_b64, _ = enrolled_alias
 
-        respx.post("https://api.openai.com/v1/chat/completions").mock(
-            side_effect=side_effect
-        )
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=side_effect)
 
         resp = await proxy_client.post(
             "/v1/chat/completions",

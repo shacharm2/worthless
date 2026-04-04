@@ -58,7 +58,10 @@ def extract_usage_openai(data: bytes) -> UsageInfo | None:
 
 
 def _find_sse_event_data(
-    lines: list[str], event_name: str, *, reverse: bool = False,
+    lines: list[str],
+    event_name: str,
+    *,
+    reverse: bool = False,
 ) -> dict | None:
     """Find an SSE event by name and parse its data payload."""
     indices = range(len(lines) - 1, -1, -1) if reverse else range(len(lines))

@@ -32,9 +32,9 @@ _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "worthless"
 # ---------------------------------------------------------------------------
 
 # API keys: 8-128 printable ASCII bytes (real keys are 32-64 chars)
-_API_KEYS = st.binary(min_size=8, max_size=128).filter(lambda b: b == b"".join(
-    bytes([c]) for c in b if 32 <= c < 127
-))
+_API_KEYS = st.binary(min_size=8, max_size=128).filter(
+    lambda b: b == b"".join(bytes([c]) for c in b if 32 <= c < 127)
+)
 
 # Simpler: just use text-based keys
 _KEY_TEXT = st.text(
@@ -418,9 +418,7 @@ class TestGateBeforeDecrypt:
         decrypt_idx = source.find("repo.decrypt_shard", gate_idx)
         assert denial_return_idx != -1, "denial block must have a return"
         assert decrypt_idx != -1, "decrypt_shard must exist in handler"
-        assert denial_return_idx < decrypt_idx, (
-            "denial return must come before decrypt_shard call"
-        )
+        assert denial_return_idx < decrypt_idx, "denial return must come before decrypt_shard call"
 
         if not allow:
             # When denied, the handler returns at denial_return_idx
@@ -473,9 +471,7 @@ class TestSanitizeNeverLeaksMessage:
                 {"type": "error", "error": {"type": error_type, "message": message}}
             ).encode()
         else:
-            body = json.dumps(
-                {"error": {"message": message, "type": error_type}}
-            ).encode()
+            body = json.dumps({"error": {"message": message, "type": error_type}}).encode()
 
         sanitized = _sanitize_upstream_error(status_code, body, provider)
 
@@ -508,9 +504,7 @@ class TestSanitizeNeverLeaksMessage:
         status_code=st.integers(min_value=400, max_value=599),
         provider=st.sampled_from(["openai", "anthropic"]),
     )
-    def test_sanitized_output_is_valid_json(
-        self, status_code: int, provider: str
-    ) -> None:
+    def test_sanitized_output_is_valid_json(self, status_code: int, provider: str) -> None:
         """Sanitized output must always be valid JSON regardless of input."""
         from worthless.proxy.app import _sanitize_upstream_error
 
@@ -524,9 +518,7 @@ class TestSanitizeNeverLeaksMessage:
         message=_ERROR_MSG,
         provider=st.sampled_from(["openai", "anthropic"]),
     )
-    def test_error_type_preserved_but_message_replaced(
-        self, message: str, provider: str
-    ) -> None:
+    def test_error_type_preserved_but_message_replaced(self, message: str, provider: str) -> None:
         """The error type field passes through but the message is always generic."""
         from worthless.proxy.app import _sanitize_upstream_error
 
@@ -538,9 +530,7 @@ class TestSanitizeNeverLeaksMessage:
                 {"type": "error", "error": {"type": custom_type, "message": message}}
             ).encode()
         else:
-            body = json.dumps(
-                {"error": {"message": message, "type": custom_type}}
-            ).encode()
+            body = json.dumps({"error": {"message": message, "type": custom_type}}).encode()
 
         sanitized = _sanitize_upstream_error(400, body, provider)
         parsed = json.loads(sanitized)
@@ -645,7 +635,7 @@ class TestSR07ConstantTimeCompare:
                 # Check if digest results are compared with == or !=
                 if isinstance(node, ast.Compare):
                     for op in node.ops:
-                        if isinstance(op, (ast.Eq, ast.NotEq)):
+                        if isinstance(op, ast.Eq | ast.NotEq):
                             all_operands = [node.left, *node.comparators]
                             for operand in all_operands:
                                 if _operand_has_suspect_name(operand, self._SUSPECT_NAMES):
@@ -683,7 +673,7 @@ class TestSR07ConstantTimeCompare:
                     continue
                 # Check if any comparator uses == or != with suspect variable names
                 for op in node.ops:
-                    if not isinstance(op, (ast.Eq, ast.NotEq)):
+                    if not isinstance(op, ast.Eq | ast.NotEq):
                         continue
                     # Check left side and comparators for suspect names
                     all_operands = [node.left, *node.comparators]

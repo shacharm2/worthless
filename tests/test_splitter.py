@@ -222,7 +222,7 @@ def test_nonce_is_exactly_32_bytes(sample_api_key_bytes: bytes) -> None:
 
 def test_xor_precomputed() -> None:
     """XOR with a known mask must produce the expected shard — kills ^→|/& mutants."""
-    key = b"\xAA\xBB\xCC"
+    key = b"\xaa\xbb\xcc"
     result = split_key(key)
     # Manually verify: shard_a = key XOR shard_b
     for i in range(len(key)):
@@ -252,7 +252,6 @@ def test_expected_buf_initialized_as_bytearray() -> None:
     even if ``hmac.new()`` raises before the reassignment.
     """
 
-
     from worthless.crypto.types import zero_buf
 
     result = split_key(b"sk-test-key-1234567890abcdef")
@@ -269,9 +268,7 @@ def test_expected_buf_initialized_as_bytearray() -> None:
     with patch("worthless.crypto.splitter.zero_buf", side_effect=tracking_zero):
         with patch("hmac.new", side_effect=RuntimeError("injected")):
             with pytest.raises(RuntimeError, match="injected"):
-                reconstruct_key(
-                    result.shard_a, result.shard_b, result.commitment, result.nonce
-                )
+                reconstruct_key(result.shard_a, result.shard_b, result.commitment, result.nonce)
 
     # zero_buf should have been called with the key buffer (bytearray).
     # If expected were None, the finally clause would have raised TypeError.

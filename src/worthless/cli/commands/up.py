@@ -90,10 +90,7 @@ def register_up_commands(app: typer.Typer) -> None:
                     else:
                         # Stale PID file -- reclaim
                         cleanup_stale_pid(pid_file)
-                        console.print_warning(
-                            f"Reclaimed stale PID file "
-                            f"(was PID {existing_pid})"
-                        )
+                        console.print_warning(f"Reclaimed stale PID file (was PID {existing_pid})")
 
             # Disable core dumps
             disable_core_dumps()
@@ -177,8 +174,7 @@ def register_up_commands(app: typer.Typer) -> None:
             console.print_success(f"Proxy running on 127.0.0.1:{port} (PID {proc.pid})")
         else:
             console.print_warning(
-                f"Proxy started (PID {proc.pid}) but health check timed out. "
-                f"Check logs."
+                f"Proxy started (PID {proc.pid}) but health check timed out. Check logs."
             )
 
     def _start_foreground(

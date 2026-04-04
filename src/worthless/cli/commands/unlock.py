@@ -21,11 +21,7 @@ def _list_aliases(home: WorthlessHome) -> list[str]:
     """List all enrolled aliases from shard_a directory."""
     if not home.shard_a_dir.exists():
         return []
-    return [
-        f.name
-        for f in home.shard_a_dir.iterdir()
-        if f.is_file()
-    ]
+    return [f.name for f in home.shard_a_dir.iterdir() if f.is_file()]
 
 
 async def _unlock_alias(
@@ -115,9 +111,7 @@ def register_unlock_commands(app: typer.Typer) -> None:
         alias: str | None = typer.Option(
             None, "--alias", "-a", help="Specific alias to unlock (default: all)"
         ),
-        env: Path = typer.Option(
-            Path(".env"), "--env", "-e", help="Path to .env file"
-        ),
+        env: Path = typer.Option(Path(".env"), "--env", "-e", help="Path to .env file"),
     ) -> None:
         """Restore original API keys from shards."""
         console = get_console()

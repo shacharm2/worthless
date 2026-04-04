@@ -79,8 +79,7 @@ def _infer_alias_from_path(clean_path: str, settings: ProxySettings) -> str | No
         return None
 
     matches = [
-        f.name for f in shard_a_dir.iterdir()
-        if f.is_file() and f.name.startswith(f"{provider}-")
+        f.name for f in shard_a_dir.iterdir() if f.is_file() and f.name.startswith(f"{provider}-")
     ]
     if len(matches) == 1:
         return matches[0]
@@ -90,7 +89,8 @@ def _infer_alias_from_path(clean_path: str, settings: ProxySettings) -> str | No
         logger.warning(
             "Ambiguous alias inference: %d aliases for provider %r. "
             "Use x-worthless-key header or enroll only one key per provider.",
-            len(matches), provider,
+            len(matches),
+            provider,
         )
     return None
 
@@ -399,7 +399,8 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 if usage is None:
                     logger.warning(  # nosemgrep: python-logger-credential-disclosure
                         "Token extraction failed for alias=%s provider=%s",
-                        alias, provider,
+                        alias,
+                        provider,
                     )
                 try:
                     await record_spend(settings.db_path, alias, tokens, model, provider)

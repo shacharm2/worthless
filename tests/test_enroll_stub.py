@@ -37,9 +37,7 @@ class TestEnrollStub:
 
     def test_shard_b_stored_in_db(self, tmp_db_path: str, fernet_key: bytes) -> None:
         """enroll_stub stores shard_b in the database."""
-        asyncio.run(
-            enroll_stub("test-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
-        )
+        asyncio.run(enroll_stub("test-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key))
 
         stored = asyncio.run(_retrieve(tmp_db_path, fernet_key, "test-alias"))
         assert stored is not None
@@ -50,9 +48,7 @@ class TestEnrollStub:
 
     def test_reconstruct_roundtrip(self, tmp_db_path: str, fernet_key: bytes) -> None:
         """shard_a + shard_b from DB reconstruct the original key."""
-        shard_a = asyncio.run(
-            enroll_stub("rt-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
-        )
+        shard_a = asyncio.run(enroll_stub("rt-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key))
         assert shard_a is not None
 
         stored = asyncio.run(_retrieve(tmp_db_path, fernet_key, "rt-alias"))
@@ -68,8 +64,11 @@ class TestEnrollStub:
         shard_a_dir = tmp_path / "shard_a"
         shard_a = asyncio.run(
             enroll_stub(
-                "file-alias", _TEST_KEY, "openai",
-                tmp_db_path, fernet_key,
+                "file-alias",
+                _TEST_KEY,
+                "openai",
+                tmp_db_path,
+                fernet_key,
                 shard_a_dir=str(shard_a_dir),
             )
         )
@@ -82,9 +81,7 @@ class TestEnrollStub:
     ) -> None:
         """Without shard_a_dir, no file is written."""
         shard_a_dir = tmp_path / "shard_a"
-        asyncio.run(
-            enroll_stub("no-file", _TEST_KEY, "openai", tmp_db_path, fernet_key)
-        )
+        asyncio.run(enroll_stub("no-file", _TEST_KEY, "openai", tmp_db_path, fernet_key))
         assert not shard_a_dir.exists()
 
     def test_creates_shard_a_dir_if_missing(
@@ -94,27 +91,24 @@ class TestEnrollStub:
         nested = tmp_path / "deep" / "nested" / "shard_a"
         asyncio.run(
             enroll_stub(
-                "nested-alias", _TEST_KEY, "openai",
-                tmp_db_path, fernet_key,
+                "nested-alias",
+                _TEST_KEY,
+                "openai",
+                tmp_db_path,
+                fernet_key,
                 shard_a_dir=str(nested),
             )
         )
         assert nested.exists()
         assert (nested / "nested-alias").exists()
 
-    def test_duplicate_alias_raises(
-        self, tmp_db_path: str, fernet_key: bytes
-    ) -> None:
+    def test_duplicate_alias_raises(self, tmp_db_path: str, fernet_key: bytes) -> None:
         """Enrolling the same alias twice raises IntegrityError."""
         import sqlite3
 
-        asyncio.run(
-            enroll_stub("dup-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
-        )
+        asyncio.run(enroll_stub("dup-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key))
         with pytest.raises(sqlite3.IntegrityError):
-            asyncio.run(
-                enroll_stub("dup-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key)
-            )
+            asyncio.run(enroll_stub("dup-alias", _TEST_KEY, "openai", tmp_db_path, fernet_key))
 
 
 # ------------------------------------------------------------------
@@ -125,9 +119,7 @@ class TestEnrollStub:
 class TestEnrollStubMultipleKeys:
     """WOR-74: enroll_stub handles multi-key enrollment."""
 
-    def test_enroll_two_keys_both_stored(
-        self, tmp_db_path: str, fernet_key: bytes
-    ) -> None:
+    def test_enroll_two_keys_both_stored(self, tmp_db_path: str, fernet_key: bytes) -> None:
         """Enrolling two different keys results in both being stored and retrievable."""
         shard_a_1 = asyncio.run(
             enroll_stub("key-openai", _TEST_KEY, "openai", tmp_db_path, fernet_key)
@@ -148,9 +140,7 @@ class TestEnrollStubMultipleKeys:
         assert stored_1.provider == "openai"
         assert stored_2.provider == "anthropic"
 
-    def test_multi_key_reconstruct_roundtrip(
-        self, tmp_db_path: str, fernet_key: bytes
-    ) -> None:
+    def test_multi_key_reconstruct_roundtrip(self, tmp_db_path: str, fernet_key: bytes) -> None:
         """Both enrolled keys reconstruct correctly to their original values."""
         shard_a_1 = asyncio.run(
             enroll_stub("rt-openai", _TEST_KEY, "openai", tmp_db_path, fernet_key)
@@ -171,4 +161,3 @@ class TestEnrollStubMultipleKeys:
 
         assert key_1.decode() == _TEST_KEY
         assert key_2.decode() == _TEST_KEY_2
-

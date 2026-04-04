@@ -56,14 +56,16 @@ def scan_files(
 
                 is_protected = bool(is_decoy and is_decoy(value))
 
-                findings.append(ScanFinding(
-                    file=str(path),
-                    line=line_no,
-                    var_name=var_name,
-                    provider=provider,
-                    is_protected=is_protected,
-                    value_preview=_mask(value),
-                ))
+                findings.append(
+                    ScanFinding(
+                        file=str(path),
+                        line=line_no,
+                        var_name=var_name,
+                        provider=provider,
+                        is_protected=is_protected,
+                        value_preview=_mask(value),
+                    )
+                )
     return findings
 
 
@@ -122,9 +124,7 @@ def format_sarif(findings: list[ScanFinding], tool_version: str) -> dict:
                         "rules": [
                             {
                                 "id": "worthless/exposed-api-key",
-                                "shortDescription": {
-                                    "text": "Exposed API key detected"
-                                },
+                                "shortDescription": {"text": "Exposed API key detected"},
                             }
                         ],
                     }

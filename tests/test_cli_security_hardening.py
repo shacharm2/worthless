@@ -224,8 +224,9 @@ class TestFernetKeyNotInEnv:
             with pytest.raises(RuntimeError, match="abort spawn"):
                 spawn_proxy(env_copy, port=9999)
 
-        assert "WORTHLESS_FERNET_KEY" not in captured_env, \
+        assert "WORTHLESS_FERNET_KEY" not in captured_env, (
             "Fernet key must not appear in subprocess environment"
+        )
 
     def test_fernet_fd_is_set_when_key_provided(self) -> None:
         """WORTHLESS_FERNET_FD must be set in env when a Fernet key is provided."""
@@ -243,8 +244,9 @@ class TestFernetKeyNotInEnv:
             with pytest.raises(RuntimeError, match="abort spawn"):
                 spawn_proxy(dict(env), port=9999)
 
-        assert "WORTHLESS_FERNET_FD" in captured_env, \
+        assert "WORTHLESS_FERNET_FD" in captured_env, (
             "WORTHLESS_FERNET_FD must be set for fd inheritance"
+        )
 
 
 # =====================================================================
@@ -304,8 +306,9 @@ class TestEntropyFiltering:
         """Decoys produced by make_decoy must have entropy ABOVE threshold (WOR-31)."""
         decoy = make_decoy("openai", "sk-proj-")
         entropy = shannon_entropy(decoy)
-        assert entropy > ENTROPY_THRESHOLD, \
+        assert entropy > ENTROPY_THRESHOLD, (
             f"Decoy entropy {entropy:.2f} should be above threshold {ENTROPY_THRESHOLD}"
+        )
 
     def test_decoy_not_detected_by_scan_env_keys_with_predicate(self, tmp_path: Path) -> None:
         """scan_env_keys must skip decoy values when is_decoy predicate is provided."""
@@ -349,33 +352,39 @@ class TestEntropyFiltering:
 class TestAliasValidation:
     """Aliases must only contain alphanumeric, dash, underscore."""
 
-    @pytest.mark.parametrize("bad_alias", [
-        "../escape",
-        "foo/bar",
-        "hello world",
-        "semi;colon",
-        "back`tick",
-        "dollar$sign",
-        "new\nline",
-        "tab\there",
-        "pipe|char",
-        "angle<bracket",
-        "ampersand&",
-        "at@sign",
-        "dot.name",
-    ])
+    @pytest.mark.parametrize(
+        "bad_alias",
+        [
+            "../escape",
+            "foo/bar",
+            "hello world",
+            "semi;colon",
+            "back`tick",
+            "dollar$sign",
+            "new\nline",
+            "tab\there",
+            "pipe|char",
+            "angle<bracket",
+            "ampersand&",
+            "at@sign",
+            "dot.name",
+        ],
+    )
     def test_rejects_invalid_aliases(self, bad_alias: str, tmp_path: Path) -> None:
         home = ensure_home(tmp_path / ".worthless")
         with pytest.raises(WorthlessError, match="Invalid alias"):
             _enroll_single(bad_alias, "sk-test-key-abcdef1234567890", "openai", home)
 
-    @pytest.mark.parametrize("good_alias", [
-        "my-key",
-        "key_123",
-        "OPENAI-abc123",
-        "a",
-        "A1-b2_c3",
-    ])
+    @pytest.mark.parametrize(
+        "good_alias",
+        [
+            "my-key",
+            "key_123",
+            "OPENAI-abc123",
+            "a",
+            "A1-b2_c3",
+        ],
+    )
     def test_accepts_valid_aliases(self, good_alias: str, tmp_path: Path) -> None:
         home = ensure_home(tmp_path / ".worthless")
         _enroll_single(good_alias, "sk-test-key-abcdef1234567890", "openai", home)

@@ -122,9 +122,7 @@ def anthropic_env(tmp_path: Path) -> tuple[Path, Path, str, dict[str, str]]:
 class TestOpenAILive:
     """Lock a real OpenAI key, send a request through the proxy, verify response."""
 
-    def test_openai_roundtrip(
-        self, openai_env: tuple[Path, Path, str, dict[str, str]]
-    ) -> None:
+    def test_openai_roundtrip(self, openai_env: tuple[Path, Path, str, dict[str, str]]) -> None:
         env_file, worthless_home, original_key, cli_env = openai_env
         original_content = env_file.read_text()
 
@@ -142,8 +140,7 @@ class TestOpenAILive:
             text=True,
         )
         assert proc.returncode == 0, (
-            f"wrap failed (rc={proc.returncode}):\n"
-            f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+            f"wrap failed (rc={proc.returncode}):\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
         )
 
         # Parse child output
@@ -201,8 +198,7 @@ class TestAnthropicLive:
             text=True,
         )
         assert proc.returncode == 0, (
-            f"wrap failed (rc={proc.returncode}):\n"
-            f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+            f"wrap failed (rc={proc.returncode}):\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
         )
 
         # Parse child output

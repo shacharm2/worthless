@@ -60,6 +60,7 @@ def env_with_google(tmp_path: Path) -> Path:
     env.write_text("GOOGLE_API_KEY=AIzaSyB3x7k9mR2pQ1wE5vF8nJ4hL0tY6uI2oP3\n")
     return env
 
+
 # home_with_key fixture is in conftest.py
 
 
@@ -139,9 +140,7 @@ class TestHelpText:
 class TestLockUx:
     """User-facing messages from the lock command."""
 
-    def test_lock_success_message(
-        self, home_dir: WorthlessHome, env_with_openai: Path
-    ) -> None:
+    def test_lock_success_message(self, home_dir: WorthlessHome, env_with_openai: Path) -> None:
         """After locking, user sees 'N key(s) protected.'"""
         result = runner.invoke(
             app,
@@ -152,9 +151,7 @@ class TestLockUx:
         combined = result.stdout + result.stderr
         assert "1 key(s) protected" in combined
 
-    def test_lock_no_keys_message(
-        self, home_dir: WorthlessHome, env_clean: Path
-    ) -> None:
+    def test_lock_no_keys_message(self, home_dir: WorthlessHome, env_clean: Path) -> None:
         """When .env has no API keys, user sees 'No unprotected API keys found.'"""
         result = runner.invoke(
             app,
@@ -203,9 +200,7 @@ class TestUnlockUx:
         combined = result.stdout + result.stderr
         assert "Unlocked openai-a1b2c3d4" in combined
 
-    def test_unlock_all_keys_message(
-        self, home_with_key: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_unlock_all_keys_message(self, home_with_key: WorthlessHome, tmp_path: Path) -> None:
         """After unlocking all keys, user sees 'N key(s) restored.'"""
         env = tmp_path / ".env"
         env.write_text("OPENAI_API_KEY=decoy-value\n")
@@ -219,9 +214,7 @@ class TestUnlockUx:
         combined = result.stdout + result.stderr
         assert "key(s) restored" in combined
 
-    def test_unlock_no_keys_message(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_unlock_no_keys_message(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """When no keys enrolled, user sees 'No enrolled keys found.'"""
         env = tmp_path / ".env"
         env.write_text("SOME_VAR=value\n")
@@ -235,9 +228,7 @@ class TestUnlockUx:
         combined = result.stdout + result.stderr
         assert "No enrolled keys found" in combined
 
-    def test_unlock_ambiguous_alias_error(
-        self, home_with_multi_env_key: WorthlessHome
-    ) -> None:
+    def test_unlock_ambiguous_alias_error(self, home_with_multi_env_key: WorthlessHome) -> None:
         """When alias is in 2 env files and --env does not match, user gets error."""
         result = runner.invoke(
             app,
@@ -262,9 +253,11 @@ class TestEnrollUx:
             app,
             [
                 "enroll",
-                "--alias", "stdin-test",
+                "--alias",
+                "stdin-test",
                 "--key-stdin",
-                "--provider", "openai",
+                "--provider",
+                "openai",
             ],
             input=f"{_OPENAI_KEY}\n",
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
@@ -279,9 +272,12 @@ class TestEnrollUx:
             app,
             [
                 "enroll",
-                "--alias", "bad alias!@#",
-                "--key", _OPENAI_KEY,
-                "--provider", "openai",
+                "--alias",
+                "bad alias!@#",
+                "--key",
+                _OPENAI_KEY,
+                "--provider",
+                "openai",
             ],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
@@ -295,8 +291,10 @@ class TestEnrollUx:
             app,
             [
                 "enroll",
-                "--alias", "no-key",
-                "--provider", "openai",
+                "--alias",
+                "no-key",
+                "--provider",
+                "openai",
             ],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
@@ -310,9 +308,11 @@ class TestEnrollUx:
             app,
             [
                 "enroll",
-                "--alias", "empty-stdin",
+                "--alias",
+                "empty-stdin",
                 "--key-stdin",
-                "--provider", "openai",
+                "--provider",
+                "openai",
             ],
             input="\n",
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
@@ -363,9 +363,7 @@ class TestScanUx:
 
     def test_scan_format_sarif_valid(self, env_with_openai: Path) -> None:
         """--format sarif returns valid SARIF v2.1.0."""
-        result = runner.invoke(
-            app, ["scan", "--format", "sarif", str(env_with_openai)]
-        )
+        result = runner.invoke(app, ["scan", "--format", "sarif", str(env_with_openai)])
         assert result.exit_code == 1
         sarif = json.loads(result.stdout)
         assert sarif["version"] == "2.1.0"
@@ -399,9 +397,7 @@ class TestStatusUx:
         combined = result.stdout + result.stderr
         assert "No keys enrolled" in combined
 
-    def test_status_with_enrolled_key(
-        self, home_with_key: WorthlessHome
-    ) -> None:
+    def test_status_with_enrolled_key(self, home_with_key: WorthlessHome) -> None:
         """Shows enrolled key info (alias, provider, PROTECTED)."""
         result = runner.invoke(
             app,
@@ -442,9 +438,7 @@ class TestQuietMode:
         assert result.exit_code == 1
         assert result.stderr.strip() == ""
 
-    def test_quiet_status_suppresses_output(
-        self, home_dir: WorthlessHome
-    ) -> None:
+    def test_quiet_status_suppresses_output(self, home_dir: WorthlessHome) -> None:
         """--quiet status suppresses non-error output."""
         result = runner.invoke(
             app,
@@ -464,9 +458,7 @@ class TestQuietMode:
 class TestJsonMode:
     """--json emits machine-readable output."""
 
-    def test_json_status_is_parseable(
-        self, home_dir: WorthlessHome
-    ) -> None:
+    def test_json_status_is_parseable(self, home_dir: WorthlessHome) -> None:
         """--json status emits valid JSON to stdout."""
         result = runner.invoke(
             app,
@@ -478,9 +470,7 @@ class TestJsonMode:
         assert "keys" in data
         assert "proxy" in data
 
-    def test_json_status_with_key(
-        self, home_with_key: WorthlessHome
-    ) -> None:
+    def test_json_status_with_key(self, home_with_key: WorthlessHome) -> None:
         """--json status with enrolled keys includes key details."""
         result = runner.invoke(
             app,
@@ -495,9 +485,7 @@ class TestJsonMode:
 
     def test_json_scan_emits_array(self, env_with_openai: Path) -> None:
         """--json scan emits a JSON array of findings."""
-        result = runner.invoke(
-            app, ["scan", "--json", str(env_with_openai)]
-        )
+        result = runner.invoke(app, ["scan", "--json", str(env_with_openai)])
         assert result.exit_code == 1
         findings = json.loads(result.stdout)
         assert isinstance(findings, list)

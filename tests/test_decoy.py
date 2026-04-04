@@ -42,7 +42,7 @@ class TestOpenAIDecoy:
     def test_charset(self):
         decoy = make_decoy("openai", "sk-proj-")
         # Strip prefix and marker, check remaining chars
-        body = decoy[len("sk-proj-"):]
+        body = decoy[len("sk-proj-") :]
         body = body.replace("T3BlbkFJ", "")
         assert all(c in BASE64URL for c in body)
 
@@ -66,7 +66,7 @@ class TestAnthropicDecoy:
 
     def test_charset(self):
         decoy = make_decoy("anthropic", "sk-ant-api03-")
-        body = decoy[len("sk-ant-api03-"):-2]  # strip prefix and AA suffix
+        body = decoy[len("sk-ant-api03-") : -2]  # strip prefix and AA suffix
         assert all(c in BASE64URL for c in body)
 
     def test_high_entropy(self):
@@ -85,7 +85,7 @@ class TestGoogleDecoy:
 
     def test_charset(self):
         decoy = make_decoy("google", "AIzaSy")
-        body = decoy[len("AIzaSy"):]
+        body = decoy[len("AIzaSy") :]
         assert all(c in BASE64URL for c in body)
 
     def test_high_entropy(self):
@@ -105,7 +105,7 @@ class TestXaiDecoy:
     def test_charset(self):
         """xAI uses plain alphanumeric, no underscores or hyphens."""
         decoy = make_decoy("xai", "xai-")
-        body = decoy[len("xai-"):]
+        body = decoy[len("xai-") :]
         assert all(c in ALPHANUMERIC for c in body)
 
     def test_high_entropy(self):
@@ -119,12 +119,15 @@ class TestXaiDecoy:
 
 
 class TestDecoyGeneral:
-    @pytest.mark.parametrize("provider,prefix", [
-        ("openai", "sk-proj-"),
-        ("anthropic", "sk-ant-api03-"),
-        ("google", "AIzaSy"),
-        ("xai", "xai-"),
-    ])
+    @pytest.mark.parametrize(
+        "provider,prefix",
+        [
+            ("openai", "sk-proj-"),
+            ("anthropic", "sk-ant-api03-"),
+            ("google", "AIzaSy"),
+            ("xai", "xai-"),
+        ],
+    )
     def test_two_calls_produce_different_values(self, provider, prefix):
         """CSPRNG should produce unique decoys."""
         d1 = make_decoy(provider, prefix)
@@ -135,7 +138,7 @@ class TestDecoyGeneral:
         """Fallback for unknown providers: keep prefix, fill with base62."""
         decoy = make_decoy("unknown", "custom-prefix-")
         assert decoy.startswith("custom-prefix-")
-        body = decoy[len("custom-prefix-"):]
+        body = decoy[len("custom-prefix-") :]
         assert len(body) == 40  # default fallback length
         assert all(c in ALPHANUMERIC for c in body)
 
@@ -145,15 +148,19 @@ class TestDecoyGeneral:
         assert "google" in PROVIDER_FORMATS
         assert "xai" in PROVIDER_FORMATS
 
-    @pytest.mark.parametrize("provider,prefix", [
-        ("openai", "sk-proj-"),
-        ("anthropic", "sk-ant-api03-"),
-        ("google", "AIzaSy"),
-        ("xai", "xai-"),
-    ])
+    @pytest.mark.parametrize(
+        "provider,prefix",
+        [
+            ("openai", "sk-proj-"),
+            ("anthropic", "sk-ant-api03-"),
+            ("google", "AIzaSy"),
+            ("xai", "xai-"),
+        ],
+    )
     def test_decoy_matches_key_pattern_regex(self, provider, prefix):
         """Decoys should be detected by the same KEY_PATTERN used for real keys."""
         from worthless.cli.key_patterns import KEY_PATTERN
+
         decoy = make_decoy(provider, prefix)
         assert KEY_PATTERN.search(decoy) is not None
 
@@ -174,7 +181,7 @@ _PROVIDER_PREFIXES: dict[str, str] = {
 def _extract_random_body(provider: str, decoy: str) -> str:
     """Strip the prefix and literal segments, returning only random chars."""
     prefix = _PROVIDER_PREFIXES[provider]
-    body = decoy[len(prefix):]
+    body = decoy[len(prefix) :]
     fmt = PROVIDER_FORMATS[provider]
     # Remove literal segments, keeping only random portions.
     random_parts: list[str] = []
@@ -183,7 +190,7 @@ def _extract_random_body(provider: str, decoy: str) -> str:
         kind = segment[0]
         if kind == "random":
             length = segment[1]
-            random_parts.append(body[offset:offset + length])
+            random_parts.append(body[offset : offset + length])
             offset += length
         elif kind == "literal":
             literal = segment[1]
@@ -338,9 +345,7 @@ class TestStatisticalIndistinguishability:
         n_decoys = 100
 
         # Determine random body length from format segments.
-        random_body_len = sum(
-            seg[1] for seg in fmt["segments"] if seg[0] == "random"
-        )
+        random_body_len = sum(seg[1] for seg in fmt["segments"] if seg[0] == "random")
         expected_ent = _expected_entropy_uniform(random_body_len, charset_size)
 
         entropies: list[float] = []
@@ -352,10 +357,7 @@ class TestStatisticalIndistinguishability:
             if length == 0:
                 continue
             freq = Counter(body)
-            ent = -sum(
-                (count / length) * math.log2(count / length)
-                for count in freq.values()
-            )
+            ent = -sum((count / length) * math.log2(count / length) for count in freq.values())
             entropies.append(ent)
 
         mean_entropy = sum(entropies) / len(entropies)

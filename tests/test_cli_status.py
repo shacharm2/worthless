@@ -20,6 +20,7 @@ runner = CliRunner(mix_stderr=False)
 # Tests: no enrollment
 # ---------------------------------------------------------------------------
 
+
 class TestStatusNoEnrollment:
     """Tests for status with no enrolled keys."""
 
@@ -52,12 +53,11 @@ class TestStatusNoEnrollment:
 # Tests: with enrollment
 # ---------------------------------------------------------------------------
 
+
 class TestStatusWithKeys:
     """Tests for status with enrolled keys."""
 
-    def test_status_shows_aliases_and_providers(
-        self, home_with_key: WorthlessHome
-    ) -> None:
+    def test_status_shows_aliases_and_providers(self, home_with_key: WorthlessHome) -> None:
         """Status with enrolled key shows alias and provider."""
         result = runner.invoke(
             app,
@@ -69,9 +69,7 @@ class TestStatusWithKeys:
         assert "openai-a1b2c3d4" in output
         assert "openai" in output
 
-    def test_status_json_with_keys(
-        self, home_with_key: WorthlessHome
-    ) -> None:
+    def test_status_json_with_keys(self, home_with_key: WorthlessHome) -> None:
         """Status --json outputs valid JSON with keys array."""
         result = runner.invoke(
             app,
@@ -91,12 +89,11 @@ class TestStatusWithKeys:
 # Tests: proxy health
 # ---------------------------------------------------------------------------
 
+
 class TestStatusProxy:
     """Tests for proxy health check in status."""
 
-    def test_status_unreachable_proxy_shows_not_running(
-        self, home_with_key: WorthlessHome
-    ) -> None:
+    def test_status_unreachable_proxy_shows_not_running(self, home_with_key: WorthlessHome) -> None:
         """Status with no proxy running shows 'not running'."""
         result = runner.invoke(
             app,
@@ -107,9 +104,7 @@ class TestStatusProxy:
         output = result.stderr + result.stdout
         assert "not running" in output.lower()
 
-    def test_status_json_unreachable_proxy(
-        self, home_with_key: WorthlessHome
-    ) -> None:
+    def test_status_json_unreachable_proxy(self, home_with_key: WorthlessHome) -> None:
         """Status --json with no proxy shows proxy.healthy=false."""
         result = runner.invoke(
             app,
@@ -121,9 +116,7 @@ class TestStatusProxy:
         assert data["proxy"]["healthy"] is False
         assert data["proxy"]["port"] is None
 
-    def test_status_mock_healthy_proxy(
-        self, home_with_key: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_status_mock_healthy_proxy(self, home_with_key: WorthlessHome, tmp_path: Path) -> None:
         """Status with mock healthy proxy shows 'running'."""
         # Write a PID file to indicate proxy is running on port 18787
         pid_file = home_with_key.base_dir / "proxy.pid"
@@ -149,13 +142,10 @@ class TestStatusProxy:
         output = result.stderr + result.stdout
         assert "running" in output.lower() or "18787" in output
 
-    def test_status_json_healthy_proxy(
-        self, home_with_key: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_status_json_healthy_proxy(self, home_with_key: WorthlessHome, tmp_path: Path) -> None:
         """Status --json with mock proxy shows port and mode."""
         pid_file = home_with_key.base_dir / "proxy.pid"
         pid_file.write_text("99999\n18787\n")
-
 
         class MockResponse:
             status_code = 200
