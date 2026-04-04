@@ -10,6 +10,8 @@ from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
+from dotenv import dotenv_values
+
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
 
 
@@ -40,16 +42,10 @@ def scan_env_keys(
         values are skipped before the entropy check.
     """
     results: list[tuple[str, str, str]] = []
-    text = env_path.read_text()
-    for line in text.splitlines():
-        line_stripped = line.strip()
-        if not line_stripped or line_stripped.startswith("#"):
+    parsed = dotenv_values(env_path)
+    for var_name, value in parsed.items():
+        if value is None:
             continue
-        if "=" not in line_stripped:
-            continue
-        var_name, _, raw_value = line_stripped.partition("=")
-        var_name = var_name.strip()
-        value = raw_value.strip().strip("\"'")
         if not KEY_PATTERN.search(value):
             continue
         if is_decoy and is_decoy(value):
