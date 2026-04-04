@@ -81,25 +81,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TOTAL=$(uv run python -c "
-          import xml.etree.ElementTree as ET
-          tree = ET.parse('coverage.xml')
-          rate = float(tree.getroot().attrib['line-rate']) * 100
-          print(f'{rate:.1f}')
-          ")
-          BODY=$(cat <<EOF
-          ### Coverage Report
-          **Total line coverage: ${TOTAL}%**
-          <details><summary>Per-package breakdown</summary>
-
-          \`\`\`
-          $(uv run coverage report --skip-covered --skip-empty 2>/dev/null || echo "run coverage report manually")
-          \`\`\`
-          </details>
-          EOF
-          )
-          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" --edit-last || \
-          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
+          REPORT=$(uv run coverage report --skip-covered --skip-empty) || true
+          TOTAL=$(echo "$REPORT" | tail -1 | awk '{print $NF}')
+          if ! [[ "$TOTAL" =~ ^[0-9]+%$ ]]; then
+            echo "::warning::Could not parse coverage total: '$TOTAL'"
+            exit 0
+          fi
+          {
+            echo "<!-- worthless-coverage-bot -->"
+            echo "### Coverage Report"
+            echo "**Total line coverage: ${TOTAL}**"
+            echo "<details><summary>Per-package breakdown</summary>"
+            echo ""
+            echo '```'
+            echo "$REPORT"
+            echo '```'
+            echo "</details>"
+          } > /tmp/cov-comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/cov-comment.md --edit-last || \
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/cov-comment.md
 
   coverage-gate:
     name: Per-module coverage gate
