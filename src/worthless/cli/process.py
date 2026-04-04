@@ -7,6 +7,10 @@ Shared infrastructure for ``wrap`` (ephemeral proxy + child) and ``up``
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from worthless.cli.bootstrap import WorthlessHome
 import os
 import re
 import signal
@@ -27,6 +31,16 @@ _UVICORN_PORT_RE = re.compile(r"Uvicorn running on http://[\d.]+:(\d+)")
 # ---------------------------------------------------------------------------
 # Core dump suppression
 # ---------------------------------------------------------------------------
+
+
+def build_proxy_env(home: WorthlessHome) -> dict[str, str]:
+    """Build the environment dict for spawning a proxy process."""
+    return {
+        "WORTHLESS_DB_PATH": str(home.db_path),
+        "WORTHLESS_FERNET_KEY": home.fernet_key.decode(),
+        "WORTHLESS_SHARD_A_DIR": str(home.shard_a_dir),
+        "WORTHLESS_ALLOW_ALIAS_INFERENCE": "true",
+    }
 
 
 def disable_core_dumps() -> None:

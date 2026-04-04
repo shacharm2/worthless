@@ -3,25 +3,35 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 
 import aiosqlite
 
 
-def extract_usage_openai(data: bytes) -> int:
-    """Extract total_tokens from an OpenAI response (JSON or SSE).
+@dataclass(frozen=True)
+class UsageInfo:
+    """Extracted token usage from a provider response."""
 
-    For JSON responses: parses usage.total_tokens directly.
+    total_tokens: int
+    model: str | None
+
+
+def extract_usage_openai(data: bytes) -> UsageInfo | None:
+    """Extract token usage from an OpenAI response (JSON or SSE).
+
+    For JSON responses: parses usage.total_tokens and model directly.
     For SSE streams: scans for the final chunk containing a "usage" field.
-    Returns 0 if usage data is not found or data is malformed.
+    Returns None if usage data is not found or data is malformed.
     """
     if not data:
-        return 0
+        return None
 
     # Try as plain JSON first
     try:
         parsed = json.loads(data)
         if isinstance(parsed, dict) and "usage" in parsed:
-            return parsed["usage"].get("total_tokens", 0)
+            total = parsed["usage"].get("total_tokens", 0)
+            return UsageInfo(total_tokens=total, model=parsed.get("model"))
     except (json.JSONDecodeError, ValueError):
         pass
 
@@ -37,44 +47,66 @@ def extract_usage_openai(data: bytes) -> int:
             try:
                 chunk = json.loads(payload)
                 if isinstance(chunk, dict) and "usage" in chunk:
-                    return chunk["usage"].get("total_tokens", 0)
+                    total = chunk["usage"].get("total_tokens", 0)
+                    return UsageInfo(total_tokens=total, model=chunk.get("model"))
             except (json.JSONDecodeError, ValueError):
                 continue
     except Exception:  # noqa: S110 — best-effort SSE decode; malformed response must not raise
         pass
 
-    return 0
+    return None
 
 
-def extract_usage_anthropic(data: bytes) -> int:
-    """Extract output_tokens from an Anthropic SSE response.
+def _find_sse_event_data(
+    lines: list[str], event_name: str, *, reverse: bool = False,
+) -> dict | None:
+    """Find an SSE event by name and parse its data payload."""
+    indices = range(len(lines) - 1, -1, -1) if reverse else range(len(lines))
+    for i in indices:
+        if lines[i].strip() == f"event: {event_name}":
+            for j in range(i + 1, len(lines)):
+                data_line = lines[j].strip()
+                if data_line.startswith("data: "):
+                    try:
+                        return json.loads(data_line[6:])
+                    except (json.JSONDecodeError, ValueError):
+                        return None
+    return None
 
-    Scans for event: message_delta followed by data containing usage.output_tokens.
-    Returns 0 if usage data is not found or data is malformed.
+
+def extract_usage_anthropic(data: bytes) -> UsageInfo | None:
+    """Extract token usage from an Anthropic SSE response.
+
+    Scans for:
+    - event: message_start → input_tokens and model
+    - event: message_delta → output_tokens
+    Total = input_tokens + output_tokens.
+    Returns None if no usage data found.
     """
     if not data:
-        return 0
+        return None
 
     try:
         text = data.decode("utf-8", errors="replace")
         lines = text.splitlines()
-        for i in range(len(lines) - 1, -1, -1):
-            if lines[i].strip() == "event: message_delta":
-                # Next non-empty line should be the data line
-                for j in range(i + 1, len(lines)):
-                    data_line = lines[j].strip()
-                    if data_line.startswith("data: "):
-                        try:
-                            chunk = json.loads(data_line[6:])
-                            if isinstance(chunk, dict) and "usage" in chunk:
-                                return chunk["usage"].get("output_tokens", 0)
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                        break
     except Exception:  # noqa: S110 — best-effort SSE decode; malformed response must not raise
-        pass
+        return None
 
-    return 0
+    input_tokens = 0
+    model: str | None = None
+
+    start = _find_sse_event_data(lines, "message_start")
+    if start:
+        msg = start.get("message", {})
+        input_tokens = msg.get("usage", {}).get("input_tokens", 0)
+        model = msg.get("model")
+
+    delta = _find_sse_event_data(lines, "message_delta", reverse=True)
+    if delta is None or "usage" not in delta:
+        return None
+
+    output_tokens = delta["usage"].get("output_tokens", 0)
+    return UsageInfo(total_tokens=input_tokens + output_tokens, model=model)
 
 
 async def record_spend(

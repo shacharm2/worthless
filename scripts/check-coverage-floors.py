@@ -18,7 +18,7 @@ def main() -> int:
         return 1
 
     try:
-        tree = ET.parse(coverage_path)
+        tree = ET.parse(coverage_path)  # noqa: S314 — trusted coverage XML we generated
     except ET.ParseError as exc:
         print(f"ERROR: failed to parse {coverage_path}: {exc}")
         return 1

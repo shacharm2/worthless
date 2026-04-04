@@ -245,35 +245,35 @@ def test_empty_key_error_message() -> None:
 
 
 def test_expected_buf_initialized_as_bytearray() -> None:
-    """The expected HMAC buffer must be a bytearray (not None) before _zero_buf runs.
+    """The expected HMAC buffer must be a bytearray (not None) before zero_buf runs.
 
     reconstruct_key initialises ``expected = bytearray()`` before the try block
-    so that the finally clause can always call ``_zero_buf(expected)`` safely,
+    so that the finally clause can always call ``zero_buf(expected)`` safely,
     even if ``hmac.new()`` raises before the reassignment.
     """
 
 
-    from worthless.crypto.types import _zero_buf
+    from worthless.crypto.types import zero_buf
 
     result = split_key(b"sk-test-key-1234567890abcdef")
 
     # Force hmac.new to raise inside the try block — expected must still be
-    # a bytearray when _zero_buf runs in the finally clause.
+    # a bytearray when zero_buf runs in the finally clause.
     zeroed_items: list[bytearray] = []
-    original_zero = _zero_buf
+    original_zero = zero_buf
 
     def tracking_zero(buf: bytearray) -> None:
         zeroed_items.append(buf)
         original_zero(buf)
 
-    with patch("worthless.crypto.splitter._zero_buf", side_effect=tracking_zero):
+    with patch("worthless.crypto.splitter.zero_buf", side_effect=tracking_zero):
         with patch("hmac.new", side_effect=RuntimeError("injected")):
             with pytest.raises(RuntimeError, match="injected"):
                 reconstruct_key(
                     result.shard_a, result.shard_b, result.commitment, result.nonce
                 )
 
-    # _zero_buf should have been called with the key buffer (bytearray).
+    # zero_buf should have been called with the key buffer (bytearray).
     # If expected were None, the finally clause would have raised TypeError.
     assert len(zeroed_items) >= 1
     assert all(isinstance(item, bytearray) for item in zeroed_items)

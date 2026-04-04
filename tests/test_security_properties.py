@@ -18,7 +18,7 @@ from hypothesis import given, assume, settings as hsettings
 from hypothesis import strategies as st
 
 from worthless.crypto.splitter import reconstruct_key, secure_key, split_key
-from worthless.crypto.types import _zero_buf
+from worthless.crypto.types import zero_buf
 from worthless.exceptions import ShardTamperedError
 from worthless.storage.repository import EncryptedShard, StoredShard
 
@@ -64,7 +64,7 @@ class TestSplitReconstructRoundtrip:
         try:
             result = reconstruct_key(sr.shard_a, sr.shard_b, sr.commitment, sr.nonce)
             assert bytes(result) == key
-            _zero_buf(result)
+            zero_buf(result)
         finally:
             sr.zero()
 
