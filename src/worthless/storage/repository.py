@@ -362,6 +362,20 @@ class ShardRepository:
             await db.commit()
             return cursor.rowcount > 0
 
+    async def delete_spend_log(self, alias: str) -> int:
+        """Delete all spend_log entries for *alias*. Returns rows deleted."""
+        async with self._connect() as db:
+            cursor = await db.execute("DELETE FROM spend_log WHERE key_alias = ?", (alias,))
+            await db.commit()
+            return cursor.rowcount
+
+    async def delete_enrollment_config(self, alias: str) -> bool:
+        """Delete enrollment_config for *alias*. Returns True if deleted."""
+        async with self._connect() as db:
+            cursor = await db.execute("DELETE FROM enrollment_config WHERE key_alias = ?", (alias,))
+            await db.commit()
+            return cursor.rowcount > 0
+
     # ------------------------------------------------------------------
     # Decoy hash registry (WOR-31)
     # ------------------------------------------------------------------
