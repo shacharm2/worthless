@@ -43,5 +43,5 @@ def sanitize_exception(exc: Exception, *, generic: str = "an internal error occu
     logged at DEBUG level so operators can diagnose with ``--verbose`` or
     log-level configuration.
     """
-    logger.debug("Sanitized exception: %s", type(exc).__name__)
+    logger.debug("Sanitized exception: %r", exc)
     return generic

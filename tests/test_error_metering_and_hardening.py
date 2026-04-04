@@ -285,6 +285,29 @@ class TestErrorResponseMetering:
         assert resp.status_code == 504
         mock_record.assert_not_called()
 
+    @respx.mock
+    async def test_record_spend_failure_does_not_crash_request(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """If record_spend raises, the response must still return 200 (spend silently untracked)."""
+        alias, shard_a_b64, _ = enrolled_alias
+        respx.post(OPENAI_COMPLETIONS).mock(
+            return_value=httpx.Response(200, json={"choices": [], "usage": {"total_tokens": 5}})
+        )
+
+        with patch(
+            "worthless.proxy.app.record_spend",
+            new_callable=AsyncMock,
+            side_effect=Exception("DB locked"),
+        ):
+            resp = await proxy_client.post(
+                "/v1/chat/completions",
+                headers=_proxy_headers(alias, shard_a_b64),
+                content=PROXY_BODY,
+            )
+
+        assert resp.status_code == 200
+
 
 # ------------------------------------------------------------------
 # worthless-9dz: /readyz must not leak enrollment state

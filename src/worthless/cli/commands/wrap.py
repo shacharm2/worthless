@@ -8,8 +8,10 @@ the child, and cleans up when the child exits.
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import sys
+import threading
 
 import typer
 
@@ -38,8 +40,6 @@ def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
     Returns an empty list when the database does not exist, the shards
     table is missing (pre-migration DB), or the table is empty.
     """
-    import sqlite3
-
     if not home.db_path.exists():
         return []
 
@@ -196,7 +196,6 @@ def register_wrap_commands(app: typer.Typer) -> None:
             forward_signals(proxy=proxy, child=child)
 
             # Monitor proxy in background -- warn on crash but don't kill child
-            import threading
 
             def _watch_proxy():
                 proxy.wait()

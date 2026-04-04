@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import stat
@@ -89,13 +90,14 @@ def _format_human(
     protected_count = 0
     file_cache: dict[str, str] = {}
 
+    if show_suffix:
+        from worthless.cli.key_patterns import KEY_PATTERN
+
     for f in findings:
         status = "PROTECTED" if f.is_protected else "UNPROTECTED"
         preview = f.value_preview
         if show_suffix and not f.is_protected:
             try:
-                from worthless.cli.key_patterns import KEY_PATTERN
-
                 if f.file not in file_cache:
                     file_cache[f.file] = Path(f.file).read_text(errors="replace")
                 text = file_cache[f.file]
@@ -178,8 +180,6 @@ def _build_decoy_checker():
 
     Returns None if the DB is unavailable (CI/offline mode).
     """
-    import asyncio
-
     try:
         home = get_home()
     except Exception:

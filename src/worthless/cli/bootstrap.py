@@ -96,8 +96,6 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
 
 def _init_db(home: WorthlessHome) -> None:
     """Create the SQLite database using the canonical schema and run migrations."""
-    import sqlite3
-
     from worthless.storage.schema import SCHEMA
 
     conn = sqlite3.connect(str(home.db_path))

@@ -21,6 +21,7 @@ from worthless.crypto.splitter import split_key
 from worthless.storage.repository import ShardRepository, StoredShard
 
 _SUPPORTED_PROVIDERS = frozenset(_PROVIDER_ENV_MAP.keys())
+_ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 # Pattern matching the literal "WRTLS" marker in old-format decoys.
@@ -267,7 +268,6 @@ def _enroll_single(
     home: WorthlessHome,
 ) -> None:
     """Enroll a single key (no .env scanning)."""
-    _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
     if not _ALIAS_RE.match(alias):
         raise WorthlessError(ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}")
 

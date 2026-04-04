@@ -78,7 +78,11 @@ def _revoke_key(alias: str) -> None:
         revoked = asyncio.run(_run())
 
     if revoked:
-        console.print_success(f"Key '{alias}' revoked. Shard and enrollments removed.")
+        console.print_success(
+            f"Key '{alias}' revoked. Shard and enrollments removed.\n"
+            "Note: CoW filesystems (APFS, btrfs) may retain copies of zeroed data. "
+            "Use full-disk encryption for complete erasure."
+        )
     else:
         console.print_warning(f"Alias '{alias}' not found. Nothing to revoke.")
 
