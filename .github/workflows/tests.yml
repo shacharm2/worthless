@@ -18,6 +18,9 @@ jobs:
     name: Test (ubuntu, py3.13)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - name: Check out repository
@@ -40,7 +43,6 @@ jobs:
         run: |
           uv sync --extra dev --extra test
           uv run pytest --reruns 1 --cov=worthless --cov-report=xml --cov-report=term-missing --cov-fail-under=80 -n auto --dist loadscope -x
-          uv run coverage xml -o coverage.xml 2>/dev/null || true
 
       - name: Lint
         env:
@@ -73,6 +75,12 @@ jobs:
             .coverage
           retention-days: 5
 
+      - name: Post coverage comment
+        if: github.event_name == 'pull_request'
+        uses: py-cov-action/python-coverage-comment-action@4c2eefcda8b94596768855a80ac94edc61aba669 # v3
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+
   coverage-gate:
     name: Per-module coverage gate
     if: github.event_name == 'pull_request'
@@ -98,32 +106,6 @@ jobs:
 
       - name: Check per-module coverage floors
         run: python scripts/check-coverage-floors.py
-
-  coverage-comment:
-    name: Coverage PR comment
-    if: github.event_name == 'pull_request'
-    needs: test
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: write
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-
-      - name: Download coverage artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: coverage-xml
-
-      - name: Post coverage comment
-        uses: py-cov-action/python-coverage-comment-action@4c2eefcda8b94596768855a80ac94edc61aba669 # v3
-        with:
-          GITHUB_TOKEN: ${{ github.token }}
 
   quarantine:
     name: Quarantine tests
