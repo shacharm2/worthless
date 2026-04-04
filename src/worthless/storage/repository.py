@@ -6,8 +6,8 @@ import hashlib
 import hmac
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import NamedTuple
 from collections.abc import AsyncIterator
+from typing import NamedTuple
 
 import aiosqlite
 from cryptography.fernet import Fernet

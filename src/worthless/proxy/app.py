@@ -26,12 +26,15 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
-from worthless.adapters.registry import get_adapter
+from starlette.middleware.cors import CORSMiddleware
+
+from worthless.adapters.registry import get_adapter, get_provider_for_path
 from worthless.adapters.types import INTERNAL_HEADER_PREFIX
 from worthless.crypto.splitter import reconstruct_key, secure_key
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import auth_error_response, gateway_error_response
 from worthless.proxy.metering import extract_usage_anthropic, extract_usage_openai, record_spend
+from worthless.proxy.middleware import BodySizeLimitMiddleware
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 from worthless.storage.repository import ShardRepository
 from worthless.storage.schema import SCHEMA
@@ -68,8 +71,6 @@ def _infer_alias_from_path(clean_path: str, settings: ProxySettings) -> str | No
     shard_a_dir for a unique matching alias (format: ``provider-hash8``).
     Returns None if no match or ambiguous (multiple aliases for same provider).
     """
-    from worthless.adapters.registry import get_provider_for_path
-
     provider = get_provider_for_path(clean_path)
     if not provider:
         return None
@@ -214,12 +215,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
     app.state.settings = settings
 
     # Middleware stack (reverse order: last registered runs first)
-    from starlette.middleware.cors import CORSMiddleware
-
     app.add_middleware(CORSMiddleware, allow_origins=[], allow_methods=["GET"], allow_headers=[])
-
-    from worthless.proxy.middleware import BodySizeLimitMiddleware
-
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
 
     # Health endpoints (no auth)
