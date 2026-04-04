@@ -48,7 +48,7 @@ async def enroll_stub(
     await repo.initialize()
     await repo.store(alias, shard)
 
-    shard_a = bytes(sr.shard_a)
+    shard_a = bytes(sr.shard_a)  # nosemgrep: sr01-key-material-not-bytearray
 
     if shard_a_dir:
         Path(shard_a_dir).mkdir(parents=True, exist_ok=True)

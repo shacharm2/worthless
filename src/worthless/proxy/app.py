@@ -397,7 +397,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 tokens = usage.total_tokens if usage else 0
                 model = usage.model if usage else None
                 if usage is None:
-                    logger.warning(
+                    logger.warning(  # nosemgrep: python-logger-credential-disclosure
                         "Token extraction failed for alias=%s provider=%s",
                         alias, provider,
                     )

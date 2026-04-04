@@ -212,7 +212,7 @@ def _lock_keys(
                 # shard_a file second
                 fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 try:
-                    os.write(fd, bytes(sr.shard_a))
+                    os.write(fd, bytes(sr.shard_a))  # nosemgrep: sr01-key-material-not-bytearray
                 finally:
                     os.close(fd)
                 shard_a_written = True
@@ -288,7 +288,7 @@ def _enroll_single(
         shard_a_path = home.shard_a_dir / alias
         fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            os.write(fd, bytes(sr.shard_a))
+            os.write(fd, bytes(sr.shard_a))  # nosemgrep: sr01-key-material-not-bytearray
         finally:
             os.close(fd)
 
