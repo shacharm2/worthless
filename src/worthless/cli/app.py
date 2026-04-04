@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from worthless.cli.console import WorthlessConsole, set_console
+from worthless.cli.errors import set_debug
 
 app = typer.Typer(
     name="worthless",
@@ -18,8 +19,10 @@ app = typer.Typer(
 def _main(
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress non-error output"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    debug: bool = typer.Option(False, "--debug", help="Show full tracebacks on error"),
 ) -> None:
     """Worthless — make stolen API keys architecturally worthless."""
+    set_debug(debug)
     set_console(WorthlessConsole(quiet=quiet, json_mode=json_output))
 
 

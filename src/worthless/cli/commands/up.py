@@ -16,7 +16,7 @@ import typer
 
 from worthless.cli.bootstrap import WorthlessHome, get_home
 from worthless.cli.console import get_console
-from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.process import (
     build_proxy_env,
     check_pid,
@@ -51,6 +51,7 @@ def register_up_commands(app: typer.Typer) -> None:
     """Register the ``up`` command on the Typer app."""
 
     @app.command()
+    @error_boundary
     def up(
         port: int | None = typer.Option(
             None, "--port", "-p", help="Port to bind (default: 8787 or WORTHLESS_PORT)"
@@ -63,53 +64,38 @@ def register_up_commands(app: typer.Typer) -> None:
         console = get_console()
         home = get_home()
 
-        try:
-            actual_port = _resolve_port(port)
+        actual_port = _resolve_port(port)
 
-            # Check PID file for existing proxy
-            pid_file = _pid_path(home)
-            if pid_file.exists():
-                info = read_pid(pid_file)
-                if info is not None:
-                    existing_pid, existing_port = info
-                    if check_pid(existing_pid):
-                        msg = (
-                            f"Proxy already running "
-                            f"(PID {existing_pid} "
-                            f"on port {existing_port}). "
-                            f"Stop it first or use "
-                            f"a different port."
-                        )
-                        console.print_error(
-                            WorthlessError(
-                                ErrorCode.PORT_IN_USE,
-                                msg,
-                            )
-                        )
-                        raise typer.Exit(code=1)
-                    else:
-                        # Stale PID file -- reclaim
-                        cleanup_stale_pid(pid_file)
-                        console.print_warning(f"Reclaimed stale PID file (was PID {existing_pid})")
+        # Check PID file for existing proxy
+        pid_file = _pid_path(home)
+        if pid_file.exists():
+            info = read_pid(pid_file)
+            if info is not None:
+                existing_pid, existing_port = info
+                if check_pid(existing_pid):
+                    raise WorthlessError(
+                        ErrorCode.PORT_IN_USE,
+                        f"Proxy already running "
+                        f"(PID {existing_pid} "
+                        f"on port {existing_port}). "
+                        f"Stop it first or use "
+                        f"a different port.",
+                    )
+                else:
+                    # Stale PID file -- reclaim
+                    cleanup_stale_pid(pid_file)
+                    console.print_warning(f"Reclaimed stale PID file (was PID {existing_pid})")
 
-            # Disable core dumps
-            disable_core_dumps()
+        # Disable core dumps
+        disable_core_dumps()
 
-            # Build proxy env
-            proxy_env = build_proxy_env(home)
+        # Build proxy env
+        proxy_env = build_proxy_env(home)
 
-            if daemon:
-                _start_daemon(proxy_env, actual_port, pid_file, console)
-            else:
-                _start_foreground(proxy_env, actual_port, pid_file, console)
-        except (typer.Exit, SystemExit):
-            raise
-        except WorthlessError as exc:
-            console.print_error(exc)
-            raise typer.Exit(code=1) from exc
-        except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
-            raise typer.Exit(code=1) from exc
+        if daemon:
+            _start_daemon(proxy_env, actual_port, pid_file, console)
+        else:
+            _start_foreground(proxy_env, actual_port, pid_file, console)
 
     def _start_daemon(
         proxy_env: dict[str, str],

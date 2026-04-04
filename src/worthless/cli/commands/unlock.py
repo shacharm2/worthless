@@ -11,7 +11,7 @@ import typer
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import rewrite_env_key
-from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.crypto.splitter import reconstruct_key
 from worthless.crypto.types import zero_buf
 from worthless.storage.repository import ShardRepository
@@ -107,6 +107,7 @@ def register_unlock_commands(app: typer.Typer) -> None:
     """Register the unlock command on the Typer app."""
 
     @app.command()
+    @error_boundary
     def unlock(
         alias: str | None = typer.Option(
             None, "--alias", "-a", help="Specific alias to unlock (default: all)"
@@ -132,12 +133,5 @@ def register_unlock_commands(app: typer.Typer) -> None:
                     await _unlock_alias(a, home, repo, env)
                 console.print_success(f"{len(aliases)} key(s) restored.")
 
-        try:
-            with acquire_lock(home):
-                asyncio.run(_unlock_async())
-        except WorthlessError as exc:
-            console.print_error(exc)
-            raise typer.Exit(code=1) from exc
-        except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
-            raise typer.Exit(code=1) from exc
+        with acquire_lock(home):
+            asyncio.run(_unlock_async())

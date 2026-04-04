@@ -14,8 +14,7 @@ import sys
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, get_home
-from worthless.cli.console import get_console
-from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.process import (
     build_proxy_env,
     create_liveness_pipe,
@@ -112,111 +111,93 @@ def register_wrap_commands(app: typer.Typer) -> None:
     @app.command(
         context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
     )
+    @error_boundary
     def wrap(
         ctx: typer.Context,
         command: list[str] = typer.Argument(..., help="Command to run (e.g. python main.py)"),
     ) -> None:
         """Start ephemeral proxy, inject env vars, run COMMAND, clean up."""
-        console = get_console()
+        # Load home, verify keys enrolled
+        home = get_home()
+        providers = _list_enrolled_providers(home)
+        if not providers:
+            raise WorthlessError(
+                ErrorCode.KEY_NOT_FOUND,
+                "No keys enrolled. Run 'worthless lock' first.",
+            )
 
+        # Suppress core dumps
+        disable_core_dumps()
+
+        # Create liveness pipe
+        read_fd, write_fd = create_liveness_pipe()
+
+        # Build proxy environment
+        proxy_env = build_proxy_env(home)
+
+        # Spawn proxy on random port
         try:
-            # Load home, verify keys enrolled
-            home = get_home()
-            providers = _list_enrolled_providers(home)
-            if not providers:
-                console.print_error(
-                    WorthlessError(
-                        ErrorCode.KEY_NOT_FOUND,
-                        "No keys enrolled. Run 'worthless lock' first.",
-                    )
-                )
-                raise typer.Exit(code=1)
-
-            # Suppress core dumps
-            disable_core_dumps()
-
-            # Create liveness pipe
-            read_fd, write_fd = create_liveness_pipe()
-
-            # Build proxy environment
-            proxy_env = build_proxy_env(home)
-
-            # Spawn proxy on random port
-            try:
-                proxy, port = spawn_proxy(
-                    env=proxy_env,
-                    port=0,
-                    liveness_fd=read_fd,
-                )
-            except Exception as exc:
-                os.close(read_fd)
-                os.close(write_fd)
-                console.print_error(
-                    WorthlessError(ErrorCode.PROXY_UNREACHABLE, f"Failed to start proxy: {exc}")
-                )
-                raise typer.Exit(code=1) from exc
-
-            # Close read_fd in parent (proxy has it)
-            os.close(read_fd)
-
-            # Poll health
-            healthy = poll_health(port, timeout=15.0)
-            if not healthy:
-                _cleanup_proxy(proxy, write_fd)
-                console.print_error(
-                    WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
-                )
-                raise typer.Exit(code=1)
-
-            # Build child env with BASE_URL injection
-            full_command = list(command) + ctx.args
-            child_env = _build_child_env(port, providers)
-
-            # Spawn child
-            try:
-                child = subprocess.Popen(
-                    full_command,
-                    env=child_env,
-                    process_group=0,
-                )
-            except Exception as exc:
-                _cleanup_proxy(proxy, write_fd)
-                console.print_error(
-                    WorthlessError(ErrorCode.WRAP_CHILD_FAILED, f"Failed to start child: {exc}")
-                )
-                raise typer.Exit(code=1) from exc
-
-            # Register signal forwarding
-            forward_signals(proxy=proxy, child=child)
-
-            # Monitor proxy in background -- warn on crash but don't kill child
-            import threading
-
-            def _watch_proxy():
-                proxy.wait()
-                if child.poll() is None:
-                    # Proxy died while child still running
-                    sys.stderr.write(
-                        "worthless: warning: proxy crashed mid-session, "
-                        "child continues without protection\n"
-                    )
-                    sys.stderr.flush()
-
-            watcher = threading.Thread(target=_watch_proxy, daemon=True)
-            watcher.start()
-
-            # Wait for child
-            exit_code = _run_child_and_wait(child)
-
-            # Clean up proxy
-            _cleanup_proxy(proxy, write_fd)
-
-            raise typer.Exit(code=exit_code)
-        except (typer.Exit, SystemExit):
-            raise
-        except WorthlessError as exc:
-            console.print_error(exc)
-            raise typer.Exit(code=1) from exc
+            proxy, port = spawn_proxy(
+                env=proxy_env,
+                port=0,
+                liveness_fd=read_fd,
+            )
         except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
-            raise typer.Exit(code=1) from exc
+            os.close(read_fd)
+            os.close(write_fd)
+            raise WorthlessError(
+                ErrorCode.PROXY_UNREACHABLE, f"Failed to start proxy: {exc}"
+            ) from exc
+
+        # Close read_fd in parent (proxy has it)
+        os.close(read_fd)
+
+        # Poll health
+        healthy = poll_health(port, timeout=15.0)
+        if not healthy:
+            _cleanup_proxy(proxy, write_fd)
+            raise WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
+
+        # Build child env with BASE_URL injection
+        full_command = list(command) + ctx.args
+        child_env = _build_child_env(port, providers)
+
+        # Spawn child
+        try:
+            child = subprocess.Popen(
+                full_command,
+                env=child_env,
+                process_group=0,
+            )
+        except Exception as exc:
+            _cleanup_proxy(proxy, write_fd)
+            raise WorthlessError(
+                ErrorCode.WRAP_CHILD_FAILED, f"Failed to start child: {exc}"
+            ) from exc
+
+        # Register signal forwarding
+        forward_signals(proxy=proxy, child=child)
+
+        # Monitor proxy in background -- warn on crash but don't kill child
+        import threading
+
+        def _watch_proxy():
+            proxy.wait()
+            if child.poll() is None:
+                # Proxy died while child still running
+                sys.stderr.write(
+                    "worthless: warning: proxy crashed mid-session, "
+                    "child continues without protection\n"
+                )
+                sys.stderr.flush()
+
+        watcher = threading.Thread(target=_watch_proxy, daemon=True)
+        watcher.start()
+
+        # Wait for child
+        exit_code = _run_child_and_wait(child)
+
+        # Clean up proxy
+        _cleanup_proxy(proxy, write_fd)
+
+        raise typer.Exit(code=exit_code)

@@ -13,7 +13,7 @@ import typer
 
 from worthless.cli.bootstrap import get_home
 from worthless.cli.console import get_console
-from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
 from worthless.storage.repository import ShardRepository
 
@@ -152,7 +152,7 @@ def _install_hook() -> None:
     """Write or append worthless scan to .git/hooks/pre-commit."""
     git_dir = _find_git_dir()
     if git_dir is None:
-        raise WorthlessError(ErrorCode.SCAN_ERROR, "No .git directory found")
+        raise WorthlessError(ErrorCode.SCAN_ERROR, "No .git directory found", exit_code=2)
 
     hooks_dir = git_dir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
@@ -212,6 +212,7 @@ def register_scan_commands(app: typer.Typer) -> None:
     """Register the scan command on the Typer app."""
 
     @app.command()
+    @error_boundary(exit_code=2)
     def scan(
         paths: list[Path] | None = typer.Argument(
             None,
@@ -255,12 +256,8 @@ def register_scan_commands(app: typer.Typer) -> None:
 
         # Handle --install-hook
         if install_hook:
-            try:
-                _install_hook()
-                console.print_success("Pre-commit hook installed.")
-            except WorthlessError as exc:
-                console.print_error(exc)
-                raise typer.Exit(code=2) from exc
+            _install_hook()
+            console.print_success("Pre-commit hook installed.")
             raise typer.Exit(code=0)
 
         # Resolve format
@@ -268,13 +265,11 @@ def register_scan_commands(app: typer.Typer) -> None:
         if json_output:
             fmt = "json"
         if fmt not in ("text", "sarif", "json"):
-            console.print_error(
-                WorthlessError(
-                    ErrorCode.SCAN_ERROR,
-                    f"Unknown format: {fmt!r} (use text, sarif, or json)",
-                )
+            raise WorthlessError(
+                ErrorCode.SCAN_ERROR,
+                f"Unknown format: {fmt!r} (use text, sarif, or json)",
+                exit_code=2,
             )
-            raise typer.Exit(code=2)
 
         tmp_file: Path | None = None
         try:
@@ -316,16 +311,6 @@ def register_scan_commands(app: typer.Typer) -> None:
             if unprotected:
                 raise typer.Exit(code=1)
             raise typer.Exit(code=0)
-
-        except typer.Exit:
-            raise
-        except WorthlessError as exc:
-            console.print_error(exc)
-            raise typer.Exit(code=2) from exc
-        except Exception as exc:
-            if not console.quiet:
-                sys.stderr.write(f"Scan error: {type(exc).__name__}: {exc}\n")
-            raise typer.Exit(code=2) from exc
         finally:
             if tmp_file is not None:
                 tmp_file.unlink(missing_ok=True)
