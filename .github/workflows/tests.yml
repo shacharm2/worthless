@@ -78,9 +78,31 @@ jobs:
       - name: Post coverage comment
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: py-cov-action/python-coverage-comment-action@4c2eefcda8b94596768855a80ac94edc61aba669 # v3
-        with:
-          GITHUB_TOKEN: ${{ github.token }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! REPORT=$(uv run coverage report --skip-covered --skip-empty); then
+            echo "::warning::coverage report failed (exit $?)"
+            exit 0
+          fi
+          TOTAL=$(echo "$REPORT" | tail -1 | awk '{print $NF}')
+          if ! [[ "$TOTAL" =~ ^[0-9]+%$ ]]; then
+            echo "::warning::Could not parse coverage total: '$TOTAL'"
+            exit 0
+          fi
+          {
+            echo "<!-- worthless-coverage-bot -->"
+            echo "### Coverage Report"
+            echo "**Total line coverage: ${TOTAL}**"
+            echo "<details><summary>Per-package breakdown</summary>"
+            echo ""
+            echo '```'
+            echo "$REPORT"
+            echo '```'
+            echo "</details>"
+          } > /tmp/cov-comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/cov-comment.md --edit-last || \
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/cov-comment.md
 
   coverage-gate:
     name: Per-module coverage gate

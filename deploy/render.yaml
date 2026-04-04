@@ -1,0 +1,19 @@
+# NOTE: Cloud deployment is planned but not yet streamlined.
+# The container is self-contained but needs a persistent disk at /data.
+
+services:
+  - type: web
+    name: worthless-proxy
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /healthz
+    envVars:
+      # Render terminates TLS at its edge; the container receives plain HTTP.
+      - key: WORTHLESS_ALLOW_INSECURE
+        value: "true"
+    disk:
+      name: worthless-data
+      mountPath: /data
+      sizeGB: 1

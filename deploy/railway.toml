@@ -1,0 +1,13 @@
+# NOTE: Cloud deployment is planned but not yet streamlined.
+# The container is self-contained but needs a persistent volume at /data
+# to survive redeploys. Configure via: railway volume add --mount /data
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/healthz"
+healthcheckTimeout = 10
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3

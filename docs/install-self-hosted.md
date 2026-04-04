@@ -1,22 +1,35 @@
 # Install -- Self-Hosted
 
+Run the Worthless proxy in Docker. The container is fully self-contained —
+it generates its own encryption key and stores all shard data internally.
+
+## Quick start (Docker Compose)
+
+```bash
+git clone https://github.com/shacharm2/worthless && cd worthless/deploy
+cp docker-compose.env.example docker-compose.env
+docker compose up -d
+```
+
+The proxy starts on `localhost:8787`. Enroll your API keys:
+
+```bash
+echo $OPENAI_API_KEY | docker compose exec -T proxy \
+  worthless enroll --alias openai --key-stdin --provider openai
+```
+
+Repeat for each key. The container splits and stores the key internally —
+the original key never touches disk.
+
+## Cloud deploy
+
 > [!NOTE]
-> **Planned** -- Self-hosted deployment (Docker Compose, Helm charts) is not yet
-> available. The documentation below describes the target-state design.
+> **Planned** -- Cloud deployment (Railway, Render) requires a persistent
+> volume at `/data`. Template configs are in `deploy/` but the enrollment
+> workflow is not yet streamlined.
 > See the [README](../README.md) for current install options.
 
-## Target-state deployment
-
-A Docker Compose stack with proxy + PostgreSQL for production self-hosted deployments.
-
-- Proxy listens on port 8787
-- Shard B encrypted at rest
-- Helm charts and Terraform modules in `deploy/`
-- Your infrastructure, your data, your control
-
-## Current option
-
-Run the proxy locally from source:
+## From source (no Docker)
 
 ```bash
 git clone https://github.com/shacharm2/worthless && cd worthless
