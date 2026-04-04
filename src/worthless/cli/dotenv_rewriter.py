@@ -1,4 +1,4 @@
-"""Atomic prefix-preserving .env key replacement and scanning."""
+"""Atomic .env key replacement and scanning via python-dotenv."""
 
 from __future__ import annotations
 

@@ -117,8 +117,8 @@ class TestRewriteEnvKey:
 class TestScanRewriteParity:
     """Verify scan_env_keys and rewrite_env_key agree on var names.
 
-    scan uses python-dotenv (dotenv_values), rewrite uses regex.
-    These must parse the same var names or lock breaks.
+    Both use python-dotenv (dotenv_values / set_key) so parity is
+    guaranteed, but these tests catch any future divergence.
     """
 
     def test_quoted_value_roundtrip(self, tmp_path: Path):

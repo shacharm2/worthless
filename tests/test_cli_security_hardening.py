@@ -9,7 +9,7 @@ Covers attack vectors from 5 security reviews:
 - Provider gating (unsupported providers rejected)
 - Low-entropy decoy filtering
 - Alias validation (alphanumeric, dash, underscore only)
-- Atomic .env rewriting (tempfile + os.replace)
+- Atomic .env rewriting (delegated to python-dotenv)
 - Core dump suppression (RLIMIT_CORE)
 """
 
