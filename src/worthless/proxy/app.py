@@ -32,7 +32,7 @@ from worthless.adapters.registry import get_adapter, get_provider_for_path
 from worthless.adapters.types import INTERNAL_HEADER_PREFIX
 from worthless.crypto.splitter import reconstruct_key, secure_key
 from worthless.proxy.config import ProxySettings
-from worthless.proxy.errors import auth_error_response, gateway_error_response
+from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
 from worthless.proxy.metering import extract_usage_anthropic, extract_usage_openai, record_spend
 from worthless.proxy.middleware import BodySizeLimitMiddleware
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
@@ -42,6 +42,7 @@ from worthless.storage.schema import SCHEMA
 logger = logging.getLogger(__name__)
 
 _ALIAS_RE = re.compile(r"[a-zA-Z0-9_-]+")
+_BAD_HEADER_CHARS = frozenset("\x00\r\n")
 
 
 def _make_uniform_401_bytes() -> tuple[bytes, dict[str, str]]:
@@ -104,48 +105,17 @@ def _strip_worthless_headers(headers: dict[str, str]) -> dict[str, str]:
 def _sanitize_upstream_error(status_code: int, body: bytes, provider: str) -> bytes:
     """Sanitize upstream error response body — strip internal provider details.
 
-    Keeps the status code and error type but replaces the message with a generic
-    one to prevent information leakage from the upstream provider.
+    Keeps the error type but replaces the message with a generic one
+    to prevent information leakage from the upstream provider.
     """
+    error_type = "api_error"
     try:
         parsed = json.loads(body)
-        if provider == "anthropic" and isinstance(parsed, dict):
-            error_type = "api_error"
-            if "error" in parsed and isinstance(parsed["error"], dict):
-                error_type = parsed["error"].get("type", "api_error")
-            return json.dumps(
-                {
-                    "type": "error",
-                    "error": {"type": error_type, "message": "upstream provider error"},
-                }
-            ).encode()
-        elif isinstance(parsed, dict) and "error" in parsed:
-            error_type = "api_error"
-            if isinstance(parsed["error"], dict):
-                error_type = parsed["error"].get("type", "api_error")
-            return json.dumps(
-                {
-                    "error": {
-                        "message": "upstream provider error",
-                        "type": error_type,
-                        "param": None,
-                        "code": None,
-                    }
-                }
-            ).encode()
+        if isinstance(parsed, dict) and "error" in parsed and isinstance(parsed["error"], dict):
+            error_type = parsed["error"].get("type", "api_error")
     except (json.JSONDecodeError, ValueError, KeyError):
         pass
-    # Fallback: generic error body
-    return json.dumps(
-        {
-            "error": {
-                "message": "upstream provider error",
-                "type": "api_error",
-                "param": None,
-                "code": None,
-            }
-        }
-    ).encode()
+    return _error_body(status_code, "upstream provider error", error_type, provider)
 
 
 @asynccontextmanager
@@ -265,11 +235,9 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             if proto != "https":
                 return _uniform_401()
 
-        # Reject null/CR/LF in header keys or values (worthless-64x)
+        # Reject null/CR/LF in header keys or values
         for key, value in request.headers.items():
-            if any(c in key for c in ("\x00", "\r", "\n")):
-                return _uniform_401()
-            if any(c in value for c in ("\x00", "\r", "\n")):
+            if _BAD_HEADER_CHARS.intersection(key) or _BAD_HEADER_CHARS.intersection(value):
                 return _uniform_401()
 
         # Fetch encrypted shard (gate-before-decrypt: no Fernet yet)

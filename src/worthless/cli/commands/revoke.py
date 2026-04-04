@@ -27,20 +27,12 @@ async def _revoke_async(alias: str, repo: ShardRepository, shard_a_dir: Path) ->
     """
     shard_a_path = shard_a_dir / alias
 
-    # Check DB for the shard
-    db_shard = await repo.fetch_encrypted(alias)
-
-    # Check shard_a file (refuse symlinks)
-    shard_a_exists = shard_a_path.exists() and not shard_a_path.is_symlink()
-
-    if db_shard is None and not shard_a_exists:
-        return False
-
     # Atomic DB cleanup: spend_log + enrollment_config + shard (CASCADE) in one txn
-    await repo.revoke_all(alias)
+    db_deleted = await repo.revoke_all(alias)
 
     # Best-effort wipe of shard_a: zero contents, then unlink.
-    # O_NOFOLLOW prevents TOCTOU symlink race between is_symlink() check and open.
+    # O_NOFOLLOW prevents TOCTOU symlink race.
+    shard_a_exists = shard_a_path.exists() and not shard_a_path.is_symlink()
     if shard_a_exists:
         try:
             fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_NOFOLLOW)
@@ -56,8 +48,9 @@ async def _revoke_async(alias: str, repo: ShardRepository, shard_a_dir: Path) ->
         finally:
             os.close(fd)
         shard_a_path.unlink()
+        return True
 
-    return True
+    return db_deleted
 
 
 def _revoke_key(alias: str) -> None:
