@@ -397,6 +397,33 @@ class TestStatusUx:
         combined = result.stdout + result.stderr
         assert "No keys enrolled" in combined
 
+    def test_status_exception_no_traceback_leak(
+        self, home_dir: WorthlessHome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Internal exceptions must not leak tracebacks or file paths to the user."""
+
+        def _boom(_home: WorthlessHome) -> list[dict[str, str]]:
+            raise ValueError("unexpected db error at /secret/path")
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.status._list_enrolled_keys",
+            _boom,
+        )
+        result = runner.invoke(
+            app,
+            ["status"],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        combined = result.stdout + result.stderr
+        assert result.exit_code == 1
+        assert "Traceback" not in combined
+        assert "/secret/path" not in combined
+        # error_boundary should catch the exception cleanly — if it leaks,
+        # result.exception will be a ValueError instead of SystemExit.
+        assert not isinstance(result.exception, ValueError), (
+            f"ValueError leaked through CLI: {result.exception}"
+        )
+
     def test_status_with_enrolled_key(self, home_with_key: WorthlessHome) -> None:
         """Shows enrolled key info (alias, provider, PROTECTED)."""
         result = runner.invoke(
