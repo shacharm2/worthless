@@ -12,6 +12,7 @@ import typer
 
 from worthless.cli.bootstrap import WorthlessHome, resolve_home
 from worthless.cli.console import get_console
+from worthless.cli.errors import error_boundary
 from worthless.cli.process import read_pid
 
 
@@ -77,6 +78,7 @@ def register_status_commands(app: typer.Typer) -> None:
     """Register the status command on the Typer app."""
 
     @app.command()
+    @error_boundary
     def status() -> None:
         """Show enrolled keys and proxy health."""
         console = get_console()

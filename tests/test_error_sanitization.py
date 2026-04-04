@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import re
 
+import pytest
+
 
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.proxy.app import _sanitize_upstream_error
@@ -241,6 +243,79 @@ class TestCLICatchAllHandlers:
 # ---------------------------------------------------------------------------
 # Typer pretty_exceptions_enable=False verification
 # ---------------------------------------------------------------------------
+
+
+class TestWrapCommandSanitization:
+    """Wrap command must not leak raw exception details to users."""
+
+    def test_wrap_proxy_spawn_does_not_leak_exception(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When spawn_proxy raises PermissionError, output must not contain the path."""
+        from typer.testing import CliRunner
+
+        from worthless.cli.app import app
+
+        runner = CliRunner()
+
+        def _fail(**_kw):
+            raise PermissionError("Permission denied: /secret/path")
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.spawn_proxy",
+            _fail,
+        )
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
+        # Must NOT leak the internal path
+        assert "/secret/path" not in result.output
+        # Must contain structured error info
+        assert "WRTLS-" in result.output or "failed to start proxy" in result.output.lower()
+
+    def test_wrap_child_spawn_does_not_leak_exception(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When child Popen raises FileNotFoundError, output must not contain the path."""
+        from unittest.mock import MagicMock
+
+        from typer.testing import CliRunner
+
+        from worthless.cli.app import app
+
+        runner = CliRunner()
+
+        mock_proxy = MagicMock()
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.spawn_proxy",
+            lambda **_kw: (mock_proxy, 9999),
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.poll_health",
+            lambda *_a, **_kw: True,
+        )
+
+        def _fail_popen(*_a, **_kw):
+            raise FileNotFoundError("/usr/local/secret/bin")
+
+        monkeypatch.setattr("subprocess.Popen", _fail_popen)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "nonexistent-binary"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
+        # Must NOT leak the internal path
+        assert "/usr/local/secret/bin" not in result.output
+        # Must contain structured error info
+        assert "WRTLS-" in result.output or "failed to start child" in result.output.lower()
 
 
 class TestTyperConfiguration:

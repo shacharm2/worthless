@@ -1,0 +1,204 @@
+"""Tests for the Worthless MCP server tools."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from worthless.mcp.server import (
+    worthless_lock,
+    worthless_scan,
+    worthless_spend,
+    worthless_status,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_env_file(tmp_path: Path, content: str) -> Path:
+    env_file = tmp_path / ".env"
+    env_file.write_text(content)
+    return env_file
+
+
+def _make_home(tmp_path: Path) -> Path:
+    """Create a minimal WorthlessHome directory."""
+    from cryptography.fernet import Fernet
+
+    home = tmp_path / ".worthless"
+    home.mkdir(mode=0o700)
+    (home / "shard_a").mkdir(mode=0o700)
+    key = Fernet.generate_key()
+    (home / "fernet.key").write_bytes(key)
+    return home
+
+
+# ---------------------------------------------------------------------------
+# worthless_status
+# ---------------------------------------------------------------------------
+
+
+class TestWorthlessStatus:
+    @pytest.mark.asyncio
+    async def test_status_no_home(self, tmp_path: Path) -> None:
+        """Status returns empty when worthless is not initialized."""
+        with patch.dict(os.environ, {"WORTHLESS_HOME": str(tmp_path / "nonexistent")}):
+            result = json.loads(await worthless_status())
+        assert result["keys"] == []
+        assert result["proxy"]["healthy"] is False
+
+    @pytest.mark.asyncio
+    async def test_status_with_home(self, tmp_path: Path) -> None:
+        """Status returns empty keys list when initialized but no keys enrolled."""
+        home = _make_home(tmp_path)
+        with patch.dict(os.environ, {"WORTHLESS_HOME": str(home)}):
+            result = json.loads(await worthless_status())
+        assert result["keys"] == []
+        assert result["proxy"]["healthy"] is False
+
+
+# ---------------------------------------------------------------------------
+# worthless_scan
+# ---------------------------------------------------------------------------
+
+
+class TestWorthlessScan:
+    @pytest.mark.asyncio
+    async def test_scan_clean_file(self, tmp_path: Path) -> None:
+        """Scanning a file with no keys returns empty findings."""
+        env_file = _make_env_file(tmp_path, "FOO=bar\nBAZ=123\n")
+        result = json.loads(await worthless_scan(paths=[str(env_file)]))
+        assert result["findings"] == []
+        assert result["summary"]["total"] == 0
+
+    @pytest.mark.asyncio
+    async def test_scan_detects_key(self, tmp_path: Path) -> None:
+        """Scanning a file with a real-looking key returns findings."""
+        # Use a high-entropy string that matches provider patterns
+        fake_key = "sk-proj-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0" * 2
+        env_file = _make_env_file(tmp_path, f"OPENAI_API_KEY={fake_key}\n")
+        result = json.loads(await worthless_scan(paths=[str(env_file)]))
+        assert result["summary"]["total"] >= 1
+        assert result["summary"]["unprotected"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_scan_no_paths_defaults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Scanning with no paths scans .env in cwd."""
+        monkeypatch.chdir(tmp_path)
+        _make_env_file(tmp_path, "FOO=bar\n")
+        result = json.loads(await worthless_scan())
+        assert result["summary"]["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# worthless_lock
+# ---------------------------------------------------------------------------
+
+
+class TestWorthlessLock:
+    @pytest.mark.asyncio
+    async def test_lock_no_keys(self, tmp_path: Path) -> None:
+        """Locking a file with no API keys returns 0 protected."""
+        home = _make_home(tmp_path)
+        env_file = _make_env_file(tmp_path, "FOO=bar\n")
+        with patch.dict(os.environ, {"WORTHLESS_HOME": str(home)}):
+            result = json.loads(await worthless_lock(env_path=str(env_file)))
+        assert result["protected_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_lock_protects_key(self, tmp_path: Path) -> None:
+        """Locking a file with an API key should protect it."""
+        home = _make_home(tmp_path)
+        fake_key = "sk-proj-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0" * 2
+        env_file = _make_env_file(tmp_path, f"OPENAI_API_KEY={fake_key}\n")
+        with patch.dict(os.environ, {"WORTHLESS_HOME": str(home)}):
+            result = json.loads(await worthless_lock(env_path=str(env_file)))
+        assert result["protected_count"] == 1
+        # Original key should no longer be in the file
+        assert fake_key not in env_file.read_text()
+
+
+# ---------------------------------------------------------------------------
+# worthless_spend
+# ---------------------------------------------------------------------------
+
+
+class TestWorthlessSpend:
+    @pytest.mark.asyncio
+    async def test_spend_empty(self, tmp_path: Path) -> None:
+        """Spend returns empty list when no spend data exists."""
+        home = _make_home(tmp_path)
+        # Initialize the DB schema
+        from worthless.storage.schema import init_db
+
+        await init_db(str(home / "worthless.db"))
+
+        with patch.dict(os.environ, {"WORTHLESS_HOME": str(home)}):
+            result = json.loads(await worthless_spend())
+        assert result["spend"] == []
+
+    @pytest.mark.asyncio
+    async def test_spend_with_data(self, tmp_path: Path) -> None:
+        """Spend aggregates rows from spend_log table."""
+        home = _make_home(tmp_path)
+        from worthless.storage.schema import init_db
+
+        db_path = str(home / "worthless.db")
+        await init_db(db_path)
+
+        # Insert test spend data directly
+        import aiosqlite
+
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "INSERT INTO spend_log (key_alias, tokens, model, provider) VALUES (?, ?, ?, ?)",
+                ("openai-abc123", 100, "gpt-4", "openai"),
+            )
+            await db.execute(
+                "INSERT INTO spend_log (key_alias, tokens, model, provider) VALUES (?, ?, ?, ?)",
+                ("openai-abc123", 200, "gpt-4", "openai"),
+            )
+            await db.commit()
+
+        with patch.dict(os.environ, {"WORTHLESS_HOME": str(home)}):
+            result = json.loads(await worthless_spend())
+        assert len(result["spend"]) == 1
+        assert result["spend"][0]["alias"] == "openai-abc123"
+        assert result["spend"][0]["total_tokens"] == 300
+        assert result["spend"][0]["request_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_spend_filter_by_alias(self, tmp_path: Path) -> None:
+        """Spend filters by alias when provided."""
+        home = _make_home(tmp_path)
+        from worthless.storage.schema import init_db
+
+        db_path = str(home / "worthless.db")
+        await init_db(db_path)
+
+        import aiosqlite
+
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "INSERT INTO spend_log (key_alias, tokens, model, provider) VALUES (?, ?, ?, ?)",
+                ("openai-abc", 100, "gpt-4", "openai"),
+            )
+            await db.execute(
+                "INSERT INTO spend_log (key_alias, tokens, model, provider) VALUES (?, ?, ?, ?)",
+                ("anthropic-xyz", 500, "claude-3", "anthropic"),
+            )
+            await db.commit()
+
+        with patch.dict(os.environ, {"WORTHLESS_HOME": str(home)}):
+            result = json.loads(await worthless_spend(alias="openai-abc"))
+        assert len(result["spend"]) == 1
+        assert result["spend"][0]["alias"] == "openai-abc"

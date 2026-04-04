@@ -14,7 +14,7 @@ import typer
 
 from worthless.cli.bootstrap import get_home
 from worthless.cli.console import get_console
-from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
+from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
 from worthless.storage.repository import ShardRepository
 
@@ -154,7 +154,7 @@ def _install_hook() -> None:
     """Write or append worthless scan to .git/hooks/pre-commit."""
     git_dir = _find_git_dir()
     if git_dir is None:
-        raise WorthlessError(ErrorCode.SCAN_ERROR, "No .git directory found")
+        raise WorthlessError(ErrorCode.SCAN_ERROR, "No .git directory found", exit_code=2)
 
     hooks_dir = git_dir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
@@ -175,10 +175,12 @@ def _install_hook() -> None:
     hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _build_decoy_checker():
-    """Try to build an is_decoy predicate from the worthless DB.
+async def _build_decoy_checker_async():
+    """Build an is_decoy predicate from the worthless DB.
 
     Returns None if the DB is unavailable (CI/offline mode).
+    Exceptions are intentionally swallowed — graceful degradation
+    when running without a worthless home (e.g. CI, first scan).
     """
     try:
         home = get_home()
@@ -190,28 +192,37 @@ def _build_decoy_checker():
 
     try:
         repo = ShardRepository(str(home.db_path), home.fernet_key)
-
-        async def _load():
-            await repo.initialize()
-            return await repo.all_decoy_hashes()
-
-        decoy_hashes = asyncio.run(_load())
+        await repo.initialize()
+        decoy_hashes = await repo.all_decoy_hashes()
     except Exception:
         return None
 
     if not decoy_hashes:
         return None
 
+    # Capture only the hash function, not the full repo instance.
+    compute_hash = repo._compute_decoy_hash
+
     def _is_decoy(value: str) -> bool:
-        return repo._compute_decoy_hash(value) in decoy_hashes
+        return compute_hash(value) in decoy_hashes
 
     return _is_decoy
+
+
+def _build_decoy_checker():
+    """Sync wrapper around _build_decoy_checker_async for CLI (typer) context."""
+
+    try:
+        return asyncio.run(_build_decoy_checker_async())
+    except Exception:
+        return None
 
 
 def register_scan_commands(app: typer.Typer) -> None:
     """Register the scan command on the Typer app."""
 
     @app.command()
+    @error_boundary(exit_code=2)
     def scan(
         paths: list[Path] | None = typer.Argument(
             None,
@@ -255,12 +266,8 @@ def register_scan_commands(app: typer.Typer) -> None:
 
         # Handle --install-hook
         if install_hook:
-            try:
-                _install_hook()
-                console.print_success("Pre-commit hook installed.")
-            except WorthlessError as exc:
-                console.print_error(exc)
-                raise typer.Exit(code=2) from exc
+            _install_hook()
+            console.print_success("Pre-commit hook installed.")
             raise typer.Exit(code=0)
 
         # Resolve format
@@ -268,13 +275,11 @@ def register_scan_commands(app: typer.Typer) -> None:
         if json_output:
             fmt = "json"
         if fmt not in ("text", "sarif", "json"):
-            console.print_error(
-                WorthlessError(
-                    ErrorCode.SCAN_ERROR,
-                    f"Unknown format: {fmt!r} (use text, sarif, or json)",
-                )
+            raise WorthlessError(
+                ErrorCode.SCAN_ERROR,
+                f"Unknown format: {fmt!r} (use text, sarif, or json)",
+                exit_code=2,
             )
-            raise typer.Exit(code=2)
 
         tmp_file: Path | None = None
         try:
@@ -316,17 +321,6 @@ def register_scan_commands(app: typer.Typer) -> None:
             if unprotected:
                 raise typer.Exit(code=1)
             raise typer.Exit(code=0)
-
-        except typer.Exit:
-            raise
-        except WorthlessError as exc:
-            console.print_error(exc)
-            raise typer.Exit(code=2) from exc
-        except Exception as exc:
-            console.print_error(
-                WorthlessError(ErrorCode.SCAN_ERROR, sanitize_exception(exc, generic="scan failed"))
-            )
-            raise typer.Exit(code=2) from exc
         finally:
             if tmp_file is not None:
                 tmp_file.unlink(missing_ok=True)

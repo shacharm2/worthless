@@ -516,7 +516,7 @@ class TestScanErrorPaths:
             result = runner.invoke(app, ["-q", "scan", str(file_with_key)])
         assert result.exit_code == 2
         # Errors are always shown (even in quiet mode) but must be sanitized
-        assert "WRTLS-106" in result.stderr
+        assert "WRTLS-199" in result.stderr
         assert "boom" not in result.stderr  # raw exception must not leak
 
     def test_worthless_error_during_scan_exits_2(self, file_with_key: Path) -> None:
@@ -526,7 +526,7 @@ class TestScanErrorPaths:
 
         with patch(
             "worthless.cli.commands.scan.scan_files",
-            side_effect=WorthlessError(ErrorCode.SCAN_ERROR, "test error"),
+            side_effect=WorthlessError(ErrorCode.SCAN_ERROR, "test error", exit_code=2),
         ):
             result = runner.invoke(app, ["scan", str(file_with_key)])
         assert result.exit_code == 2

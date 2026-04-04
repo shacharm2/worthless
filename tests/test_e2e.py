@@ -175,9 +175,12 @@ class TestWrapProxiesRequest:
         assert result.exit_code == 0, f"lock failed: {result.output}"
 
         # Run wrap as a real subprocess — spawns proxy, runs child, cleans up
+        # Resolve the worthless entrypoint from the same venv as the test runner
+        _venv_bin = Path(sys.executable).parent
+        _worthless = str(_venv_bin / "worthless")
         proc = subprocess.run(
-            [  # noqa: S607
-                "worthless",
+            [
+                _worthless,
                 "wrap",
                 "--",
                 sys.executable,

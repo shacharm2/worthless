@@ -14,7 +14,7 @@ from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
 from worthless.cli.decoy import make_decoy
 from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys, shannon_entropy
-from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
+from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, detect_prefix
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.crypto.splitter import split_key
@@ -308,6 +308,7 @@ def register_lock_commands(app: typer.Typer) -> None:
     """Register lock and enroll commands on the Typer app."""
 
     @app.command()
+    @error_boundary
     def lock(
         env: Path = typer.Option(Path(".env"), "--env", "-e", help="Path to .env file"),
         provider: str | None = typer.Option(
@@ -315,19 +316,12 @@ def register_lock_commands(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Protect API keys in a .env file."""
-        console = get_console()
         home = get_home()
-        try:
-            with acquire_lock(home):
-                _lock_keys(env, home, provider_override=provider)
-        except WorthlessError as exc:
-            console.print_error(exc)
-            raise typer.Exit(code=1) from exc
-        except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, sanitize_exception(exc)))
-            raise typer.Exit(code=1) from exc
+        with acquire_lock(home):
+            _lock_keys(env, home, provider_override=provider)
 
     @app.command()
+    @error_boundary
     def enroll(
         alias: str = typer.Option(..., "--alias", "-a", help="Key alias"),
         key: str | None = typer.Option(
@@ -342,30 +336,16 @@ def register_lock_commands(app: typer.Typer) -> None:
         """Enroll a single API key (scripting/CI primitive)."""
         import sys
 
-        console = get_console()
         home = get_home()
 
         if key_stdin:
             actual_key = sys.stdin.readline().strip()
             if not actual_key:
-                console.print_error(
-                    WorthlessError(ErrorCode.KEY_NOT_FOUND, "No key provided on stdin")
-                )
-                raise typer.Exit(code=1)
+                raise WorthlessError(ErrorCode.KEY_NOT_FOUND, "No key provided on stdin")
         elif key:
             actual_key = key
         else:
-            console.print_error(
-                WorthlessError(ErrorCode.KEY_NOT_FOUND, "Provide --key or --key-stdin")
-            )
-            raise typer.Exit(code=1)
+            raise WorthlessError(ErrorCode.KEY_NOT_FOUND, "Provide --key or --key-stdin")
 
-        try:
-            with acquire_lock(home):
-                _enroll_single(alias, actual_key, provider, home)
-        except WorthlessError as exc:
-            console.print_error(exc)
-            raise typer.Exit(code=1) from exc
-        except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, sanitize_exception(exc)))
-            raise typer.Exit(code=1) from exc
+        with acquire_lock(home):
+            _enroll_single(alias, actual_key, provider, home)

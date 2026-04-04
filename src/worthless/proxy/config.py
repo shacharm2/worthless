@@ -15,6 +15,11 @@ def _default_shard_a_dir() -> str:
     return str(Path.home() / ".worthless" / "shard_a")
 
 
+def _env_bool(name: str) -> bool:
+    """Return ``True`` when the environment variable *name* is a truthy string."""
+    return os.environ.get(name, "").lower() in ("1", "true", "yes")
+
+
 def _read_fernet_key() -> str:
     """Read Fernet key from inherited fd (preferred) or env var (fallback)."""
     fd_str = os.environ.get("WORTHLESS_FERNET_FD")
@@ -46,18 +51,12 @@ class ProxySettings:
     streaming_timeout: float = field(
         default_factory=lambda: float(os.environ.get("WORTHLESS_STREAMING_TIMEOUT", "300.0"))
     )
-    allow_insecure: bool = field(
-        default_factory=lambda: (
-            os.environ.get("WORTHLESS_ALLOW_INSECURE", "").lower() in ("1", "true", "yes")
-        )
-    )
+    allow_insecure: bool = field(default_factory=lambda: _env_bool("WORTHLESS_ALLOW_INSECURE"))
     shard_a_dir: str = field(
         default_factory=lambda: os.environ.get("WORTHLESS_SHARD_A_DIR", _default_shard_a_dir())
     )
     allow_alias_inference: bool = field(
-        default_factory=lambda: (
-            os.environ.get("WORTHLESS_ALLOW_ALIAS_INFERENCE", "").lower() in ("1", "true", "yes")
-        )
+        default_factory=lambda: _env_bool("WORTHLESS_ALLOW_ALIAS_INFERENCE")
     )
     max_request_bytes: int = field(
         default_factory=lambda: int(
