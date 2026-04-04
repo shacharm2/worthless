@@ -1,10 +1,5 @@
 # Install -- GitHub Actions
 
-> [!CAUTION]
-> **Planned — not functional yet.** The workflow below is aspirational. `worthless lock`
-> reads `.env` files, not shell environment variables, so `OPENAI_API_KEY` injected via
-> GitHub Secrets is not picked up. Functional CI gate testing is tracked in Phase 04.2.
-
 Run Worthless in CI to protect API keys during test runs and scan for exposed secrets.
 
 ## Workflow
@@ -34,13 +29,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
-      - name: Install worthless from source
-        run: |
-          git clone https://github.com/shacharm2/worthless /tmp/worthless
-          cd /tmp/worthless && uv pip install -e . --system
+      - name: Install worthless
+        run: uv pip install worthless --system
 
-      - name: Lock API keys
-        run: worthless lock
+      - name: Enroll OpenAI key
+        run: echo "$OPENAI_API_KEY" | worthless enroll --alias openai --provider openai --key-stdin
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
@@ -48,14 +41,41 @@ jobs:
         run: worthless wrap pytest
 
       - name: Scan for exposed keys
-        run: worthless scan --pre-commit
+        run: worthless scan --deep
 ```
 
 ## What this does
 
-1. **Lock** -- Reads `OPENAI_API_KEY` from GitHub Secrets, splits it, stores shards locally in the runner
-2. **Wrap** -- Starts an ephemeral proxy, injects `OPENAI_BASE_URL`, runs `pytest` through it
-3. **Scan** -- Checks staged files and environment for any exposed (unprotected) keys. Exits non-zero if found.
+1. **Enroll** -- Pipes each API key from GitHub Secrets through stdin to `worthless enroll`. The key is split into shards and stored locally on the ephemeral runner. Secrets never touch disk as a `.env` file.
+2. **Wrap** -- Starts an ephemeral proxy, injects `OPENAI_BASE_URL`, runs `pytest` through it.
+3. **Scan** -- Checks files and environment variables for any exposed (unprotected) keys. Exits non-zero if found.
+
+## Adding more keys
+
+Repeat the enroll step for each provider:
+
+```yaml
+      - name: Enroll Anthropic key
+        run: echo "$ANTHROPIC_API_KEY" | worthless enroll --alias anthropic --provider anthropic --key-stdin
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+The alias is user-chosen -- use `openai-prod`, `openai-test`, etc. for multiple keys from the same provider.
+
+## Alternative: file-based enrollment
+
+If you prefer using a `.env` file, create one from secrets and use `worthless lock`:
+
+```yaml
+      - name: Create .env and lock
+        run: |
+          cat <<'EOF' > .env
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          EOF
+          worthless lock --env .env
+          rm -f .env
+```
 
 ## Exit codes
 
