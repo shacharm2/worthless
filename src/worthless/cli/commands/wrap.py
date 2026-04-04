@@ -8,14 +8,16 @@ the child, and cleans up when the child exits.
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import sys
+import threading
 
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, get_home
 from worthless.cli.console import get_console
-from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.cli.process import (
     build_proxy_env,
     create_liveness_pipe,
@@ -38,8 +40,6 @@ def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
     Returns an empty list when the database does not exist, the shards
     table is missing (pre-migration DB), or the table is empty.
     """
-    import sqlite3
-
     if not home.db_path.exists():
         return []
 
@@ -152,7 +152,10 @@ def register_wrap_commands(app: typer.Typer) -> None:
                 os.close(read_fd)
                 os.close(write_fd)
                 console.print_error(
-                    WorthlessError(ErrorCode.PROXY_UNREACHABLE, f"Failed to start proxy: {exc}")
+                    WorthlessError(
+                        ErrorCode.PROXY_UNREACHABLE,
+                        sanitize_exception(exc, generic="failed to start proxy"),
+                    )
                 )
                 raise typer.Exit(code=1) from exc
 
@@ -182,7 +185,10 @@ def register_wrap_commands(app: typer.Typer) -> None:
             except Exception as exc:
                 _cleanup_proxy(proxy, write_fd)
                 console.print_error(
-                    WorthlessError(ErrorCode.WRAP_CHILD_FAILED, f"Failed to start child: {exc}")
+                    WorthlessError(
+                        ErrorCode.WRAP_CHILD_FAILED,
+                        sanitize_exception(exc, generic="failed to start child process"),
+                    )
                 )
                 raise typer.Exit(code=1) from exc
 
@@ -190,7 +196,6 @@ def register_wrap_commands(app: typer.Typer) -> None:
             forward_signals(proxy=proxy, child=child)
 
             # Monitor proxy in background -- warn on crash but don't kill child
-            import threading
 
             def _watch_proxy():
                 proxy.wait()
@@ -218,5 +223,5 @@ def register_wrap_commands(app: typer.Typer) -> None:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc
         except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
+            console.print_error(WorthlessError(ErrorCode.UNKNOWN, sanitize_exception(exc)))
             raise typer.Exit(code=1) from exc

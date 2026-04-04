@@ -47,15 +47,17 @@ class ProxySettings:
         default_factory=lambda: float(os.environ.get("WORTHLESS_STREAMING_TIMEOUT", "300.0"))
     )
     allow_insecure: bool = field(
-        default_factory=lambda: os.environ.get("WORTHLESS_ALLOW_INSECURE", "").lower()
-        in ("1", "true", "yes")
+        default_factory=lambda: (
+            os.environ.get("WORTHLESS_ALLOW_INSECURE", "").lower() in ("1", "true", "yes")
+        )
     )
     shard_a_dir: str = field(
         default_factory=lambda: os.environ.get("WORTHLESS_SHARD_A_DIR", _default_shard_a_dir())
     )
     allow_alias_inference: bool = field(
-        default_factory=lambda: os.environ.get("WORTHLESS_ALLOW_ALIAS_INFERENCE", "").lower()
-        in ("1", "true", "yes")
+        default_factory=lambda: (
+            os.environ.get("WORTHLESS_ALLOW_ALIAS_INFERENCE", "").lower() in ("1", "true", "yes")
+        )
     )
     max_request_bytes: int = field(
         default_factory=lambda: int(

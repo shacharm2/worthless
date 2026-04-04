@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from enum import IntEnum
+
+logger = logging.getLogger(__name__)
 
 
 class ErrorCode(IntEnum):
@@ -30,3 +33,15 @@ class WorthlessError(Exception):
 
     def __str__(self) -> str:  # noqa: D105
         return f"WRTLS-{self.code.value}: {self.message}"
+
+
+def sanitize_exception(exc: Exception, *, generic: str = "an internal error occurred") -> str:
+    """Return a user-safe single-line description for *exc*.
+
+    Always returns the *generic* message to avoid leaking file paths, DB
+    paths, stack traces, or library internals.  The original exception is
+    logged at DEBUG level so operators can diagnose with ``--verbose`` or
+    log-level configuration.
+    """
+    logger.debug("Sanitized exception: %r", exc)
+    return generic

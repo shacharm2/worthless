@@ -26,7 +26,6 @@ def extract_usage_openai(data: bytes) -> UsageInfo | None:
     if not data:
         return None
 
-    # Try as plain JSON first
     try:
         parsed = json.loads(data)
         if isinstance(parsed, dict) and "usage" in parsed:
@@ -35,7 +34,6 @@ def extract_usage_openai(data: bytes) -> UsageInfo | None:
     except (json.JSONDecodeError, ValueError):
         pass
 
-    # Try as SSE: scan for data: lines containing "usage"
     try:
         text = data.decode("utf-8", errors="replace")
         for line in reversed(text.splitlines()):
@@ -78,16 +76,27 @@ def _find_sse_event_data(
 
 
 def extract_usage_anthropic(data: bytes) -> UsageInfo | None:
-    """Extract token usage from an Anthropic SSE response.
+    """Extract token usage from an Anthropic response (JSON or SSE).
 
-    Scans for:
-    - event: message_start → input_tokens and model
-    - event: message_delta → output_tokens
-    Total = input_tokens + output_tokens.
+    For non-streaming JSON: parses usage.input_tokens + usage.output_tokens directly.
+    For SSE streams: scans for message_start (input_tokens) and message_delta (output_tokens).
     Returns None if no usage data found.
     """
     if not data:
         return None
+
+    try:
+        parsed = json.loads(data)
+        if isinstance(parsed, dict) and "usage" in parsed:
+            usage = parsed["usage"]
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+            return UsageInfo(
+                total_tokens=input_tokens + output_tokens,
+                model=parsed.get("model"),
+            )
+    except (json.JSONDecodeError, ValueError):
+        pass
 
     try:
         text = data.decode("utf-8", errors="replace")

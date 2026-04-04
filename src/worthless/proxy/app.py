@@ -26,12 +26,15 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
-from worthless.adapters.registry import get_adapter
+from starlette.middleware.cors import CORSMiddleware
+
+from worthless.adapters.registry import get_adapter, get_provider_for_path
 from worthless.adapters.types import INTERNAL_HEADER_PREFIX
 from worthless.crypto.splitter import reconstruct_key, secure_key
 from worthless.proxy.config import ProxySettings
-from worthless.proxy.errors import auth_error_response, gateway_error_response
+from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
 from worthless.proxy.metering import extract_usage_anthropic, extract_usage_openai, record_spend
+from worthless.proxy.middleware import BodySizeLimitMiddleware
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 from worthless.storage.repository import ShardRepository
 from worthless.storage.schema import SCHEMA
@@ -39,6 +42,7 @@ from worthless.storage.schema import SCHEMA
 logger = logging.getLogger(__name__)
 
 _ALIAS_RE = re.compile(r"[a-zA-Z0-9_-]+")
+_BAD_HEADER_CHARS = frozenset("\x00\r\n")
 
 
 def _make_uniform_401_bytes() -> tuple[bytes, dict[str, str]]:
@@ -68,8 +72,6 @@ def _infer_alias_from_path(clean_path: str, settings: ProxySettings) -> str | No
     shard_a_dir for a unique matching alias (format: ``provider-hash8``).
     Returns None if no match or ambiguous (multiple aliases for same provider).
     """
-    from worthless.adapters.registry import get_provider_for_path
-
     provider = get_provider_for_path(clean_path)
     if not provider:
         return None
@@ -103,48 +105,17 @@ def _strip_worthless_headers(headers: dict[str, str]) -> dict[str, str]:
 def _sanitize_upstream_error(status_code: int, body: bytes, provider: str) -> bytes:
     """Sanitize upstream error response body — strip internal provider details.
 
-    Keeps the status code and error type but replaces the message with a generic
-    one to prevent information leakage from the upstream provider.
+    Keeps the error type but replaces the message with a generic one
+    to prevent information leakage from the upstream provider.
     """
+    error_type = "api_error"
     try:
         parsed = json.loads(body)
-        if provider == "anthropic" and isinstance(parsed, dict):
-            error_type = "api_error"
-            if "error" in parsed and isinstance(parsed["error"], dict):
-                error_type = parsed["error"].get("type", "api_error")
-            return json.dumps(
-                {
-                    "type": "error",
-                    "error": {"type": error_type, "message": "upstream provider error"},
-                }
-            ).encode()
-        elif isinstance(parsed, dict) and "error" in parsed:
-            error_type = "api_error"
-            if isinstance(parsed["error"], dict):
-                error_type = parsed["error"].get("type", "api_error")
-            return json.dumps(
-                {
-                    "error": {
-                        "message": "upstream provider error",
-                        "type": error_type,
-                        "param": None,
-                        "code": None,
-                    }
-                }
-            ).encode()
+        if isinstance(parsed, dict) and "error" in parsed and isinstance(parsed["error"], dict):
+            error_type = parsed["error"].get("type", "api_error")
     except (json.JSONDecodeError, ValueError, KeyError):
         pass
-    # Fallback: generic error body
-    return json.dumps(
-        {
-            "error": {
-                "message": "upstream provider error",
-                "type": "api_error",
-                "param": None,
-                "code": None,
-            }
-        }
-    ).encode()
+    return _error_body(status_code, "upstream provider error", error_type, provider)
 
 
 @asynccontextmanager
@@ -152,7 +123,6 @@ async def _lifespan(app: FastAPI):
     """Startup/shutdown lifecycle for the proxy."""
     settings: ProxySettings = app.state.settings
 
-    # Initialize persistent DB connection (H-6/H-7: reuse across requests)
     db = await aiosqlite.connect(settings.db_path)
     await db.executescript(SCHEMA)
     await db.execute("PRAGMA journal_mode=WAL")
@@ -160,12 +130,10 @@ async def _lifespan(app: FastAPI):
     await db.commit()
     app.state.db = db
 
-    # Initialize repository
     repo = ShardRepository(settings.db_path, settings.fernet_key.encode())
     await repo.initialize()
     app.state.repo = repo
 
-    # Initialize httpx client (follow_redirects=False for security)
     client = httpx.AsyncClient(
         follow_redirects=False,
         timeout=httpx.Timeout(
@@ -178,7 +146,6 @@ async def _lifespan(app: FastAPI):
     )
     app.state.httpx_client = client
 
-    # Initialize rules engine with persistent DB connection
     rules_engine = RulesEngine(
         rules=[
             SpendCapRule(db=db),
@@ -217,17 +184,11 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
     )
     app.state.settings = settings
 
-    # ---- Middleware stack (reverse order: last registered runs first) ----
-    # M-11: CORS denial — no origins allowed, browser-based access blocked
-    from starlette.middleware.cors import CORSMiddleware
-
+    # Middleware stack (reverse order: last registered runs first)
     app.add_middleware(CORSMiddleware, allow_origins=[], allow_methods=["GET"], allow_headers=[])
-    # M-1: Body size limit — reject oversized requests before they reach handlers
-    from worthless.proxy.middleware import BodySizeLimitMiddleware
-
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
 
-    # ---- Health endpoints (no auth) ----
+    # Health endpoints (no auth)
 
     @app.get("/")
     async def root() -> dict[str, str]:
@@ -239,13 +200,16 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
 
     @app.get("/readyz")
     async def readyz(request: Request) -> Response:
-        repo: ShardRepository = request.app.state.repo
-        keys = await repo.list_keys()
-        if not keys:
-            return JSONResponse(status_code=503, content={"status": "no keys enrolled"})
+        # H-3: Only check DB connectivity — never reveal enrollment state
+        # (prevents unauthenticated enrollment oracle, worthless-9dz)
+        db: aiosqlite.Connection = request.app.state.db
+        try:
+            await db.execute("SELECT 1")
+        except Exception:
+            return JSONResponse(status_code=503, content={"status": "unavailable"})
         return JSONResponse(status_code=200, content={"status": "ok"})
 
-    # ---- Catch-all proxy route ----
+    # Catch-all proxy route
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def proxy_request(request: Request, path: str) -> Response:  # noqa: C901
@@ -254,37 +218,34 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         rules_engine: RulesEngine = request.app.state.rules_engine
         httpx_client: httpx.AsyncClient = request.app.state.httpx_client
 
-        # (a) Strip query params from path for adapter lookup
         clean_path = "/" + path.split("?")[0].lstrip("/")
 
-        # (b) Validate alias header present, or infer from path
+        # Validate alias header present, or infer from path
         alias = request.headers.get("x-worthless-key")
         if not alias and settings.allow_alias_inference:
             alias = _infer_alias_from_path(clean_path, settings)
         if not alias:
             return _uniform_401()
 
-        # (c) Validate alias format (anti-path-traversal)
         if not _ALIAS_RE.fullmatch(alias):
             return _uniform_401()
 
-        # (d) TLS enforcement
         if not settings.allow_insecure:
             proto = request.scope.get("scheme", "http")
             if proto != "https":
                 return _uniform_401()
 
-        # (e) Validate no whitespace/null in header keys
-        for key in request.headers.keys():
-            if any(c in key for c in ("\x00", "\r", "\n")):
+        # Reject null/CR/LF in header keys or values
+        for key, value in request.headers.items():
+            if _BAD_HEADER_CHARS.intersection(key) or _BAD_HEADER_CHARS.intersection(value):
                 return _uniform_401()
 
-        # (f) Fetch encrypted shard (NO Fernet decrypt — enables gate-before-decrypt)
+        # Fetch encrypted shard (gate-before-decrypt: no Fernet yet)
         encrypted = await repo.fetch_encrypted(alias)
         if encrypted is None:
             return _uniform_401()
 
-        # (g) Load shard_a from header or file fallback
+        # Load shard_a from header or file fallback
         shard_a_header = request.headers.get("x-worthless-shard-a")
         shard_a: bytearray | None = None
         if shard_a_header:
@@ -293,22 +254,21 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             except Exception:
                 return _uniform_401()
         else:
-            # B-4: Async file I/O with TOCTOU fix (try/except instead of check-then-read)
             shard_a_path = Path(settings.shard_a_dir) / alias
             try:
                 raw = await asyncio.to_thread(shard_a_path.read_bytes)
                 shard_a = bytearray(raw)
-                del raw  # Remove immutable bytes reference sooner
+                del raw
             except FileNotFoundError:
                 pass
 
         if shard_a is None:
             return _uniform_401()
 
-        # (h) GATE: rules engine evaluates BEFORE any Fernet decrypt (SR-03 / CRYP-05)
+        # GATE: rules engine evaluates BEFORE any Fernet decrypt
         denial = await rules_engine.evaluate(alias, request, provider=encrypted.provider)
         if denial is not None:
-            # Zero shard_a before returning — gate denied but shard_a was loaded
+            # Zero shard_a before returning
             shard_a[:] = b"\x00" * len(shard_a)
             return Response(
                 content=denial.body,
@@ -317,28 +277,27 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 media_type="application/json",
             )
 
-        # (i) Get adapter — H-2/M-3: return uniform 401 (not 404) for anti-enumeration
+        # Get adapter (uniform 401, not 404, for anti-enumeration)
         adapter = get_adapter(clean_path)
         if adapter is None:
             shard_a[:] = b"\x00" * len(shard_a)
             return _uniform_401()
 
-        # (j) NOW decrypt (gate passed) — Fernet decrypt only happens after rules pass
+        # Decrypt now that the gate has passed
         stored = repo.decrypt_shard(encrypted)
 
-        # (k) Reconstruct key inside secure_key context
+        # Reconstruct key inside secure_key context
         body = await request.body()
         req_headers = {k: v for k, v in request.headers.items()}
 
         try:
             key_buf = reconstruct_key(shard_a, stored.shard_b, stored.commitment, stored.nonce)
         except Exception:
-            # Zero shard material on failure
             shard_a[:] = b"\x00" * len(shard_a)
             stored.zero()
             return _uniform_401()
 
-        # B-1: Build and send with stream=True for SSE support
+        # Build and send with stream=True for SSE support
         upstream_resp: httpx.Response | None = None
         try:
             with secure_key(key_buf) as k:
@@ -353,11 +312,6 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     content=adapter_req.body,
                 )
 
-                # NOTE: api_key.decode() in adapter creates an immutable str copy.
-                # This is a known PoC limitation — the Rust reconstruction service
-                # will handle key material entirely in-process without string copies.
-
-                # H-1: Send with error handling for httpx exceptions
                 try:
                     upstream_resp = await httpx_client.send(upstream_req, stream=True)
                 except httpx.TimeoutException:
@@ -367,26 +321,11 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 except httpx.HTTPError:
                     return _make_gateway_response(502, "bad gateway")
 
-            # secure_key exited — key_buf is zeroed. Stream reads happen after key is gone.
-
-            # Relay response
+            # Relay response (key_buf is zeroed after secure_key exits)
             adapter_resp = await adapter.relay_response(upstream_resp)
 
-            # Strip x-worthless-* from response headers
             clean_headers = _strip_worthless_headers(adapter_resp.headers)
             provider = encrypted.provider
-
-            # M-4: Sanitize upstream error bodies
-            if adapter_resp.status_code >= 400:
-                sanitized_body = _sanitize_upstream_error(
-                    adapter_resp.status_code, adapter_resp.body, provider
-                )
-                return Response(
-                    content=sanitized_body,
-                    status_code=adapter_resp.status_code,
-                    headers={"content-type": "application/json"},
-                    media_type="application/json",
-                )
 
             async def _do_record_spend(data: bytes):
                 """Extract usage and record spend — shared by streaming and non-streaming."""
@@ -407,8 +346,19 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 except Exception:
                     logger.warning("Failed to record spend for alias=%s", alias)
 
+            if adapter_resp.status_code >= 400:
+                sanitized_body = _sanitize_upstream_error(
+                    adapter_resp.status_code, adapter_resp.body, provider
+                )
+                return Response(
+                    content=sanitized_body,
+                    status_code=adapter_resp.status_code,
+                    headers={"content-type": "application/json"},
+                    media_type="application/json",
+                    background=BackgroundTask(_do_record_spend, adapter_resp.body),
+                )
+
             if adapter_resp.is_streaming and adapter_resp.stream is not None:
-                # B-1: SSE streaming with metering and cleanup
                 collected_chunks: list[bytes] = []
 
                 async def _stream_with_metering() -> AsyncIterator[bytes]:
@@ -430,7 +380,6 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     background=BackgroundTask(_record_metering),
                 )
             else:
-                # Non-streaming: read body, close response, extract usage
                 await upstream_resp.aclose()
 
                 return Response(
@@ -441,7 +390,6 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     background=BackgroundTask(_do_record_spend, adapter_resp.body),
                 )
         finally:
-            # B-3: Zero all shard material after request completes
             shard_a[:] = b"\x00" * len(shard_a)
             if stored is not None:
                 stored.zero()

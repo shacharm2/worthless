@@ -11,7 +11,7 @@ import typer
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import rewrite_env_key
-from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.crypto.splitter import reconstruct_key
 from worthless.crypto.types import zero_buf
 from worthless.storage.repository import ShardRepository
@@ -139,5 +139,5 @@ def register_unlock_commands(app: typer.Typer) -> None:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc
         except Exception as exc:
-            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
+            console.print_error(WorthlessError(ErrorCode.UNKNOWN, sanitize_exception(exc)))
             raise typer.Exit(code=1) from exc

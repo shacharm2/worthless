@@ -1,0 +1,99 @@
+"""Revoke command -- wipe an enrolled key (shard_a + DB records)."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import re
+from pathlib import Path
+
+import typer
+
+from worthless.cli.bootstrap import acquire_lock, get_home
+from worthless.cli.console import get_console
+from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
+from worthless.storage.repository import ShardRepository
+
+_ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+async def _revoke_async(alias: str, repo: ShardRepository, shard_a_dir: Path) -> bool:
+    """Delete all DB records and wipe shard_a file for *alias*.
+
+    Returns True if anything was deleted, False if alias not found anywhere.
+
+    Note: zeroing shard_a is best-effort on CoW filesystems (APFS, btrfs).
+    Full-disk encryption is the real mitigation for data-at-rest.
+    """
+    shard_a_path = shard_a_dir / alias
+
+    # Atomic DB cleanup: spend_log + enrollment_config + shard (CASCADE) in one txn
+    db_deleted = await repo.revoke_all(alias)
+
+    # Best-effort wipe of shard_a: zero contents, then unlink.
+    # O_NOFOLLOW prevents TOCTOU symlink race.
+    shard_a_exists = shard_a_path.exists() and not shard_a_path.is_symlink()
+    if shard_a_exists:
+        try:
+            fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_NOFOLLOW)
+        except OSError:
+            # Symlink appeared between check and open, or permission error — skip wipe
+            shard_a_path.unlink(missing_ok=True)
+            return True
+        try:
+            size = os.fstat(fd).st_size
+            if size > 0:
+                os.write(fd, b"\x00" * size)
+                os.fsync(fd)
+        finally:
+            os.close(fd)
+        shard_a_path.unlink()
+        return True
+
+    return db_deleted
+
+
+def _revoke_key(alias: str) -> None:
+    """Core revoke logic."""
+    if not _ALIAS_RE.match(alias):
+        raise WorthlessError(ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}")
+
+    console = get_console()
+    home = get_home()
+
+    with acquire_lock(home):
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+
+        async def _run() -> bool:
+            await repo.initialize()
+            return await _revoke_async(alias, repo, home.shard_a_dir)
+
+        revoked = asyncio.run(_run())
+
+    if revoked:
+        console.print_success(
+            f"Key '{alias}' revoked. Shard and enrollments removed.\n"
+            "Note: CoW filesystems (APFS, btrfs) may retain copies of zeroed data. "
+            "Use full-disk encryption for complete erasure."
+        )
+    else:
+        console.print_warning(f"Alias '{alias}' not found. Nothing to revoke.")
+
+
+def register_revoke_commands(app: typer.Typer) -> None:
+    """Register the revoke command on the Typer app."""
+
+    @app.command()
+    def revoke(
+        alias: str = typer.Option(..., "--alias", "-a", help="Alias of the key to revoke"),
+    ) -> None:
+        """Permanently revoke an enrolled API key."""
+        console = get_console()
+        try:
+            _revoke_key(alias)
+        except WorthlessError as exc:
+            console.print_error(exc)
+            raise typer.Exit(code=1) from exc
+        except Exception as exc:
+            console.print_error(WorthlessError(ErrorCode.UNKNOWN, sanitize_exception(exc)))
+            raise typer.Exit(code=1) from exc

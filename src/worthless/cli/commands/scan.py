@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import stat
@@ -13,7 +14,7 @@ import typer
 
 from worthless.cli.bootstrap import get_home
 from worthless.cli.console import get_console
-from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
 from worthless.storage.repository import ShardRepository
 
@@ -89,13 +90,14 @@ def _format_human(
     protected_count = 0
     file_cache: dict[str, str] = {}
 
+    if show_suffix:
+        from worthless.cli.key_patterns import KEY_PATTERN
+
     for f in findings:
         status = "PROTECTED" if f.is_protected else "UNPROTECTED"
         preview = f.value_preview
         if show_suffix and not f.is_protected:
             try:
-                from worthless.cli.key_patterns import KEY_PATTERN
-
                 if f.file not in file_cache:
                     file_cache[f.file] = Path(f.file).read_text(errors="replace")
                 text = file_cache[f.file]
@@ -178,8 +180,6 @@ def _build_decoy_checker():
 
     Returns None if the DB is unavailable (CI/offline mode).
     """
-    import asyncio
-
     try:
         home = get_home()
     except Exception:
@@ -323,8 +323,9 @@ def register_scan_commands(app: typer.Typer) -> None:
             console.print_error(exc)
             raise typer.Exit(code=2) from exc
         except Exception as exc:
-            if not console.quiet:
-                sys.stderr.write(f"Scan error: {type(exc).__name__}: {exc}\n")
+            console.print_error(
+                WorthlessError(ErrorCode.SCAN_ERROR, sanitize_exception(exc, generic="scan failed"))
+            )
             raise typer.Exit(code=2) from exc
         finally:
             if tmp_file is not None:

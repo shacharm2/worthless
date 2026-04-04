@@ -47,3 +47,7 @@ register_wrap_commands(app)
 from worthless.cli.commands.up import register_up_commands  # noqa: E402
 
 register_up_commands(app)
+
+from worthless.cli.commands.revoke import register_revoke_commands  # noqa: E402
+
+register_revoke_commands(app)
