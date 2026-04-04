@@ -28,9 +28,11 @@ _HOP_BY_HOP_HEADERS = (
 )
 
 _SAFE_HEADER_KEYS = st.from_regex(r"[a-z][a-z0-9-]{0,20}", fullmatch=True).filter(
-    lambda key: not key.startswith("x-worthless-")
-    and key not in _HOP_BY_HOP_HEADERS
-    and key != "anthropic-version"
+    lambda key: (
+        not key.startswith("x-worthless-")
+        and key not in _HOP_BY_HOP_HEADERS
+        and key != "anthropic-version"
+    )
 )
 _HEADER_VALUES = st.text(
     alphabet=string.ascii_letters + string.digits + "-_/;= .",

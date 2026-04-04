@@ -54,3 +54,7 @@ register_up_commands(app)
 from worthless.cli.commands.mcp import register_mcp_commands  # noqa: E402
 
 register_mcp_commands(app)
+
+from worthless.cli.commands.revoke import register_revoke_commands  # noqa: E402
+
+register_revoke_commands(app)

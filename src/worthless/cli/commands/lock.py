@@ -14,13 +14,14 @@ from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
 from worthless.cli.decoy import make_decoy
 from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys, shannon_entropy
-from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
+from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, detect_prefix
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.crypto.splitter import split_key
 from worthless.storage.repository import ShardRepository, StoredShard
 
 _SUPPORTED_PROVIDERS = frozenset(_PROVIDER_ENV_MAP.keys())
+_ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 # Pattern matching the literal "WRTLS" marker in old-format decoys.
@@ -243,7 +244,7 @@ def _lock_keys(
                     raise
                 raise WorthlessError(
                     ErrorCode.SHARD_STORAGE_FAILED,
-                    f"Failed to protect key: {exc}",
+                    sanitize_exception(exc, generic="failed to protect key"),
                 ) from exc
             finally:
                 sr.zero()
@@ -267,7 +268,6 @@ def _enroll_single(
     home: WorthlessHome,
 ) -> None:
     """Enroll a single key (no .env scanning)."""
-    _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
     if not _ALIAS_RE.match(alias):
         raise WorthlessError(ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}")
 

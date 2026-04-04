@@ -16,7 +16,7 @@ import typer
 
 from worthless.cli.bootstrap import WorthlessHome, get_home
 from worthless.cli.console import get_console
-from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
+from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
 from worthless.cli.process import (
     build_proxy_env,
     check_pid,
@@ -147,7 +147,10 @@ def register_up_commands(app: typer.Typer) -> None:
             )
         except Exception as exc:
             console.print_error(
-                WorthlessError(ErrorCode.PROXY_UNREACHABLE, f"Failed to start daemon: {exc}")
+                WorthlessError(
+                    ErrorCode.PROXY_UNREACHABLE,
+                    sanitize_exception(exc, generic="failed to start daemon"),
+                )
             )
             raise typer.Exit(code=1) from exc
 
@@ -174,7 +177,10 @@ def register_up_commands(app: typer.Typer) -> None:
             proxy, actual_port = spawn_proxy(env=proxy_env, port=port)
         except Exception as exc:
             console.print_error(
-                WorthlessError(ErrorCode.PROXY_UNREACHABLE, f"Failed to start proxy: {exc}")
+                WorthlessError(
+                    ErrorCode.PROXY_UNREACHABLE,
+                    sanitize_exception(exc, generic="failed to start proxy"),
+                )
             )
             raise typer.Exit(code=1) from exc
 

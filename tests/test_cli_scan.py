@@ -507,7 +507,7 @@ class TestScanErrorPaths:
         assert result.exit_code == 2
 
     def test_scan_files_exception_quiet(self, file_with_key: Path) -> None:
-        """Generic exception in quiet mode -> exit 2, error still shown."""
+        """Generic exception in quiet mode -> exit 2, sanitized error on stderr."""
 
         with patch(
             "worthless.cli.commands.scan.scan_files",
@@ -515,7 +515,9 @@ class TestScanErrorPaths:
         ):
             result = runner.invoke(app, ["-q", "scan", str(file_with_key)])
         assert result.exit_code == 2
+        # Errors are always shown (even in quiet mode) but must be sanitized
         assert "WRTLS-199" in result.stderr
+        assert "boom" not in result.stderr  # raw exception must not leak
 
     def test_worthless_error_during_scan_exits_2(self, file_with_key: Path) -> None:
         """WorthlessError during scan -> exit 2 with error message."""
