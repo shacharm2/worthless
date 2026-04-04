@@ -19,10 +19,7 @@ def shannon_entropy(s: str) -> float:
         return 0.0
     counts = Counter(s)
     length = len(s)
-    return -sum(
-        (count / length) * math.log2(count / length)
-        for count in counts.values()
-    )
+    return -sum((count / length) * math.log2(count / length) for count in counts.values())
 
 
 def scan_env_keys(

@@ -15,6 +15,7 @@ from worthless.proxy.config import ProxySettings, _read_fernet_key
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove all WORTHLESS_* env vars so each test starts clean."""
@@ -26,6 +27,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 # Tests: defaults
 # ---------------------------------------------------------------------------
+
 
 class TestDefaults:
     """ProxySettings should have sensible defaults when no env vars set."""
@@ -67,6 +69,7 @@ class TestDefaults:
 # Tests: custom values from env
 # ---------------------------------------------------------------------------
 
+
 class TestCustomValues:
     """Env vars should override defaults."""
 
@@ -105,6 +108,7 @@ class TestCustomValues:
 # Tests: ALLOW_INSECURE truthy/falsy
 # ---------------------------------------------------------------------------
 
+
 class TestAllowInsecure:
     """ALLOW_INSECURE should accept 1/true/yes and reject everything else."""
 
@@ -125,6 +129,7 @@ class TestAllowInsecure:
 # Tests: fernet key from env
 # ---------------------------------------------------------------------------
 
+
 class TestFernetKeyEnv:
     """Fernet key loading from WORTHLESS_FERNET_KEY env var."""
 
@@ -142,6 +147,7 @@ class TestFernetKeyEnv:
 # ---------------------------------------------------------------------------
 # Tests: fernet fd fallback
 # ---------------------------------------------------------------------------
+
 
 class TestFernetFdFallback:
     """Fernet key loading from inherited file descriptor."""
@@ -167,18 +173,24 @@ class TestFernetFdFallback:
         key = _read_fernet_key()
         assert key == "env-fallback"
 
-    @pytest.mark.parametrize("error", [
-        OSError("Bad fd"),
-        OSError(9, "Bad file descriptor"),
-    ], ids=["generic-oserror", "closed-fd"])
+    @pytest.mark.parametrize(
+        "error",
+        [
+            OSError("Bad fd"),
+            OSError(9, "Bad file descriptor"),
+        ],
+        ids=["generic-oserror", "closed-fd"],
+    )
     def test_fernet_fd_os_error_falls_back(
         self, monkeypatch: pytest.MonkeyPatch, error: OSError
     ) -> None:
         """OSError on read (generic or closed fd) falls back to env var."""
         monkeypatch.setenv("WORTHLESS_FERNET_FD", "99")
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-fallback")
-        with patch("worthless.proxy.config.os.read", side_effect=error), \
-             patch("worthless.proxy.config.os.close"):
+        with (
+            patch("worthless.proxy.config.os.read", side_effect=error),
+            patch("worthless.proxy.config.os.close"),
+        ):
             key = _read_fernet_key()
         assert key == "env-fallback"
 
@@ -186,8 +198,10 @@ class TestFernetFdFallback:
         """When both fd and env are set, fd wins."""
         monkeypatch.setenv("WORTHLESS_FERNET_FD", "7")
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-value")
-        with patch("worthless.proxy.config.os.read", return_value=b"fd-value"), \
-             patch("worthless.proxy.config.os.close"):
+        with (
+            patch("worthless.proxy.config.os.read", return_value=b"fd-value"),
+            patch("worthless.proxy.config.os.close"),
+        ):
             key = _read_fernet_key()
         assert key == "fd-value"
 
@@ -195,6 +209,7 @@ class TestFernetFdFallback:
 # ---------------------------------------------------------------------------
 # Tests: validation
 # ---------------------------------------------------------------------------
+
 
 class TestValidation:
     """ProxySettings.validate() should raise on missing fernet key."""
@@ -213,6 +228,7 @@ class TestValidation:
 # ---------------------------------------------------------------------------
 # Tests: invalid / edge-case values
 # ---------------------------------------------------------------------------
+
 
 class TestInvalidValues:
     """Malformed env vars should raise during construction."""

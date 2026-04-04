@@ -938,7 +938,7 @@ class TestAntiEnumeration:
         alias, shard_a_b64, _ = enrolled_alias
         responses: list[tuple[str, httpx.Response]] = []
 
-        # 1. Missing alias (no header, no inferrable alias)
+        # 1. Missing alias (no header, no inferable alias)
         r = await proxy_client.post("/v1/chat/completions", content=b"{}")
         responses.append(("missing_alias", r))
 
@@ -1010,9 +1010,7 @@ class TestAntiEnumeration:
         reference_label, reference = responses[0]
         for label, resp in responses:
             assert resp.status_code == 401, f"{label}: expected 401, got {resp.status_code}"
-            assert resp.content == reference.content, (
-                f"{label} body differs from {reference_label}"
-            )
+            assert resp.content == reference.content, f"{label} body differs from {reference_label}"
 
     async def test_tls_enforcement_returns_identical_401(
         self, proxy_settings: ProxySettings, repo, enrolled_alias
@@ -1245,7 +1243,10 @@ class TestCORSDenial:
 
 @pytest.fixture()
 async def attack_scenario(
-    tmp_db_path: str, fernet_key: bytes, tmp_path, sample_api_key_bytes: bytes,
+    tmp_db_path: str,
+    fernet_key: bytes,
+    tmp_path,
+    sample_api_key_bytes: bytes,
 ):
     """Enrolled key with shard_a on disk, secure defaults (inference off, TLS required)."""
     from worthless.crypto import split_key

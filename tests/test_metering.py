@@ -177,9 +177,7 @@ def test_extract_usage_openai_sse_no_usage_in_any_chunk():
         b"data: "
         + json.dumps({"choices": [{"delta": {"content": "Hi"}}], "model": "gpt-4o"}).encode()
         + b"\n\n"
-        b"data: "
-        + json.dumps({"choices": [{"delta": {}}], "model": "gpt-4o"}).encode()
-        + b"\n\n"
+        b"data: " + json.dumps({"choices": [{"delta": {}}], "model": "gpt-4o"}).encode() + b"\n\n"
         b"data: [DONE]\n\n"
     )
     assert extract_usage_openai(chunks) is None

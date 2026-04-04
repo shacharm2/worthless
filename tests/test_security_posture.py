@@ -38,8 +38,7 @@ class TestSecurityMd:
 
     def test_security_md_exists(self) -> None:
         assert _SECURITY_PATH.exists(), (
-            "SECURITY.md not found at repo root — "
-            "vulnerability disclosure policy is missing"
+            "SECURITY.md not found at repo root — vulnerability disclosure policy is missing"
         )
 
 
@@ -60,9 +59,7 @@ class TestSecurityPostureStructure:
 
     def test_has_glossary(self) -> None:
         text = _posture_text()
-        assert "Glossary" in text, (
-            "SECURITY_POSTURE.md must have a Glossary section"
-        )
+        assert "Glossary" in text, "SECURITY_POSTURE.md must have a Glossary section"
 
     def test_covers_all_three_invariants(self) -> None:
         text = _posture_text()
@@ -80,9 +77,7 @@ class TestSecurityPostureStructure:
         text = _posture_text()
         for rule_num in range(1, 9):
             rule_id = f"SR-{rule_num:02d}"
-            assert rule_id in text, (
-                f"SECURITY_POSTURE.md must reference {rule_id}"
-            )
+            assert rule_id in text, f"SECURITY_POSTURE.md must reference {rule_id}"
 
     def test_uses_defined_confidence_scale(self) -> None:
         text = _posture_text()
@@ -110,9 +105,7 @@ class TestSecurityPostureStructure:
             phrase in text
             for phrase in ("Non-Goals", "Out of Scope", "Does NOT protect", "Non-goals")
         )
-        assert has_non_goals, (
-            "SECURITY_POSTURE.md must have Non-Goals or Out of Scope section"
-        )
+        assert has_non_goals, "SECURITY_POSTURE.md must have Non-Goals or Out of Scope section"
 
     def test_cites_test_evidence(self) -> None:
         text = _posture_text()
@@ -126,9 +119,7 @@ class TestSecurityPostureStructure:
     def test_has_trust_boundary_diagram(self) -> None:
         text = _posture_text()
         has_diagram = "Trust Boundary" in text or "trust boundary" in text
-        assert has_diagram, (
-            "SECURITY_POSTURE.md must have a trust boundary diagram"
-        )
+        assert has_diagram, "SECURITY_POSTURE.md must have a trust boundary diagram"
 
     def test_has_residual_risk_table(self) -> None:
         text = _posture_text()
@@ -150,9 +141,7 @@ class TestSecurityPostureStructure:
 
     def test_links_to_security_md(self) -> None:
         text = _posture_text()
-        assert "SECURITY.md" in text, (
-            "SECURITY_POSTURE.md must link to SECURITY.md"
-        )
+        assert "SECURITY.md" in text, "SECURITY_POSTURE.md must link to SECURITY.md"
 
     def test_no_compliance_overclaiming(self) -> None:
         text = _posture_text().lower()

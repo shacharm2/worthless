@@ -24,6 +24,7 @@ runner = CliRunner(mix_stderr=False)
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def env_with_real_key(tmp_path: Path) -> Path:
     """Create a .env with a real (unprotected) OpenAI key."""
@@ -52,20 +53,24 @@ def file_with_key(tmp_path: Path) -> Path:
 # Tests: fake key guard — fail fast if key generation drifts from scanner
 # ---------------------------------------------------------------------------
 
+
 class TestFakeKeyGuard:
     """Ensure generated test keys match scanner expectations."""
 
     def test_fake_openai_key_matches_pattern(self) -> None:
         from worthless.cli.key_patterns import KEY_PATTERN
+
         assert KEY_PATTERN.match(_fake_openai_key()), "fake key no longer matches KEY_PATTERN"
 
     def test_fake_openai_key_above_entropy_threshold(self) -> None:
         from worthless.cli.dotenv_rewriter import shannon_entropy
         from worthless.cli.key_patterns import ENTROPY_THRESHOLD
+
         assert shannon_entropy(_fake_openai_key()) >= ENTROPY_THRESHOLD
 
     def test_fake_anthropic_key_matches_pattern(self) -> None:
         from worthless.cli.key_patterns import KEY_PATTERN
+
         assert KEY_PATTERN.match(_fake_anthropic_key()), (
             "fake anthropic key no longer matches KEY_PATTERN"
         )
@@ -73,6 +78,7 @@ class TestFakeKeyGuard:
     def test_fake_anthropic_key_above_entropy_threshold(self) -> None:
         from worthless.cli.dotenv_rewriter import shannon_entropy
         from worthless.cli.key_patterns import ENTROPY_THRESHOLD
+
         assert shannon_entropy(_fake_anthropic_key()) >= ENTROPY_THRESHOLD
 
 
@@ -80,12 +86,11 @@ class TestFakeKeyGuard:
 # Tests: basic scan
 # ---------------------------------------------------------------------------
 
+
 class TestScanBasic:
     """Tests for basic scan behavior."""
 
-    def test_scan_file_with_unprotected_key_exits_1(
-        self, file_with_key: Path
-    ) -> None:
+    def test_scan_file_with_unprotected_key_exits_1(self, file_with_key: Path) -> None:
         """Scan file with real key -> exit 1, shows UNPROTECTED."""
         result = runner.invoke(app, ["scan", str(file_with_key)])
         assert result.exit_code == 1, f"stdout={result.stdout}\nstderr={result.stderr}"
@@ -126,6 +131,7 @@ class TestScanBasic:
 # ---------------------------------------------------------------------------
 # Tests: output formats
 # ---------------------------------------------------------------------------
+
 
 class TestScanFormats:
     """Tests for --format sarif, --json, --quiet."""
@@ -168,6 +174,7 @@ class TestScanFormats:
 # Tests: exit codes
 # ---------------------------------------------------------------------------
 
+
 class TestScanExitCodes:
     """Test exit code convention: 0=clean, 1=unprotected, 2=error."""
 
@@ -183,6 +190,7 @@ class TestScanExitCodes:
 # ---------------------------------------------------------------------------
 # Tests: --install-hook
 # ---------------------------------------------------------------------------
+
 
 class TestScanInstallHook:
     """Tests for --install-hook."""
@@ -227,16 +235,13 @@ class TestScanInstallHook:
 # Tests: --pre-commit mode
 # ---------------------------------------------------------------------------
 
+
 class TestScanPrecommit:
     """Tests for --pre-commit mode (filenames passed as args)."""
 
-    def test_precommit_processes_passed_files(
-        self, file_with_key: Path, env_clean: Path
-    ) -> None:
+    def test_precommit_processes_passed_files(self, file_with_key: Path, env_clean: Path) -> None:
         """--pre-commit should scan only the files passed as args."""
-        result = runner.invoke(
-            app, ["scan", "--pre-commit", str(file_with_key), str(env_clean)]
-        )
+        result = runner.invoke(app, ["scan", "--pre-commit", str(file_with_key), str(env_clean)])
         assert result.exit_code == 1  # file_with_key has unprotected
 
     def test_precommit_clean_files_exit_0(self, env_clean: Path) -> None:
@@ -248,6 +253,7 @@ class TestScanPrecommit:
 # ---------------------------------------------------------------------------
 # Tests: provider diversity
 # ---------------------------------------------------------------------------
+
 
 class TestScanProviders:
     """Scan must detect keys from multiple providers, not just OpenAI."""
@@ -264,6 +270,7 @@ class TestScanProviders:
 # Tests: entropy filtering
 # ---------------------------------------------------------------------------
 
+
 class TestScanEntropy:
     """Placeholder values should be filtered by entropy."""
 
@@ -279,6 +286,7 @@ class TestScanEntropy:
 # ---------------------------------------------------------------------------
 # Tests: deep scan mode (WOR-45)
 # ---------------------------------------------------------------------------
+
 
 class TestScanDeep:
     """Tests for --deep scan mode: env dump + config file glob."""
@@ -303,9 +311,7 @@ class TestScanDeep:
         result = runner.invoke(app, ["scan", "--deep"])
         assert result.exit_code == 1, f"stdout={result.stdout}\nstderr={result.stderr}"
 
-    def test_deep_scan_env_var_dump(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_deep_scan_env_var_dump(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Deep scan dumps os.environ to temp file and scans it."""
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("MY_OPENAI_KEY", _fake_openai_key())
@@ -345,6 +351,7 @@ class TestScanDeep:
 # Tests: --install-hook edge cases (WOR-45)
 # ---------------------------------------------------------------------------
 
+
 class TestScanInstallHookEdgeCases:
     """Additional edge cases for --install-hook."""
 
@@ -378,6 +385,7 @@ class TestScanInstallHookEdgeCases:
 # Tests: --pre-commit edge cases (WOR-45)
 # ---------------------------------------------------------------------------
 
+
 class TestScanPrecommitEdgeCases:
     """Additional edge cases for --pre-commit mode."""
 
@@ -388,14 +396,10 @@ class TestScanPrecommitEdgeCases:
 
     def test_precommit_nonexistent_file_exits_0(self, tmp_path: Path) -> None:
         """--pre-commit with a nonexistent staged file should not crash."""
-        result = runner.invoke(
-            app, ["scan", "--pre-commit", str(tmp_path / "gone.py")]
-        )
+        result = runner.invoke(app, ["scan", "--pre-commit", str(tmp_path / "gone.py")])
         assert result.exit_code == 0
 
-    def test_precommit_mixed_files(
-        self, env_clean: Path, file_with_key: Path
-    ) -> None:
+    def test_precommit_mixed_files(self, env_clean: Path, file_with_key: Path) -> None:
         """--pre-commit with mix of clean and dirty files -> exit 1."""
         result = runner.invoke(
             app,
@@ -408,31 +412,24 @@ class TestScanPrecommitEdgeCases:
 # Tests: --show-suffix output format (WOR-45)
 # ---------------------------------------------------------------------------
 
+
 class TestScanShowSuffixFormat:
     """Detailed tests for --show-suffix output formatting."""
 
-    def test_show_suffix_contains_dots_separator(
-        self, file_with_key: Path
-    ) -> None:
+    def test_show_suffix_contains_dots_separator(self, file_with_key: Path) -> None:
         """--show-suffix output should use '...' before the suffix."""
         result = runner.invoke(app, ["scan", "--show-suffix", str(file_with_key)])
         assert result.exit_code == 1
         assert "..." in result.stderr
 
-    def test_show_suffix_with_clean_file_no_suffix(
-        self, env_clean: Path
-    ) -> None:
+    def test_show_suffix_with_clean_file_no_suffix(self, env_clean: Path) -> None:
         """--show-suffix with no keys found -> no suffix in output."""
         result = runner.invoke(app, ["scan", "--show-suffix", str(env_clean)])
         assert result.exit_code == 0
 
-    def test_show_suffix_combined_with_json(
-        self, file_with_key: Path
-    ) -> None:
+    def test_show_suffix_combined_with_json(self, file_with_key: Path) -> None:
         """--show-suffix with --json should still produce valid JSON."""
-        result = runner.invoke(
-            app, ["scan", "--show-suffix", "--json", str(file_with_key)]
-        )
+        result = runner.invoke(app, ["scan", "--show-suffix", "--json", str(file_with_key)])
         assert result.exit_code == 1
         findings = json.loads(result.stdout)
         assert isinstance(findings, list)
@@ -442,6 +439,7 @@ class TestScanShowSuffixFormat:
 # ---------------------------------------------------------------------------
 # Tests: _find_git_dir CWD traversal (WOR-45 coverage)
 # ---------------------------------------------------------------------------
+
 
 class TestScanFindGitDir:
     """Test _find_git_dir path: GIT_DIR unset, walks up CWD parents."""
@@ -461,9 +459,7 @@ class TestScanFindGitDir:
         hook = tmp_path / ".git" / "hooks" / "pre-commit"
         assert hook.exists(), f"stdout={result.stdout}\nstderr={result.stderr}"
 
-    def test_install_hook_no_git_anywhere_exits_2(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_install_hook_no_git_anywhere_exits_2(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """--install-hook with no .git anywhere in parents -> exit 2."""
         # Use /tmp which has no .git in any parent
         monkeypatch.chdir("/tmp")  # noqa: S108
@@ -476,14 +472,13 @@ class TestScanFindGitDir:
 # Tests: error handlers and format validation (WOR-45 coverage)
 # ---------------------------------------------------------------------------
 
+
 class TestScanErrorPaths:
     """Test error handler branches in scan command."""
 
     def test_unknown_format_exits_2(self, file_with_key: Path) -> None:
         """--format with unknown value should exit 2."""
-        result = runner.invoke(
-            app, ["scan", "--format", "xml", str(file_with_key)]
-        )
+        result = runner.invoke(app, ["scan", "--format", "xml", str(file_with_key)])
         assert result.exit_code == 2
 
     def test_scan_non_tty_output(self, file_with_key: Path) -> None:
@@ -494,20 +489,14 @@ class TestScanErrorPaths:
         # CliRunner is non-TTY by default
         assert "unprotected" in result.stderr.lower() or "UNPROTECTED" in result.stderr
 
-    def test_scan_protected_key_count(
-        self, file_with_key: Path, env_clean: Path
-    ) -> None:
+    def test_scan_protected_key_count(self, file_with_key: Path, env_clean: Path) -> None:
         """Scan with findings should report count in human output."""
-        result = runner.invoke(
-            app, ["scan", str(file_with_key), str(env_clean)]
-        )
+        result = runner.invoke(app, ["scan", str(file_with_key), str(env_clean)])
         assert result.exit_code == 1
         assert "Found" in result.stderr
         assert "1 unprotected" in result.stderr
 
-    def test_scan_files_exception_exits_2(
-        self, file_with_key: Path
-    ) -> None:
+    def test_scan_files_exception_exits_2(self, file_with_key: Path) -> None:
         """Generic exception during scan_files -> exit 2."""
 
         with patch(
@@ -517,9 +506,7 @@ class TestScanErrorPaths:
             result = runner.invoke(app, ["scan", str(file_with_key)])
         assert result.exit_code == 2
 
-    def test_scan_files_exception_quiet(
-        self, file_with_key: Path
-    ) -> None:
+    def test_scan_files_exception_quiet(self, file_with_key: Path) -> None:
         """Generic exception in quiet mode -> exit 2, no stderr."""
 
         with patch(
@@ -530,12 +517,11 @@ class TestScanErrorPaths:
         assert result.exit_code == 2
         assert result.stderr.strip() == ""
 
-    def test_worthless_error_during_scan_exits_2(
-        self, file_with_key: Path
-    ) -> None:
+    def test_worthless_error_during_scan_exits_2(self, file_with_key: Path) -> None:
         """WorthlessError during scan -> exit 2 with error message."""
 
         from worthless.cli.errors import ErrorCode, WorthlessError
+
         with patch(
             "worthless.cli.commands.scan.scan_files",
             side_effect=WorthlessError(ErrorCode.SCAN_ERROR, "test error"),
@@ -547,6 +533,7 @@ class TestScanErrorPaths:
 # ---------------------------------------------------------------------------
 # Tests: _collect_deep_paths edge cases (coverage completeness)
 # ---------------------------------------------------------------------------
+
 
 class TestCollectDeepPaths:
     """Exercise _collect_deep_paths branches for full coverage."""
@@ -589,6 +576,7 @@ class TestCollectDeepPaths:
 # Tests: _format_human branch coverage
 # ---------------------------------------------------------------------------
 
+
 class TestFormatHumanBranches:
     """Cover remaining branches in _format_human."""
 
@@ -601,6 +589,7 @@ class TestFormatHumanBranches:
         # Now delete the file and scan with a mocked finding
 
         from worthless.cli.scanner import ScanFinding
+
         fake_finding = ScanFinding(
             file=str(tmp_path / "gone.py"),
             line=1,
@@ -610,25 +599,30 @@ class TestFormatHumanBranches:
             value_preview="sk-p****",
         )
         with patch("worthless.cli.commands.scan.scan_files", return_value=[fake_finding]):
-            result = runner.invoke(
-                app, ["scan", "--show-suffix", str(tmp_path / "gone.py")]
-            )
+            result = runner.invoke(app, ["scan", "--show-suffix", str(tmp_path / "gone.py")])
         assert result.exit_code == 1
 
     def test_protected_finding_count(self, tmp_path: Path) -> None:
         """Protected findings should be counted and displayed."""
 
         from worthless.cli.scanner import ScanFinding
+
         findings = [
             ScanFinding(
                 file=str(tmp_path / "x.env"),
-                line=1, var_name="KEY", provider="openai",
-                is_protected=True, value_preview="sk-p****",
+                line=1,
+                var_name="KEY",
+                provider="openai",
+                is_protected=True,
+                value_preview="sk-p****",
             ),
             ScanFinding(
                 file=str(tmp_path / "x.env"),
-                line=2, var_name="KEY2", provider="openai",
-                is_protected=False, value_preview="sk-p****",
+                line=2,
+                var_name="KEY2",
+                provider="openai",
+                is_protected=False,
+                value_preview="sk-p****",
             ),
         ]
         with patch("worthless.cli.commands.scan.scan_files", return_value=findings):
@@ -643,8 +637,12 @@ class TestFormatHumanBranches:
         from worthless.cli.scanner import ScanFinding
 
         finding = ScanFinding(
-            file="/tmp/x.env", line=1, var_name="KEY",  # noqa: S108
-            provider="openai", is_protected=False, value_preview="sk-p****",
+            file="/tmp/x.env",  # noqa: S108
+            line=1,
+            var_name="KEY",
+            provider="openai",
+            is_protected=False,
+            value_preview="sk-p****",
         )
         output = _format_human([finding], show_suffix=False, is_tty=True)
         assert "Run: worthless lock" in output
@@ -655,8 +653,12 @@ class TestFormatHumanBranches:
         from worthless.cli.scanner import ScanFinding
 
         finding = ScanFinding(
-            file="/tmp/x.env", line=1, var_name="KEY",  # noqa: S108
-            provider="openai", is_protected=False, value_preview="sk-p****",
+            file="/tmp/x.env",  # noqa: S108
+            line=1,
+            var_name="KEY",
+            provider="openai",
+            is_protected=False,
+            value_preview="sk-p****",
         )
         output = _format_human([finding], show_suffix=False, is_tty=False)
         assert "docs.worthless.dev" in output
@@ -679,7 +681,9 @@ class TestFormatHumanBranches:
                 raise OSError("already closed")
             # Let other close calls through (e.g. tempfile's fd)
 
-        with patch("worthless.cli.commands.scan.os.write", _failing_write), \
-             patch("worthless.cli.commands.scan.os.close", _failing_close):
+        with (
+            patch("worthless.cli.commands.scan.os.write", _failing_write),
+            patch("worthless.cli.commands.scan.os.close", _failing_close),
+        ):
             result = runner.invoke(app, ["scan", "--deep"])
         assert result.exit_code in (0, 1)

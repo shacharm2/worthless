@@ -104,15 +104,15 @@ class TestWrapLivenessPipe:
 class TestWrapSpawnProxyFailure:
     """wrap exits 1 and cleans up FDs when spawn_proxy fails."""
 
-    def test_spawn_failure_exit_code(
-        self, home_with_key, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_spawn_failure_exit_code(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
         """When spawn_proxy raises, wrap exits 1."""
+
         def _fail(**_kw):
             raise RuntimeError("bind failed")
 
         monkeypatch.setattr(
-            "worthless.cli.commands.wrap.spawn_proxy", _fail,
+            "worthless.cli.commands.wrap.spawn_proxy",
+            _fail,
         )
         result = runner.invoke(
             app,
@@ -172,6 +172,7 @@ class TestWrapChildSpawnFailure:
             "worthless.cli.commands.wrap.poll_health",
             lambda *_a, **_kw: True,
         )
+
         def _fail_popen(*_a, **_kw):
             raise FileNotFoundError("No such file")
 
@@ -277,17 +278,20 @@ class TestWrapProxyCrashMidSession:
 
         # Patch spawn_proxy -> returns mock proxy
         monkeypatch.setattr(
-            wrap_mod, "spawn_proxy",
+            wrap_mod,
+            "spawn_proxy",
             lambda **_kw: (mock_proxy, 9999),
         )
         # Patch poll_health -> healthy
         monkeypatch.setattr(
-            wrap_mod, "poll_health",
+            wrap_mod,
+            "poll_health",
             lambda *_a, **_kw: True,
         )
         # Patch forward_signals -> no-op (can't killpg mock PIDs)
         monkeypatch.setattr(
-            wrap_mod, "forward_signals",
+            wrap_mod,
+            "forward_signals",
             lambda **_kw: None,
         )
         # Patch subprocess.Popen -> returns mock child
@@ -313,11 +317,13 @@ class TestWrapBootstrapFailure:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """OSError in get_home -> exit_code=1."""
+
         def _boom():
             raise OSError("permission denied")
 
         monkeypatch.setattr(
-            "worthless.cli.commands.wrap.get_home", _boom,
+            "worthless.cli.commands.wrap.get_home",
+            _boom,
         )
 
         result = runner.invoke(
@@ -331,11 +337,13 @@ class TestWrapBootstrapFailure:
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """OSError in create_liveness_pipe -> exit_code=1."""
+
         def _boom():
             raise OSError("too many files")
 
         monkeypatch.setattr(
-            "worthless.cli.commands.wrap.create_liveness_pipe", _boom,
+            "worthless.cli.commands.wrap.create_liveness_pipe",
+            _boom,
         )
 
         result = runner.invoke(
@@ -424,9 +432,7 @@ class TestListEnrolledProvidersNoDB:
 class TestWrapExceptionHandlers:
     """Cover WorthlessError and generic Exception handlers in wrap."""
 
-    def test_worthless_error_in_wrap_exits_clean(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_worthless_error_in_wrap_exits_clean(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """WorthlessError raised inside wrap -> exit_code=1 with WRTLS."""
         from worthless.cli.errors import ErrorCode, WorthlessError
 
@@ -442,10 +448,9 @@ class TestWrapExceptionHandlers:
         assert result.exit_code == 1
         assert "WRTLS" in result.output
 
-    def test_generic_exception_in_wrap_exits_clean(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_generic_exception_in_wrap_exits_clean(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Generic Exception raised inside wrap -> exit_code=1 with WRTLS-199."""
+
         def _boom():
             raise ValueError("unexpected")
 

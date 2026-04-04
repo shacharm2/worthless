@@ -56,6 +56,7 @@ dev = [
     {include-group = "test"},
     "cyclonedx-bom>=7.3.0",
     "deptry>=0.22",
+    "pip-audit>=2.8",
     "pip-licenses>=5.5.5",
     "pre-commit>=4.0",
     "pyright>=1.1",
@@ -149,10 +150,12 @@ ignore = [
 # Only scan src/ — dev/test/qa deps are CLI tools, not imported by app code
 optional_dependencies_dev_groups = ["dev", "test", "qa", "fuzz"]
 [tool.deptry.per_rule_ignores]
-# starlette: transitive dep of fastapi, but we import ASGI types directly
 # uvicorn: runtime ASGI server invoked via CLI, never imported
-DEP002 = ["uvicorn"]
-DEP003 = ["starlette"]
+# python-dotenv: planned refactor to replace custom parser (worthless-ic6)
+DEP002 = ["uvicorn", "python-dotenv"]
+# starlette: transitive dep of fastapi, but we import ASGI types directly
+# rich: transitive dep of typer[all], but we import directly for console output
+DEP003 = ["starlette", "rich"]
 
 [tool.bandit]
 targets = ["src"]

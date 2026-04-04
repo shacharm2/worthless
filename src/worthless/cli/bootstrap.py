@@ -109,18 +109,14 @@ def _init_db(home: WorthlessHome) -> None:
         # decoy_hash column get it added before CREATE INDEX touches it.
         tables = {
             row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
         if "enrollments" in tables:
             cursor = conn.execute("PRAGMA table_info(enrollments)")
             columns = {row[1] for row in cursor.fetchall()}
             if "decoy_hash" not in columns:
                 try:
-                    conn.execute(
-                        "ALTER TABLE enrollments ADD COLUMN decoy_hash TEXT"
-                    )
+                    conn.execute("ALTER TABLE enrollments ADD COLUMN decoy_hash TEXT")
                     conn.commit()
                 except sqlite3.OperationalError as exc:
                     if "duplicate column" not in str(exc).lower():

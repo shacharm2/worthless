@@ -175,8 +175,7 @@ def _parse_uvicorn_port(proc: subprocess.Popen, timeout: float = 15.0) -> int:
             return int(m.group(1))
 
     raise RuntimeError(
-        f"Could not parse uvicorn port within {timeout}s. "
-        f"Output so far: {''.join(lines[:20])}"
+        f"Could not parse uvicorn port within {timeout}s. Output so far: {''.join(lines[:20])}"
     )
 
 

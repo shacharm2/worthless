@@ -125,9 +125,7 @@ class TestMultiEnvUnlock:
         assert len(enrollments_before) == 2
 
         # Unlock only env_a
-        r2 = runner.invoke(
-            app, ["unlock", "--alias", alias, "--env", str(env_a)], env=env_vars
-        )
+        r2 = runner.invoke(app, ["unlock", "--alias", alias, "--env", str(env_a)], env=env_vars)
         assert r2.exit_code == 0, r2.output
 
         # project-b enrollment should still exist
@@ -195,18 +193,14 @@ class TestMultiEnvUnlockAll:
 class TestOrphanShardA:
     """shard_a file exists on disk but no matching DB row."""
 
-    def test_unlock_orphan_shard_a_reports_error(
-        self, home_dir: WorthlessHome
-    ) -> None:
+    def test_unlock_orphan_shard_a_reports_error(self, home_dir: WorthlessHome) -> None:
         """Unlock with orphan shard_a file should report a clear error, not crash."""
         alias = "orphan-test"
         shard_a_path = home_dir.shard_a_dir / alias
         shard_a_path.write_bytes(b"fake-shard-data")
 
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
-        r = runner.invoke(
-            app, ["unlock", "--alias", alias], env=env_vars
-        )
+        r = runner.invoke(app, ["unlock", "--alias", alias], env=env_vars)
         # Should exit with error (shard_b not found in DB)
         assert r.exit_code == 1
         assert "not found" in r.output.lower() or "shard" in r.output.lower()
@@ -248,9 +242,7 @@ class TestOrphanDbRow:
         # Remove shard_a file (simulate corruption)
         (home_dir.shard_a_dir / alias).unlink()
 
-        r2 = runner.invoke(
-            app, ["unlock", "--alias", alias, "--env", str(env)], env=env_vars
-        )
+        r2 = runner.invoke(app, ["unlock", "--alias", alias, "--env", str(env)], env=env_vars)
         assert r2.exit_code == 1
         assert "shard" in r2.output.lower() or "not found" in r2.output.lower()
 
@@ -261,9 +253,7 @@ class TestOrphanDbRow:
 class TestDoubleLock:
     """Running lock twice on same .env should not create duplicate shards."""
 
-    def test_double_lock_is_idempotent(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_double_lock_is_idempotent(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         env = _make_env(tmp_path, "proj", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
@@ -320,9 +310,7 @@ class TestLockThenScan:
         keys = scan_env_keys(env, is_decoy=_is_decoy)
         assert len(keys) == 0, f"Expected 0 unprotected keys after lock, got {keys}"
 
-    def test_scan_cli_exit_zero_after_lock(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_scan_cli_exit_zero_after_lock(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         env = _make_env(tmp_path, "proj", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
@@ -341,9 +329,7 @@ class TestLockThenScan:
 class TestLockUnlockRoundtrip:
     """lock -> unlock should restore the exact original .env content."""
 
-    def test_roundtrip_restores_original(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_roundtrip_restores_original(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         original_content = f"OPENAI_API_KEY={_OPENAI_KEY}\n"
         env = _make_env(tmp_path, "proj", original_content)
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
@@ -359,9 +345,7 @@ class TestLockUnlockRoundtrip:
 
         assert env.read_text() == original_content
 
-    def test_roundtrip_multi_key(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_roundtrip_multi_key(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Roundtrip works for files with multiple API keys."""
         original = (
             f"OPENAI_API_KEY={_OPENAI_KEY}\n"
@@ -423,9 +407,7 @@ class TestConcurrentLock:
 class TestStaleLockRecovery:
     """Lock file older than 5 minutes should be auto-cleaned."""
 
-    def test_stale_lock_auto_cleaned(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_stale_lock_auto_cleaned(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         # Create lock file and backdate it
         fd = os.open(
             str(home_dir.lock_file),
@@ -446,9 +428,7 @@ class TestStaleLockRecovery:
         assert r.exit_code == 0
         assert not home_dir.lock_file.exists()
 
-    def test_fresh_lock_not_auto_cleaned(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_fresh_lock_not_auto_cleaned(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Lock file younger than 5 minutes should NOT be auto-cleaned."""
         fd = os.open(
             str(home_dir.lock_file),
@@ -471,9 +451,7 @@ class TestStaleLockRecovery:
 class TestEmptyEnvFile:
     """Lock on an empty .env should handle gracefully."""
 
-    def test_lock_empty_env_exits_zero(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_lock_empty_env_exits_zero(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         env = tmp_path / ".env"
         env.write_text("")
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
@@ -528,14 +506,8 @@ class TestEnvWithComments:
         locked_blanks = locked_content.count("\n\n")
         assert original_blanks == locked_blanks
 
-    def test_roundtrip_preserves_comments(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
-        original = (
-            "# My config\n"
-            f"OPENAI_API_KEY={_OPENAI_KEY}\n"
-            "# trailing comment\n"
-        )
+    def test_roundtrip_preserves_comments(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        original = f"# My config\nOPENAI_API_KEY={_OPENAI_KEY}\n# trailing comment\n"
         env = _make_env(tmp_path, "proj", original)
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
@@ -551,17 +523,18 @@ class TestEnvWithComments:
 class TestEnrollmentWithoutEnv:
     """Enroll via CLI without any .env file (scripting/CI use case)."""
 
-    def test_enroll_direct_key_no_env(
-        self, home_dir: WorthlessHome
-    ) -> None:
+    def test_enroll_direct_key_no_env(self, home_dir: WorthlessHome) -> None:
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         r = runner.invoke(
             app,
             [
                 "enroll",
-                "--alias", "ci-key",
-                "--key", _OPENAI_KEY,
-                "--provider", "openai",
+                "--alias",
+                "ci-key",
+                "--key",
+                _OPENAI_KEY,
+                "--provider",
+                "openai",
             ],
             env=env_vars,
         )
@@ -581,18 +554,19 @@ class TestEnrollmentWithoutEnv:
         assert enrollment is not None
         assert enrollment.env_path is None
 
-    def test_enroll_reconstructs_correctly(
-        self, home_dir: WorthlessHome
-    ) -> None:
+    def test_enroll_reconstructs_correctly(self, home_dir: WorthlessHome) -> None:
         """Enrolled key can be reconstructed back to original."""
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         r = runner.invoke(
             app,
             [
                 "enroll",
-                "--alias", "recon-key",
-                "--key", _OPENAI_KEY,
-                "--provider", "openai",
+                "--alias",
+                "recon-key",
+                "--key",
+                _OPENAI_KEY,
+                "--provider",
+                "openai",
             ],
             env=env_vars,
         )
@@ -743,7 +717,8 @@ class TestErrorCompensationPreservesEnrollments:
         assert stored is not None
         asyncio.run(
             repo.store_enrolled(
-                alias, stored,
+                alias,
+                stored,
                 var_name="OPENAI_API_KEY",
                 env_path=str(tmp_path / "project-b" / ".env"),
             )
@@ -759,8 +734,6 @@ class TestErrorCompensationPreservesEnrollments:
         #    doesn't skip, then mock rewrite_env_key to raise AFTER db+file writes.
         env_c = _make_env(tmp_path, "project-c", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
         shard_a_path.unlink()
-
-
 
         with patch(
             "worthless.cli.commands.lock.rewrite_env_key",
@@ -839,10 +812,7 @@ class TestDuplicateKeyValueSameEnv:
         self, home_dir: WorthlessHome, tmp_path: Path
     ) -> None:
         """When two vars have the same key value, both should be rewritten."""
-        original = (
-            f"OPENAI_API_KEY={_OPENAI_KEY}\n"
-            f"OPENAI_API_KEY_DEV={_OPENAI_KEY}\n"
-        )
+        original = f"OPENAI_API_KEY={_OPENAI_KEY}\nOPENAI_API_KEY_DEV={_OPENAI_KEY}\n"
         env = _make_env(tmp_path, "proj", original)
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
@@ -852,9 +822,7 @@ class TestDuplicateKeyValueSameEnv:
         locked = env.read_text()
         # Neither line should still contain the original key
         for line in locked.splitlines():
-            assert _OPENAI_KEY not in line, (
-                f"Original key still present in line: {line}"
-            )
+            assert _OPENAI_KEY not in line, f"Original key still present in line: {line}"
 
         # Both enrollment records should exist
         repo = _repo(home_dir)
@@ -867,10 +835,7 @@ class TestDuplicateKeyValueSameEnv:
         self, home_dir: WorthlessHome, tmp_path: Path
     ) -> None:
         """Same key value in two vars creates two enrollment rows but one shard."""
-        original = (
-            f"OPENAI_API_KEY={_OPENAI_KEY}\n"
-            f"OPENAI_API_KEY_DEV={_OPENAI_KEY}\n"
-        )
+        original = f"OPENAI_API_KEY={_OPENAI_KEY}\nOPENAI_API_KEY_DEV={_OPENAI_KEY}\n"
         env = _make_env(tmp_path, "proj", original)
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
@@ -897,9 +862,7 @@ class TestDuplicateKeyValueSameEnv:
 class TestDuplicateKeyTwoEnvFiles:
     """Locking the same key from two .env files should protect both."""
 
-    def test_lock_same_key_two_env_files(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_lock_same_key_two_env_files(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         env_a = _make_env(tmp_path, "project-a", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
         env_b = _make_env(tmp_path, "project-b", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
@@ -911,9 +874,7 @@ class TestDuplicateKeyTwoEnvFiles:
         r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
         assert r2.exit_code == 0, r2.output
         # env_b must ALSO be rewritten with a decoy
-        assert _OPENAI_KEY not in env_b.read_text(), (
-            "Second .env file was not rewritten with decoy"
-        )
+        assert _OPENAI_KEY not in env_b.read_text(), "Second .env file was not rewritten with decoy"
 
         # Both env files should have enrollment records
         repo = _repo(home_dir)
@@ -929,9 +890,7 @@ class TestDuplicateKeyTwoEnvFiles:
 class TestEnrollThenLock:
     """After enroll, running lock should still rewrite .env with decoy."""
 
-    def test_enroll_then_lock_protects_env(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_enroll_then_lock_protects_env(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
         # Step 1: enroll with the SAME alias that lock would generate
@@ -953,9 +912,7 @@ class TestEnrollThenLock:
         assert r2.exit_code == 0, r2.output
 
         # The .env must not contain the original key anymore
-        assert _OPENAI_KEY not in env.read_text(), (
-            ".env was not rewritten after enroll+lock"
-        )
+        assert _OPENAI_KEY not in env.read_text(), ".env was not rewritten after enroll+lock"
 
 
 # ---- Scanner edge cases (existing) -----------------------------------------
@@ -975,7 +932,7 @@ class TestScannerEdgeCases:
     def test_scan_unicode_env(self, tmp_path: Path) -> None:
         """Env file with unicode should not crash."""
         f = tmp_path / ".env"
-        f.write_text("# Comment with emoji \U0001F600\nNOT_A_KEY=hello\n")
+        f.write_text("# Comment with emoji \U0001f600\nNOT_A_KEY=hello\n")
         findings = scan_files([f])
         assert isinstance(findings, list)
 
@@ -998,9 +955,7 @@ class TestScannerEdgeCases:
 class TestEnrollAcquiresLock:
     """enroll should use acquire_lock to prevent races with lock/unlock."""
 
-    def test_enroll_acquires_lock(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_enroll_acquires_lock(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """enroll should fail when lock file is already held."""
         # Create lock file manually (simulates another process holding the lock)
         fd = os.open(
@@ -1015,9 +970,12 @@ class TestEnrollAcquiresLock:
             app,
             [
                 "enroll",
-                "--alias", "lock-test",
-                "--key", _OPENAI_KEY,
-                "--provider", "openai",
+                "--alias",
+                "lock-test",
+                "--key",
+                _OPENAI_KEY,
+                "--provider",
+                "openai",
             ],
             env=env_vars,
         )
@@ -1025,18 +983,19 @@ class TestEnrollAcquiresLock:
         assert r.exit_code == 1, f"Expected exit 1 (lock held), got {r.exit_code}: {r.output}"
         assert "in progress" in r.output.lower() or "lock" in r.output.lower()
 
-    def test_enroll_cleans_lock_after_success(
-        self, home_dir: WorthlessHome
-    ) -> None:
+    def test_enroll_cleans_lock_after_success(self, home_dir: WorthlessHome) -> None:
         """Lock file must not persist after a successful enroll."""
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
         r = runner.invoke(
             app,
             [
                 "enroll",
-                "--alias", "clean-lock",
-                "--key", _OPENAI_KEY,
-                "--provider", "openai",
+                "--alias",
+                "clean-lock",
+                "--key",
+                _OPENAI_KEY,
+                "--provider",
+                "openai",
             ],
             env=env_vars,
         )
@@ -1050,9 +1009,7 @@ class TestEnrollAcquiresLock:
 class TestUnlockAcquiresLock:
     """unlock should use acquire_lock to prevent races."""
 
-    def test_unlock_acquires_lock(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_unlock_acquires_lock(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """unlock should fail when lock file is already held."""
         # Enroll a key first
         env = _make_env(tmp_path, "proj", f"OPENAI_API_KEY={_OPENAI_KEY}\n")
@@ -1079,9 +1036,7 @@ class TestUnlockAcquiresLock:
 class TestLockRejectsSymlinkEnv:
     """lock should refuse to follow symlink .env files (TOCTOU protection)."""
 
-    def test_lock_rejects_env_symlink(
-        self, home_dir: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_lock_rejects_env_symlink(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """lock --env pointing to a symlink should be rejected."""
         real_env = tmp_path / "real.env"
         real_env.write_text(f"OPENAI_API_KEY={_OPENAI_KEY}\n")
@@ -1103,9 +1058,7 @@ class TestLockRejectsSymlinkEnv:
 class TestWrapUsesDbProvider:
     """wrap should get providers from DB, not by parsing alias names."""
 
-    def test_wrap_provider_from_db_not_alias(
-        self, home_dir: WorthlessHome
-    ) -> None:
+    def test_wrap_provider_from_db_not_alias(self, home_dir: WorthlessHome) -> None:
         """Enroll with non-standard alias; _list_enrolled_providers should still find provider."""
         from worthless.cli.commands.wrap import _list_enrolled_providers
 
@@ -1116,15 +1069,16 @@ class TestWrapUsesDbProvider:
             app,
             [
                 "enroll",
-                "--alias", "my-custom-alias",
-                "--key", _OPENAI_KEY,
-                "--provider", "openai",
+                "--alias",
+                "my-custom-alias",
+                "--key",
+                _OPENAI_KEY,
+                "--provider",
+                "openai",
             ],
             env=env_vars,
         )
         assert r.exit_code == 0, r.output
 
         providers = _list_enrolled_providers(home_dir)
-        assert "openai" in providers, (
-            f"Expected 'openai' from DB lookup, got {providers}"
-        )
+        assert "openai" in providers, f"Expected 'openai' from DB lookup, got {providers}"

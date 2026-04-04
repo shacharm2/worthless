@@ -147,14 +147,14 @@ class TestInitDbMigration:
                 "AND name NOT LIKE 'sqlite_%' ORDER BY name"
             ).fetchall():
                 cols = {
-                    (row[1], row[2]) for row in
-                    conn.execute(f"PRAGMA table_info({name})").fetchall()
+                    (row[1], row[2])
+                    for row in conn.execute(f"PRAGMA table_info({name})").fetchall()
                 }
                 tables[name] = cols
             indexes = sorted(
-                row[1] for row in conn.execute(
-                    "SELECT * FROM sqlite_master WHERE type='index' "
-                    "AND name NOT LIKE 'sqlite_%'"
+                row[1]
+                for row in conn.execute(
+                    "SELECT * FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
                 ).fetchall()
                 if row[1] is not None
             )

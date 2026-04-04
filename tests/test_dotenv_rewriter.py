@@ -33,8 +33,7 @@ class TestScanEnvKeys:
 
         env_file = tmp_path / ".env"
         env_file.write_text(
-            'OPENAI_API_KEY=sk-proj-a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0u1V2\n'
-            'OTHER_VAR=hello\n'
+            "OPENAI_API_KEY=sk-proj-a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0u1V2\nOTHER_VAR=hello\n"
         )
         results = scan_env_keys(env_file)
         assert len(results) == 1
@@ -45,7 +44,7 @@ class TestScanEnvKeys:
         from worthless.cli.dotenv_rewriter import scan_env_keys
 
         env_file = tmp_path / ".env"
-        env_file.write_text('OPENAI_API_KEY=sk-your-key-here\n')
+        env_file.write_text("OPENAI_API_KEY=sk-your-key-here\n")
         results = scan_env_keys(env_file)
         assert len(results) == 0
 
@@ -54,8 +53,8 @@ class TestScanEnvKeys:
 
         env_file = tmp_path / ".env"
         env_file.write_text(
-            'OPENAI_API_KEY=sk-proj-a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0u1V2\n'
-            'ANTHROPIC_API_KEY=sk-ant-api03-x9Y8w7V6u5T4s3R2q1P0o9N8m7L6k5J4i3H2g1F0e9\n'
+            "OPENAI_API_KEY=sk-proj-a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0u1V2\n"
+            "ANTHROPIC_API_KEY=sk-ant-api03-x9Y8w7V6u5T4s3R2q1P0o9N8m7L6k5J4i3H2g1F0e9\n"
         )
         results = scan_env_keys(env_file)
         assert len(results) == 2
@@ -68,7 +67,7 @@ class TestRewriteEnvKey:
         from worthless.cli.dotenv_rewriter import rewrite_env_key
 
         env_file = tmp_path / ".env"
-        env_file.write_text('FOO=bar\nAPI_KEY=old_value\nBAZ=qux\n')
+        env_file.write_text("FOO=bar\nAPI_KEY=old_value\nBAZ=qux\n")
         rewrite_env_key(env_file, "API_KEY", "new_value")
         content = env_file.read_text()
         assert "API_KEY=new_value" in content
@@ -77,7 +76,7 @@ class TestRewriteEnvKey:
         from worthless.cli.dotenv_rewriter import rewrite_env_key
 
         env_file = tmp_path / ".env"
-        original = '# Comment\nFOO=bar\nAPI_KEY=old_value\n\nBAZ=qux\n'
+        original = "# Comment\nFOO=bar\nAPI_KEY=old_value\n\nBAZ=qux\n"
         env_file.write_text(original)
         rewrite_env_key(env_file, "API_KEY", "new_value")
         content = env_file.read_text()
@@ -90,7 +89,7 @@ class TestRewriteEnvKey:
         from worthless.cli.dotenv_rewriter import rewrite_env_key
 
         env_file = tmp_path / ".env"
-        env_file.write_text('FOO=bar\n')
+        env_file.write_text("FOO=bar\n")
         with pytest.raises(KeyError):
             rewrite_env_key(env_file, "NONEXISTENT", "value")
 
@@ -99,7 +98,7 @@ class TestRewriteEnvKey:
         from worthless.cli.dotenv_rewriter import rewrite_env_key
 
         env_file = tmp_path / ".env"
-        env_file.write_text('KEY=old\n')
+        env_file.write_text("KEY=old\n")
         rewrite_env_key(env_file, "KEY", "new")
         # os.replace creates a new inode on most filesystems
         content = env_file.read_text()

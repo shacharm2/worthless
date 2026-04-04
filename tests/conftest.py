@@ -21,9 +21,7 @@ from tests.helpers import fake_openai_key
 # which triggers this check spuriously.  In normal test runs, the check
 # remains active to catch real working-directory issues.
 if os.environ.get("MUTANT_UNDER_TEST"):
-    settings.register_profile(
-        "mutmut", suppress_health_check=[HealthCheck.differing_executors]
-    )
+    settings.register_profile("mutmut", suppress_health_check=[HealthCheck.differing_executors])
     settings.load_profile("mutmut")
 
 # CI profile: cap Hypothesis examples, derandomize for reproducibility,

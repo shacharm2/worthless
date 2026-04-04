@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check per-module coverage floors from coverage.xml."""
+
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path

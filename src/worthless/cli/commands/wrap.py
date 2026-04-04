@@ -114,9 +114,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
     )
     def wrap(
         ctx: typer.Context,
-        command: list[str] = typer.Argument(
-            ..., help="Command to run (e.g. python main.py)"
-        ),
+        command: list[str] = typer.Argument(..., help="Command to run (e.g. python main.py)"),
     ) -> None:
         """Start ephemeral proxy, inject env vars, run COMMAND, clean up."""
         console = get_console()

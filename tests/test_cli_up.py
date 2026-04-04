@@ -111,9 +111,7 @@ class TestUpPidFileErrorBranches:
 class TestUpDaemonFlow:
     """up --daemon starts a daemon process and writes a PID file."""
 
-    def test_daemon_mode_writes_pid(
-        self, home_with_key, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_daemon_mode_writes_pid(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
         """up --daemon writes PID file and exits 0 when healthy."""
         mock_proc = MagicMock()
         mock_proc.pid = 54321
@@ -150,11 +148,13 @@ class TestUpErrorBranches:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """OSError in get_home -> exit_code=1."""
+
         def _boom():
             raise OSError("permission denied")
 
         monkeypatch.setattr(
-            "worthless.cli.commands.up.get_home", _boom,
+            "worthless.cli.commands.up.get_home",
+            _boom,
         )
 
         result = runner.invoke(
@@ -168,11 +168,13 @@ class TestUpErrorBranches:
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """RuntimeError in spawn_proxy -> exit_code=1 with WRTLS."""
+
         def _boom(**_kw):
             raise RuntimeError("bind failed")
 
         monkeypatch.setattr(
-            "worthless.cli.commands.up.spawn_proxy", _boom,
+            "worthless.cli.commands.up.spawn_proxy",
+            _boom,
         )
 
         result = runner.invoke(
@@ -214,6 +216,7 @@ class TestUpErrorBranches:
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """OSError in subprocess.Popen for daemon mode -> exit_code=1."""
+
         def _fail_popen(*_a, **_kw):
             raise OSError("too many processes")
 
@@ -288,9 +291,7 @@ class TestUpStalePidReclaim:
         assert result.exit_code == 0
         assert "Reclaimed" in result.output
 
-    def test_live_pid_blocks_startup(
-        self, home_with_key, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_live_pid_blocks_startup(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
         """Existing live PID file prevents starting a new proxy."""
         pid_file = _pid_path(home_with_key)
         write_pid(pid_file, os.getpid(), 8787)  # current process = alive
@@ -329,6 +330,7 @@ class TestUpExceptionHandlers:
         self, monkeypatch: pytest.MonkeyPatch, home_with_key
     ) -> None:
         """Generic Exception raised inside up -> exit_code=1."""
+
         def _boom():
             raise ValueError("unexpected")
 

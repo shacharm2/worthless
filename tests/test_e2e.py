@@ -163,9 +163,7 @@ _CHILD_SCRIPT = textwrap.dedent("""\
 class TestWrapProxiesRequest:
     """Prove ``worthless wrap`` spawns a real proxy that transits requests."""
 
-    def test_wrap_real_proxy_transit(
-        self, e2e_env: tuple[Path, Path, str, dict[str, str]]
-    ) -> None:
+    def test_wrap_real_proxy_transit(self, e2e_env: tuple[Path, Path, str, dict[str, str]]) -> None:
         env_file, worthless_home, _original_key, cli_env = e2e_env
 
         # Lock a key first
@@ -179,8 +177,12 @@ class TestWrapProxiesRequest:
         # Run wrap as a real subprocess — spawns proxy, runs child, cleans up
         proc = subprocess.run(
             [  # noqa: S607
-                "worthless", "wrap", "--",
-                sys.executable, "-c", _CHILD_SCRIPT,
+                "worthless",
+                "wrap",
+                "--",
+                sys.executable,
+                "-c",
+                _CHILD_SCRIPT,
             ],
             env={**os.environ, "WORTHLESS_HOME": str(worthless_home)},
             timeout=45,
@@ -192,14 +194,10 @@ class TestWrapProxiesRequest:
 
         # Child should have exited 0 (got a response OR connect error)
         assert proc.returncode == 0, (
-            f"wrap failed (rc={proc.returncode}):\n"
-            f"stdout: {proc.stdout}\n"
-            f"stderr: {proc.stderr}"
+            f"wrap failed (rc={proc.returncode}):\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
         )
 
         # Prove the proxy was involved: child got a status code or reached proxy
         assert "STATUS:" in combined or "PROXY_REACHED" in combined, (
-            f"No evidence of proxy transit:\n"
-            f"stdout: {proc.stdout}\n"
-            f"stderr: {proc.stderr}"
+            f"No evidence of proxy transit:\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
         )

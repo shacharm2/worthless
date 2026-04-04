@@ -173,7 +173,9 @@ def _lock_keys(
                 # 2. Rewrite THIS .env line with a decoy
                 shard_a_path.read_bytes()  # validate file is readable
                 await repo.add_enrollment(
-                    alias, var_name=var_name, env_path=str(env_path.resolve()),
+                    alias,
+                    var_name=var_name,
+                    env_path=str(env_path.resolve()),
                 )
                 try:
                     prefix = detect_prefix(value, provider)
@@ -203,7 +205,8 @@ def _lock_keys(
                 )
                 # DB first -- atomic commit point
                 await repo.store_enrolled(
-                    alias, stored,
+                    alias,
+                    stored,
                     var_name=var_name,
                     env_path=str(env_path.resolve()),
                 )
@@ -266,9 +269,7 @@ def _enroll_single(
     """Enroll a single key (no .env scanning)."""
     _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
     if not _ALIAS_RE.match(alias):
-        raise WorthlessError(
-            ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}"
-        )
+        raise WorthlessError(ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}")
 
     async def _enroll_async():
         repo = ShardRepository(str(home.db_path), home.fernet_key)
@@ -280,7 +281,10 @@ def _enroll_single(
             provider=provider,
         )
         await repo.store_enrolled(
-            alias, stored, var_name=alias, env_path=None,
+            alias,
+            stored,
+            var_name=alias,
+            env_path=None,
         )
 
     sr = split_key(key.encode())
@@ -305,9 +309,7 @@ def register_lock_commands(app: typer.Typer) -> None:
 
     @app.command()
     def lock(
-        env: Path = typer.Option(
-            Path(".env"), "--env", "-e", help="Path to .env file"
-        ),
+        env: Path = typer.Option(Path(".env"), "--env", "-e", help="Path to .env file"),
         provider: str | None = typer.Option(
             None, "--provider", "-p", help="Override provider auto-detection"
         ),
@@ -322,16 +324,16 @@ def register_lock_commands(app: typer.Typer) -> None:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc
         except Exception as exc:
-            console.print_error(
-                WorthlessError(ErrorCode.UNKNOWN, str(exc))
-            )
+            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
             raise typer.Exit(code=1) from exc
 
     @app.command()
     def enroll(
         alias: str = typer.Option(..., "--alias", "-a", help="Key alias"),
         key: str | None = typer.Option(
-            None, "--key", "-k",
+            None,
+            "--key",
+            "-k",
             help="API key (use --key-stdin instead to avoid shell history)",
         ),
         key_stdin: bool = typer.Option(False, "--key-stdin", help="Read API key from stdin"),
@@ -365,7 +367,5 @@ def register_lock_commands(app: typer.Typer) -> None:
             console.print_error(exc)
             raise typer.Exit(code=1) from exc
         except Exception as exc:
-            console.print_error(
-                WorthlessError(ErrorCode.UNKNOWN, str(exc))
-            )
+            console.print_error(WorthlessError(ErrorCode.UNKNOWN, str(exc)))
             raise typer.Exit(code=1) from exc
