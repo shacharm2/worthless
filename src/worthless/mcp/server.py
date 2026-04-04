@@ -16,7 +16,7 @@ from worthless.cli.bootstrap import (
     get_home,
     resolve_home,
 )
-from worthless.cli.errors import WorthlessError
+from worthless.cli.errors import ErrorCode, WorthlessError
 
 mcp = FastMCP("worthless")
 
@@ -31,7 +31,7 @@ def _require_home() -> WorthlessHome:
     home = resolve_home()
     if home is None:
         raise WorthlessError(
-            __import__("worthless.cli.errors", fromlist=["ErrorCode"]).ErrorCode.BOOTSTRAP_FAILED,
+            ErrorCode.BOOTSTRAP_FAILED,
             "Worthless is not initialized. Run `worthless lock` first.",
         )
     return home
@@ -39,29 +39,20 @@ def _require_home() -> WorthlessHome:
 
 async def _query_spend(db_path: Path, alias: str | None) -> list[dict[str, Any]]:
     """Aggregate spend_log rows, optionally filtered by alias."""
+    query = """
+        SELECT key_alias, provider,
+               COALESCE(SUM(tokens), 0) AS total_tokens,
+               COUNT(*) AS request_count
+        FROM spend_log
+    """
+    params: tuple[str, ...] = ()
+    if alias:
+        query += " WHERE key_alias = ?"
+        params = (alias,)
+    query += " GROUP BY key_alias, provider"
+
     async with aiosqlite.connect(str(db_path)) as db:
-        if alias:
-            rows = await db.execute_fetchall(
-                """
-                SELECT key_alias, provider,
-                       COALESCE(SUM(tokens), 0) AS total_tokens,
-                       COUNT(*) AS request_count
-                FROM spend_log
-                WHERE key_alias = ?
-                GROUP BY key_alias, provider
-                """,
-                (alias,),
-            )
-        else:
-            rows = await db.execute_fetchall(
-                """
-                SELECT key_alias, provider,
-                       COALESCE(SUM(tokens), 0) AS total_tokens,
-                       COUNT(*) AS request_count
-                FROM spend_log
-                GROUP BY key_alias, provider
-                """,
-            )
+        rows = await db.execute_fetchall(query, params)
         return [
             {
                 "alias": r[0],
@@ -85,6 +76,9 @@ async def worthless_status() -> str:
     Returns the list of protected key aliases with their providers,
     and whether the local proxy is currently running.
     """
+    # Deferred: avoid pulling typer/rich CLI stack at MCP server startup.
+    # TODO(WOR-126): move _list_enrolled_keys, _check_proxy_health into
+    # worthless.services.status so both CLI and MCP import public API.
     from worthless.cli.commands.status import (
         _check_proxy_health,
         _discover_proxy_port,
@@ -122,7 +116,7 @@ async def worthless_scan(
               and live environment variables.
     """
     from worthless.cli.commands.scan import (
-        _build_decoy_checker,
+        _build_decoy_checker_async,
         _collect_deep_paths,
         _collect_fast_paths,
     )
@@ -137,7 +131,7 @@ async def worthless_scan(
         else:
             scan_paths = _collect_fast_paths(explicit)
 
-        is_decoy = _build_decoy_checker()
+        is_decoy = await _build_decoy_checker_async()
         findings = scan_files(scan_paths, is_decoy=is_decoy)
 
         items = [

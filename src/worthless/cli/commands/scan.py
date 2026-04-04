@@ -173,13 +173,13 @@ def _install_hook() -> None:
     hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _build_decoy_checker():
-    """Try to build an is_decoy predicate from the worthless DB.
+async def _build_decoy_checker_async():
+    """Build an is_decoy predicate from the worthless DB.
 
     Returns None if the DB is unavailable (CI/offline mode).
+    Exceptions are intentionally swallowed — graceful degradation
+    when running without a worthless home (e.g. CI, first scan).
     """
-    import asyncio
-
     try:
         home = get_home()
     except Exception:
@@ -190,22 +190,31 @@ def _build_decoy_checker():
 
     try:
         repo = ShardRepository(str(home.db_path), home.fernet_key)
-
-        async def _load():
-            await repo.initialize()
-            return await repo.all_decoy_hashes()
-
-        decoy_hashes = asyncio.run(_load())
+        await repo.initialize()
+        decoy_hashes = await repo.all_decoy_hashes()
     except Exception:
         return None
 
     if not decoy_hashes:
         return None
 
+    # Capture only the hash function, not the full repo instance.
+    compute_hash = repo._compute_decoy_hash
+
     def _is_decoy(value: str) -> bool:
-        return repo._compute_decoy_hash(value) in decoy_hashes
+        return compute_hash(value) in decoy_hashes
 
     return _is_decoy
+
+
+def _build_decoy_checker():
+    """Sync wrapper around _build_decoy_checker_async for CLI (typer) context."""
+    import asyncio
+
+    try:
+        return asyncio.run(_build_decoy_checker_async())
+    except Exception:
+        return None
 
 
 def register_scan_commands(app: typer.Typer) -> None:

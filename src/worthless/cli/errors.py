@@ -49,11 +49,6 @@ def set_debug(enabled: bool) -> None:
     _debug = enabled
 
 
-def is_debug() -> bool:
-    """Return whether debug mode is active."""
-    return _debug
-
-
 # ---------------------------------------------------------------------------
 # @error_boundary — unified error handling for CLI commands
 # ---------------------------------------------------------------------------
@@ -70,6 +65,8 @@ def error_boundary(fn=None, *, exit_code: int = 1):  # noqa: ANN001, ANN201
     Can be used bare (``@error_boundary``) or with an explicit fallback
     exit code (``@error_boundary(exit_code=2)``).
     """
+    # Deferred: errors.py is imported before typer-based modules load.
+    # TODO: break cycle by moving error_boundary to its own module.
     import typer
 
     def decorator(func):  # noqa: ANN001, ANN202
@@ -83,6 +80,7 @@ def error_boundary(fn=None, *, exit_code: int = 1):  # noqa: ANN001, ANN201
                 if _debug:
                     traceback.print_exc(file=sys.stderr)
                 else:
+                    # Deferred: console imports errors, so we can't import at top.
                     from worthless.cli.console import get_console
 
                     get_console().print_error(exc)
