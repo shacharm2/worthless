@@ -8,6 +8,22 @@ Worthless makes API keys worthless to steal. It splits keys using XOR secret sha
 
 A developer installs Worthless and goes back to work with a quiet mind. Their API keys are architecturally worthless to anyone who steals them.
 
+## Current Milestone: v2.0 Harden
+
+**Goal:** Add secure mode (Shamir 2-of-3 + Rust sidecar) alongside the permanent light mode (XOR + Fernet). Light mode stays unchanged forever. Secure mode is purely additive.
+
+**Target features:**
+- Shamir 2-of-3 secret sharing (GF(256), Rust implementation) — secure mode splitting primitive
+- Rust sidecar binary — IPC over Unix socket, vault mode + proxy mode with SSE streaming
+- Sidecar OS-level hardening — seccomp-BPF, Landlock, optional `--hardened` install (separate Unix user)
+- Platform credential store backends — macOS Keychain, Windows Credential Manager, Linux kernel keyring, Docker secrets, encrypted file fallback
+- Python layer rewired for secure mode — `worthless up --secure` routes through sidecar IPC; `worthless up` stays exactly as v1.0 (XOR + Fernet, single process)
+- Optional migration tool — `worthless migrate` converts Fernet enrollments to Shamir per-key with rollback; mixed state (some Fernet, some Shamir) works
+- Distribution — maturin wheels (manylinux2014 x86_64/aarch64, macOS universal2, Windows x86_64), Docker multi-container, fallback binary via GitHub Releases
+- Security documentation — SECURITY_POSTURE.md updated, cargo audit + cargo vet gates, updated SECURITY_RULES.md for Shamir + sidecar invariants
+
+**Architectural constraint:** Light mode (XOR + Fernet) is PERMANENT. Fernet is NOT eliminated. The `cryptography` dependency stays. Secure mode is additive — the two modes coexist forever. No requirement may say "remove Fernet" or "eliminate cryptography."
+
 ## Requirements
 
 ### Validated
@@ -51,7 +67,8 @@ A developer installs Worthless and goes back to work with a quiet mind. Their AP
 - **Target:** Solo dev dogfood first → OpenClaw user second → small teams third.
 - **Build order:** PoC (Python + SQLite) → Harden (Rust reconstruction) → Attack (pen-test).
 - **Current state:** v1.0 shipped (2026-04-03). 4,399 LOC Python, 38 source files. Tech stack: Python 3.12, FastAPI, aiosqlite, cryptography (Fernet). All 3 architectural invariants at Enforced confidence tier. 5-tier CI pipeline with coverage gates.
-- **Known limitations:** Python GC non-determinism for memory zeroing (documented in SECURITY_POSTURE.md, Rust mitigation planned). `api_key.decode()` creates immutable str copy in proxy (PoC limitation).
+- **Known limitations:** Python GC non-determinism for memory zeroing (documented in SECURITY_POSTURE.md, Rust sidecar resolves this). `api_key.decode()` creates immutable str copy in proxy (eliminated by sidecar direct-upstream-call).
+- **v2.0 research:** Extensive research completed in `docs/research/` — Shamir architecture, sidecar design, platform credential stores, security review, crypto verification, implementation plan (6 phases). Key correction: implementation-plan.md says "Fernet eliminated" in several places — WRONG, light mode is permanent.
 
 ## Constraints
 
@@ -60,6 +77,7 @@ A developer installs Worthless and goes back to work with a quiet mind. Their AP
 - **UX**: 90-second install target. Terminal output confirmation, not dashboards. Peace of mind, not features.
 - **Logging**: API keys, cert private keys, base64 strings > 32 chars, prompt/response content, raw IPs must NEVER appear in any log.
 - **Scope**: Dogfood-first. Local proxy only. No hosted infrastructure until core works.
+- **Coexistence**: Light mode (XOR + Fernet) is permanent. Secure mode (Shamir + sidecar) is additive. Both modes coexist forever. Mixed key state (some Fernet, some Shamir) is supported.
 
 ## Key Decisions
 
@@ -76,5 +94,7 @@ A developer installs Worthless and goes back to work with a quiet mind. Their AP
 | 5-tier CI (not 2-tier) | Separate fast gate from full audit prevents developer friction | ✓ Good |
 | Evidence-backed security posture | Confidence tiers (Enforced/Best-effort/Planned) with test citations | ✓ Good — honest documentation |
 
+| Light mode permanent, secure mode additive | Fernet bootstrap problem makes elimination wrong; two audiences (vibe coder vs production) need different tradeoffs | — Pending |
+
 ---
-*Last updated: 2026-04-03 after v1.0 milestone*
+*Last updated: 2026-04-06 after v2.0 Harden milestone started*
