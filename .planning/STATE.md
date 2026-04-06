@@ -1,69 +1,51 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.0
-milestone_name: milestone
-status: completed
-stopped_at: Completed 05-02-PLAN.md
-last_updated: "2026-04-03T12:16:48.071Z"
-last_activity: 2026-04-03 — Completed 05-02 SECURITY_POSTURE.md
+milestone: v2.0
+milestone_name: Harden
+status: active
+stopped_at: null
+last_updated: "2026-04-06"
+last_activity: 2026-04-06 — Roadmap created for v2.0 Harden (8 phases, 64 requirements)
 progress:
   total_phases: 8
-  completed_phases: 8
-  total_plans: 22
-  completed_plans: 22
-  percent: 100
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-03)
+See: .planning/PROJECT.md (updated 2026-04-06)
 
 **Core value:** A developer installs Worthless and goes back to work with a quiet mind. Their API keys are architecturally worthless to anyone who steals them.
-**Current focus:** Planning next milestone
+**Current focus:** Phase 6 (Shamir Core) and Phase 7 (Shard Store) -- parallel start
 
 ## Current Position
 
-Phase: 05 of 5 (Security Posture Documentation)
-Plan: 2 of 2 complete in current phase
-Status: Complete
-Last activity: 2026-04-03 — Completed 05-02 SECURITY_POSTURE.md
+Phase: 6 of 13 (Shamir Core -- ready to plan)
+Plan: --
+Status: Ready to plan
+Last activity: 2026-04-06 -- Roadmap created
 
-Progress: [██████████] 100%
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 7
-- Average duration: 8 min
-- Total execution time: 0.85 hours
+- Total plans completed: 0
+- Average duration: --
+- Total execution time: 0 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 02-provider-adapters | 2 | 6 min | 3 min |
-| 03-proxy-service | 2 | 41 min | 20 min |
-| 03.1-proxy-hardening | 3 | 14 min | 5 min |
-
-**Recent Trend:**
-- Last 5 plans: -
-- Trend: -
+| - | - | - | - |
 
 *Updated after each plan completion*
-| Phase 04-cli P01 | 5min | 2 tasks | 13 files |
-| Phase 04-cli P02 | 7min | 2 tasks | 8 files |
-| Phase 04-cli P04 | 5min | 2 tasks | 7 files |
-| Phase 04-cli P03 | 7min | 2 tasks | 7 files |
-| Phase 04.1 P01 | 10min | 2 tasks | 31 files |
-| Phase 04.1 P02 | 46min | 3 tasks | 10 files |
-| Phase 04.1 P03 | 5min | 1 tasks | 3 files |
-| Phase 04.1 P04 | 3min | 2 tasks | 2 files |
-| Phase 04.2-test-hardening P01 | 4min | 2 tasks | 3 files |
-| Phase 04.2-test-hardening P03 | 2min | 2 tasks | 6 files |
-| Phase 04.2-test-hardening P02 | 5min | 2 tasks | 6 files |
-| Phase 05 P02 | 8min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -72,60 +54,11 @@ Progress: [██████████] 100%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- [Roadmap]: Phases 1 and 2 can execute in parallel (no dependencies between crypto core and provider adapters)
-- [Roadmap]: Phase 5 is documentation-only, depends on Phases 3+4 being complete
-- [02-01]: Frozen dataclasses for adapter contracts (no pydantic needed at this layer)
-- [02-01]: Header keys lowercased during prepare_request for consistent handling
-- [02-01]: Denylist pattern for x-worthless-* header stripping
-- [02-02]: Content-type sniffing for stream detection (text/event-stream triggers streaming path)
-- [02-02]: Raw byte passthrough via aiter_bytes -- no SSE parsing in adapter layer
-- [02-02]: SSE headers set by adapter, not copied from upstream
-- [03-01]: ErrorResponse is a lightweight dataclass, not FastAPI JSONResponse -- rules engine testable without web framework
-- [03-01]: RateLimitRule uses in-memory sliding window (not SQLite) for sub-millisecond evaluation
-- [03-01]: Adapter api_key decode happens only at header insertion point per SR-01
-- [03-02]: ASGITransport does not run lifespan -- tests manually set app.state
-- [03-02]: Pre-computed uniform 401 body ensures byte-identical anti-enumeration responses
-- [03-02]: Streaming metering via BackgroundTask, non-streaming via create_task
-- [03.1-01]: StoredShard is now a dataclass with bytearray fields (NamedTuple cannot constrain types)
-- [03.1-01]: EncryptedShard is a NamedTuple (immutable, no secret material)
-- [03.1-01]: fetch_encrypted + decrypt_shard split enables gate-before-decrypt
-- [03.1-03]: SpendCapRule uses persistent aiosqlite.Connection with BEGIN IMMEDIATE for atomic spend checks
-- [03.1-03]: Fail-closed pattern: SpendCapRule returns 402 on any DB error
-- [03.1-03]: RateLimitRule uses plain dict with periodic TTL cleanup to bound memory
-- [03.1-03]: BodySizeLimitMiddleware checks Content-Length header only (streaming uploads pass through)
-- [03.1-02]: Anti-enumeration: unknown endpoints return 401 not 404 to prevent endpoint discovery
-- [03.1-02]: Upstream error sanitization: keep status code, replace message with generic "upstream provider error"
-- [03.1-02]: relay_response uses aread() for non-SSE responses when sent with stream=True
-- [03.1-02]: Shard material zeroed in finally block covering entire request lifecycle
-- [Phase 04-01]: Prefix detection sorted longest-first to prevent sk-ant- matching openai sk-
-- [Phase 04-01]: Bootstrap uses synchronous sqlite3 for DB init (avoids async in CLI setup)
-- [Phase 04-02]: Low-entropy decoy pattern (WRTLS filler) keeps Shannon entropy below 4.5 for idempotent lock
-- [Phase 04-02]: Deterministic alias via provider-sha256[:8] for reproducible enrollment
-- [Phase 04-02]: Metadata sidecar (.meta JSON) stores var_name for .env restoration on unlock
-- [Phase 04-cli]: Pipe-based death detection via os.pipe() with WORTHLESS_LIVENESS_FD for robust proxy cleanup
-- [Phase 04-cli]: Exit codes follow ESLint/Semgrep convention: 0=clean, 1=unprotected, 2=error
-- [Phase 04-cli]: Proxy port discovered from PID file or WORTHLESS_PORT env var
-- [Phase 04.1-01]: Wrap OperationalError catch for pre-migration DBs without shards table
-- [Phase 04.1-01]: Import reordering: all imports before module-level code execution (conftest.py pattern)
-- [Phase 04.1-01]: StoredShard.zero() loop var renamed field->buf to avoid shadowing dataclass import
-- [Phase 04.1-02]: Forward-looking header name x-worthless-key used in all new docs (code rename in Plan 03)
-- [Phase 04.1-02]: worthless down omitted from quickstart — command does not exist yet, tracked as future feature
-- [Phase 04.1-02]: lock/unlock terminology enforced in all user-facing docs, enroll only in protocol/architecture docs
-- [Phase 04.1]: Header rename: mechanical sed sufficient for 3-file scope, no constant extraction needed
-- [Phase 04.1-04]: xdist temp file race fixed by isolating tempdir per test, not by stripping env keys
-- [Phase 04.1-04]: worthless enroll row removed from CLI table entirely per locked decision
-- [Phase 04.2-01]: Hypothesis CI profile uses derandomize=True and database=None for reproducible xdist-safe runs
-- [Phase 04.2-03]: 5-tier CI: push (fast gate) -> PR (coverage) -> scheduled (mutation) -> pre-release (full audit) -> manual (benchmarks)
-- [Phase 04.2-03]: Zero-secrets CI: only github.token used, no external API keys needed
-- [Phase 04.2-03]: py-cov-action for coverage PR comments (works with default github.token)
-- [Phase 04.2]: Flaky decoy test confirmed fixed by 04.1 6-sigma bounds -- no quarantine needed
-- [Phase 05]: All 3 invariants at Enforced tier — evidence-backed by CI tests
-
-### Roadmap Evolution
-
-- Phase 03.1 inserted after Phase 3: Proxy Hardening (URGENT) — Fix 4 blockers and 7 high-severity findings from Phase 3 review
-- Phase 04.1 inserted after Phase 4: Post-CLI Wave 1 overhaul (URGENT) — Reconcile the Wave 1 story around the shipped CLI and restore honest support surfaces before Phase 5
-- Phase 04.2 inserted after Phase 04: Test Hardening (URGENT) — DRY consolidation, xdist speed, coverage gaps, live harness, fuzz targets, CI gate before Phase 5 security posture doc
+- [v2.0]: Light mode (XOR + Fernet) is permanent. Secure mode (Shamir + sidecar) is additive. Two modes coexist forever.
+- [v2.0]: Migration is optional and per-key with rollback. Mixed state supported.
+- [v2.0]: Phase 6 and 7 execute in parallel (no dependencies between them).
+- [v2.0]: Python Layer is one phase (15 reqs) -- Karen/Brutus split was applied by separating Migration into its own Phase 12.
+- [v2.0]: DOCK-05 (K8s CSI) deferred to v2.1.
 
 ### Pending Todos
 
@@ -133,11 +66,10 @@ None yet.
 
 ### Blockers/Concerns
 
-- Shard B encryption at rest: Need to decide between stdlib crypto and pyca `cryptography` for AES (flagged in research)
-- keyring reliability: OS keychain access via `keyring` library untested on headless Linux (fallback strategy needed)
+None.
 
 ## Session Continuity
 
-Last session: 2026-04-03T05:25:40.888Z
-Stopped at: Completed 05-02-PLAN.md
+Last session: 2026-04-06
+Stopped at: Roadmap created, ready to plan Phase 6 or 7
 Resume file: None
