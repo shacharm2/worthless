@@ -71,8 +71,9 @@ class TestWorthlessStatus:
 
 class TestWorthlessScan:
     @pytest.mark.asyncio
-    async def test_scan_clean_file(self, tmp_path: Path) -> None:
+    async def test_scan_clean_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Scanning a file with no keys returns empty findings."""
+        monkeypatch.chdir(tmp_path)
         env_file = _make_env_file(tmp_path, "FOO=bar\nBAZ=123\n")
         result = json.loads(await worthless_scan(paths=[str(env_file)]))
         assert result["findings"] == []
