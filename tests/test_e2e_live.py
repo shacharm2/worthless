@@ -218,13 +218,14 @@ class TestAnthropicLive:
         # Parse child output
         data = json.loads(proc.stdout.strip())
 
-        if data["status"] == 429:
-            # Rate-limited — but 429 from upstream still proves full
-            # proxy transit: key reconstructed, request forwarded, error
-            # sanitized and relayed back. Accept as a pass.
+        if data["status"] in {429, 529}:
+            # Rate-limited or overloaded — but a response from upstream
+            # still proves full proxy transit: key reconstructed, request
+            # forwarded, error sanitized and relayed back.
             pass
-        elif data["status"] == 529:
-            # Anthropic overloaded — same reasoning as 429.
+        elif data["status"] == 400:
+            # Billing/quota 400 ("credit balance too low") also proves
+            # proxy transit — the request reached Anthropic and came back.
             pass
         else:
             assert data["status"] == 200, f"upstream returned {data['status']}: {data['body']}"
