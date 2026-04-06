@@ -34,7 +34,7 @@ Requirements for the Harden milestone. Each maps to roadmap phases.
 - [ ] **SIDE-03**: Proxy mode — formats Authorization header, makes upstream HTTPS call via reqwest, returns response + usage metadata
 - [ ] **SIDE-04**: Peer UID verification via SO_PEERCRED (Linux) / LOCAL_PEERCRED (macOS) — only the spawning user's processes can connect
 - [ ] **SIDE-05**: Reconstruction into mlock'd `Zeroizing<Vec<u8>>` with MADV_DONTDUMP — key material never hits swap or core dumps
-- [ ] **SIDE-06**: Connection pooling for upstream HTTPS (reqwest ConnectionPool) — warm connections keep key lifetime ~15µs
+- [ ] **SIDE-06**: Connection pooling for upstream HTTPS (reqwest ConnectionPool) — warm connections keep key lifetime ~15us
 - [ ] **SIDE-07**: SSE streaming support in proxy mode — sidecar streams LLM responses through socket without buffering full response
 
 ### Python Layer
@@ -79,7 +79,7 @@ Requirements for the Harden milestone. Each maps to roadmap phases.
 - [ ] **DOCK-01**: Docker Compose config — proxy + sidecar + optional Redis, pre-configured networking
 - [ ] **DOCK-02**: Sidecar container image — distroless base, minimal attack surface
 - [ ] **DOCK-03**: Docker secrets integration for shard storage — sidecar reads Shard B from mounted secret
-- [ ] **DOCK-04**: Docker networking — proxy ↔ sidecar communicate over internal network, sidecar not exposed
+- [ ] **DOCK-04**: Docker networking — proxy <-> sidecar communicate over internal network, sidecar not exposed
 
 ### Hardening
 
@@ -136,17 +136,78 @@ Requirements for the Harden milestone. Each maps to roadmap phases.
 
 ## Traceability
 
-Updated during roadmap creation.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| *(populated by roadmapper)* | | |
+| CRYPTO-01 | Phase 6 | Pending |
+| CRYPTO-02 | Phase 6 | Pending |
+| CRYPTO-03 | Phase 6 | Pending |
+| CRYPTO-04 | Phase 6 | Pending |
+| CRYPTO-05 | Phase 6 | Pending |
+| SHARD-01 | Phase 7 | Pending |
+| SHARD-02 | Phase 7 | Pending |
+| SHARD-03 | Phase 7 | Pending |
+| SHARD-04 | Phase 7 | Pending |
+| SHARD-05 | Phase 7 | Pending |
+| SHARD-06 | Phase 7 | Pending |
+| SHARD-07 | Phase 7 | Pending |
+| SHARD-08 | Phase 7 | Pending |
+| SIDE-01 | Phase 8 | Pending |
+| SIDE-02 | Phase 8 | Pending |
+| SIDE-03 | Phase 8 | Pending |
+| SIDE-04 | Phase 8 | Pending |
+| SIDE-05 | Phase 8 | Pending |
+| SIDE-06 | Phase 8 | Pending |
+| SIDE-07 | Phase 8 | Pending |
+| HARD-01 | Phase 9 | Pending |
+| HARD-02 | Phase 9 | Pending |
+| HARD-03 | Phase 9 | Pending |
+| HARD-04 | Phase 9 | Pending |
+| HARD-05 | Phase 9 | Pending |
+| PERF-01 | Phase 9 | Pending |
+| PERF-02 | Phase 9 | Pending |
+| DIST-01 | Phase 10 | Pending |
+| DIST-02 | Phase 10 | Pending |
+| DIST-03 | Phase 10 | Pending |
+| DIST-04 | Phase 10 | Pending |
+| DIST-05 | Phase 10 | Pending |
+| DIST-06 | Phase 10 | Pending |
+| DOCK-01 | Phase 10 | Pending |
+| DOCK-02 | Phase 10 | Pending |
+| DOCK-03 | Phase 10 | Pending |
+| DOCK-04 | Phase 10 | Pending |
+| PY-01 | Phase 11 | Pending |
+| PY-02 | Phase 11 | Pending |
+| PY-03 | Phase 11 | Pending |
+| PY-04 | Phase 11 | Pending |
+| PY-05 | Phase 11 | Pending |
+| PY-06 | Phase 11 | Pending |
+| PY-07 | Phase 11 | Pending |
+| PY-08 | Phase 11 | Pending |
+| PY-09 | Phase 11 | Pending |
+| PY-10 | Phase 11 | Pending |
+| PY-11 | Phase 11 | Pending |
+| PY-12 | Phase 11 | Pending |
+| PY-13 | Phase 11 | Pending |
+| PY-14 | Phase 11 | Pending |
+| PY-15 | Phase 11 | Pending |
+| MIG-01 | Phase 12 | Pending |
+| MIG-02 | Phase 12 | Pending |
+| MIG-03 | Phase 12 | Pending |
+| MIG-04 | Phase 12 | Pending |
+| MIG-05 | Phase 12 | Pending |
+| MIG-06 | Phase 12 | Pending |
+| MIG-07 | Phase 12 | Pending |
+| HARD-06 | Phase 13 | Pending |
+| HARD-07 | Phase 13 | Pending |
+| HARD-08 | Phase 13 | Pending |
+| HARD-09 | Phase 13 | Pending |
+| HARD-10 | Phase 13 | Pending |
 
 **Coverage:**
-- v2.0 requirements: 63 total
-- Mapped to phases: 0 (pending roadmap)
-- Unmapped: 63 ⚠️
+- v2.0 requirements: 64 total
+- Mapped to phases: 64/64
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-06*
-*Last updated: 2026-04-06 after initial definition*
+*Last updated: 2026-04-06 after roadmap creation*

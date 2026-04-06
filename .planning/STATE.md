@@ -5,9 +5,9 @@ milestone_name: Harden
 status: active
 stopped_at: null
 last_updated: "2026-04-06"
-last_activity: 2026-04-06 — Milestone v2.0 Harden started
+last_activity: 2026-04-06 — Roadmap created for v2.0 Harden (8 phases, 64 requirements)
 progress:
-  total_phases: 0
+  total_phases: 8
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,14 +21,31 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-06)
 
 **Core value:** A developer installs Worthless and goes back to work with a quiet mind. Their API keys are architecturally worthless to anyone who steals them.
-**Current focus:** Defining requirements for v2.0 Harden
+**Current focus:** Phase 6 (Shamir Core) and Phase 7 (Shard Store) -- parallel start
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-04-06 — Milestone v2.0 started
+Phase: 6 of 13 (Shamir Core -- ready to plan)
+Plan: --
+Status: Ready to plan
+Last activity: 2026-04-06 -- Roadmap created
+
+Progress: [░░░░░░░░░░] 0%
+
+## Performance Metrics
+
+**Velocity:**
+- Total plans completed: 0
+- Average duration: --
+- Total execution time: 0 hours
+
+**By Phase:**
+
+| Phase | Plans | Total | Avg/Plan |
+|-------|-------|-------|----------|
+| - | - | - | - |
+
+*Updated after each plan completion*
 
 ## Accumulated Context
 
@@ -37,13 +54,11 @@ Last activity: 2026-04-06 — Milestone v2.0 started
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- [v2.0]: Light mode (XOR + Fernet) is permanent. Secure mode (Shamir + Rust sidecar) is additive. Two modes coexist forever.
-- [v2.0]: Migration is optional and per-key with rollback. Mixed state (some Fernet, some Shamir) supported.
-- [v2.0]: Research already completed in docs/research/ — implementation-plan.md has "Fernet eliminated" errors to correct.
-
-### Roadmap Evolution
-
-- v1.0 shipped 2026-04-03 (Phases 1-5, 22 plans). Archived to milestones/v1.0-ROADMAP.md.
+- [v2.0]: Light mode (XOR + Fernet) is permanent. Secure mode (Shamir + sidecar) is additive. Two modes coexist forever.
+- [v2.0]: Migration is optional and per-key with rollback. Mixed state supported.
+- [v2.0]: Phase 6 and 7 execute in parallel (no dependencies between them).
+- [v2.0]: Python Layer is one phase (15 reqs) -- Karen/Brutus split was applied by separating Migration into its own Phase 12.
+- [v2.0]: DOCK-05 (K8s CSI) deferred to v2.1.
 
 ### Pending Todos
 
@@ -51,11 +66,10 @@ None yet.
 
 ### Blockers/Concerns
 
-- implementation-plan.md says "Fernet eliminated" in multiple locations — must be corrected during requirements/roadmap generation
-- Previous Karen+Brutus review found 12 additional requirements and structural changes (Phase 11 split, DOCK-05 deferred) — incorporate into requirements
+None.
 
 ## Session Continuity
 
 Last session: 2026-04-06
-Stopped at: Defining requirements
+Stopped at: Roadmap created, ready to plan Phase 6 or 7
 Resume file: None
