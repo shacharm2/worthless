@@ -60,7 +60,7 @@ class TestWrapExitCode:
         """wrap should exit with the child's exit code."""
         proc = subprocess.Popen(
             [sys.executable, "-c", "import sys; sys.exit(42)"],
-            process_group=0,
+            start_new_session=True,
         )
         code = _run_child_and_wait(proc)
         assert code == 42
@@ -71,7 +71,7 @@ class TestWrapExitCode:
         """wrap should exit 0 when child exits 0."""
         proc = subprocess.Popen(
             [sys.executable, "-c", "pass"],
-            process_group=0,
+            start_new_session=True,
         )
         code = _run_child_and_wait(proc)
         assert code == 0

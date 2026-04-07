@@ -168,7 +168,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
             child = subprocess.Popen(
                 full_command,
                 env=child_env,
-                process_group=0,
+                start_new_session=True,
             )
         except Exception as exc:
             _cleanup_proxy(proxy, write_fd)
