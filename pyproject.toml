@@ -1,7 +1,7 @@
 [project]
 name = "worthless"
 version = "0.1.0"
-description = "Split-key reverse proxy that makes API keys architecturally worthless to steal"
+description = "Split-key reverse proxy that makes leaked API keys worthless"
 requires-python = ">=3.10"
 dependencies = [
     "cryptography>=46.0.5",
