@@ -2,7 +2,7 @@
 name = "worthless"
 version = "0.1.0"
 description = "Split-key reverse proxy that makes API keys architecturally worthless to steal"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 dependencies = [
     "cryptography>=46.0.5",
     "aiosqlite>=0.22.1",
@@ -45,7 +45,7 @@ qa = [
     "bandit[sarif]>=1.8",
     "mutmut>=3.0",
     "pip-audit>=2.8",
-    "schemathesis>=4.0",
+    "schemathesis>=4.0; python_version >= '3.11'",
     "semgrep>=1.155.0",
 ]
 fuzz = [
@@ -114,7 +114,7 @@ show_missing = true
 skip_covered = false
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
