@@ -88,6 +88,11 @@ class WorthlessConsole:
         """Red WRTLS-NNN to stderr (always shown)."""
         self._err.print(f"[bold red]{error}[/bold red]")
 
+    def print_hint(self, message: str) -> None:
+        """Dim hint text to stderr (suppressed in quiet and json modes)."""
+        if not self.quiet and not self.json_mode:
+            self._err.print(f"[dim]{message}[/dim]")
+
     def print_warning(self, message: str) -> None:
         """Yellow text to stderr (suppressed in quiet mode)."""
         if not self.quiet:
