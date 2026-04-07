@@ -119,7 +119,33 @@ class TestHealthEndpoints:
     async def test_healthz_returns_ok(self, proxy_client: httpx.AsyncClient):
         resp = await proxy_client.get("/healthz")
         assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
+        data = resp.json()
+        assert data["status"] == "ok"
+
+    async def test_healthz_includes_requests_proxied(self, proxy_client: httpx.AsyncClient):
+        """GET /healthz must return an integer requests_proxied field."""
+        resp = await proxy_client.get("/healthz")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "requests_proxied" in data
+        assert isinstance(data["requests_proxied"], int)
+        assert data["requests_proxied"] >= 0
+
+    async def test_healthz_count_increments_after_spend_log(
+        self, proxy_app, proxy_client: httpx.AsyncClient
+    ):
+        """After inserting a spend_log row, /healthz count should reflect it."""
+        # Insert a spend_log row directly
+        db = proxy_app.state.db
+        await db.execute(
+            "INSERT INTO spend_log (key_alias, tokens, model, provider) VALUES (?, ?, ?, ?)",
+            ("test-key", 100, "gpt-4", "openai"),
+        )
+        await db.commit()
+
+        resp = await proxy_client.get("/healthz")
+        data = resp.json()
+        assert data["requests_proxied"] >= 1
 
     async def test_readyz_returns_200_when_no_keys(
         self, proxy_settings: ProxySettings, tmp_db_path, fernet_key

@@ -67,11 +67,12 @@ def _check_proxy_health(port: int) -> dict[str, Any]:
                 "healthy": True,
                 "port": port,
                 "mode": data.get("mode", "up"),
+                "requests_proxied": data.get("requests_proxied", 0),
             }
     except Exception:  # noqa: S110 — proxy may not be running; absence is the expected default state
         pass
 
-    return {"healthy": False, "port": port, "mode": None}
+    return {"healthy": False, "port": port, "mode": None, "requests_proxied": 0}
 
 
 def register_status_commands(app: typer.Typer) -> None:
@@ -116,6 +117,7 @@ def register_status_commands(app: typer.Typer) -> None:
                     f"Proxy: running on 127.0.0.1:{proxy_info['port']}"
                     f" (mode: {proxy_info['mode']})\n"
                 )
+                sys.stderr.write(f"Requests proxied: {proxy_info['requests_proxied']}\n")
             else:
                 sys.stderr.write("Proxy: not running\n")
             sys.stderr.flush()
