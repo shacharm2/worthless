@@ -112,8 +112,10 @@ def live_proxy():
 
     asyncio.run(_enroll())
 
-    # Patch upstream URLs to mock
+    # Patch upstream URLs to mock (save originals for restore)
     mock_upstream = f"http://127.0.0.1:{MOCK_PORT}"
+    _oai_original = _oai_mod.UPSTREAM_URL
+    _anth_original = _anth_mod.UPSTREAM_URL
     _oai_mod.UPSTREAM_URL = f"{mock_upstream}/v1/chat/completions"
     _anth_mod.UPSTREAM_URL = f"{mock_upstream}/v1/messages"
 
@@ -159,6 +161,10 @@ def live_proxy():
     proxy_server.should_exit = True
     mock_thread.join(timeout=3)
     proxy_thread.join(timeout=3)
+
+    # Restore upstream URLs — prevents cross-test pollution under xdist
+    _oai_mod.UPSTREAM_URL = _oai_original
+    _anth_mod.UPSTREAM_URL = _anth_original
 
     import shutil
 
