@@ -143,16 +143,17 @@ def live_proxy():
     mock_thread.start()
     proxy_thread.start()
 
-    # Wait for servers to be ready
+    # Wait for both servers to be ready
+    for label, port in [("Mock upstream", MOCK_PORT), ("Proxy", PROXY_PORT)]:
+        for _ in range(30):
+            try:
+                httpx.get(f"http://127.0.0.1:{port}/", timeout=1.0)
+                break
+            except (httpx.ConnectError, httpx.ReadError):
+                time.sleep(0.2)
+        else:
+            raise RuntimeError(f"{label} did not start within 6 seconds")
     base_url = f"http://127.0.0.1:{PROXY_PORT}"
-    for _ in range(30):
-        try:
-            httpx.get(f"{base_url}/healthz", timeout=1.0)
-            break
-        except httpx.ConnectError:
-            time.sleep(0.2)
-    else:
-        raise RuntimeError("Proxy did not start within 6 seconds")
 
     yield base_url
 
