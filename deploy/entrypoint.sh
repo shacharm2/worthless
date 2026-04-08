@@ -4,10 +4,10 @@ set -e
 HOME_DIR="${WORTHLESS_HOME:-/data}"
 FERNET_PATH="${WORTHLESS_FERNET_KEY_PATH:-$HOME_DIR/fernet.key}"
 
-# Migrate fernet.key from data volume to secrets volume (one-time upgrade).
-# Existing deployments stored fernet.key alongside shard data on the same
-# volume — move it so the encryption key and encrypted shards are separated.
-if [ ! -f "$FERNET_PATH" ] && [ -f "$HOME_DIR/fernet.key" ] && [ "$FERNET_PATH" != "$HOME_DIR/fernet.key" ]; then
+# Migrate fernet.key to a separate volume when WORTHLESS_FERNET_KEY_PATH is
+# explicitly set (e.g., docker-compose with a secrets volume).  Without the
+# env var the key stays on the data volume — safe for single-volume PaaS.
+if [ -n "$WORTHLESS_FERNET_KEY_PATH" ] && [ ! -f "$FERNET_PATH" ] && [ -f "$HOME_DIR/fernet.key" ]; then
   cp "$HOME_DIR/fernet.key" "$FERNET_PATH"
   chmod 0400 "$FERNET_PATH"
   rm "$HOME_DIR/fernet.key"

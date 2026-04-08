@@ -7,11 +7,14 @@ services:
       # Bind to localhost only; use a reverse proxy for external access
       - "127.0.0.1:8787:8787"
     env_file: docker-compose.env
+    environment:
+      # Separate fernet key from shard data — requires the worthless-secrets
+      # volume below. Removes this for single-volume PaaS deployments.
+      WORTHLESS_FERNET_KEY_PATH: /secrets/fernet.key
     volumes:
       - worthless-data:/data
-      # Separate volume for the Fernet encryption key. Keeps the key that
-      # decrypts shard_b off the same volume as shard_a and the encrypted DB,
-      # preventing single-volume exfiltration from reconstructing API keys.
+      # Keeps the decryption key off the same volume as shard data.
+      # Compromise of one volume alone cannot reconstruct API keys.
       - worthless-secrets:/secrets
     restart: unless-stopped
     read_only: true

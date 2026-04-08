@@ -14,7 +14,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r worthless && useradd -r -g worthless -m worthless \
-    && mkdir -p /data /secrets && chown worthless:worthless /data /secrets
+    && mkdir -p /data && chown worthless:worthless /data
 
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin/worthless /usr/local/bin/worthless
@@ -24,12 +24,10 @@ COPY deploy/entrypoint.sh /entrypoint.sh
 ENV WORTHLESS_HOME=/data \
     WORTHLESS_DB_PATH=/data/worthless.db \
     WORTHLESS_SHARD_A_DIR=/data/shard_a \
-    WORTHLESS_FERNET_KEY_PATH=/secrets/fernet.key \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8787
 
 EXPOSE 8787
-VOLUME ["/data", "/secrets"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/healthz')"
