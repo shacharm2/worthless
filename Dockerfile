@@ -1,5 +1,5 @@
 # NOTE: pin patch versions; update quarterly or on CVE.
-FROM python:3.12.9-slim AS builder
+FROM python:3.12.9-slim@sha256:48a11b7ba705fd53bf15248d1f94d36c39549903c5d59edcfa2f3f84126e7b44 AS builder
 
 WORKDIR /build
 COPY pyproject.toml ./
@@ -8,7 +8,7 @@ COPY src/ src/
 RUN pip install --no-cache-dir .
 
 # -----------------------------------------------------------
-FROM python:3.12.9-slim
+FROM python:3.12.9-slim@sha256:48a11b7ba705fd53bf15248d1f94d36c39549903c5d59edcfa2f3f84126e7b44
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tini \

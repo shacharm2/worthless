@@ -1,0 +1,42 @@
+name: Docker Security Scan
+
+on:
+  push:
+    paths:
+      - 'Dockerfile'
+      - 'deploy/**'
+      - 'pyproject.toml'
+      - 'src/**'
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'deploy/**'
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        run: docker build -t worthless-proxy:${{ github.sha }} .
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: worthless-proxy:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: table
+
+      - name: Dockle best-practice lint
+        uses: erzz/dockle-action@v1
+        with:
+          image: worthless-proxy:${{ github.sha }}
+          exit-code: "1"
+          failure-threshold: WARN
