@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
-import signal
 import shutil
+import signal
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -241,6 +242,7 @@ class TestDownPidFileTampering:
         assert result.exit_code == 0
         assert not pid_file.exists()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod 000 is no-op on Windows")
     def test_unreadable_pid_file(self, home_dir: Path) -> None:
         """PID file with 000 permissions must not crash (PermissionError path)."""
         pid_file = home_dir / "proxy.pid"
