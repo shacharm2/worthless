@@ -442,11 +442,14 @@ class TestLifecycle:
 class TestComposeSecurity:
     """Compose stack security hardening."""
 
-    def test_compose_fernet_on_data_volume(self, compose_stack: tuple[str, str]) -> None:
+    def test_compose_fernet_on_secrets_volume(self, compose_stack: tuple[str, str]) -> None:
         _project, cname = compose_stack
-        # fernet.key lives in /data (compose mounts worthless-data:/data)
+        # Compose sets WORTHLESS_FERNET_KEY_PATH=/secrets/fernet.key
+        result = _docker_exec(cname, ["test", "-f", "/secrets/fernet.key"])
+        assert result.returncode == 0, "fernet.key not on /secrets volume"
+        # Must NOT be on /data
         result = _docker_exec(cname, ["test", "-f", "/data/fernet.key"])
-        assert result.returncode == 0, "fernet.key not in /data"
+        assert result.returncode != 0, "fernet.key should not be on /data in compose mode"
 
     def test_compose_read_only_filesystem(self, compose_stack: tuple[str, str]) -> None:
         _project, cname = compose_stack
