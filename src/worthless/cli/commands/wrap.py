@@ -168,7 +168,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
             child = subprocess.Popen(
                 full_command,
                 env=child_env,
-                process_group=0,
+                start_new_session=True,
             )
         except Exception as exc:
             _cleanup_proxy(proxy, write_fd)
@@ -196,6 +196,18 @@ def register_wrap_commands(app: typer.Typer) -> None:
 
         # Wait for child
         exit_code = _run_child_and_wait(child)
+
+        # Print post-run summary before cleanup
+        try:
+            from worthless.cli.commands.status import _check_proxy_health
+
+            info = _check_proxy_health(port)
+            count = info.get("requests_proxied", 0)
+            if count:
+                sys.stderr.write(f"worthless: proxied {count} requests\n")
+                sys.stderr.flush()
+        except Exception:  # noqa: S110 — best-effort summary
+            pass
 
         # Clean up proxy
         _cleanup_proxy(proxy, write_fd)

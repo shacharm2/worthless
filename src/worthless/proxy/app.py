@@ -195,8 +195,17 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
-        return {"status": "ok"}
+    async def healthz(request: Request) -> dict[str, object]:
+        count = 0
+        try:
+            db: aiosqlite.Connection = request.app.state.db
+            async with db.execute("SELECT COUNT(*) FROM spend_log") as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    count = row[0]
+        except Exception:  # noqa: S110 — spend_log may not exist yet
+            pass
+        return {"status": "ok", "requests_proxied": count}
 
     @app.get("/readyz")
     async def readyz(request: Request) -> Response:

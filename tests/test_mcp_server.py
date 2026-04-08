@@ -9,7 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
-from worthless.mcp.server import (
+pytest.importorskip("mcp", reason="mcp extra not installed")
+
+from worthless.mcp.server import (  # noqa: E402
     worthless_lock,
     worthless_scan,
     worthless_spend,

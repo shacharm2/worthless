@@ -255,6 +255,7 @@ def _lock_keys(
 
     if count:
         console.print_success(f"{count} key(s) protected.")
+        console.print_hint("Next: run `worthless service install` or `worthless wrap <command>`")
     else:
         console.print_warning("No unprotected API keys found.")
 

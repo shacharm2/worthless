@@ -136,7 +136,7 @@ def spawn_proxy(
         env=full_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        process_group=0,
+        start_new_session=True,
         pass_fds=tuple(pass_fds),
     )
 
