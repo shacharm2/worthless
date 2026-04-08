@@ -210,6 +210,11 @@ def poll_health(port: int, timeout: float = 10.0) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def pid_path(home: WorthlessHome) -> Path:
+    """Return the standard PID file path for a proxy daemon."""
+    return home.base_dir / "proxy.pid"
+
+
 def write_pid(pid_path: Path, pid: int, port: int) -> None:
     """Write PID file with ``pid\\nport`` format (0600 permissions)."""
     fd = os.open(str(pid_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -227,12 +232,23 @@ def read_pid(pid_path: Path) -> tuple[int, int] | None:
         if len(parts) < 2:
             return None
         return int(parts[0]), int(parts[1])
-    except (FileNotFoundError, ValueError, IndexError):
+    except (FileNotFoundError, ValueError, IndexError, OSError):
         return None
 
 
+# Reject PIDs outside the valid range for any mainstream OS.
+# Linux default pid_max is 4194304; macOS uses 99998.
+MAX_VALID_PID: int = 4_194_304
+
+
 def check_pid(pid: int) -> bool:
-    """Return True if *pid* is alive (via ``os.kill(pid, 0)``)."""
+    """Return True if *pid* is alive (via ``os.kill(pid, 0)``).
+
+    Rejects PIDs ≤ 1 or beyond the OS range to prevent signaling
+    init, the caller's process group, or every user process.
+    """
+    if pid <= 1 or pid > MAX_VALID_PID:
+        return False
     try:
         os.kill(pid, 0)
         return True

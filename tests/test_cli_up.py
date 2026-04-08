@@ -11,10 +11,11 @@ from typer.testing import CliRunner
 
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
-from worthless.cli.commands.up import _pid_path, _resolve_port
+from worthless.cli.commands.up import _resolve_port
 from worthless.cli.process import (
     check_pid,
     cleanup_stale_pid,
+    pid_path,
     read_pid,
     write_pid,
 )
@@ -45,7 +46,7 @@ class TestUpPidFile:
 
     def test_pid_file_path(self, tmp_path: Path):
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
-        result = _pid_path(home)
+        result = pid_path(home)
         assert result == home.base_dir / "proxy.pid"
 
 
@@ -132,7 +133,7 @@ class TestUpDaemonFlow:
         )
         assert result.exit_code == 0
 
-        pid_file = _pid_path(home_with_key)
+        pid_file = pid_path(home_with_key)
         assert pid_file.exists()
         info = read_pid(pid_file)
         assert info is not None
@@ -252,7 +253,7 @@ class TestUpErrorBranches:
         assert "health check timed out" in result.output.lower()
 
         # PID file should still be written (daemon stays running)
-        pid_file = _pid_path(home_with_key)
+        pid_file = pid_path(home_with_key)
         assert pid_file.exists()
         info = read_pid(pid_file)
         assert info is not None
@@ -266,7 +267,7 @@ class TestUpStalePidReclaim:
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Existing stale PID file is reclaimed, proxy starts normally."""
-        pid_file = _pid_path(home_with_key)
+        pid_file = pid_path(home_with_key)
         write_pid(pid_file, 99999999, 8787)
 
         mock_proxy = MagicMock()
@@ -293,7 +294,7 @@ class TestUpStalePidReclaim:
 
     def test_live_pid_blocks_startup(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
         """Existing live PID file prevents starting a new proxy."""
-        pid_file = _pid_path(home_with_key)
+        pid_file = pid_path(home_with_key)
         write_pid(pid_file, os.getpid(), 8787)  # current process = alive
 
         result = runner.invoke(

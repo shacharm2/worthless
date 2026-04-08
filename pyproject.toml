@@ -103,6 +103,7 @@ markers = [
     "slow: long-running statistical validation tests",
     "quarantine: flaky tests under investigation (non-blocking in CI)",
     "live: tests hitting real LLM providers (requires API keys, costs money)",
+    "adversarial: security-focused tests — race conditions, PID reuse, injection, fuzz",
 ]
 
 [tool.coverage.run]

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, get_home
+from worthless.cli.bootstrap import get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
 from worthless.cli.process import (
@@ -22,16 +22,12 @@ from worthless.cli.process import (
     check_pid,
     cleanup_stale_pid,
     disable_core_dumps,
+    pid_path,
     poll_health,
     read_pid,
     spawn_proxy,
     write_pid,
 )
-
-
-def _pid_path(home: WorthlessHome) -> Path:
-    """Return the PID file path."""
-    return home.base_dir / "proxy.pid"
 
 
 def _resolve_port(port_arg: int | None) -> int:
@@ -67,7 +63,7 @@ def register_up_commands(app: typer.Typer) -> None:
         actual_port = _resolve_port(port)
 
         # Check PID file for existing proxy
-        pid_file = _pid_path(home)
+        pid_file = pid_path(home)
         if pid_file.exists():
             info = read_pid(pid_file)
             if info is not None:
@@ -93,7 +89,8 @@ def register_up_commands(app: typer.Typer) -> None:
         proxy_env = build_proxy_env(home)
 
         if daemon:
-            _start_daemon(proxy_env, actual_port, pid_file, console)
+            log_file = home.base_dir / "proxy.log"
+            _start_daemon(proxy_env, actual_port, pid_file, log_file, console)
         else:
             _start_foreground(proxy_env, actual_port, pid_file, console)
 
@@ -101,6 +98,7 @@ def register_up_commands(app: typer.Typer) -> None:
         proxy_env: dict[str, str],
         port: int,
         pid_file: Path,
+        log_file: Path,
         console,
     ) -> None:
         """Start proxy in daemon mode (setsid, write PID, detach)."""
@@ -136,12 +134,16 @@ def register_up_commands(app: typer.Typer) -> None:
             pass_fds.append(fernet_fd)
 
         # Start detached process
+        log_fd: int = -1
         try:
+            # Open log file with 0600 permissions (append mode)
+            log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+
             proc = subprocess.Popen(
                 cmd,
                 env=full_env,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=log_fd,
                 start_new_session=True,
                 pass_fds=tuple(pass_fds),
             )
@@ -153,6 +155,12 @@ def register_up_commands(app: typer.Typer) -> None:
                 )
             )
             raise typer.Exit(code=1) from exc
+        finally:
+            # Parent closes its copies; child inherited the fds
+            if log_fd >= 0:
+                os.close(log_fd)
+            if fernet_fd is not None:
+                os.close(fernet_fd)
 
         # Write PID file
         write_pid(pid_file, proc.pid, port)
