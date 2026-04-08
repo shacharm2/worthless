@@ -18,9 +18,13 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
+
+from worthless.cli.platform import IS_WINDOWS, check_pid_alive, popen_platform_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +56,7 @@ def disable_core_dumps() -> None:
         import resource
 
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, ImportError):
         pass
 
 
@@ -70,6 +74,96 @@ def create_liveness_pipe() -> tuple[int, int]:
         closing it (or parent death) signals EOF to the proxy.
     """
     return os.pipe()
+
+
+# ---------------------------------------------------------------------------
+# Fernet key transport
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def fernet_transport(
+    env: dict[str, str],
+) -> Generator[tuple[str | None, int | None, list[int]], None, None]:
+    """Context manager for Fernet key transport. Closes fds on failure.
+
+    On Unix, creates a pipe fd for ``pass_fds``.
+    On Windows, returns the key for later stdin delivery.
+
+    Yields:
+        (fernet_key, fernet_fd, extra_pass_fds).
+    """
+    raw_key = env.pop("WORTHLESS_FERNET_KEY", None)
+    fernet_fd: int | None = None
+    fernet_fds: list[int] = []
+
+    if raw_key and not IS_WINDOWS:
+        r_fd, w_fd = os.pipe()
+        key_bytes = raw_key.encode() if isinstance(raw_key, str) else raw_key
+        written = os.write(w_fd, key_bytes)
+        os.close(w_fd)
+        if written != len(key_bytes):
+            os.close(r_fd)
+            raise OSError(f"Short write to Fernet pipe: {written}/{len(key_bytes)} bytes")
+        fernet_fd = r_fd
+        fernet_fds = [r_fd]
+
+    fernet_key = raw_key if IS_WINDOWS else None
+    try:
+        yield fernet_key, fernet_fd, fernet_fds
+    except BaseException:
+        if fernet_fd is not None:
+            os.close(fernet_fd)
+        raise
+
+
+def finalize_fernet_transport(
+    proc: subprocess.Popen,
+    fernet_key: str | None,
+    fernet_fd: int | None,
+) -> None:
+    """Send Fernet key via stdin (Windows) and close parent fds."""
+    if IS_WINDOWS and fernet_key and proc.stdin:
+        key_bytes = fernet_key.encode() if isinstance(fernet_key, str) else fernet_key
+        proc.stdin.write(key_bytes)
+        proc.stdin.close()
+    if fernet_fd is not None:
+        os.close(fernet_fd)
+
+
+def prepare_proxy_env(
+    env: dict[str, str],
+    fernet_fd: int | None,
+    *,
+    liveness_fd: int | None = None,
+) -> dict[str, str]:
+    """Build the full subprocess environment for a proxy process."""
+    insecure = env.get("WORTHLESS_ALLOW_INSECURE", "true")
+    full_env = {
+        **os.environ,
+        **env,
+        "WORTHLESS_ALLOW_INSECURE": insecure,
+    }
+    if fernet_fd is not None:
+        full_env["WORTHLESS_FERNET_FD"] = str(fernet_fd)
+    if liveness_fd is not None:
+        full_env["WORTHLESS_LIVENESS_FD"] = str(liveness_fd)
+    return full_env
+
+
+def proxy_cmd(port: int) -> list[str]:
+    """Build the uvicorn command for the proxy."""
+    return [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "worthless.proxy.app:create_app",
+        "--factory",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -93,52 +187,27 @@ def spawn_proxy(
     Returns:
         (process, actual_port).
     """
-    cmd = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        "worthless.proxy.app:create_app",
-        "--factory",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(port),
-    ]
+    cmd = proxy_cmd(port)
 
-    # Pass Fernet key via inherited fd instead of env var (avoids /proc/PID/environ leak)
-    fernet_key = env.pop("WORTHLESS_FERNET_KEY", None)
-    fernet_fd: int | None = None
-    if fernet_key:
-        r_fd, w_fd = os.pipe()
-        os.write(w_fd, fernet_key.encode() if isinstance(fernet_key, str) else fernet_key)
-        os.close(w_fd)
-        fernet_fd = r_fd
+    with fernet_transport(env) as (fernet_key, fernet_fd, fernet_fds):
+        full_env = prepare_proxy_env(env, fernet_fd, liveness_fd=liveness_fd)
 
-    # Build subprocess environment
-    insecure = env.get("WORTHLESS_ALLOW_INSECURE", "true")
-    full_env = {
-        **os.environ,
-        **env,
-        "WORTHLESS_ALLOW_INSECURE": insecure,
-    }
-    if fernet_fd is not None:
-        full_env["WORTHLESS_FERNET_FD"] = str(fernet_fd)
+        pass_fds = [*fernet_fds]
+        if liveness_fd is not None:
+            pass_fds.append(liveness_fd)
 
-    pass_fds: list[int] = []
-    if liveness_fd is not None:
-        full_env["WORTHLESS_LIVENESS_FD"] = str(liveness_fd)
-        pass_fds.append(liveness_fd)
-    if fernet_fd is not None:
-        pass_fds.append(fernet_fd)
+        platform_kwargs = popen_platform_kwargs(detach=True, pass_fds=tuple(pass_fds))
 
-    proc = subprocess.Popen(
-        cmd,
-        env=full_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-        pass_fds=tuple(pass_fds),
-    )
+        proc = subprocess.Popen(
+            cmd,
+            env=full_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if fernet_key else None,
+            **platform_kwargs,
+        )
+
+        finalize_fernet_transport(proc, fernet_key, fernet_fd)
 
     if port == 0:
         # Parse actual port from uvicorn output
@@ -242,18 +311,14 @@ MAX_VALID_PID: int = 4_194_304
 
 
 def check_pid(pid: int) -> bool:
-    """Return True if *pid* is alive (via ``os.kill(pid, 0)``).
+    """Return True if *pid* is alive. Cross-platform via ``psutil``.
 
     Rejects PIDs ≤ 1 or beyond the OS range to prevent signaling
     init, the caller's process group, or every user process.
     """
     if pid <= 1 or pid > MAX_VALID_PID:
         return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
+    return check_pid_alive(pid)
 
 
 def cleanup_stale_pid(pid_path: Path) -> bool:
@@ -290,16 +355,21 @@ def forward_signals(
 ) -> None:
     """Register handlers that forward SIGINT/SIGTERM to *proxy* and *child*.
 
-    Uses process group kill (``os.killpg``) for robust cleanup.
+    Uses process group kill (``os.killpg``) on Unix, ``proc.terminate()``
+    on Windows.  Only registers SIGINT on Windows (SIGTERM is not deliverable).
     """
 
     def _handler(signum: int, _frame: object) -> None:
         for proc in (child, proxy):
             if proc is not None and proc.poll() is None:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signum)
+                    if IS_WINDOWS:
+                        proc.terminate()
+                    else:
+                        os.killpg(os.getpgid(proc.pid), signum)
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
 
     signal.signal(signal.SIGINT, _handler)
-    signal.signal(signal.SIGTERM, _handler)
+    if not IS_WINDOWS:
+        signal.signal(signal.SIGTERM, _handler)

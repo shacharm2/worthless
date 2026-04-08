@@ -68,28 +68,21 @@ class TestDownGraceful:
     """down sends SIGTERM to process group and cleans PID file."""
 
     def test_sigterm_succeeds(self, home_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """SIGTERM kills process, PID file cleaned, exit 0."""
+        """kill_tree succeeds, process dies, PID file cleaned, exit 0."""
         pid_file = home_dir / "proxy.pid"
         write_pid(pid_file, 12345, 8787)
 
-        call_count = 0
+        killed = False
 
-        def mock_kill(pid: int, sig: int) -> None:
-            nonlocal call_count
-            call_count += 1
-            if sig == 0 and call_count > 2:
-                raise ProcessLookupError
-            # SIGTERM accepted silently
+        def mock_kill_tree(pid: int) -> None:
+            nonlocal killed
+            killed = True
 
-        def mock_killpg(pgid: int, sig: int) -> None:
-            mock_kill(pgid, sig)
-
-        def mock_getpgid(pid: int) -> int:
-            return pid
-
-        monkeypatch.setattr("os.kill", mock_kill)
-        monkeypatch.setattr("os.killpg", mock_killpg)
-        monkeypatch.setattr("os.getpgid", mock_getpgid)
+        monkeypatch.setattr("worthless.cli.commands.down.kill_tree", mock_kill_tree)
+        monkeypatch.setattr(
+            "worthless.cli.commands.down.check_pid",
+            lambda pid: not killed,
+        )
         monkeypatch.setattr("worthless.cli.commands.down._POLL_INTERVAL", 0.01)
 
         result = runner.invoke(app, ["down"], env={"WORTHLESS_HOME": str(home_dir)})
@@ -106,66 +99,41 @@ class TestDownGraceful:
 class TestDownForceKill:
     """down escalates to SIGKILL when SIGTERM is ignored."""
 
-    def test_sigkill_after_timeout(self, home_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_force_kill_after_timeout(
+        self, home_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         pid_file = home_dir / "proxy.pid"
         write_pid(pid_file, 12345, 8787)
 
-        signals_sent: list[int] = []
-        killed = False
+        calls: list[tuple[int, bool]] = []  # (pid, force)
 
-        def mock_kill(pid: int, sig: int) -> None:
-            nonlocal killed
-            signals_sent.append(sig)
-            if sig == 0:
-                if killed:
-                    raise ProcessLookupError
-                return  # still alive
-            if sig == signal.SIGKILL:
-                killed = True
+        def mock_kill_tree(pid: int, *, force: bool = False) -> None:
+            calls.append((pid, force))
 
-        def mock_killpg(pgid: int, sig: int) -> None:
-            nonlocal killed
-            signals_sent.append(sig)
-            if sig == signal.SIGKILL:
-                killed = True
-
-        def mock_getpgid(pid: int) -> int:
-            return pid
-
-        monkeypatch.setattr("os.kill", mock_kill)
-        monkeypatch.setattr("os.killpg", mock_killpg)
-        monkeypatch.setattr("os.getpgid", mock_getpgid)
+        monkeypatch.setattr("worthless.cli.commands.down.kill_tree", mock_kill_tree)
+        # Process stays alive through the poll window
+        monkeypatch.setattr("worthless.cli.commands.down.check_pid", lambda pid: True)
         monkeypatch.setattr("worthless.cli.commands.down._TERM_TIMEOUT", 0.1)
         monkeypatch.setattr("worthless.cli.commands.down._POLL_INTERVAL", 0.02)
 
         result = runner.invoke(app, ["down"], env={"WORTHLESS_HOME": str(home_dir)})
         assert result.exit_code == 0
         assert not pid_file.exists()
-        assert signal.SIGTERM in signals_sent
-        assert signal.SIGKILL in signals_sent
+        # First call: graceful (force=False), second: force kill (force=True)
+        assert (12345, False) in calls
+        assert (12345, True) in calls
 
     @pytest.mark.adversarial
-    def test_process_dies_between_timeout_and_sigkill(
+    def test_process_dies_between_timeout_and_force_kill(
         self, home_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Process dies after SIGTERM timeout but before SIGKILL lands."""
+        """Process dies after timeout but before force kill lands."""
         pid_file = home_dir / "proxy.pid"
         write_pid(pid_file, 12345, 8787)
 
-        def mock_kill(pid: int, sig: int) -> None:
-            if sig == 0:
-                return  # alive during polling
-
-        def mock_killpg(pgid: int, sig: int) -> None:
-            if sig == signal.SIGKILL:
-                raise ProcessLookupError  # died right before SIGKILL
-
-        def mock_getpgid(pid: int) -> int:
-            return pid
-
-        monkeypatch.setattr("os.kill", mock_kill)
-        monkeypatch.setattr("os.killpg", mock_killpg)
-        monkeypatch.setattr("os.getpgid", mock_getpgid)
+        # kill_tree with force=True finds process already dead (no-op via psutil)
+        monkeypatch.setattr("worthless.cli.commands.down.kill_tree", lambda pid, **kw: None)
+        monkeypatch.setattr("worthless.cli.commands.down.check_pid", lambda pid: True)
         monkeypatch.setattr("worthless.cli.commands.down._TERM_TIMEOUT", 0.1)
         monkeypatch.setattr("worthless.cli.commands.down._POLL_INTERVAL", 0.02)
 
@@ -190,20 +158,11 @@ class TestDownErrors:
         pid_file = home_dir / "proxy.pid"
         write_pid(pid_file, 12345, 8787)
 
-        def mock_kill(pid: int, sig: int) -> None:
-            if sig == 0:
-                return  # alive check passes
-            raise PermissionError("not permitted")
+        def _deny(pid: int, **_kw: object) -> None:
+            raise PermissionError("access denied")
 
-        def mock_killpg(pgid: int, sig: int) -> None:
-            raise PermissionError("not permitted")
-
-        def mock_getpgid(pid: int) -> int:
-            return pid
-
-        monkeypatch.setattr("os.kill", mock_kill)
-        monkeypatch.setattr("os.killpg", mock_killpg)
-        monkeypatch.setattr("os.getpgid", mock_getpgid)
+        monkeypatch.setattr("worthless.cli.commands.down.check_pid", lambda pid: True)
+        monkeypatch.setattr("worthless.cli.commands.down.kill_tree", _deny)
 
         result = runner.invoke(app, ["down"], env={"WORTHLESS_HOME": str(home_dir)})
         assert result.exit_code == 1
@@ -216,20 +175,19 @@ class TestDownErrors:
         pid_file = home_dir / "proxy.pid"
         write_pid(pid_file, 12345, 8787)
 
-        def mock_kill(pid: int, sig: int) -> None:
-            if sig == 0:
-                return  # alive
-            raise ProcessLookupError  # dies right as we signal
+        # kill_tree returns silently (psutil.NoSuchProcess handled internally)
+        monkeypatch.setattr("worthless.cli.commands.down.kill_tree", lambda pid: None)
+        monkeypatch.setattr("worthless.cli.commands.down._POLL_INTERVAL", 0.01)
 
-        def mock_killpg(pgid: int, sig: int) -> None:
-            raise ProcessLookupError
+        # check_pid: alive once (initial check), then dead after kill
+        call_count = 0
 
-        def mock_getpgid(pid: int) -> int:
-            return pid
+        def dying_pid(pid: int) -> bool:
+            nonlocal call_count
+            call_count += 1
+            return call_count <= 1
 
-        monkeypatch.setattr("os.kill", mock_kill)
-        monkeypatch.setattr("os.killpg", mock_killpg)
-        monkeypatch.setattr("os.getpgid", mock_getpgid)
+        monkeypatch.setattr("worthless.cli.commands.down.check_pid", dying_pid)
 
         result = runner.invoke(app, ["down"], env={"WORTHLESS_HOME": str(home_dir)})
         assert result.exit_code == 0
@@ -322,6 +280,43 @@ class TestDownPidFileTampering:
         assert result.exit_code == 0
         # The symlink itself should be removed
         assert not pid_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Windows platform branch
+# ---------------------------------------------------------------------------
+
+
+class TestDownWindows:
+    """down command Windows branch via monkeypatch."""
+
+    def test_uses_win32_kill_on_windows(
+        self, home_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Windows, kill_tree uses psutil instead of os.killpg."""
+        pid_file = home_dir / "proxy.pid"
+        write_pid(pid_file, 12345, 8787)
+
+        monkeypatch.setattr("worthless.cli.platform.IS_WINDOWS", True)
+
+        kill_calls: list[int] = []
+
+        def mock_kill_tree(pid: int) -> None:
+            kill_calls.append(pid)
+
+        monkeypatch.setattr("worthless.cli.commands.down.kill_tree", mock_kill_tree)
+
+        # check_pid: alive once, then dead after kill_tree called
+        def check_pid_dying(pid: int) -> bool:
+            return len(kill_calls) == 0
+
+        monkeypatch.setattr("worthless.cli.commands.down.check_pid", check_pid_dying)
+        monkeypatch.setattr("worthless.cli.commands.down._POLL_INTERVAL", 0.01)
+
+        result = runner.invoke(app, ["down"], env={"WORTHLESS_HOME": str(home_dir)})
+        assert result.exit_code == 0
+        assert not pid_file.exists()
+        assert 12345 in kill_calls
 
 
 # ---------------------------------------------------------------------------

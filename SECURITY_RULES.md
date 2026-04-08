@@ -54,3 +54,7 @@ All random byte generation uses `secrets.token_bytes()` (Python) or `OsRng` (Rus
 | SR-06 | Phase 3+ (full in Rust) | Architecture |
 | SR-07 | Phase 1+ | CRYP-02 |
 | SR-08 | Phase 1+ | CRYP-04 |
+
+## Platform Notes
+
+**Windows (experimental):** SR-02 (explicit memory zeroing) is best-effort on Windows. Forced process termination via `TerminateProcess` skips atexit handlers and signal handlers, so key material may persist in process memory until the OS reclaims pages. Graceful shutdown via `worthless down` zeroes key material normally. This is acceptable because Worthless protects against key exfiltration from `.env` files and network transit — not against an attacker with local memory access to the running process (who already has full machine access). The Harden milestone will address this with a Rust reconstruction service using `SecureZeroMemory` and named-event graceful shutdown.

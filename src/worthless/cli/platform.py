@@ -1,0 +1,104 @@
+"""Cross-platform abstractions for process management.
+
+Centralises all ``sys.platform == "win32"`` checks so that command modules
+only import helpers, never branch on platform themselves.
+
+Uses ``psutil`` for reliable cross-platform process management.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import psutil
+
+IS_WINDOWS: bool = sys.platform == "win32"
+
+# Windows creation flags (defined here to avoid conditional imports at use sites)
+_DETACHED_PROCESS = 0x00000008
+_CREATE_NO_WINDOW = 0x08000000
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+# Module-level warning state
+_warned: bool = False
+
+
+def popen_platform_kwargs(
+    *,
+    detach: bool = False,
+    pass_fds: tuple[int, ...] = (),
+) -> dict:
+    """Return platform-appropriate kwargs for ``subprocess.Popen``.
+
+    On Unix: ``start_new_session=True`` for detach, ``pass_fds`` forwarded.
+    On Windows: ``creationflags`` for detach, ``pass_fds`` dropped (unsupported).
+    """
+    if IS_WINDOWS:
+        if detach:
+            return {"creationflags": _DETACHED_PROCESS | _CREATE_NO_WINDOW}
+        return {"creationflags": _CREATE_NEW_PROCESS_GROUP}
+
+    kwargs: dict = {}
+    if detach:
+        kwargs["start_new_session"] = True
+    if pass_fds:
+        kwargs["pass_fds"] = pass_fds
+    return kwargs
+
+
+def check_pid_alive(pid: int) -> bool:
+    """Return True if *pid* is alive. Cross-platform via psutil."""
+    return psutil.pid_exists(pid)
+
+
+def kill_tree(pid: int, *, force: bool = False) -> None:
+    """Kill a process and all its descendants.
+
+    Uses ``psutil`` for reliable cross-platform tree kill.
+    With ``force=False`` (default), sends SIGTERM (graceful).
+    With ``force=True``, sends SIGKILL (immediate).
+
+    Raises ``PermissionError`` if access is denied on the parent process.
+    """
+    try:
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+    except psutil.NoSuchProcess:
+        return  # Already dead
+    except psutil.AccessDenied:
+        raise PermissionError(f"access denied for PID {pid}") from None
+
+    method = "kill" if force else "terminate"
+
+    for child in children:
+        try:
+            getattr(child, method)()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    try:
+        getattr(parent, method)()
+    except psutil.NoSuchProcess:
+        pass
+    except psutil.AccessDenied:
+        raise PermissionError(f"access denied for PID {pid}") from None
+
+
+def warn_windows_once(*, quiet: bool = False) -> None:
+    """Print a one-shot experimental warning on Windows.
+
+    Suppressed by ``--quiet`` or ``WORTHLESS_WINDOWS_ACK=1``.
+    """
+    global _warned  # noqa: PLW0603
+    if _warned or not IS_WINDOWS or quiet:
+        return
+    if os.environ.get("WORTHLESS_WINDOWS_ACK"):
+        return
+    _warned = True
+    sys.stderr.write(
+        "worthless: On Windows, key material may persist in memory "
+        "after forced process termination.\n"
+        "Set WORTHLESS_WINDOWS_ACK=1 to suppress this message.\n"
+    )
+    sys.stderr.flush()

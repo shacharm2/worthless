@@ -6,8 +6,6 @@ polls for exit, escalates to SIGKILL after a timeout, and cleans up.
 
 from __future__ import annotations
 
-import os
-import signal
 import time
 from pathlib import Path
 
@@ -16,6 +14,7 @@ import typer
 from worthless.cli.bootstrap import get_home
 from worthless.cli.console import WorthlessConsole, get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
+from worthless.cli.platform import kill_tree, warn_windows_once
 from worthless.cli.process import MAX_VALID_PID, check_pid, pid_path, read_pid
 
 # Tunable for tests
@@ -41,6 +40,7 @@ def register_down_commands(app: typer.Typer) -> None:
         """Stop the running proxy daemon."""
         console = get_console()
         home = get_home()
+        warn_windows_once(quiet=console.quiet)
 
         pf = pid_path(home)
         info = read_pid(pf)
@@ -62,13 +62,9 @@ def register_down_commands(app: typer.Typer) -> None:
             _done(pf, console, f"Proxy is not running (stale PID {pid} cleaned up).")
             return
 
-        # Send SIGTERM to the process group
+        # Kill the process tree (SIGTERM via psutil)
         try:
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except ProcessLookupError:
-            _done(pf, console, f"Proxy stopped (was PID {pid} on port {port}).", success=True)
-            return
+            kill_tree(pid)
         except PermissionError as exc:
             raise WorthlessError(
                 ErrorCode.PROXY_NOT_RUNNING,
@@ -86,12 +82,11 @@ def register_down_commands(app: typer.Typer) -> None:
                 return
             time.sleep(_POLL_INTERVAL)
 
-        # Escalate to SIGKILL on the process group (Unix only)
-        if hasattr(signal, "SIGKILL"):
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+        # Escalate: force kill (SIGKILL on Unix, TerminateProcess on Windows)
+        try:
+            kill_tree(pid, force=True)
+        except PermissionError:
+            pass
 
         time.sleep(_POLL_INTERVAL)
         _done(

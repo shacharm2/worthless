@@ -13,6 +13,7 @@ from collections.abc import Generator
 from cryptography.fernet import Fernet
 
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
+from worthless.cli.platform import IS_WINDOWS
 
 _DEFAULT_BASE = Path.home() / ".worthless"
 _STALE_LOCK_SECONDS = 300  # 5 minutes
@@ -60,8 +61,9 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
         home.shard_a_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
         # Ensure permissions are correct even if dir already existed
-        home.base_dir.chmod(0o700)
-        home.shard_a_dir.chmod(0o700)
+        if not IS_WINDOWS:
+            home.base_dir.chmod(0o700)
+            home.shard_a_dir.chmod(0o700)
 
         # Generate Fernet key if missing
         if not home.fernet_key_path.exists():
@@ -126,8 +128,9 @@ def _init_db(home: WorthlessHome) -> None:
     finally:
         conn.close()
 
-    # Restrict DB file permissions
-    home.db_path.chmod(0o600)
+    # Restrict DB file permissions (no-op on Windows — NTFS ACLs are different)
+    if not IS_WINDOWS:
+        home.db_path.chmod(0o600)
 
 
 @contextmanager
