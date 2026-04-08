@@ -9,6 +9,10 @@ services:
     env_file: docker-compose.env
     volumes:
       - worthless-data:/data
+      # Separate volume for the Fernet encryption key. Keeps the key that
+      # decrypts shard_b off the same volume as shard_a and the encrypted DB,
+      # preventing single-volume exfiltration from reconstructing API keys.
+      - worthless-secrets:/secrets
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -30,3 +34,4 @@ services:
 
 volumes:
   worthless-data:
+  worthless-secrets:

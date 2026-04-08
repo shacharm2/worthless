@@ -31,6 +31,9 @@ class WorthlessHome:
 
     @property
     def fernet_key_path(self) -> Path:
+        env_path = os.environ.get("WORTHLESS_FERNET_KEY_PATH")
+        if env_path:
+            return Path(env_path)
         return self.base_dir / "fernet.key"
 
     @property
@@ -65,11 +68,21 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
             home.base_dir.chmod(0o700)
             home.shard_a_dir.chmod(0o700)
 
+        # Validate custom fernet key path if set via env var
+        fernet_path = home.fernet_key_path
+        fernet_parent = fernet_path.parent
+        if os.environ.get("WORTHLESS_FERNET_KEY_PATH") and not fernet_parent.is_dir():
+            raise WorthlessError(
+                ErrorCode.BOOTSTRAP_FAILED,
+                f"WORTHLESS_FERNET_KEY_PATH directory does not exist: {fernet_parent}\n"
+                "Create it or mount a volume at that path.",
+            )
+
         # Generate Fernet key if missing
-        if not home.fernet_key_path.exists():
+        if not fernet_path.exists():
             key = Fernet.generate_key()
             fd = os.open(
-                str(home.fernet_key_path),
+                str(fernet_path),
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                 0o600,
             )
@@ -78,7 +91,17 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 os.write(fd, b"\n")
             finally:
                 os.close(fd)
+    except WorthlessError:
+        raise
     except OSError as exc:
+        fernet_env = os.environ.get("WORTHLESS_FERNET_KEY_PATH")
+        if fernet_env:
+            raise WorthlessError(
+                ErrorCode.BOOTSTRAP_FAILED,
+                f"Cannot write fernet key to {fernet_env}: "
+                f"{sanitize_exception(exc, generic='permission denied or path invalid')}\n"
+                "Check that the directory exists and is writable.",
+            ) from exc
         raise WorthlessError(
             ErrorCode.BOOTSTRAP_FAILED,
             sanitize_exception(exc, generic="failed to initialise home directory"),
