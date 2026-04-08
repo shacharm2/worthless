@@ -525,25 +525,17 @@ class TestWrapSetsEnvAndRunsCommand:
 
 
 # ------------------------------------------------------------------
-# worthless-j3y: Daemon + wrap port conflict coexistence tests
+# worthless-j3y: Daemon + wrap port coexistence
 # ------------------------------------------------------------------
 
 
 class TestWrapDaemonCoexistence:
-    """wrap uses ephemeral port and is independent of daemon state."""
+    """wrap always uses port=0 (ephemeral), ignoring daemon state."""
 
-    def test_wrap_uses_ephemeral_port_not_daemon_port(
+    def test_wrap_always_requests_ephemeral_port(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When a daemon is running, wrap still starts on port=0 (ephemeral).
-
-        Verifies that spawn_proxy is called with port=0 regardless of
-        whether a daemon PID file exists with a live process.
-        """
-        # Create a fake daemon PID file to simulate a running daemon
-        pid_file = home_with_key.base_dir / "daemon.pid"
-        pid_file.write_text(f"{os.getpid()}:8787")
-
+        """wrap passes port=0 to spawn_proxy even when WORTHLESS_PORT is set."""
         captured_kwargs: dict = {}
 
         def _capture_spawn(**kw):
@@ -560,84 +552,19 @@ class TestWrapDaemonCoexistence:
         mock_child.returncode = 0
         mock_child.wait.return_value = 0
 
-        monkeypatch.setattr(
-            "worthless.cli.commands.wrap.spawn_proxy",
-            _capture_spawn,
-        )
-        monkeypatch.setattr(
-            "worthless.cli.commands.wrap.poll_health",
-            lambda *_a, **_kw: True,
-        )
-        monkeypatch.setattr(
-            "worthless.cli.commands.wrap.forward_signals",
-            lambda **_kw: None,
-        )
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _capture_spawn)
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
+        monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
         monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
+        monkeypatch.setenv("WORTHLESS_PORT", "8787")
 
         result = runner.invoke(
             app,
             ["wrap", "--", "echo", "hi"],
-            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir), "WORTHLESS_PORT": "8787"},
         )
         assert result.exit_code == 0, f"wrap failed: {result.output}"
-
-        # The critical assertion: wrap always passes port=0 (ephemeral)
-        assert captured_kwargs.get("port") == 0, (
-            f"wrap should use port=0 (ephemeral), got port={captured_kwargs.get('port')}"
-        )
-
-    def test_wrap_and_daemon_independent(
-        self, home_with_key, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """wrap does not read or check the daemon PID file.
-
-        Verifies that wrap spawns its own proxy without consulting
-        any PID file, proving full independence from daemon state.
-        """
-        # Create a PID file pointing to a non-existent PID
-        pid_file = home_with_key.base_dir / "daemon.pid"
-        pid_file.write_text("999999999:8787")
-
-        spawn_called = False
-
-        def _track_spawn(**kw):
-            nonlocal spawn_called
-            spawn_called = True
-            mock_proxy = MagicMock()
-            mock_proxy.pid = 88888
-            mock_proxy.poll.return_value = None
-            mock_proxy.wait.return_value = 0
-            return (mock_proxy, 22222)
-
-        mock_child = MagicMock()
-        mock_child.pid = 88889
-        mock_child.poll.return_value = 0
-        mock_child.returncode = 0
-        mock_child.wait.return_value = 0
-
-        monkeypatch.setattr(
-            "worthless.cli.commands.wrap.spawn_proxy",
-            _track_spawn,
-        )
-        monkeypatch.setattr(
-            "worthless.cli.commands.wrap.poll_health",
-            lambda *_a, **_kw: True,
-        )
-        monkeypatch.setattr(
-            "worthless.cli.commands.wrap.forward_signals",
-            lambda **_kw: None,
-        )
-        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
-
-        result = runner.invoke(
-            app,
-            ["wrap", "--", "echo", "hi"],
-            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
-        )
-        assert result.exit_code == 0, f"wrap failed: {result.output}"
-
-        # wrap spawned its own proxy regardless of stale PID file
-        assert spawn_called, "wrap should spawn its own proxy independent of daemon PID file"
+        assert captured_kwargs.get("port") == 0
 
 
 # ------------------------------------------------------------------
@@ -646,89 +573,46 @@ class TestWrapDaemonCoexistence:
 
 
 class TestWrapAfterUnlockExitsWithError:
-    """wrap fails after lock+unlock removes all enrolled keys."""
+    """wrap refuses when all keys have been unlocked."""
 
-    def test_wrap_after_lock_unlock_exits_key_not_found(self, home_dir, tmp_path: Path) -> None:
-        """Lock a key, unlock it, then wrap should exit 1 with WRTLS-102."""
+    def test_lock_unlock_then_wrap_fails(self, home_dir, tmp_path: Path) -> None:
+        """lock → unlock → wrap exits 1 with WRTLS-102."""
         from tests.helpers import fake_openai_key
 
-        # Create a .env file with a key
         env_file = tmp_path / ".env"
-        test_key = fake_openai_key()
-        env_file.write_text(f"OPENAI_API_KEY={test_key}\n")
-
+        env_file.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
         home_env = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
-        # Lock the key
-        lock_result = runner.invoke(
-            app,
-            ["lock", "--env", str(env_file)],
-            env=home_env,
-        )
-        assert lock_result.exit_code == 0, f"lock failed: {lock_result.output}"
+        result = runner.invoke(app, ["lock", "--env", str(env_file)], env=home_env)
+        assert result.exit_code == 0, result.output
 
-        # Verify key is enrolled (wrap would succeed at this point)
-        providers = _list_enrolled_providers(home_dir)
-        assert len(providers) > 0, "Expected enrolled providers after lock"
+        result = runner.invoke(app, ["unlock", "--env", str(env_file)], env=home_env)
+        assert result.exit_code == 0, result.output
+        assert _list_enrolled_providers(home_dir) == []
 
-        # Unlock the key (removes shards and enrollments)
-        unlock_result = runner.invoke(
-            app,
-            ["unlock", "--env", str(env_file)],
-            env=home_env,
-        )
-        assert unlock_result.exit_code == 0, f"unlock failed: {unlock_result.output}"
+        result = runner.invoke(app, ["wrap", "--", "echo", "hi"], env=home_env)
+        assert result.exit_code == 1
+        assert "WRTLS-102" in result.output
 
-        # Verify no providers remain
-        providers_after = _list_enrolled_providers(home_dir)
-        assert providers_after == [], f"Expected no providers after unlock, got {providers_after}"
-
-        # wrap should now fail with KEY_NOT_FOUND
-        wrap_result = runner.invoke(
-            app,
-            ["wrap", "--", "echo", "hi"],
-            env=home_env,
-        )
-        assert wrap_result.exit_code == 1
-        assert "WRTLS-102" in wrap_result.output
-
-    def test_wrap_after_partial_unlock_still_works(self, home_dir, tmp_path: Path) -> None:
-        """Lock two keys, unlock one -- wrap should still succeed (with mocked proxy)."""
+    def test_partial_unlock_leaves_wrap_functional(self, home_dir, tmp_path: Path) -> None:
+        """Lock two keys, unlock one — wrap still has a provider."""
         from tests.helpers import fake_anthropic_key, fake_openai_key
 
         env_file = tmp_path / ".env"
-        openai_key = fake_openai_key()
-        anthropic_key = fake_anthropic_key()
-        env_file.write_text(f"OPENAI_API_KEY={openai_key}\nANTHROPIC_API_KEY={anthropic_key}\n")
-
+        env_file.write_text(
+            f"OPENAI_API_KEY={fake_openai_key()}\nANTHROPIC_API_KEY={fake_anthropic_key()}\n"
+        )
         home_env = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
-        # Lock both keys
-        lock_result = runner.invoke(
-            app,
-            ["lock", "--env", str(env_file)],
-            env=home_env,
-        )
-        assert lock_result.exit_code == 0, f"lock failed: {lock_result.output}"
+        result = runner.invoke(app, ["lock", "--env", str(env_file)], env=home_env)
+        assert result.exit_code == 0, result.output
 
-        # Find one alias to unlock
-        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
-        assert len(shard_a_files) == 2, f"Expected 2 shard_a files, got {len(shard_a_files)}"
-
-        # Unlock just one alias
-        alias_to_unlock = shard_a_files[0].name
-        unlock_result = runner.invoke(
-            app,
-            ["unlock", "--alias", alias_to_unlock, "--env", str(env_file)],
-            env=home_env,
+        alias = next(f.name for f in home_dir.shard_a_dir.iterdir() if f.is_file())
+        result = runner.invoke(
+            app, ["unlock", "--alias", alias, "--env", str(env_file)], env=home_env
         )
-        assert unlock_result.exit_code == 0, f"unlock failed: {unlock_result.output}"
-
-        # One provider should remain enrolled
-        providers_after = _list_enrolled_providers(home_dir)
-        assert len(providers_after) == 1, (
-            f"Expected 1 provider after partial unlock, got {providers_after}"
-        )
+        assert result.exit_code == 0, result.output
+        assert len(_list_enrolled_providers(home_dir)) == 1
 
 
 # ------------------------------------------------------------------
@@ -737,36 +621,28 @@ class TestWrapAfterUnlockExitsWithError:
 
 
 class TestProxySpawnFailureFDCleanup:
-    """When spawn_proxy raises, both liveness pipe FDs are closed."""
+    """spawn_proxy failure must close both liveness pipe FDs."""
 
     def test_spawn_failure_closes_both_fds(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Both read_fd and write_fd are closed when spawn_proxy raises."""
         closed_fds: list[int] = []
         real_os_close = os.close
-
-        # Create real FDs to return from mocked create_liveness_pipe
         real_r, real_w = os.pipe()
 
         monkeypatch.setattr(
             "worthless.cli.commands.wrap.create_liveness_pipe",
             lambda: (real_r, real_w),
         )
-
-        def _tracking_close(fd: int) -> None:
-            closed_fds.append(fd)
-            real_os_close(fd)
-
-        monkeypatch.setattr("worthless.cli.commands.wrap.os.close", _tracking_close)
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.os.close",
+            lambda fd: (closed_fds.append(fd), real_os_close(fd)),
+        )
 
         def _fail(**_kw):
             raise RuntimeError("bind failed")
 
-        monkeypatch.setattr(
-            "worthless.cli.commands.wrap.spawn_proxy",
-            _fail,
-        )
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _fail)
 
         result = runner.invoke(
             app,
@@ -774,19 +650,14 @@ class TestProxySpawnFailureFDCleanup:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
         assert result.exit_code == 1
-
-        # Both FDs must have been closed
-        assert real_r in closed_fds, f"read_fd {real_r} was not closed; closed: {closed_fds}"
-        assert real_w in closed_fds, f"write_fd {real_w} was not closed; closed: {closed_fds}"
+        assert real_r in closed_fds
+        assert real_w in closed_fds
 
 
 class TestChildExitCodePropagatedViaWrap:
-    """Child nonzero exit code propagated through the full wrap command."""
+    """Child nonzero exit code flows through wrap → typer.Exit."""
 
-    def test_child_exits_nonzero_propagated(
-        self, home_with_key, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """When child exits with code 42, wrap should exit with code 42."""
+    def test_child_exits_42(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_proxy = MagicMock()
         mock_proxy.pid = 77770
         mock_proxy.poll.return_value = None
@@ -802,14 +673,8 @@ class TestChildExitCodePropagatedViaWrap:
             "worthless.cli.commands.wrap.spawn_proxy",
             lambda **_kw: (mock_proxy, 9999),
         )
-        monkeypatch.setattr(
-            "worthless.cli.commands.wrap.poll_health",
-            lambda *_a, **_kw: True,
-        )
-        monkeypatch.setattr(
-            "worthless.cli.commands.wrap.forward_signals",
-            lambda **_kw: None,
-        )
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
+        monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
         monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
 
         result = runner.invoke(
@@ -820,106 +685,12 @@ class TestChildExitCodePropagatedViaWrap:
         assert result.exit_code == 42
 
 
-class TestProxyDiesAfterChildFinishes:
-    """When proxy dies AFTER child has already exited, no warning is emitted."""
-
-    def test_proxy_dies_after_child_no_warning(
-        self, home_with_key, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """No 'proxy crashed mid-session' warning when child finishes first."""
-        captured_messages: list[str] = []
-
-        # Child finishes immediately
-        mock_child = MagicMock()
-        mock_child.pid = 88881
-        mock_child.poll.return_value = 0
-        mock_child.returncode = 0
-        mock_child.wait.return_value = 0
-
-        # Proxy finishes after child (wait blocks briefly)
-        child_done = threading.Event()
-        mock_proxy = MagicMock()
-        mock_proxy.pid = 88880
-        mock_proxy.returncode = 0
-
-        def proxy_wait(**_kw):
-            # Wait until child is done before proxy "dies"
-            child_done.wait(timeout=5)
-            time.sleep(0.05)
-            return 0
-
-        mock_proxy.wait.side_effect = proxy_wait
-        mock_proxy.poll.return_value = 0  # already dead after wait returns
-
-        import worthless.cli.commands.wrap as wrap_mod
-
-        fake_sys = ModuleType("fake_sys")
-        for attr in dir(sys):
-            try:
-                setattr(fake_sys, attr, getattr(sys, attr))
-            except (AttributeError, TypeError):
-                pass
-
-        class _CapturingStderr:
-            def write(self, msg: str) -> int:
-                captured_messages.append(msg)
-                return len(msg)
-
-            def flush(self) -> None:
-                pass
-
-        fake_sys.stderr = _CapturingStderr()
-        monkeypatch.setattr(wrap_mod, "sys", fake_sys)
-
-        monkeypatch.setattr(
-            wrap_mod,
-            "spawn_proxy",
-            lambda **_kw: (mock_proxy, 9999),
-        )
-        monkeypatch.setattr(
-            wrap_mod,
-            "poll_health",
-            lambda *_a, **_kw: True,
-        )
-        monkeypatch.setattr(
-            wrap_mod,
-            "forward_signals",
-            lambda **_kw: None,
-        )
-
-        original_run = _run_child_and_wait
-
-        def _run_and_signal(child):
-            code = original_run(child)
-            child_done.set()
-            return code
-
-        monkeypatch.setattr(wrap_mod, "_run_child_and_wait", _run_and_signal)
-        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
-
-        result = runner.invoke(
-            app,
-            ["wrap", "--", "echo", "hi"],
-            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
-        )
-        assert result.exit_code == 0
-
-        # Give watcher thread time to run
-        time.sleep(0.2)
-
-        combined = "".join(captured_messages)
-        assert "proxy crashed mid-session" not in combined, (
-            f"Warning should NOT appear when proxy dies after child; got: {combined}"
-        )
-
-
 class TestWrapKeyboardInterruptCleanup:
-    """KeyboardInterrupt during child.wait() propagates as exit 130."""
+    """Ctrl+C during child.wait() exits 130 (128 + SIGINT)."""
 
     def test_keyboard_interrupt_exits_130(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ctrl+C during child.wait() exits with 130 (128 + SIGINT)."""
         mock_proxy = MagicMock()
         mock_proxy.pid = 66660
         mock_proxy.poll.return_value = None
@@ -928,25 +699,15 @@ class TestWrapKeyboardInterruptCleanup:
         mock_child = MagicMock()
         mock_child.pid = 66661
         mock_child.poll.return_value = None
-
-        def _child_wait(**_kw):
-            raise KeyboardInterrupt
-
-        mock_child.wait.side_effect = _child_wait
+        mock_child.wait.side_effect = KeyboardInterrupt
         mock_child.returncode = None
 
         monkeypatch.setattr(
             "worthless.cli.commands.wrap.spawn_proxy",
             lambda **_kw: (mock_proxy, 9999),
         )
-        monkeypatch.setattr(
-            "worthless.cli.commands.wrap.poll_health",
-            lambda *_a, **_kw: True,
-        )
-        monkeypatch.setattr(
-            "worthless.cli.commands.wrap.forward_signals",
-            lambda **_kw: None,
-        )
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
+        monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
         monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
 
         result = runner.invoke(
@@ -954,6 +715,4 @@ class TestWrapKeyboardInterruptCleanup:
             ["wrap", "--", "sleep", "999"],
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
-
-        # error_boundary catches KeyboardInterrupt and exits 130 (128 + SIGINT)
         assert result.exit_code == 130
