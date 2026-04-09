@@ -68,6 +68,10 @@ from worthless.cli.commands.up import register_up_commands  # noqa: E402
 
 register_up_commands(app)
 
+from worthless.cli.commands.down import register_down_commands  # noqa: E402
+
+register_down_commands(app)
+
 try:
     from worthless.cli.commands.mcp import register_mcp_commands  # noqa: E402
 

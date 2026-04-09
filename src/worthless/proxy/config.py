@@ -67,4 +67,8 @@ class ProxySettings:
     def validate(self) -> None:
         """Raise if required settings are missing."""
         if not self.fernet_key:
-            raise ValueError("WORTHLESS_FERNET_KEY environment variable is required")
+            raise ValueError(
+                "Fernet key not available. "
+                "Set WORTHLESS_FERNET_KEY or WORTHLESS_FERNET_KEY_PATH, "
+                "or check that entrypoint.sh ran successfully in Docker."
+            )

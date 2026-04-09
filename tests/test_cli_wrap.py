@@ -522,3 +522,197 @@ class TestWrapSetsEnvAndRunsCommand:
             "wrap should inject OPENAI_BASE_URL for enrolled openai key"
         )
         assert "127.0.0.1" in captured_env["OPENAI_BASE_URL"]
+
+
+# ------------------------------------------------------------------
+# worthless-j3y: Daemon + wrap port coexistence
+# ------------------------------------------------------------------
+
+
+class TestWrapDaemonCoexistence:
+    """wrap always uses port=0 (ephemeral), ignoring daemon state."""
+
+    def test_wrap_always_requests_ephemeral_port(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """wrap passes port=0 to spawn_proxy even when WORTHLESS_PORT is set."""
+        captured_kwargs: dict = {}
+
+        def _capture_spawn(**kw):
+            captured_kwargs.update(kw)
+            mock_proxy = MagicMock()
+            mock_proxy.pid = 77777
+            mock_proxy.poll.return_value = None
+            mock_proxy.wait.return_value = 0
+            return (mock_proxy, 11111)
+
+        mock_child = MagicMock()
+        mock_child.pid = 77778
+        mock_child.poll.return_value = 0
+        mock_child.returncode = 0
+        mock_child.wait.return_value = 0
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _capture_spawn)
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
+        monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
+        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
+        monkeypatch.setenv("WORTHLESS_PORT", "8787")
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir), "WORTHLESS_PORT": "8787"},
+        )
+        assert result.exit_code == 0, f"wrap failed: {result.output}"
+        assert captured_kwargs.get("port") == 0
+
+
+# ------------------------------------------------------------------
+# Lifecycle: wrap after lock/unlock leaves no enrolled keys
+# ------------------------------------------------------------------
+
+
+class TestWrapAfterUnlockExitsWithError:
+    """wrap refuses when all keys have been unlocked."""
+
+    def test_lock_unlock_then_wrap_fails(self, home_dir, tmp_path: Path) -> None:
+        """lock → unlock → wrap exits 1 with WRTLS-102."""
+        from tests.helpers import fake_openai_key
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
+        home_env = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+
+        result = runner.invoke(app, ["lock", "--env", str(env_file)], env=home_env)
+        assert result.exit_code == 0, result.output
+
+        result = runner.invoke(app, ["unlock", "--env", str(env_file)], env=home_env)
+        assert result.exit_code == 0, result.output
+        assert _list_enrolled_providers(home_dir) == []
+
+        result = runner.invoke(app, ["wrap", "--", "echo", "hi"], env=home_env)
+        assert result.exit_code == 1
+        assert "WRTLS-102" in result.output
+
+    def test_partial_unlock_leaves_wrap_functional(self, home_dir, tmp_path: Path) -> None:
+        """Lock two keys, unlock one — wrap still has a provider."""
+        from tests.helpers import fake_anthropic_key, fake_openai_key
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            f"OPENAI_API_KEY={fake_openai_key()}\nANTHROPIC_API_KEY={fake_anthropic_key()}\n"
+        )
+        home_env = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+
+        result = runner.invoke(app, ["lock", "--env", str(env_file)], env=home_env)
+        assert result.exit_code == 0, result.output
+
+        alias = next(f.name for f in home_dir.shard_a_dir.iterdir() if f.is_file())
+        result = runner.invoke(
+            app, ["unlock", "--alias", alias, "--env", str(env_file)], env=home_env
+        )
+        assert result.exit_code == 0, result.output
+        assert len(_list_enrolled_providers(home_dir)) == 1
+
+
+# ------------------------------------------------------------------
+# Failure-path tests (bead worthless-1k9)
+# ------------------------------------------------------------------
+
+
+class TestProxySpawnFailureFDCleanup:
+    """spawn_proxy failure must close both liveness pipe FDs."""
+
+    def test_spawn_failure_closes_both_fds(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        closed_fds: list[int] = []
+        real_os_close = os.close
+        real_r, real_w = os.pipe()
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.create_liveness_pipe",
+            lambda: (real_r, real_w),
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.os.close",
+            lambda fd: (closed_fds.append(fd), real_os_close(fd)),
+        )
+
+        def _fail(**_kw):
+            raise RuntimeError("bind failed")
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _fail)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1
+        assert real_r in closed_fds
+        assert real_w in closed_fds
+
+
+class TestChildExitCodePropagatedViaWrap:
+    """Child nonzero exit code flows through wrap → typer.Exit."""
+
+    def test_child_exits_42(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 77770
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+
+        mock_child = MagicMock()
+        mock_child.pid = 77771
+        mock_child.poll.return_value = 42
+        mock_child.returncode = 42
+        mock_child.wait.return_value = 42
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.spawn_proxy",
+            lambda **_kw: (mock_proxy, 9999),
+        )
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
+        monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
+        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "false"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 42
+
+
+class TestWrapKeyboardInterruptCleanup:
+    """Ctrl+C during child.wait() exits 130 (128 + SIGINT)."""
+
+    def test_keyboard_interrupt_exits_130(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 66660
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+
+        mock_child = MagicMock()
+        mock_child.pid = 66661
+        mock_child.poll.return_value = None
+        mock_child.wait.side_effect = KeyboardInterrupt
+        mock_child.returncode = None
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.spawn_proxy",
+            lambda **_kw: (mock_proxy, 9999),
+        )
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
+        monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
+        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "sleep", "999"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 130

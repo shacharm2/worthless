@@ -11,10 +11,11 @@ from typer.testing import CliRunner
 
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
-from worthless.cli.commands.up import _pid_path, _resolve_port
+from worthless.cli.commands.up import _resolve_port
 from worthless.cli.process import (
     check_pid,
     cleanup_stale_pid,
+    pid_path,
     read_pid,
     write_pid,
 )
@@ -45,7 +46,7 @@ class TestUpPidFile:
 
     def test_pid_file_path(self, tmp_path: Path):
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
-        result = _pid_path(home)
+        result = pid_path(home)
         assert result == home.base_dir / "proxy.pid"
 
 
@@ -132,7 +133,7 @@ class TestUpDaemonFlow:
         )
         assert result.exit_code == 0
 
-        pid_file = _pid_path(home_with_key)
+        pid_file = pid_path(home_with_key)
         assert pid_file.exists()
         info = read_pid(pid_file)
         assert info is not None
@@ -252,7 +253,7 @@ class TestUpErrorBranches:
         assert "health check timed out" in result.output.lower()
 
         # PID file should still be written (daemon stays running)
-        pid_file = _pid_path(home_with_key)
+        pid_file = pid_path(home_with_key)
         assert pid_file.exists()
         info = read_pid(pid_file)
         assert info is not None
@@ -266,7 +267,7 @@ class TestUpStalePidReclaim:
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Existing stale PID file is reclaimed, proxy starts normally."""
-        pid_file = _pid_path(home_with_key)
+        pid_file = pid_path(home_with_key)
         write_pid(pid_file, 99999999, 8787)
 
         mock_proxy = MagicMock()
@@ -293,7 +294,7 @@ class TestUpStalePidReclaim:
 
     def test_live_pid_blocks_startup(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
         """Existing live PID file prevents starting a new proxy."""
-        pid_file = _pid_path(home_with_key)
+        pid_file = pid_path(home_with_key)
         write_pid(pid_file, os.getpid(), 8787)  # current process = alive
 
         result = runner.invoke(
@@ -378,3 +379,77 @@ class TestUpStartsProxyBackground:
         # Proxy was actually spawned (spawn_proxy was called)
         # The mock_proxy.wait was called, confirming the proxy lifecycle ran
         mock_proxy.wait.assert_called()
+
+
+# ------------------------------------------------------------------
+# worthless-9lu: Duplicate `up -d` detection integration tests
+# ------------------------------------------------------------------
+
+
+class TestUpDuplicateDetection:
+    """Integration tests proving duplicate daemon/foreground detection."""
+
+    def test_duplicate_daemon_rejected(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Second `up -d` exits 1 with WRTLS-107 when a live PID file exists."""
+        # Plant a PID file with our own (live) PID to simulate running daemon
+        pid_file = pid_path(home_with_key)
+        write_pid(pid_file, os.getpid(), 8787)
+
+        result = runner.invoke(
+            app,
+            ["up", "--daemon"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1, f"Expected rejection, got: {result.output}"
+        assert "WRTLS-107" in result.output
+        assert "already running" in result.output.lower()
+
+    def test_duplicate_daemon_stale_reclaimed_then_starts(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stale PID is reclaimed and daemon starts normally."""
+        pid_file = pid_path(home_with_key)
+        # 99999999 is almost certainly not a live PID
+        write_pid(pid_file, 99999999, 8787)
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 77777
+
+        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_proc)
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.poll_health",
+            lambda *_a, **_kw: True,
+        )
+
+        result = runner.invoke(
+            app,
+            ["up", "--daemon"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 0, f"Expected success, got: {result.output}"
+        assert "Reclaimed" in result.output
+
+        # New PID file should reflect the new daemon
+        info = read_pid(pid_file)
+        assert info is not None
+        pid, port = info
+        assert pid == 77777
+        assert port == 8787
+
+    def test_duplicate_foreground_rejected(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Foreground `up` exits 1 with WRTLS-107 when a live PID file exists."""
+        pid_file = pid_path(home_with_key)
+        write_pid(pid_file, os.getpid(), 8787)
+
+        result = runner.invoke(
+            app,
+            ["up"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 1, f"Expected rejection, got: {result.output}"
+        assert "WRTLS-107" in result.output
+        assert "already running" in result.output.lower()

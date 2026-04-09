@@ -11,6 +11,7 @@ Requires: the proxy + mock upstream to be running (handled by the
 from __future__ import annotations
 
 import asyncio
+import socket
 import tempfile
 import threading
 import time
@@ -86,8 +87,12 @@ _mock_app = Starlette(
     ]
 )
 
-MOCK_PORT = 19000
-PROXY_PORT = 18000
+
+def _free_port() -> int:
+    """Return an OS-assigned ephemeral port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 @pytest.fixture(scope="module")
@@ -97,6 +102,9 @@ def live_proxy():
     db_path = str(Path(tmpdir) / "worthless.db")
     shard_a_dir = str(Path(tmpdir) / "shard_a")
     fernet_key = Fernet.generate_key()
+
+    mock_port = _free_port()
+    proxy_port = _free_port()
 
     # Enroll fake keys
     async def _enroll():
@@ -112,64 +120,67 @@ def live_proxy():
 
     asyncio.run(_enroll())
 
-    # Patch upstream URLs to mock (save originals for restore)
-    mock_upstream = f"http://127.0.0.1:{MOCK_PORT}"
+    # Save originals before patching — restore in finally to prevent xdist pollution
     _oai_original = _oai_mod.UPSTREAM_URL
     _anth_original = _anth_mod.UPSTREAM_URL
-    _oai_mod.UPSTREAM_URL = f"{mock_upstream}/v1/chat/completions"
-    _anth_mod.UPSTREAM_URL = f"{mock_upstream}/v1/messages"
 
-    # Create proxy app
-    settings = ProxySettings(
-        db_path=db_path,
-        fernet_key=fernet_key.decode(),
-        shard_a_dir=shard_a_dir,
-        allow_insecure=True,
-        allow_alias_inference=True,
-        default_rate_limit_rps=100.0,
-    )
-    proxy_app = create_app(settings)
+    try:
+        # Patch upstream URLs to mock
+        mock_upstream = f"http://127.0.0.1:{mock_port}"
+        _oai_mod.UPSTREAM_URL = f"{mock_upstream}/v1/chat/completions"
+        _anth_mod.UPSTREAM_URL = f"{mock_upstream}/v1/messages"
 
-    # Start both servers in background threads
-    mock_server = uvicorn.Server(
-        uvicorn.Config(_mock_app, host="127.0.0.1", port=MOCK_PORT, log_level="error")
-    )
-    proxy_server = uvicorn.Server(
-        uvicorn.Config(proxy_app, host="127.0.0.1", port=PROXY_PORT, log_level="error")
-    )
+        # Create proxy app
+        settings = ProxySettings(
+            db_path=db_path,
+            fernet_key=fernet_key.decode(),
+            shard_a_dir=shard_a_dir,
+            allow_insecure=True,
+            allow_alias_inference=True,
+            default_rate_limit_rps=100.0,
+        )
+        proxy_app = create_app(settings)
 
-    mock_thread = threading.Thread(target=mock_server.run, daemon=True)
-    proxy_thread = threading.Thread(target=proxy_server.run, daemon=True)
-    mock_thread.start()
-    proxy_thread.start()
+        # Start both servers in background threads
+        mock_server = uvicorn.Server(
+            uvicorn.Config(_mock_app, host="127.0.0.1", port=mock_port, log_level="error")
+        )
+        proxy_server = uvicorn.Server(
+            uvicorn.Config(proxy_app, host="127.0.0.1", port=proxy_port, log_level="error")
+        )
 
-    # Wait for both servers to be ready
-    for label, port in [("Mock upstream", MOCK_PORT), ("Proxy", PROXY_PORT)]:
-        for _ in range(30):
-            try:
-                httpx.get(f"http://127.0.0.1:{port}/", timeout=1.0)
-                break
-            except (httpx.ConnectError, httpx.ReadError):
-                time.sleep(0.2)
-        else:
-            raise RuntimeError(f"{label} did not start within 6 seconds")
-    base_url = f"http://127.0.0.1:{PROXY_PORT}"
+        mock_thread = threading.Thread(target=mock_server.run, daemon=True)
+        proxy_thread = threading.Thread(target=proxy_server.run, daemon=True)
+        mock_thread.start()
+        proxy_thread.start()
 
-    yield base_url
+        # Wait for both servers to be ready
+        for label, port in [("Mock upstream", mock_port), ("Proxy", proxy_port)]:
+            for _ in range(30):
+                try:
+                    httpx.get(f"http://127.0.0.1:{port}/", timeout=1.0)
+                    break
+                except (httpx.ConnectError, httpx.ReadError):
+                    time.sleep(0.2)
+            else:
+                raise RuntimeError(f"{label} did not start within 6 seconds")
+        base_url = f"http://127.0.0.1:{proxy_port}"
 
-    # Teardown
-    mock_server.should_exit = True
-    proxy_server.should_exit = True
-    mock_thread.join(timeout=3)
-    proxy_thread.join(timeout=3)
+        yield base_url
 
-    # Restore upstream URLs — prevents cross-test pollution under xdist
-    _oai_mod.UPSTREAM_URL = _oai_original
-    _anth_mod.UPSTREAM_URL = _anth_original
+        # Teardown
+        mock_server.should_exit = True
+        proxy_server.should_exit = True
+        mock_thread.join(timeout=3)
+        proxy_thread.join(timeout=3)
+    finally:
+        # Always restore upstream URLs — prevents cross-test pollution under xdist
+        _oai_mod.UPSTREAM_URL = _oai_original
+        _anth_mod.UPSTREAM_URL = _anth_original
 
-    import shutil
+        import shutil
 
-    shutil.rmtree(tmpdir, ignore_errors=True)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

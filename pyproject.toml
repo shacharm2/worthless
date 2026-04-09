@@ -11,6 +11,7 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     "typer[all]>=0.15",
     "python-dotenv>=1.0",
+    "psutil>=5.9",
 ]
 
 [project.scripts]
@@ -103,6 +104,8 @@ markers = [
     "slow: long-running statistical validation tests",
     "quarantine: flaky tests under investigation (non-blocking in CI)",
     "live: tests hitting real LLM providers (requires API keys, costs money)",
+    "adversarial: security-focused tests — race conditions, PID reuse, injection, fuzz",
+    "docker: Docker container end-to-end tests (requires running Docker daemon)",
 ]
 
 [tool.coverage.run]
@@ -145,6 +148,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Test files: assert is standard pytest style; S110 (try/except/pass) acceptable in test helpers
 "tests/**" = ["S101", "S110", "B"]
+# Docker e2e tests shell out to `docker` CLI extensively — partial path is intentional
+"tests/test_docker_e2e.py" = ["S607"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "random".msg = "Use the 'secrets' module for cryptographic randomness. The 'random' module is banned (CRYP-04)."

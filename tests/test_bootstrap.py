@@ -65,6 +65,44 @@ class TestEnsureHome:
         assert home.shard_a_dir == tmp_path / ".worthless" / "shard_a"
         assert home.lock_file == tmp_path / ".worthless" / ".lock-in-progress"
 
+    def test_fernet_key_path_env_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        from worthless.cli.bootstrap import WorthlessHome
+
+        custom_path = tmp_path / "secrets" / "fernet.key"
+        monkeypatch.setenv("WORTHLESS_FERNET_KEY_PATH", str(custom_path))
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+        assert home.fernet_key_path == custom_path
+
+    def test_fernet_key_written_to_custom_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from worthless.cli.bootstrap import ensure_home
+
+        secrets_dir = tmp_path / "secrets"
+        secrets_dir.mkdir(mode=0o700)
+        custom_path = secrets_dir / "fernet.key"
+        monkeypatch.setenv("WORTHLESS_FERNET_KEY_PATH", str(custom_path))
+
+        home = ensure_home(base_dir=tmp_path / ".worthless")
+        assert custom_path.exists()
+        assert home.fernet_key_path == custom_path
+        # Default location should NOT have fernet.key
+        assert not (tmp_path / ".worthless" / "fernet.key").exists()
+
+    def test_custom_fernet_path_missing_dir_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from worthless.cli.bootstrap import ensure_home
+        from worthless.cli.errors import WorthlessError
+
+        monkeypatch.setenv(
+            "WORTHLESS_FERNET_KEY_PATH", str(tmp_path / "nonexistent" / "fernet.key")
+        )
+        with pytest.raises(WorthlessError) as exc_info:
+            ensure_home(base_dir=tmp_path / ".worthless")
+        assert "WORTHLESS_FERNET_KEY_PATH" in str(exc_info.value)
+        assert "does not exist" in str(exc_info.value)
+
 
 class TestInitDbMigration:
     """Regression tests for _init_db forward-only migrations."""
