@@ -274,8 +274,12 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         if shard_a is None:
             return _uniform_401()
 
+        # Pre-read body ONCE before rules engine (WOR-182: eliminates
+        # Starlette body-caching coupling — rules receive bytes, not stream)
+        body = await request.body()
+
         # GATE: rules engine evaluates BEFORE any Fernet decrypt
-        denial = await rules_engine.evaluate(alias, request, provider=encrypted.provider)
+        denial = await rules_engine.evaluate(alias, request, provider=encrypted.provider, body=body)
         if denial is not None:
             # Zero shard_a before returning
             shard_a[:] = b"\x00" * len(shard_a)
@@ -295,8 +299,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         # Decrypt now that the gate has passed
         stored = repo.decrypt_shard(encrypted)
 
-        # Reconstruct key inside secure_key context
-        body = await request.body()
+        # Reconstruct key inside secure_key context (body already read above)
         req_headers = {k: v for k, v in request.headers.items()}
 
         try:

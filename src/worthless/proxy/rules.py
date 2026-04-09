@@ -24,7 +24,7 @@ class Rule(Protocol):
     """Protocol for a single rule in the gate-before-reconstruct pipeline."""
 
     async def evaluate(
-        self, alias: str, request: object, *, provider: str = "openai"
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
     ) -> ErrorResponse | None: ...
 
 
@@ -35,10 +35,10 @@ class RulesEngine:
     rules: list[Rule]
 
     async def evaluate(
-        self, alias: str, request: object, *, provider: str = "openai"
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
     ) -> ErrorResponse | None:
         for rule in self.rules:
-            result = await rule.evaluate(alias, request, provider=provider)
+            result = await rule.evaluate(alias, request, provider=provider, body=body)
             if result is not None:
                 return result
         return None
@@ -65,7 +65,7 @@ class SpendCapRule:
     db: aiosqlite.Connection
 
     async def evaluate(
-        self, alias: str, request: object, *, provider: str = "openai"
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
     ) -> ErrorResponse | None:
         try:
             # BEGIN IMMEDIATE acquires a write lock, preventing TOCTOU races
@@ -135,7 +135,7 @@ class RateLimitRule:
     _limits: dict[str, float] = field(default_factory=dict, init=False, repr=False)
 
     async def evaluate(
-        self, alias: str, request: object, *, provider: str = "openai"
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
     ) -> ErrorResponse | None:
         client_ip = getattr(getattr(request, "client", None), "host", "unknown")
         now = time.monotonic()

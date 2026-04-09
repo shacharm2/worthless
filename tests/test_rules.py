@@ -20,7 +20,9 @@ from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 class _PassRule:
     """Stub rule that always passes."""
 
-    async def evaluate(self, alias: str, request: object, *, provider: str = "openai") -> None:
+    async def evaluate(
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
+    ) -> None:
         return None
 
 
@@ -30,23 +32,38 @@ class _DenyRule:
     def __init__(self) -> None:
         self.called = False
 
-    async def evaluate(self, alias: str, request: object, *, provider: str = "openai"):
+    async def evaluate(
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
+    ):
         self.called = True
         # Return a simple dict to simulate a denial response
         return {"status": 403, "detail": "denied"}
 
 
+class _BodyCapturingRule:
+    """Stub rule that captures the body it receives."""
+
+    def __init__(self) -> None:
+        self.received_body: bytes | None = None
+
+    async def evaluate(
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
+    ):
+        self.received_body = body
+        return None
+
+
 @pytest.mark.asyncio
 async def test_empty_rules_engine_returns_none():
     engine = RulesEngine(rules=[])
-    result = await engine.evaluate("test-alias", object())
+    result = await engine.evaluate("test-alias", object(), body=b"")
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_single_passing_rule_returns_none():
     engine = RulesEngine(rules=[_PassRule()])
-    result = await engine.evaluate("test-alias", object())
+    result = await engine.evaluate("test-alias", object(), body=b"")
     assert result is None
 
 
@@ -55,10 +72,59 @@ async def test_short_circuits_on_first_denial():
     deny = _DenyRule()
     never_reached = _DenyRule()
     engine = RulesEngine(rules=[deny, never_reached])
-    result = await engine.evaluate("test-alias", object())
+    result = await engine.evaluate("test-alias", object(), body=b"")
     assert result is not None
     assert deny.called is True
     assert never_reached.called is False
+
+
+# ---------------------------------------------------------------------------
+# Body parameter passthrough (WOR-182)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rules_engine_passes_body_to_rules():
+    """RulesEngine.evaluate() must forward body kwarg to each rule."""
+    rule = _BodyCapturingRule()
+    engine = RulesEngine(rules=[rule])
+    test_body = b'{"model": "gpt-4o"}'
+    await engine.evaluate("test-alias", object(), body=test_body)
+    assert rule.received_body == test_body
+
+
+@pytest.mark.asyncio
+async def test_rules_engine_body_defaults_to_empty():
+    """Body defaults to b'' when not provided."""
+    rule = _BodyCapturingRule()
+    engine = RulesEngine(rules=[rule])
+    await engine.evaluate("test-alias", object())
+    assert rule.received_body == b""
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_accepts_body_parameter(tmp_path):
+    """SpendCapRule.evaluate() accepts body kwarg without error."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "test.db")
+    await _setup_spend_db(db_path, alias="k1", spend_cap=1000.0, total_tokens=500)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b'{"model": "gpt-4"}')
+        assert result is None
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_accepts_body_parameter():
+    """RateLimitRule.evaluate() accepts body kwarg without error."""
+    rule = RateLimitRule(default_rps=10.0)
+    result = await rule.evaluate("k1", _fake_request("127.0.0.1"), body=b'{"model": "gpt-4"}')
+    assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +143,7 @@ async def test_spend_cap_under_limit(tmp_path):
     db_conn = await aiosqlite.connect(db_path)
     try:
         rule = SpendCapRule(db=db_conn)
-        result = await rule.evaluate("k1", object())
+        result = await rule.evaluate("k1", object(), body=b"")
         assert result is None
     finally:
         await db_conn.close()
@@ -94,7 +160,7 @@ async def test_spend_cap_exceeded(tmp_path):
     db_conn = await aiosqlite.connect(db_path)
     try:
         rule = SpendCapRule(db=db_conn)
-        result = await rule.evaluate("k1", object())
+        result = await rule.evaluate("k1", object(), body=b"")
         assert result is not None
         assert result.status_code == 402
         body = json.loads(result.body)
@@ -114,7 +180,7 @@ async def test_spend_cap_null_no_cap(tmp_path):
     db_conn = await aiosqlite.connect(db_path)
     try:
         rule = SpendCapRule(db=db_conn)
-        result = await rule.evaluate("k1", object())
+        result = await rule.evaluate("k1", object(), body=b"")
         assert result is None
     finally:
         await db_conn.close()
@@ -131,7 +197,7 @@ async def test_spend_cap_no_enrollment_record(tmp_path):
     db_conn = await aiosqlite.connect(db_path)
     try:
         rule = SpendCapRule(db=db_conn)
-        result = await rule.evaluate("unknown-alias", object())
+        result = await rule.evaluate("unknown-alias", object(), body=b"")
         assert result is None
     finally:
         await db_conn.close()
@@ -203,7 +269,7 @@ async def test_spend_cap_returns_anthropic_error_format(tmp_path):
     db_conn = await aiosqlite.connect(db_path)
     try:
         rule = SpendCapRule(db=db_conn)
-        result = await rule.evaluate("k1", object(), provider="anthropic")
+        result = await rule.evaluate("k1", object(), provider="anthropic", body=b"")
         assert result is not None
         assert result.status_code == 402
         body = json.loads(result.body)
@@ -219,8 +285,8 @@ async def test_rate_limit_returns_anthropic_error_format():
     """When provider=anthropic, rate limit denial uses Anthropic error format."""
     rule = RateLimitRule(default_rps=1.0)
     req = _fake_request("127.0.0.1")
-    await rule.evaluate("k1", req, provider="anthropic")
-    result = await rule.evaluate("k1", req, provider="anthropic")
+    await rule.evaluate("k1", req, provider="anthropic", body=b"")
+    result = await rule.evaluate("k1", req, provider="anthropic", body=b"")
     assert result is not None
     assert result.status_code == 429
     body = json.loads(result.body)
@@ -391,7 +457,7 @@ async def test_spend_cap_fail_closed_on_db_error(tmp_path):
     # Don't create tables — queries will fail
     try:
         rule = SpendCapRule(db=db_conn)
-        result = await rule.evaluate("k1", object())
+        result = await rule.evaluate("k1", object(), body=b"")
         assert result is not None
         assert result.status_code == 402
     finally:

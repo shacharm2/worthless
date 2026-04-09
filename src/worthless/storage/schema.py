@@ -68,6 +68,13 @@ async def init_db(db_path: str) -> None:
 async def migrate_db(db_path: str) -> None:
     """Apply forward-only migrations for existing databases."""
     async with aiosqlite.connect(db_path) as db:
+        # WOR-182: Prune spend_log entries older than 90 days
+        try:
+            await db.execute("DELETE FROM spend_log WHERE created_at < datetime('now', '-90 days')")
+            await db.commit()
+        except Exception:  # noqa: S110 — spend_log may not exist in pre-schema DBs
+            pass
+
         # WOR-31: Add decoy_hash column to enrollments
         cursor = await db.execute("PRAGMA table_info(enrollments)")
         columns = {row[1] for row in await cursor.fetchall()}
