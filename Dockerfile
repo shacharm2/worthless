@@ -1,5 +1,5 @@
 # NOTE: pin patch versions; update quarterly or on CVE.
-FROM python:3.12-slim@sha256:5072b08ad74609c5329ab4085a96dfa873de565fb4751a4cfcd7dcc427661df0 AS builder
+FROM python:3.13-slim-bookworm@sha256:f13a6b7565175da40695e8109f64cbc4d2e65f4c9ef2e3b321c3a44fa3c06fe7 AS builder
 
 WORKDIR /build
 COPY pyproject.toml ./
@@ -8,7 +8,7 @@ COPY src/ src/
 RUN pip install --no-cache-dir .
 
 # -----------------------------------------------------------
-FROM python:3.12-slim@sha256:5072b08ad74609c5329ab4085a96dfa873de565fb4751a4cfcd7dcc427661df0
+FROM python:3.13-slim-bookworm@sha256:f13a6b7565175da40695e8109f64cbc4d2e65f4c9ef2e3b321c3a44fa3c06fe7
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tini \
@@ -16,7 +16,7 @@ RUN apt-get update \
     && groupadd -r worthless && useradd -r -g worthless -m worthless \
     && mkdir -p /data /secrets && chown worthless:worthless /data /secrets
 
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin/worthless /usr/local/bin/worthless
 COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/uvicorn
 COPY deploy/entrypoint.sh /entrypoint.sh
