@@ -13,7 +13,7 @@ from worthless.proxy.errors import (
     time_window_error_response,
     token_budget_error_response,
 )
-from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
+from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule, TokenBudgetRule
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +208,204 @@ async def test_spend_cap_no_enrollment_record(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# TokenBudgetRule (WOR-160)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_token_budget_all_null_passes(tmp_path):
+    """All budget columns NULL → no limit → pass."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "tb.db")
+    await _setup_spend_db(db_path, alias="k1", spend_cap=None, total_tokens=999999)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TokenBudgetRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is None
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_token_budget_under_daily_limit(tmp_path):
+    """Tokens below daily budget → pass."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "tb.db")
+    await _setup_token_budget_db(db_path, alias="k1", daily=100000, tokens_today=50000)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TokenBudgetRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is None
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_token_budget_daily_exceeded(tmp_path):
+    """Tokens at or above daily budget → 429 with usage stats."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "tb.db")
+    await _setup_token_budget_db(db_path, alias="k1", daily=100000, tokens_today=100000)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TokenBudgetRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is not None
+        assert result.status_code == 429
+        body = json.loads(result.body)
+        assert "daily" in body["error"]["message"]
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_token_budget_weekly_exceeded(tmp_path):
+    """Weekly budget exceeded → 429."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "tb.db")
+    await _setup_token_budget_db(db_path, alias="k1", weekly=500000, tokens_this_week=500000)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TokenBudgetRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is not None
+        assert result.status_code == 429
+        body = json.loads(result.body)
+        assert "weekly" in body["error"]["message"]
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_token_budget_monthly_exceeded(tmp_path):
+    """Monthly budget exceeded → 429."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "tb.db")
+    await _setup_token_budget_db(db_path, alias="k1", monthly=2000000, tokens_this_month=2000000)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TokenBudgetRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is not None
+        assert result.status_code == 429
+        body = json.loads(result.body)
+        assert "monthly" in body["error"]["message"]
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_token_budget_daily_ok_monthly_exceeded(tmp_path):
+    """Daily under limit but monthly exceeded → 429 monthly."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "tb.db")
+    await _setup_token_budget_db(
+        db_path,
+        alias="k1",
+        daily=100000,
+        monthly=500000,
+        tokens_today=50000,
+        tokens_this_month=500000,
+    )
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TokenBudgetRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is not None
+        assert result.status_code == 429
+        body = json.loads(result.body)
+        assert "monthly" in body["error"]["message"]
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_token_budget_old_records_not_counted(tmp_path):
+    """Spend records older than the window are not counted."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "tb.db")
+    await _setup_token_budget_db(db_path, alias="k1", daily=100000, tokens_old=999999)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TokenBudgetRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is None  # Old tokens don't count
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_token_budget_no_enrollment_config(tmp_path):
+    """No enrollment_config row → pass (no budget configured)."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "tb.db")
+    await _setup_spend_db(db_path, alias=None, spend_cap=None, total_tokens=0)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TokenBudgetRule(db=db_conn)
+        result = await rule.evaluate("unknown-alias", object(), body=b"")
+        assert result is None
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_token_budget_fail_closed_on_db_error(tmp_path):
+    """DB error → fail closed (429)."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "tb.db")
+    db_conn = await aiosqlite.connect(db_path)
+    # Don't create tables — queries will fail
+    try:
+        rule = TokenBudgetRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is not None
+        assert result.status_code == 429
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_token_budget_anthropic_error_format(tmp_path):
+    """Anthropic provider → Anthropic error format."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "tb.db")
+    await _setup_token_budget_db(db_path, alias="k1", daily=100, tokens_today=200)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TokenBudgetRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), provider="anthropic", body=b"")
+        assert result is not None
+        assert result.status_code == 429
+        body = json.loads(result.body)
+        assert body["type"] == "error"
+        assert "daily" in body["error"]["message"]
+    finally:
+        await db_conn.close()
+
+
+# ---------------------------------------------------------------------------
 # RateLimitRule
 # ---------------------------------------------------------------------------
 
@@ -358,6 +556,67 @@ async def _setup_spend_db(
                     "VALUES (?, ?, ?, ?)",
                     (alias, total_tokens, "gpt-4", "openai"),
                 )
+        await db.commit()
+
+
+async def _setup_token_budget_db(
+    db_path: str,
+    *,
+    alias: str,
+    daily: int | None = None,
+    weekly: int | None = None,
+    monthly: int | None = None,
+    tokens_today: int = 0,
+    tokens_this_week: int = 0,
+    tokens_this_month: int = 0,
+    tokens_old: int = 0,
+) -> None:
+    """Create a test DB with token budget config and time-stamped spend records."""
+    import aiosqlite
+
+    from worthless.storage.schema import SCHEMA
+
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.execute(
+            "INSERT INTO enrollment_config"
+            " (key_alias, token_budget_daily, token_budget_weekly,"
+            " token_budget_monthly)"
+            " VALUES (?, ?, ?, ?)",
+            (alias, daily, weekly, monthly),
+        )
+        # Today's tokens
+        if tokens_today > 0:
+            await db.execute(
+                "INSERT INTO spend_log"
+                " (key_alias, tokens, model, provider, created_at)"
+                " VALUES (?, ?, ?, ?, datetime('now'))",
+                (alias, tokens_today, "gpt-4", "openai"),
+            )
+        # This week's tokens (3 days ago)
+        if tokens_this_week > 0:
+            await db.execute(
+                "INSERT INTO spend_log"
+                " (key_alias, tokens, model, provider, created_at)"
+                " VALUES (?, ?, ?, ?, datetime('now', '-3 days'))",
+                (alias, tokens_this_week, "gpt-4", "openai"),
+            )
+        # This month's tokens (15 days ago)
+        if tokens_this_month > 0:
+            await db.execute(
+                "INSERT INTO spend_log"
+                " (key_alias, tokens, model, provider, created_at)"
+                " VALUES (?, ?, ?, ?, datetime('now', '-15 days'))",
+                (alias, tokens_this_month, "gpt-4", "openai"),
+            )
+        # Old tokens (60 days ago — outside all windows)
+        if tokens_old > 0:
+            await db.execute(
+                "INSERT INTO spend_log"
+                " (key_alias, tokens, model, provider, created_at)"
+                " VALUES (?, ?, ?, ?, datetime('now', '-60 days'))",
+                (alias, tokens_old, "gpt-4", "openai"),
+            )
         await db.commit()
 
 

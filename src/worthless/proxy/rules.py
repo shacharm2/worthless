@@ -16,6 +16,7 @@ from worthless.proxy.errors import (
     ErrorResponse,
     rate_limit_error_response,
     spend_cap_error_response,
+    token_budget_error_response,
 )
 
 
@@ -110,6 +111,92 @@ class SpendCapRule:
         except Exception:
             # Fail-closed: any DB error -> deny request
             return spend_cap_error_response(provider=provider)
+
+
+@dataclass
+class TokenBudgetRule:
+    """Denies requests when token usage exceeds daily/weekly/monthly budgets.
+
+    Queries spend_log with time-windowed SUM against enrollment_config budgets.
+    Uses BEGIN IMMEDIATE like SpendCapRule for serialization.
+    Fails closed on any DB error.
+    Budget periods are UTC-anchored (SQLite datetime('now') is always UTC).
+
+    .. note:: Same TOCTOU caveat as SpendCapRule — token count is only known
+       after the upstream response. Two concurrent requests can both pass.
+    """
+
+    db: aiosqlite.Connection
+
+    _PERIODS: tuple[tuple[str, str, str], ...] = (
+        ("daily", "token_budget_daily", "-1 day"),
+        ("weekly", "token_budget_weekly", "-7 days"),
+        ("monthly", "token_budget_monthly", "-30 days"),
+    )
+
+    async def evaluate(
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
+    ) -> ErrorResponse | None:
+        try:
+            await self.db.execute("BEGIN IMMEDIATE")
+            try:
+                async with self.db.execute(
+                    "SELECT token_budget_daily, token_budget_weekly,"
+                    " token_budget_monthly"
+                    " FROM enrollment_config WHERE key_alias = ?",
+                    (alias,),
+                ) as cur:
+                    row = await cur.fetchone()
+
+                if row is None:
+                    await self.db.execute("ROLLBACK")
+                    return None
+
+                budgets = {
+                    "daily": row[0],
+                    "weekly": row[1],
+                    "monthly": row[2],
+                }
+
+                # If all budgets are NULL, no limit
+                if all(v is None for v in budgets.values()):
+                    await self.db.execute("ROLLBACK")
+                    return None
+
+                for period, _col, interval in self._PERIODS:
+                    limit = budgets[period]
+                    if limit is None:
+                        continue
+
+                    async with self.db.execute(
+                        "SELECT COALESCE(SUM(tokens), 0)"
+                        " FROM spend_log"
+                        " WHERE key_alias = ?"
+                        " AND created_at >= datetime('now', ?)",
+                        (alias, interval),
+                    ) as cur:
+                        (used,) = await cur.fetchone()  # type: ignore[assignment]
+
+                    if used >= limit:
+                        await self.db.execute("ROLLBACK")
+                        return token_budget_error_response(
+                            period=period,
+                            used=int(used),
+                            limit=int(limit),
+                            provider=provider,
+                        )
+
+                await self.db.execute("ROLLBACK")  # read-only, release lock
+                return None
+            except Exception:
+                try:
+                    await self.db.execute("ROLLBACK")
+                except Exception:  # noqa: S110
+                    pass
+                raise
+        except Exception:
+            # Fail-closed: any DB error -> deny request
+            return token_budget_error_response(period="unknown", used=0, limit=0, provider=provider)
 
 
 @dataclass

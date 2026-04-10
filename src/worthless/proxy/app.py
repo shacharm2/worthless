@@ -35,7 +35,7 @@ from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
 from worthless.proxy.metering import extract_usage_anthropic, extract_usage_openai, record_spend
 from worthless.proxy.middleware import BodySizeLimitMiddleware
-from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
+from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule, TokenBudgetRule
 from worthless.storage.repository import ShardRepository
 from worthless.storage.schema import SCHEMA
 
@@ -149,6 +149,7 @@ async def _lifespan(app: FastAPI):
     rules_engine = RulesEngine(
         rules=[
             SpendCapRule(db=db),
+            TokenBudgetRule(db=db),
             RateLimitRule(
                 default_rps=settings.default_rate_limit_rps,
                 db_path=settings.db_path,
