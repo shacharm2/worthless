@@ -128,10 +128,10 @@ class TokenBudgetRule:
 
     db: aiosqlite.Connection
 
-    _PERIODS: tuple[tuple[str, str, str], ...] = (
-        ("daily", "token_budget_daily", "-1 day"),
-        ("weekly", "token_budget_weekly", "-7 days"),
-        ("monthly", "token_budget_monthly", "-30 days"),
+    _PERIODS: tuple[tuple[str, str], ...] = (
+        ("daily", "-1 day"),
+        ("weekly", "-7 days"),
+        ("monthly", "-30 days"),
     )
 
     async def evaluate(
@@ -163,25 +163,36 @@ class TokenBudgetRule:
                     await self.db.execute("ROLLBACK")
                     return None
 
-                for period, _col, interval in self._PERIODS:
+                # Single scan with conditional aggregation (efficiency: 1 query not 3)
+                async with self.db.execute(
+                    "SELECT"
+                    " COALESCE(SUM(CASE WHEN created_at >= datetime('now','-1 day')"
+                    "   THEN tokens END), 0),"
+                    " COALESCE(SUM(CASE WHEN created_at >= datetime('now','-7 days')"
+                    "   THEN tokens END), 0),"
+                    " COALESCE(SUM(tokens), 0)"
+                    " FROM spend_log"
+                    " WHERE key_alias = ?"
+                    " AND created_at >= datetime('now', '-30 days')",
+                    (alias,),
+                ) as cur:
+                    used_daily, used_weekly, used_monthly = await cur.fetchone()  # type: ignore[assignment]
+
+                usage = {
+                    "daily": int(used_daily),
+                    "weekly": int(used_weekly),
+                    "monthly": int(used_monthly),
+                }
+
+                for period, _interval in self._PERIODS:
                     limit = budgets[period]
                     if limit is None:
                         continue
-
-                    async with self.db.execute(
-                        "SELECT COALESCE(SUM(tokens), 0)"
-                        " FROM spend_log"
-                        " WHERE key_alias = ?"
-                        " AND created_at >= datetime('now', ?)",
-                        (alias, interval),
-                    ) as cur:
-                        (used,) = await cur.fetchone()  # type: ignore[assignment]
-
-                    if used >= limit:
+                    if usage[period] >= limit:
                         await self.db.execute("ROLLBACK")
                         return token_budget_error_response(
                             period=period,
-                            used=int(used),
+                            used=usage[period],
                             limit=int(limit),
                             provider=provider,
                         )

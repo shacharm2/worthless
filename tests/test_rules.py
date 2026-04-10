@@ -7,6 +7,7 @@ import json
 import time
 from unittest.mock import patch
 
+import aiosqlite
 import pytest
 
 from worthless.proxy.errors import (
@@ -14,6 +15,7 @@ from worthless.proxy.errors import (
     token_budget_error_response,
 )
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule, TokenBudgetRule
+from worthless.storage.schema import SCHEMA
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +111,6 @@ async def test_rules_engine_body_defaults_to_empty():
 @pytest.mark.asyncio
 async def test_spend_cap_accepts_body_parameter(tmp_path):
     """SpendCapRule.evaluate() accepts body kwarg without error."""
-    import aiosqlite
 
     db_path = str(tmp_path / "test.db")
     await _setup_spend_db(db_path, alias="k1", spend_cap=1000.0, total_tokens=500)
@@ -139,7 +140,6 @@ async def test_rate_limit_accepts_body_parameter():
 @pytest.mark.asyncio
 async def test_spend_cap_under_limit(tmp_path):
     """Spend below cap -> None (pass)."""
-    import aiosqlite
 
     db_path = str(tmp_path / "test.db")
     await _setup_spend_db(db_path, alias="k1", spend_cap=1000.0, total_tokens=500)
@@ -156,7 +156,6 @@ async def test_spend_cap_under_limit(tmp_path):
 @pytest.mark.asyncio
 async def test_spend_cap_exceeded(tmp_path):
     """Spend at or above cap -> 402 denial."""
-    import aiosqlite
 
     db_path = str(tmp_path / "test.db")
     await _setup_spend_db(db_path, alias="k1", spend_cap=100.0, total_tokens=150)
@@ -176,7 +175,6 @@ async def test_spend_cap_exceeded(tmp_path):
 @pytest.mark.asyncio
 async def test_spend_cap_null_no_cap(tmp_path):
     """NULL spend_cap -> no limit -> None (pass)."""
-    import aiosqlite
 
     db_path = str(tmp_path / "test.db")
     await _setup_spend_db(db_path, alias="k1", spend_cap=None, total_tokens=999999)
@@ -193,7 +191,6 @@ async def test_spend_cap_null_no_cap(tmp_path):
 @pytest.mark.asyncio
 async def test_spend_cap_no_enrollment_record(tmp_path):
     """Alias with no enrollment_config row -> pass (no cap configured)."""
-    import aiosqlite
 
     db_path = str(tmp_path / "test.db")
     await _setup_spend_db(db_path, alias=None, spend_cap=None, total_tokens=0)
@@ -215,7 +212,6 @@ async def test_spend_cap_no_enrollment_record(tmp_path):
 @pytest.mark.asyncio
 async def test_token_budget_all_null_passes(tmp_path):
     """All budget columns NULL → no limit → pass."""
-    import aiosqlite
 
     db_path = str(tmp_path / "tb.db")
     await _setup_spend_db(db_path, alias="k1", spend_cap=None, total_tokens=999999)
@@ -232,7 +228,6 @@ async def test_token_budget_all_null_passes(tmp_path):
 @pytest.mark.asyncio
 async def test_token_budget_under_daily_limit(tmp_path):
     """Tokens below daily budget → pass."""
-    import aiosqlite
 
     db_path = str(tmp_path / "tb.db")
     await _setup_token_budget_db(db_path, alias="k1", daily=100000, tokens_today=50000)
@@ -249,7 +244,6 @@ async def test_token_budget_under_daily_limit(tmp_path):
 @pytest.mark.asyncio
 async def test_token_budget_daily_exceeded(tmp_path):
     """Tokens at or above daily budget → 429 with usage stats."""
-    import aiosqlite
 
     db_path = str(tmp_path / "tb.db")
     await _setup_token_budget_db(db_path, alias="k1", daily=100000, tokens_today=100000)
@@ -269,7 +263,6 @@ async def test_token_budget_daily_exceeded(tmp_path):
 @pytest.mark.asyncio
 async def test_token_budget_weekly_exceeded(tmp_path):
     """Weekly budget exceeded → 429."""
-    import aiosqlite
 
     db_path = str(tmp_path / "tb.db")
     await _setup_token_budget_db(db_path, alias="k1", weekly=500000, tokens_this_week=500000)
@@ -289,7 +282,6 @@ async def test_token_budget_weekly_exceeded(tmp_path):
 @pytest.mark.asyncio
 async def test_token_budget_monthly_exceeded(tmp_path):
     """Monthly budget exceeded → 429."""
-    import aiosqlite
 
     db_path = str(tmp_path / "tb.db")
     await _setup_token_budget_db(db_path, alias="k1", monthly=2000000, tokens_this_month=2000000)
@@ -309,7 +301,6 @@ async def test_token_budget_monthly_exceeded(tmp_path):
 @pytest.mark.asyncio
 async def test_token_budget_daily_ok_monthly_exceeded(tmp_path):
     """Daily under limit but monthly exceeded → 429 monthly."""
-    import aiosqlite
 
     db_path = str(tmp_path / "tb.db")
     await _setup_token_budget_db(
@@ -336,7 +327,6 @@ async def test_token_budget_daily_ok_monthly_exceeded(tmp_path):
 @pytest.mark.asyncio
 async def test_token_budget_old_records_not_counted(tmp_path):
     """Spend records older than the window are not counted."""
-    import aiosqlite
 
     db_path = str(tmp_path / "tb.db")
     await _setup_token_budget_db(db_path, alias="k1", daily=100000, tokens_old=999999)
@@ -353,7 +343,6 @@ async def test_token_budget_old_records_not_counted(tmp_path):
 @pytest.mark.asyncio
 async def test_token_budget_no_enrollment_config(tmp_path):
     """No enrollment_config row → pass (no budget configured)."""
-    import aiosqlite
 
     db_path = str(tmp_path / "tb.db")
     await _setup_spend_db(db_path, alias=None, spend_cap=None, total_tokens=0)
@@ -370,7 +359,6 @@ async def test_token_budget_no_enrollment_config(tmp_path):
 @pytest.mark.asyncio
 async def test_token_budget_fail_closed_on_db_error(tmp_path):
     """DB error → fail closed (429)."""
-    import aiosqlite
 
     db_path = str(tmp_path / "tb.db")
     db_conn = await aiosqlite.connect(db_path)
@@ -387,7 +375,6 @@ async def test_token_budget_fail_closed_on_db_error(tmp_path):
 @pytest.mark.asyncio
 async def test_token_budget_anthropic_error_format(tmp_path):
     """Anthropic provider → Anthropic error format."""
-    import aiosqlite
 
     db_path = str(tmp_path / "tb.db")
     await _setup_token_budget_db(db_path, alias="k1", daily=100, tokens_today=200)
@@ -463,7 +450,6 @@ def _fake_request(ip: str = "127.0.0.1") -> _FakeRequest:
 @pytest.mark.asyncio
 async def test_spend_cap_returns_anthropic_error_format(tmp_path):
     """When provider=anthropic, spend cap denial uses Anthropic error format."""
-    import aiosqlite
 
     db_path = str(tmp_path / "test.db")
     await _setup_spend_db(db_path, alias="k1", spend_cap=100.0, total_tokens=150)
@@ -537,9 +523,6 @@ async def _setup_spend_db(
     rate_limit_rps: float | None = None,
 ) -> None:
     """Create a test DB with spend_log and enrollment_config tables pre-populated."""
-    import aiosqlite
-
-    from worthless.storage.schema import SCHEMA
 
     async with aiosqlite.connect(db_path) as db:
         await db.executescript(SCHEMA)
@@ -572,9 +555,6 @@ async def _setup_token_budget_db(
     tokens_old: int = 0,
 ) -> None:
     """Create a test DB with token budget config and time-stamped spend records."""
-    import aiosqlite
-
-    from worthless.storage.schema import SCHEMA
 
     async with aiosqlite.connect(db_path) as db:
         await db.executescript(SCHEMA)
@@ -628,9 +608,6 @@ async def _setup_token_budget_db(
 @pytest.mark.asyncio
 async def test_spend_cap_concurrent_two_connections(tmp_path):
     """Two concurrent requests via separate connections — both over cap get denied."""
-    import aiosqlite
-
-    from worthless.storage.schema import SCHEMA
 
     db_path = str(tmp_path / "concurrent.db")
     async with aiosqlite.connect(db_path) as db:
@@ -672,9 +649,6 @@ async def test_spend_cap_concurrent_two_connections(tmp_path):
 async def test_spend_cap_concurrent_under_cap_serialized(tmp_path):
     """At 40/100 spent, two concurrent 60-token-equivalent requests both pass the gate
     (spend cap checks current total, not projected)."""
-    import aiosqlite
-
-    from worthless.storage.schema import SCHEMA
 
     db_path = str(tmp_path / "concurrent2.db")
     async with aiosqlite.connect(db_path) as db:
@@ -713,7 +687,6 @@ async def test_spend_cap_concurrent_under_cap_serialized(tmp_path):
 @pytest.mark.asyncio
 async def test_spend_cap_fail_closed_on_db_error(tmp_path):
     """SpendCapRule returns deny (ErrorResponse) when DB raises an exception."""
-    import aiosqlite
 
     db_path = str(tmp_path / "fail.db")
     db_conn = await aiosqlite.connect(db_path)
@@ -730,7 +703,6 @@ async def test_spend_cap_fail_closed_on_db_error(tmp_path):
 @pytest.mark.asyncio
 async def test_rate_limiter_ttl_cleanup():
     """Rate limiter _windows dict entries older than 2s are cleaned up."""
-    import time
 
     rule = RateLimitRule(default_rps=100.0, cleanup_interval=0.0)
     req = _fake_request("10.0.0.1")
@@ -755,7 +727,6 @@ async def test_rate_limiter_ttl_cleanup():
 @pytest.mark.asyncio
 async def test_rate_limiter_expired_keys_removed():
     """After cleanup, expired (alias, ip) keys are completely removed from _windows."""
-    import time
 
     rule = RateLimitRule(default_rps=100.0, cleanup_interval=0.0)
     req = _fake_request("10.0.0.1")
