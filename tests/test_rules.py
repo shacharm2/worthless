@@ -14,7 +14,13 @@ from worthless.proxy.errors import (
     time_window_error_response,
     token_budget_error_response,
 )
-from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule, TokenBudgetRule
+from worthless.proxy.rules import (
+    RateLimitRule,
+    RulesEngine,
+    SpendCapRule,
+    TimeWindowRule,
+    TokenBudgetRule,
+)
 from worthless.storage.schema import SCHEMA
 
 
@@ -388,6 +394,244 @@ async def test_token_budget_anthropic_error_format(tmp_path):
         body = json.loads(result.body)
         assert body["type"] == "error"
         assert "daily" in body["error"]["message"]
+    finally:
+        await db_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# TimeWindowRule (WOR-161)
+# ---------------------------------------------------------------------------
+
+
+async def _setup_time_window_db(db_path: str, *, alias: str, time_window: str | None) -> None:
+    """Create a test DB with time_window config."""
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.execute(
+            "INSERT INTO enrollment_config (key_alias, time_window) VALUES (?, ?)",
+            (alias, time_window),
+        )
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_time_window_null_passes(tmp_path):
+    """NULL time_window → no restriction → pass."""
+    db_path = str(tmp_path / "tw.db")
+    await _setup_time_window_db(db_path, alias="k1", time_window=None)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TimeWindowRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is None
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_time_window_within_window(tmp_path):
+    """Current time within configured window → pass."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(ZoneInfo("UTC"))
+    # Build a window that includes the current hour
+    start_hour = now.hour
+    end_hour = (now.hour + 2) % 24
+    window = json.dumps(
+        {
+            "start": f"{start_hour:02d}:00",
+            "end": f"{end_hour:02d}:00",
+            "tz": "UTC",
+            "days": [1, 2, 3, 4, 5, 6, 7],
+        }
+    )
+
+    db_path = str(tmp_path / "tw.db")
+    await _setup_time_window_db(db_path, alias="k1", time_window=window)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TimeWindowRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is None
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_time_window_outside_hour(tmp_path):
+    """Current time outside configured hours → 403."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(ZoneInfo("UTC"))
+    # Build a window that excludes the current hour
+    start_hour = (now.hour + 3) % 24
+    end_hour = (now.hour + 5) % 24
+    window = json.dumps(
+        {
+            "start": f"{start_hour:02d}:00",
+            "end": f"{end_hour:02d}:00",
+            "tz": "UTC",
+            "days": [1, 2, 3, 4, 5, 6, 7],
+        }
+    )
+
+    db_path = str(tmp_path / "tw.db")
+    await _setup_time_window_db(db_path, alias="k1", time_window=window)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TimeWindowRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is not None
+        assert result.status_code == 403
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_time_window_wrong_day(tmp_path):
+    """Current day not in allowed days → 403."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(ZoneInfo("UTC"))
+    # Exclude today's isoweekday
+    allowed_days = [d for d in range(1, 8) if d != now.isoweekday()]
+    window = json.dumps(
+        {
+            "start": "00:00",
+            "end": "23:59",
+            "tz": "UTC",
+            "days": allowed_days,
+        }
+    )
+
+    db_path = str(tmp_path / "tw.db")
+    await _setup_time_window_db(db_path, alias="k1", time_window=window)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TimeWindowRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is not None
+        assert result.status_code == 403
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_time_window_overnight(tmp_path):
+    """Overnight window (end < start, e.g. 22:00-06:00) works correctly."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(ZoneInfo("UTC"))
+    # Build an overnight window guaranteed to include current hour:
+    # start = current_hour - 2 (wraps around), end = current_hour + 2
+    # e.g., if now is 3:00, window is 01:00-05:00 (not overnight)
+    # if now is 0:00, window is 22:00-02:00 (overnight)
+    # Force overnight: set start after current, end before current, spanning midnight
+    end_hour = (now.hour + 1) % 24
+    start_hour = (now.hour - 1) % 24
+    # Ensure start > end to make it overnight
+    if start_hour <= end_hour:
+        start_hour = (end_hour + 12) % 24
+
+    window = json.dumps(
+        {
+            "start": f"{start_hour:02d}:00",
+            "end": f"{end_hour:02d}:00",
+            "tz": "UTC",
+            "days": [1, 2, 3, 4, 5, 6, 7],
+        }
+    )
+
+    db_path = str(tmp_path / "tw.db")
+    await _setup_time_window_db(db_path, alias="k1", time_window=window)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TimeWindowRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        # Should pass — current time is within the overnight window
+        assert result is None
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_time_window_invalid_timezone(tmp_path):
+    """Invalid timezone → fail closed (403)."""
+    window = json.dumps(
+        {
+            "start": "09:00",
+            "end": "17:00",
+            "tz": "Fake/Nowhere",
+        }
+    )
+
+    db_path = str(tmp_path / "tw.db")
+    await _setup_time_window_db(db_path, alias="k1", time_window=window)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TimeWindowRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is not None
+        assert result.status_code == 403
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_time_window_malformed_json(tmp_path):
+    """Malformed JSON in time_window → fail closed (403)."""
+    db_path = str(tmp_path / "tw.db")
+    await _setup_time_window_db(db_path, alias="k1", time_window="not valid json{{")
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TimeWindowRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), body=b"")
+        assert result is not None
+        assert result.status_code == 403
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_time_window_anthropic_format(tmp_path):
+    """Anthropic provider → Anthropic error format."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(ZoneInfo("UTC"))
+    start_hour = (now.hour + 3) % 24
+    end_hour = (now.hour + 5) % 24
+    window = json.dumps(
+        {
+            "start": f"{start_hour:02d}:00",
+            "end": f"{end_hour:02d}:00",
+            "tz": "UTC",
+            "days": [1, 2, 3, 4, 5, 6, 7],
+        }
+    )
+
+    db_path = str(tmp_path / "tw.db")
+    await _setup_time_window_db(db_path, alias="k1", time_window=window)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TimeWindowRule(db=db_conn)
+        result = await rule.evaluate("k1", object(), provider="anthropic", body=b"")
+        assert result is not None
+        assert result.status_code == 403
+        body = json.loads(result.body)
+        assert body["type"] == "error"
     finally:
         await db_conn.close()
 

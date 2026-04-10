@@ -16,6 +16,7 @@ from worthless.proxy.errors import (
     ErrorResponse,
     rate_limit_error_response,
     spend_cap_error_response,
+    time_window_error_response,
     token_budget_error_response,
 )
 
@@ -208,6 +209,77 @@ class TokenBudgetRule:
         except Exception:
             # Fail-closed: any DB error -> deny request
             return token_budget_error_response(period="unknown", used=0, limit=0, provider=provider)
+
+
+@dataclass
+class TimeWindowRule:
+    """Denies requests outside configured time windows.
+
+    Reads time_window JSON from enrollment_config. No BEGIN IMMEDIATE needed —
+    pure read of config + clock check. Fails closed on invalid tz, malformed
+    JSON, or any error.
+
+    JSON format: {"start":"09:00","end":"17:00","tz":"America/New_York","days":[1,2,3,4,5]}
+    - days: isoweekday (1=Monday, 7=Sunday). Missing → all days allowed.
+    - tz: IANA timezone. Missing → UTC.
+    - Overnight windows supported (end < start spans midnight).
+    """
+
+    db: aiosqlite.Connection
+
+    async def evaluate(
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
+    ) -> ErrorResponse | None:
+        try:
+            async with self.db.execute(
+                "SELECT time_window FROM enrollment_config WHERE key_alias = ?",
+                (alias,),
+            ) as cur:
+                row = await cur.fetchone()
+
+            if row is None or row[0] is None:
+                return None
+
+            import json as _json
+            from datetime import datetime, time as dt_time
+            from zoneinfo import ZoneInfo
+
+            config = _json.loads(row[0])
+            tz = ZoneInfo(config.get("tz", "UTC"))
+            now = datetime.now(tz)
+
+            # Check day of week
+            allowed_days = config.get("days", [1, 2, 3, 4, 5, 6, 7])
+            if now.isoweekday() not in allowed_days:
+                return time_window_error_response(
+                    current_time=now.strftime("%H:%M %Z"),
+                    window=f"{config.get('start', '?')}-{config.get('end', '?')}",
+                    provider=provider,
+                )
+
+            # Parse start/end times
+            start = dt_time.fromisoformat(config["start"])
+            end = dt_time.fromisoformat(config["end"])
+            current = now.time()
+
+            # Check time range (handle overnight windows where end < start)
+            if start <= end:
+                in_window = start <= current < end
+            else:
+                in_window = current >= start or current < end
+
+            if not in_window:
+                return time_window_error_response(
+                    current_time=now.strftime("%H:%M %Z"),
+                    window=f"{config['start']}-{config['end']}",
+                    provider=provider,
+                )
+
+            return None
+        except Exception:
+            return time_window_error_response(
+                current_time="unknown", window="unknown", provider=provider
+            )
 
 
 @dataclass
