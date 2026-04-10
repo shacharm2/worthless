@@ -16,7 +16,7 @@ Worthless protects API keys in three scenarios:
 
 ### Package Info
 - **Package name**: `worthless`
-- **Version**: 0.2.0
+- **Version**: 0.1.0
 - **Entry point**: `worthless` (CLI command)
 - **Python**: 3.10+
 - **License**: AGPL-3.0
@@ -206,6 +206,19 @@ Permanently deletes Shard A from disk (with zero-fill to resist recovery), delet
 - Zeroes Shard A contents before unlink (best-effort on CoW filesystems; full-disk encryption is the real protection)
 - Atomic DB cleanup: all related records removed in one transaction
 - Idempotent: succeeds even if alias doesn't exist
+
+#### `worthless enroll [OPTIONS]`
+**Enroll a single API key (scripting/CI primitive).**
+
+Lower-level than `lock` — enrolls one key by alias without scanning `.env`. Designed for CI pipelines and scripts where the key comes from a secret manager.
+
+**Options:**
+- `--alias, -a NAME`: Key alias (required)
+- `--key, -k VALUE`: API key (use --key-stdin instead to avoid shell history)
+- `--key-stdin`: Read API key from stdin
+- `--provider, -p NAME`: Provider name (required)
+
+**Use case:** `echo "$OPENAI_KEY" | worthless enroll --alias ci-openai --provider openai --key-stdin`
 
 #### `worthless mcp [OPTIONS]`
 **Start the MCP server (stdio transport).**
