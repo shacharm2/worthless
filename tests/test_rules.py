@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from datetime import datetime
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import aiosqlite
 import pytest
@@ -432,8 +434,6 @@ async def test_time_window_null_passes(tmp_path):
 @pytest.mark.asyncio
 async def test_time_window_within_window(tmp_path):
     """Current time within configured window → pass."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
 
     now = datetime.now(ZoneInfo("UTC"))
     # Build a window that includes the current hour
@@ -463,8 +463,6 @@ async def test_time_window_within_window(tmp_path):
 @pytest.mark.asyncio
 async def test_time_window_outside_hour(tmp_path):
     """Current time outside configured hours → 403."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
 
     now = datetime.now(ZoneInfo("UTC"))
     # Build a window that excludes the current hour
@@ -495,8 +493,6 @@ async def test_time_window_outside_hour(tmp_path):
 @pytest.mark.asyncio
 async def test_time_window_wrong_day(tmp_path):
     """Current day not in allowed days → 403."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
 
     now = datetime.now(ZoneInfo("UTC"))
     # Exclude today's isoweekday
@@ -526,8 +522,6 @@ async def test_time_window_wrong_day(tmp_path):
 @pytest.mark.asyncio
 async def test_time_window_overnight(tmp_path):
     """Overnight window (end < start, e.g. 22:00-06:00) works correctly."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
 
     now = datetime.now(ZoneInfo("UTC"))
     # Build an overnight window guaranteed to include current hour:
@@ -606,8 +600,6 @@ async def test_time_window_malformed_json(tmp_path):
 @pytest.mark.asyncio
 async def test_time_window_anthropic_format(tmp_path):
     """Anthropic provider → Anthropic error format."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
 
     now = datetime.now(ZoneInfo("UTC"))
     start_hour = (now.hour + 3) % 24

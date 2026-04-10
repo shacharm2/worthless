@@ -6,9 +6,12 @@ A denied request means zero KMS calls, zero reconstruction, zero key material.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, time as dt_time
 from typing import Protocol, runtime_checkable
+from zoneinfo import ZoneInfo
 
 import aiosqlite
 
@@ -240,11 +243,7 @@ class TimeWindowRule:
             if row is None or row[0] is None:
                 return None
 
-            import json as _json
-            from datetime import datetime, time as dt_time
-            from zoneinfo import ZoneInfo
-
-            config = _json.loads(row[0])
+            config = json.loads(row[0])
             tz = ZoneInfo(config.get("tz", "UTC"))
             now = datetime.now(tz)
 
