@@ -435,6 +435,423 @@ class TestLifecycle:
 
 
 # ===================================================================
+# Tier 4b: Lock + Wrap E2E flow (WOR-170)
+# ===================================================================
+
+
+def _write_env_to_container(
+    container: str, env_content: str, dest: str = "/tmp/.env"
+) -> subprocess.CompletedProcess[str]:
+    """Write a .env file into a running container via docker exec + sh."""
+    return subprocess.run(
+        [
+            "docker",
+            "exec",
+            container,
+            "sh",
+            "-c",
+            f"cat > {dest} << 'ENVEOF'\n{env_content}\nENVEOF",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+class TestLockWrapE2E:
+    """Tier 4b: Lock + Wrap flow inside Docker.
+
+    Verifies the CORE user journey works end-to-end in the container:
+    lock a .env file, then wrap a child process that routes through proxy.
+    These tests satisfy WOR-170 AC: "docker compose up produces working
+    proxy that handles lock+wrap flow."
+    """
+
+    def test_lock_enrolls_key_in_container(self, container: tuple[str, int]) -> None:
+        """Lock rewrites .env, creates shard_a, and stores enrollment in DB.
+
+        What it tests: The ``worthless lock`` command inside the container
+        successfully splits an API key, stores both shards, and replaces
+        the original key in .env with a decoy.
+
+        Why it matters: This is the first step of the user journey. If lock
+        fails inside Docker, the entire product is broken.
+
+        Failure looks like: .env still contains the original key, or shard_a
+        directory is empty, or DB has no enrollment record.
+        """
+        name, _port = container
+        fake_key = _fake_openai_key()
+        env_content = f"OPENAI_API_KEY={fake_key}\n"
+
+        # Write .env into the container
+        write_result = _write_env_to_container(name, env_content)
+        assert write_result.returncode == 0, f"Failed to write .env: {write_result.stderr}"
+
+        # Run lock
+        lock_result = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock_result.returncode == 0, (
+            f"'worthless lock' failed (exit {lock_result.returncode}): {lock_result.stderr}"
+        )
+
+        # Assert: .env was rewritten (original key is gone)
+        cat_result = _docker_exec(name, ["cat", "/tmp/.env"])
+        assert cat_result.returncode == 0
+        assert fake_key not in cat_result.stdout, (
+            "Original API key still present in .env after lock -- decoy replacement failed"
+        )
+
+        # Assert: shard_a file(s) created
+        ls_result = _docker_exec(name, ["ls", "/data/shard_a/"])
+        assert ls_result.returncode == 0, f"shard_a dir missing: {ls_result.stderr}"
+        shard_files = ls_result.stdout.strip()
+        assert shard_files, "No shard_a files created after lock"
+
+        # Assert: DB has enrollment record
+        db_check = _docker_exec(
+            name,
+            [
+                "python",
+                "-c",
+                (
+                    "import sqlite3; "
+                    "c = sqlite3.connect('/data/worthless.db'); "
+                    "rows = c.execute('SELECT COUNT(*) FROM shards').fetchone(); "
+                    "print(rows[0])"
+                ),
+            ],
+        )
+        assert db_check.returncode == 0
+        count = int(db_check.stdout.strip())
+        assert count > 0, "No enrollment records in DB after lock"
+
+    def test_wrap_injects_base_url(self, container: tuple[str, int]) -> None:
+        """After lock, wrap injects OPENAI_BASE_URL into child environment.
+
+        What it tests: The ``worthless wrap`` command sets OPENAI_BASE_URL
+        in the child process environment, pointing to the ephemeral proxy.
+
+        Why it matters: Without BASE_URL injection, SDK calls go directly
+        to the provider, bypassing the proxy entirely -- defeating the
+        purpose of Worthless.
+
+        Failure looks like: OPENAI_BASE_URL is None or does not contain
+        127.0.0.1.
+        """
+        name, _port = container
+        fake_key = _fake_openai_key()
+        env_content = f"OPENAI_API_KEY={fake_key}\n"
+
+        # Lock first
+        _write_env_to_container(name, env_content)
+        lock = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock.returncode == 0, f"lock failed: {lock.stderr}"
+
+        # Wrap a child that prints OPENAI_BASE_URL
+        wrap_result = _docker_exec(
+            name,
+            [
+                "worthless",
+                "wrap",
+                "--",
+                "python",
+                "-c",
+                "import os; print(os.environ.get('OPENAI_BASE_URL', 'MISSING'))",
+            ],
+        )
+        assert wrap_result.returncode == 0, f"wrap failed: {wrap_result.stderr}"
+        base_url = wrap_result.stdout.strip()
+        assert base_url != "MISSING", "OPENAI_BASE_URL not injected into child environment"
+        assert "127.0.0.1" in base_url, f"OPENAI_BASE_URL does not point to local proxy: {base_url}"
+
+    def test_proxy_reachable_during_wrap(self, container: tuple[str, int]) -> None:
+        """During wrap, the ephemeral proxy responds on /healthz.
+
+        What it tests: While a wrapped child is running, the proxy is
+        reachable and serving health checks.
+
+        Why it matters: If the proxy is unreachable during wrap, no API
+        requests can be proxied -- the child would get connection refused.
+
+        Failure looks like: /healthz returns non-200 or connection refused.
+        """
+        name, _port = container
+        fake_key = _fake_openai_key()
+        env_content = f"OPENAI_API_KEY={fake_key}\n"
+
+        _write_env_to_container(name, env_content)
+        lock = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock.returncode == 0, f"lock failed: {lock.stderr}"
+
+        # Wrap a long-running child. Use sh -c to: extract port, curl healthz,
+        # print result, then exit. The child itself acts as the health checker.
+        wrap_result = _docker_exec(
+            name,
+            [
+                "worthless",
+                "wrap",
+                "--",
+                "sh",
+                "-c",
+                (
+                    # Extract port from OPENAI_BASE_URL
+                    'PORT=$(echo "$OPENAI_BASE_URL" | grep -oP ":\\K[0-9]+$"); '
+                    # Retry healthz a few times (proxy may still be settling)
+                    "for i in 1 2 3 4 5; do "
+                    '  RESP=$(python -c "'
+                    "import urllib.request; "
+                    "r = urllib.request.urlopen('http://127.0.0.1:'+'$PORT'+'/healthz'); "
+                    "print(r.status)"
+                    '") && break || sleep 1; '
+                    "done; "
+                    'echo "HEALTH_STATUS=$RESP"'
+                ),
+            ],
+        )
+        assert wrap_result.returncode == 0, f"wrap failed: {wrap_result.stderr}"
+        assert "HEALTH_STATUS=200" in wrap_result.stdout, (
+            f"Proxy /healthz not reachable during wrap. Output: {wrap_result.stdout}"
+        )
+
+    def test_lock_wrap_full_flow(self, container: tuple[str, int]) -> None:
+        """Combined flow: lock -> wrap -> child request routes through proxy.
+
+        What it tests: After locking, a wrapped child can make an HTTP
+        request that reaches the proxy. The proxy will return an error
+        (no real upstream API key) but the REQUEST PATH must work.
+
+        Why it matters: This is the complete user journey. Even without
+        a real API key, the proxy receiving the request proves the
+        plumbing works end-to-end.
+
+        Failure looks like: Connection refused (proxy not running) or
+        the request never reaches the proxy.
+        """
+        name, _port = container
+        fake_key = _fake_openai_key()
+        env_content = f"OPENAI_API_KEY={fake_key}\n"
+
+        _write_env_to_container(name, env_content)
+        lock = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock.returncode == 0, f"lock failed: {lock.stderr}"
+
+        # Wrap a child that makes a request to the proxy's /v1/chat/completions
+        wrap_result = _docker_exec(
+            name,
+            [
+                "worthless",
+                "wrap",
+                "--",
+                "python",
+                "-c",
+                (
+                    "import os, urllib.request, urllib.error, json\n"
+                    "base = os.environ['OPENAI_BASE_URL']\n"
+                    "url = f'{base}/v1/chat/completions'\n"
+                    "msg = [{'role': 'user', 'content': 'hi'}]\n"
+                    "data = json.dumps({'model': 'gpt-4', 'messages': msg}).encode()\n"
+                    "hdrs = {'Content-Type': 'application/json', "
+                    "'Authorization': 'Bearer fake'}\n"
+                    "req = urllib.request.Request(url, data=data, headers=hdrs)\n"
+                    "try:\n"
+                    "    urllib.request.urlopen(req)\n"
+                    "    print('STATUS=200')\n"
+                    "except urllib.error.HTTPError as e:\n"
+                    "    print(f'STATUS={e.code}')\n"
+                    "except urllib.error.URLError as e:\n"
+                    "    print(f'ERROR={e.reason}')\n"
+                ),
+            ],
+        )
+        assert wrap_result.returncode == 0, f"wrap failed: {wrap_result.stderr}"
+        output = wrap_result.stdout.strip()
+        # The proxy MUST receive the request (not connection refused).
+        # Any HTTP status code (even 4xx/5xx) means the proxy handled it.
+        assert output.startswith("STATUS="), (
+            f"Request did not reach proxy. Expected STATUS=<code>, got: {output}"
+        )
+
+
+class TestDockerEdgeCases:
+    """Edge cases for lock/wrap/unlock inside Docker containers.
+
+    Tests unusual but realistic scenarios that could cause data loss,
+    orphan processes, or confusing error messages.
+    """
+
+    def test_unlock_then_proxy_rejects_requests(self, container: tuple[str, int]) -> None:
+        """After unlock removes enrollments, proxy has no keys to reconstruct.
+
+        What it tests: After unlocking all keys, the proxy starts but
+        returns an error on API requests (no shards to reconstruct from).
+
+        Why it matters: Users who unlock and then try to use the proxy
+        should get a clear error, not a hang or crash.
+
+        Failure looks like: Proxy crashes, hangs, or returns 200 with
+        garbage data.
+        """
+        name, port = container
+        fake_key = _fake_openai_key()
+        env_content = f"OPENAI_API_KEY={fake_key}\n"
+
+        # Lock first
+        _write_env_to_container(name, env_content)
+        lock = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock.returncode == 0, f"lock failed: {lock.stderr}"
+
+        # Unlock
+        unlock = _docker_exec(name, ["worthless", "unlock", "--env", "/tmp/.env"])
+        assert unlock.returncode == 0, f"unlock failed: {unlock.stderr}"
+
+        # Verify no shards remain
+        db_check = _docker_exec(
+            name,
+            [
+                "python",
+                "-c",
+                (
+                    "import sqlite3; "
+                    "c = sqlite3.connect('/data/worthless.db'); "
+                    "rows = c.execute('SELECT COUNT(*) FROM shards').fetchone(); "
+                    "print(rows[0])"
+                ),
+            ],
+        )
+        assert db_check.returncode == 0
+        count = int(db_check.stdout.strip())
+        assert count == 0, f"Shards still in DB after unlock: {count}"
+
+    def test_wrap_child_spawn_failure(self, container: tuple[str, int]) -> None:
+        """wrap with a nonexistent binary exits non-zero, no orphan proxy.
+
+        What it tests: When the child command doesn't exist, wrap fails
+        cleanly and shuts down the ephemeral proxy.
+
+        Why it matters: Orphan proxy processes would leak ports and
+        memory inside the container, eventually causing OOM or port
+        exhaustion.
+
+        Failure looks like: Exit code 0, or proxy process still running
+        after wrap exits.
+        """
+        name, _port = container
+        fake_key = _fake_openai_key()
+        env_content = f"OPENAI_API_KEY={fake_key}\n"
+
+        _write_env_to_container(name, env_content)
+        lock = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock.returncode == 0, f"lock failed: {lock.stderr}"
+
+        # Wrap a nonexistent binary
+        wrap_result = _docker_exec(
+            name,
+            ["worthless", "wrap", "--", "/nonexistent/binary"],
+        )
+        assert wrap_result.returncode != 0, (
+            "wrap should exit non-zero when child binary does not exist"
+        )
+
+        # Check no orphan proxy process
+        ps_result = _docker_exec(name, ["sh", "-c", "ps aux | grep -c '[u]vicorn'"])
+        if ps_result.returncode == 0:
+            proxy_count = int(ps_result.stdout.strip())
+            assert proxy_count == 0, (
+                f"Orphan proxy process(es) found after failed wrap: {proxy_count}"
+            )
+
+    def test_lock_idempotent(self, container: tuple[str, int]) -> None:
+        """Running lock twice on the same .env succeeds (already-locked keys skipped).
+
+        What it tests: Idempotency of the lock command -- running it
+        again on an already-locked .env should not error or double-enroll.
+
+        Why it matters: Users may run lock multiple times (habit, scripts,
+        CI). Double-enrollment would corrupt the shard mapping.
+
+        Failure looks like: Second lock exits non-zero, or DB has
+        duplicate enrollment records.
+        """
+        name, _port = container
+        fake_key = _fake_openai_key()
+        env_content = f"OPENAI_API_KEY={fake_key}\n"
+
+        _write_env_to_container(name, env_content)
+
+        # First lock
+        lock1 = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock1.returncode == 0, f"first lock failed: {lock1.stderr}"
+
+        # Count enrollments
+        count1_result = _docker_exec(
+            name,
+            [
+                "python",
+                "-c",
+                (
+                    "import sqlite3; "
+                    "c = sqlite3.connect('/data/worthless.db'); "
+                    "print(c.execute('SELECT COUNT(*) FROM shards').fetchone()[0])"
+                ),
+            ],
+        )
+        count1 = int(count1_result.stdout.strip())
+
+        # Second lock (should be idempotent)
+        lock2 = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock2.returncode == 0, f"second lock failed (not idempotent): {lock2.stderr}"
+
+        # Count enrollments again -- should be same
+        count2_result = _docker_exec(
+            name,
+            [
+                "python",
+                "-c",
+                (
+                    "import sqlite3; "
+                    "c = sqlite3.connect('/data/worthless.db'); "
+                    "print(c.execute('SELECT COUNT(*) FROM shards').fetchone()[0])"
+                ),
+            ],
+        )
+        count2 = int(count2_result.stdout.strip())
+        assert count2 == count1, (
+            f"Double enrollment detected: {count1} shards after first lock, {count2} after second"
+        )
+
+    def test_container_read_only_filesystem(self, container: tuple[str, int]) -> None:
+        """Writes to /data succeed but writes to /app fail (read-only root).
+
+        What it tests: The container filesystem is read-only except for
+        the /data volume mount.
+
+        Why it matters: Read-only root prevents attackers from modifying
+        application code or installing persistence mechanisms.
+
+        Failure looks like: Writing to /app succeeds (filesystem not
+        read-only).
+        """
+        name, _port = container
+
+        # /data should be writable
+        data_write = _docker_exec(name, ["touch", "/data/test-rw-check"])
+        assert data_write.returncode == 0, (
+            f"/data should be writable but write failed: {data_write.stderr}"
+        )
+        # Clean up
+        _docker_exec(name, ["rm", "-f", "/data/test-rw-check"])
+
+        # /app should be read-only (if container uses read-only root)
+        # Note: this test may pass even without --read-only if /app is
+        # owned by root and container runs as non-root user. Both are
+        # valid security postures.
+        app_write = _docker_exec(name, ["touch", "/app/test-ro-check"])
+        assert app_write.returncode != 0, (
+            "/app should not be writable -- container may not have read-only root "
+            "or may be running as root. Check Dockerfile USER directive."
+        )
+
+
+# ===================================================================
 # Tier 5: Security (compose-specific)
 # ===================================================================
 

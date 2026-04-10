@@ -148,8 +148,12 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Test files: assert is standard pytest style; S110 (try/except/pass) acceptable in test helpers
 "tests/**" = ["S101", "S110", "B"]
-# Docker e2e tests shell out to `docker` CLI extensively — partial path is intentional
-"tests/test_docker_e2e.py" = ["S607"]
+# Docker e2e tests shell out to `docker` CLI extensively — partial path and /tmp are intentional
+"tests/test_docker_e2e.py" = ["S607", "S108"]
+# Deploy static tests use bash -n for entrypoint syntax validation
+"tests/test_deploy_static.py" = ["S607"]
+# Eval scripts shell out to claude CLI
+"tests/evals/eval_skill_md.py" = ["S607"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "random".msg = "Use the 'secrets' module for cryptographic randomness. The 'random' module is banned (CRYP-04)."
