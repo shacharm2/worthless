@@ -9,6 +9,10 @@ from unittest.mock import patch
 
 import pytest
 
+from worthless.proxy.errors import (
+    time_window_error_response,
+    token_budget_error_response,
+)
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 
 
@@ -512,3 +516,48 @@ async def test_rate_limiter_expired_keys_removed():
     for i in range(5):
         assert (f"alias-{i}", "10.0.0.1") not in rule._windows
     assert ("fresh-alias", "10.0.0.1") in rule._windows
+
+
+# ---------------------------------------------------------------------------
+# WOR-183: Structured error factories
+# ---------------------------------------------------------------------------
+
+
+def test_token_budget_error_openai():
+    """token_budget_error_response returns 429 with period, used, and limit."""
+    resp = token_budget_error_response(period="daily", used=85000, limit=100000, provider="openai")
+    assert resp.status_code == 429
+    body = json.loads(resp.body)
+    assert "daily" in body["error"]["message"]
+    assert "85,000" in body["error"]["message"] or "85000" in body["error"]["message"]
+    assert "100,000" in body["error"]["message"] or "100000" in body["error"]["message"]
+
+
+def test_token_budget_error_anthropic():
+    resp = token_budget_error_response(
+        period="weekly", used=500000, limit=500000, provider="anthropic"
+    )
+    assert resp.status_code == 429
+    body = json.loads(resp.body)
+    assert body["type"] == "error"
+    assert "weekly" in body["error"]["message"]
+
+
+def test_time_window_error_openai():
+    """time_window_error_response returns 403 with current time and window."""
+    resp = time_window_error_response(
+        current_time="22:15 UTC", window="09:00-17:00", provider="openai"
+    )
+    assert resp.status_code == 403
+    body = json.loads(resp.body)
+    assert "22:15" in body["error"]["message"]
+    assert "09:00-17:00" in body["error"]["message"]
+
+
+def test_time_window_error_anthropic():
+    resp = time_window_error_response(
+        current_time="03:00 EST", window="09:00-17:00", provider="anthropic"
+    )
+    assert resp.status_code == 403
+    body = json.loads(resp.body)
+    assert body["type"] == "error"
