@@ -39,7 +39,6 @@ from worthless.proxy.rules import (
     RateLimitRule,
     RulesEngine,
     SpendCapRule,
-    TimeWindowRule,
     TokenBudgetRule,
 )
 from worthless.storage.repository import ShardRepository
@@ -154,7 +153,6 @@ async def _lifespan(app: FastAPI):
 
     rules_engine = RulesEngine(
         rules=[
-            TimeWindowRule(db=db),
             SpendCapRule(db=db),
             TokenBudgetRule(db=db),
             RateLimitRule(
