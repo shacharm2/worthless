@@ -154,7 +154,17 @@ def _init_db(home: WorthlessHome) -> None:
         conn.close()
 
     # Run async migrations (WOR-183: rules engine columns, spend_log cleanup)
-    asyncio.run(migrate_db(str(home.db_path)))
+    try:
+        asyncio.get_running_loop()
+        # Already in async context — schedule as a task won't work from sync.
+        # Use a new thread's event loop instead.
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(asyncio.run, migrate_db(str(home.db_path))).result()
+    except RuntimeError:
+        # No running loop — safe to use asyncio.run()
+        asyncio.run(migrate_db(str(home.db_path)))
 
     # Restrict DB file permissions (no-op on Windows — NTFS ACLs are different)
     if not IS_WINDOWS:
