@@ -6,6 +6,7 @@ import aiosqlite
 import pytest
 
 from worthless.storage.repository import EncryptedShard, ShardRepository, StoredShard
+from worthless.storage.schema import SCHEMA, migrate_db
 
 from tests.conftest import stored_shard_from_split
 
@@ -303,11 +304,102 @@ async def test_decoy_hash_index_exists(tmp_db_path: str) -> None:
         assert "idx_enrollments_decoy_hash" in index_names
 
 
+# ---------------------------------------------------------------------------
+# WOR-183: Schema migration for rules engine columns
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_migrate_adds_rules_columns(tmp_path) -> None:
+    """Migration adds token_budget_*, time_window to enrollment_config."""
+    db_path = str(tmp_path / "old_rules.db")
+
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.commit()
+
+    await migrate_db(db_path)
+
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute("PRAGMA table_info(enrollment_config)")
+        columns = {row[1] for row in await cursor.fetchall()}
+
+    expected_new = {
+        "token_budget_daily",
+        "token_budget_weekly",
+        "token_budget_monthly",
+        "time_window",
+    }
+    assert expected_new.issubset(columns), f"Missing columns: {expected_new - columns}"
+
+
+@pytest.mark.asyncio
+async def test_migrate_rules_columns_idempotent(tmp_path) -> None:
+    """Running migration twice doesn't error."""
+    db_path = str(tmp_path / "idempotent.db")
+
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.commit()
+
+    await migrate_db(db_path)
+    await migrate_db(db_path)  # Second run should not raise
+
+
+@pytest.mark.asyncio
+async def test_migrate_rules_columns_default_null(tmp_path) -> None:
+    """New rules columns default to NULL for existing enrollments."""
+    db_path = str(tmp_path / "defaults.db")
+
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.execute(
+            "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
+            ("existing-key", 1000.0),
+        )
+        await db.commit()
+
+    await migrate_db(db_path)
+
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            "SELECT token_budget_daily, token_budget_weekly, "
+            "token_budget_monthly, time_window FROM enrollment_config WHERE key_alias = ?",
+            ("existing-key",),
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None
+    assert all(v is None for v in row), f"Expected all NULL, got {row}"
+
+
+@pytest.mark.asyncio
+async def test_spend_log_index_exists_after_migrate(tmp_path) -> None:
+    """Migration creates idx_spend_log_alias_created index."""
+    db_path = str(tmp_path / "index.db")
+
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.commit()
+
+    await migrate_db(db_path)
+
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='index' AND name='idx_spend_log_alias_created'"
+        ) as cur:
+            row = await cur.fetchone()
+    assert row is not None, "idx_spend_log_alias_created index not found"
+
+
+# ---------------------------------------------------------------------------
+# Legacy migration
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_migrate_adds_decoy_hash_column(tmp_path) -> None:
     """Migration adds decoy_hash to an existing DB without the column."""
-    from worthless.storage.schema import migrate_db
-
     db_path = str(tmp_path / "old.db")
 
     # Create a DB with the old schema (no decoy_hash)

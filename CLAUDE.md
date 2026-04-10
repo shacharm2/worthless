@@ -1,0 +1,1 @@
+../worthless-cloud/config/worthless/CLAUDE.md

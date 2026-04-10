@@ -63,6 +63,30 @@ def rate_limit_error_response(retry_after: int, provider: str = "openai") -> Err
     )
 
 
+def token_budget_error_response(
+    period: str, used: int, limit: int, provider: str = "openai"
+) -> ErrorResponse:
+    """429 token budget exceeded with usage stats."""
+    message = f"{period} token budget exceeded: {used:,}/{limit:,}"
+    return ErrorResponse(
+        status_code=429,
+        body=_error_body(429, message, "token_budget_exceeded", provider),
+        headers={"content-type": "application/json"},
+    )
+
+
+def time_window_error_response(
+    current_time: str, window: str, provider: str = "openai"
+) -> ErrorResponse:
+    """403 outside allowed time window."""
+    message = f"access denied: current time {current_time} outside allowed window {window}"
+    return ErrorResponse(
+        status_code=403,
+        body=_error_body(403, message, "time_window_denied", provider),
+        headers={"content-type": "application/json"},
+    )
+
+
 def gateway_error_response(status: int, message: str, provider: str = "openai") -> ErrorResponse:
     """Gateway error (502/504) — upstream connectivity or timeout failure."""
     return ErrorResponse(

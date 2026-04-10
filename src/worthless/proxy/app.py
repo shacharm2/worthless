@@ -35,7 +35,12 @@ from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
 from worthless.proxy.metering import extract_usage_anthropic, extract_usage_openai, record_spend
 from worthless.proxy.middleware import BodySizeLimitMiddleware
-from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
+from worthless.proxy.rules import (
+    RateLimitRule,
+    RulesEngine,
+    SpendCapRule,
+    TokenBudgetRule,
+)
 from worthless.storage.repository import ShardRepository
 from worthless.storage.schema import SCHEMA
 
@@ -149,6 +154,7 @@ async def _lifespan(app: FastAPI):
     rules_engine = RulesEngine(
         rules=[
             SpendCapRule(db=db),
+            TokenBudgetRule(db=db),
             RateLimitRule(
                 default_rps=settings.default_rate_limit_rps,
                 db_path=settings.db_path,
@@ -274,8 +280,12 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         if shard_a is None:
             return _uniform_401()
 
+        # Pre-read body ONCE before rules engine (WOR-182: eliminates
+        # Starlette body-caching coupling — rules receive bytes, not stream)
+        body = await request.body()
+
         # GATE: rules engine evaluates BEFORE any Fernet decrypt
-        denial = await rules_engine.evaluate(alias, request, provider=encrypted.provider)
+        denial = await rules_engine.evaluate(alias, request, provider=encrypted.provider, body=body)
         if denial is not None:
             # Zero shard_a before returning
             shard_a[:] = b"\x00" * len(shard_a)
@@ -295,8 +305,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         # Decrypt now that the gate has passed
         stored = repo.decrypt_shard(encrypted)
 
-        # Reconstruct key inside secure_key context
-        body = await request.body()
+        # Reconstruct key inside secure_key context (body already read above)
         req_headers = {k: v for k, v in request.headers.items()}
 
         try:

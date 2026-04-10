@@ -41,7 +41,7 @@ A developer installs Worthless and goes back to work with a quiet mind. Their AP
 
 - [ ] MCP server — Claude Code / Cursor / Windsurf integration
 - [ ] Docker Compose / Railway / Render deploy configs
-- [ ] Rules engine: model_allowlist, token_budget, time_window rules
+- [ ] Rules engine: token_budget, time_window rules
 - [ ] `worthless keys` command for listing protected keys
 - [ ] `worthless daemon` background proxy mode
 - [ ] Redis hot-path metering

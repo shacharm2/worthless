@@ -121,7 +121,9 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
 
 def _init_db(home: WorthlessHome) -> None:
     """Create the SQLite database using the canonical schema and run migrations."""
-    from worthless.storage.schema import SCHEMA
+    import asyncio
+
+    from worthless.storage.schema import SCHEMA, migrate_db
 
     conn = sqlite3.connect(str(home.db_path))
     try:
@@ -150,6 +152,19 @@ def _init_db(home: WorthlessHome) -> None:
         conn.commit()
     finally:
         conn.close()
+
+    # Run async migrations (WOR-183: rules engine columns, spend_log cleanup)
+    try:
+        asyncio.get_running_loop()
+        # Already in async context — schedule as a task won't work from sync.
+        # Use a new thread's event loop instead.
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(asyncio.run, migrate_db(str(home.db_path))).result()
+    except RuntimeError:
+        # No running loop — safe to use asyncio.run()
+        asyncio.run(migrate_db(str(home.db_path)))
 
     # Restrict DB file permissions (no-op on Windows — NTFS ACLs are different)
     if not IS_WINDOWS:

@@ -222,6 +222,7 @@ class ShardRepository:
         var_name: str,
         env_path: str | None = None,
         spend_cap: int | None | _Sentinel = _USE_DEFAULT,
+        token_budget_daily: int | None = None,
     ) -> None:
         """Atomically store a shard, enrollment record, and enrollment config.
 
@@ -265,8 +266,10 @@ class ShardRepository:
                 (alias, var_name, env_path),
             )
             await db.execute(
-                "INSERT OR IGNORE INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
-                (alias, effective_cap),
+                "INSERT OR IGNORE INTO enrollment_config"
+                " (key_alias, spend_cap, token_budget_daily)"
+                " VALUES (?, ?, ?)",
+                (alias, effective_cap, token_budget_daily),
             )
             await db.commit()
 

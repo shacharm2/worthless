@@ -112,6 +112,7 @@ def _lock_keys(
     env_path: Path,
     home: WorthlessHome,
     provider_override: str | None = None,
+    token_budget_daily: int | None = None,
 ) -> int:
     """Core lock logic. Returns count of keys protected."""
     console = get_console()
@@ -210,6 +211,7 @@ def _lock_keys(
                     stored,
                     var_name=var_name,
                     env_path=str(env_path.resolve()),
+                    token_budget_daily=token_budget_daily,
                 )
                 db_written = True
 
@@ -315,11 +317,14 @@ def register_lock_commands(app: typer.Typer) -> None:
         provider: str | None = typer.Option(
             None, "--provider", "-p", help="Override provider auto-detection"
         ),
+        token_budget_daily: int | None = typer.Option(
+            None, "--token-budget-daily", help="Daily token budget limit"
+        ),
     ) -> None:
         """Protect API keys in a .env file."""
         home = get_home()
         with acquire_lock(home):
-            _lock_keys(env, home, provider_override=provider)
+            _lock_keys(env, home, provider_override=provider, token_budget_daily=token_budget_daily)
 
     @app.command()
     @error_boundary
