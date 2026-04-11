@@ -12,7 +12,12 @@ from __future__ import annotations
 
 import re
 import subprocess
-import tomllib
+import sys
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib  # backport for Python 3.10
 from pathlib import Path
 
 import pytest

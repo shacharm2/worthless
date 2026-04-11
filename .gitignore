@@ -58,9 +58,6 @@ __pycache__/
 # Mutmut working directory
 mutants/
 
-# uv
-uv.lock
-
 # Test/coverage artifacts
 .coverage
 coverage.xml
