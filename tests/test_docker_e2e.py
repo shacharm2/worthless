@@ -738,19 +738,15 @@ class TestDockerEdgeCases:
         count = int(db_check.stdout.strip())
         assert count == 0, f"Shards still in DB after unlock: {count}"
 
-    @pytest.mark.xfail(reason="Known bug: wrap leaves orphan proxy (worthless-v24)")
     def test_wrap_child_spawn_failure(self, container: tuple[str, int]) -> None:
         """wrap with a nonexistent binary exits non-zero, no orphan proxy.
 
-        What it tests: When the child command doesn't exist, wrap fails
-        cleanly and shuts down the ephemeral proxy.
-
         Why it matters: Orphan proxy processes would leak ports and
-        memory inside the container, eventually causing OOM or port
-        exhaustion.
+        memory inside the container.
 
-        Failure looks like: Exit code 0, or proxy process still running
-        after wrap exits.
+        Note: The container runs its own uvicorn (entrypoint), so we
+        count processes BEFORE and AFTER wrap — the count must not
+        increase.
         """
         name, _port = container
         fake_key = _fake_openai_key()
@@ -759,6 +755,15 @@ class TestDockerEdgeCases:
         _write_env_to_container(name, env_content)
         lock = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
+
+        # Count uvicorn processes BEFORE wrap (container's own proxy)
+        _uvicorn_count_cmd = [
+            "sh",
+            "-c",
+            "ls /proc/*/cmdline 2>/dev/null | xargs grep -l '[u]vicorn' 2>/dev/null | wc -l",
+        ]
+        before = _docker_exec(name, _uvicorn_count_cmd)
+        before_count = int(before.stdout.strip()) if before.returncode == 0 else 0
 
         # Wrap a nonexistent binary
         wrap_result = _docker_exec(
@@ -769,21 +774,12 @@ class TestDockerEdgeCases:
             "wrap should exit non-zero when child binary does not exist"
         )
 
-        # Check no orphan proxy process. Use /proc instead of ps aux
-        # because slim images may not have procps installed.
-        ps_result = _docker_exec(
-            name,
-            [
-                "sh",
-                "-c",
-                "ls /proc/*/cmdline 2>/dev/null | xargs grep -l '[u]vicorn' 2>/dev/null | wc -l",
-            ],
+        # Count AFTER — must not have increased
+        after = _docker_exec(name, _uvicorn_count_cmd)
+        after_count = int(after.stdout.strip()) if after.returncode == 0 else 0
+        assert after_count <= before_count, (
+            f"Orphan proxy: uvicorn count went from {before_count} to {after_count}"
         )
-        if ps_result.returncode == 0:
-            proxy_count = int(ps_result.stdout.strip())
-            assert proxy_count == 0, (
-                f"Orphan proxy process(es) found after failed wrap: {proxy_count}"
-            )
 
     def test_lock_idempotent(self, container: tuple[str, int]) -> None:
         """Running lock twice on the same .env succeeds (already-locked keys skipped).
