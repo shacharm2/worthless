@@ -15,25 +15,26 @@ logger = logging.getLogger(__name__)
 _SERVICE = "worthless"
 _USERNAME = "fernet-key"
 
-# Backend class names that are not real credential stores.
+# Fully-qualified backend names that are not real credential stores.
+# Matched against module.qualname (e.g. "keyring.backends.fail.Keyring").
 _REJECTED_BACKENDS = frozenset(
     {
-        "fail.Keyring",
-        "null.Keyring",
-        "PlaintextKeyring",
+        "keyring.backends.fail.Keyring",
+        "keyring.backends.null.Keyring",
+        "keyrings.alt.file.PlaintextKeyring",
     }
 )
 
 
-def _keyring_available() -> bool:
+def keyring_available() -> bool:
     """Return True if the OS keyring backend is a real credential store."""
     try:
         backend = keyring.get_keyring()
-        name = type(backend).__name__
-        if name in _REJECTED_BACKENDS:
-            logger.debug("Keyring backend rejected: %s", name)
+        fqn = f"{type(backend).__module__}.{type(backend).__qualname__}"
+        if fqn in _REJECTED_BACKENDS:
+            logger.debug("Keyring backend rejected: %s", fqn)
             return False
-        logger.debug("Keyring backend accepted: %s", name)
+        logger.debug("Keyring backend accepted: %s", fqn)
         return True
     except Exception:
         return False
@@ -46,7 +47,7 @@ def store_fernet_key(key: bytes, home_dir: Path | None = None) -> None:
         key: Raw Fernet key bytes (from ``Fernet.generate_key()``).
         home_dir: Directory for file fallback (default ``~/.worthless``).
     """
-    if _keyring_available():
+    if keyring_available():
         try:
             keyring.set_password(_SERVICE, _USERNAME, key.decode())
             logger.info("Fernet key stored in OS keyring")
@@ -93,7 +94,7 @@ def read_fernet_key(home_dir: Path | None = None) -> bytearray:
         return bytearray(env_val.encode())
 
     # 2. Keyring
-    if _keyring_available():
+    if keyring_available():
         try:
             value = keyring.get_password(_SERVICE, _USERNAME)
             if value is not None:
@@ -115,7 +116,7 @@ def read_fernet_key(home_dir: Path | None = None) -> bytearray:
 
 def delete_fernet_key(home_dir: Path | None = None) -> None:
     """Remove Fernet key from keyring and file. Never raises on missing."""
-    if _keyring_available():
+    if keyring_available():
         try:
             keyring.delete_password(_SERVICE, _USERNAME)
         except Exception:

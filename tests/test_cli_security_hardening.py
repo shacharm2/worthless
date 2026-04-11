@@ -93,7 +93,7 @@ class TestFilePermissions:
 
     def test_fernet_key_permissions(self, tmp_path: Path) -> None:
         """fernet.key must be created with 0600."""
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             home = ensure_home(tmp_path / ".worthless")
         mode = stat.S_IMODE(home.fernet_key_path.stat().st_mode)
         assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
@@ -240,7 +240,7 @@ class TestFernetKeyNotInEnv:
             raise RuntimeError("abort spawn")
 
         with (
-            patch("worthless.cli.process._keyring_available", return_value=False),
+            patch("worthless.cli.process.keyring_available", return_value=False),
             patch("worthless.cli.process.subprocess.Popen", side_effect=fake_popen),
         ):
             with pytest.raises(RuntimeError, match="abort spawn"):

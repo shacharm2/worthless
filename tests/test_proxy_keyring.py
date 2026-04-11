@@ -114,9 +114,9 @@ class TestProxySettingsKeyring:
 
 
 class TestBuildProxyEnvKeyring:
-    def test_keyring_available_omits_fernet_key(self) -> None:
+    def testkeyring_available_omits_fernet_key(self) -> None:
         home = FakeHome()
-        with patch("worthless.cli.process._keyring_available", return_value=True):
+        with patch("worthless.cli.process.keyring_available", return_value=True):
             env = build_proxy_env(home)
         assert "WORTHLESS_FERNET_KEY" not in env
         assert env["WORTHLESS_DB_PATH"] == str(home.db_path)
@@ -125,13 +125,13 @@ class TestBuildProxyEnvKeyring:
 
     def test_keyring_unavailable_includes_fernet_key(self) -> None:
         home = FakeHome()
-        with patch("worthless.cli.process._keyring_available", return_value=False):
+        with patch("worthless.cli.process.keyring_available", return_value=False):
             env = build_proxy_env(home)
         assert env["WORTHLESS_FERNET_KEY"] == "test-fernet-key-value"
 
-    def test_keyring_available_still_has_all_other_keys(self) -> None:
+    def testkeyring_available_still_has_all_other_keys(self) -> None:
         home = FakeHome()
-        with patch("worthless.cli.process._keyring_available", return_value=True):
+        with patch("worthless.cli.process.keyring_available", return_value=True):
             env = build_proxy_env(home)
         expected = {"WORTHLESS_DB_PATH", "WORTHLESS_SHARD_A_DIR", "WORTHLESS_ALLOW_ALIAS_INFERENCE"}
         assert expected.issubset(set(env.keys()))
@@ -144,9 +144,9 @@ class TestBuildProxyEnvKeyring:
 
 
 class TestFernetTransportKeyring:
-    def test_keyring_available_yields_none_tuple(self) -> None:
+    def testkeyring_available_yields_none_tuple(self) -> None:
         env = {"WORTHLESS_FERNET_KEY": "some-key", "WORTHLESS_DB_PATH": "/tmp/db"}  # noqa: S108
-        with patch("worthless.cli.process._keyring_available", return_value=True):
+        with patch("worthless.cli.process.keyring_available", return_value=True):
             with fernet_transport(env) as (fernet_key, fernet_fd, fernet_fds):
                 assert fernet_key is None
                 assert fernet_fd is None
@@ -154,7 +154,7 @@ class TestFernetTransportKeyring:
 
     def test_keyring_unavailable_unix_creates_pipe(self) -> None:
         env = {"WORTHLESS_FERNET_KEY": "pipe-me"}
-        with patch("worthless.cli.process._keyring_available", return_value=False):
+        with patch("worthless.cli.process.keyring_available", return_value=False):
             with patch("worthless.cli.process.IS_WINDOWS", False):
                 with fernet_transport(env) as (fernet_key, fernet_fd, fernet_fds):
                     assert fernet_key is None
@@ -167,7 +167,7 @@ class TestFernetTransportKeyring:
 
     def test_keyring_unavailable_env_key_popped(self) -> None:
         env = {"WORTHLESS_FERNET_KEY": "pop-me", "OTHER": "keep"}
-        with patch("worthless.cli.process._keyring_available", return_value=False):
+        with patch("worthless.cli.process.keyring_available", return_value=False):
             with patch("worthless.cli.process.IS_WINDOWS", False):
                 with fernet_transport(env) as (fernet_key, fernet_fd, fernet_fds):
                     if fernet_fd is not None:
@@ -175,9 +175,9 @@ class TestFernetTransportKeyring:
         assert "WORTHLESS_FERNET_KEY" not in env
         assert env["OTHER"] == "keep"
 
-    def test_keyring_available_no_fd_created(self) -> None:
+    def testkeyring_available_no_fd_created(self) -> None:
         env = {"WORTHLESS_FERNET_KEY": "no-leak"}
-        with patch("worthless.cli.process._keyring_available", return_value=True):
+        with patch("worthless.cli.process.keyring_available", return_value=True):
             with fernet_transport(env) as (fernet_key, fernet_fd, fernet_fds):
                 assert fernet_fd is None
                 assert fernet_fds == []

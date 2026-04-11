@@ -25,7 +25,7 @@ from worthless.cli.errors import WorthlessError
 class TestEnsureHome:
     def test_creates_directory_structure(self, tmp_path: Path):
         # Force file fallback so fernet_key_path exists on disk
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             home = ensure_home(base_dir=tmp_path / ".worthless")
         assert home.base_dir.exists()
         assert home.shard_a_dir.exists()
@@ -39,7 +39,7 @@ class TestEnsureHome:
 
     def test_fernet_key_permissions(self, tmp_path: Path):
         # Force file fallback so fernet.key is written to disk
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             home = ensure_home(base_dir=tmp_path / ".worthless")
         mode = home.fernet_key_path.stat().st_mode
         assert stat.S_IMODE(mode) == 0o600
@@ -82,7 +82,7 @@ class TestEnsureHome:
         monkeypatch.setenv("WORTHLESS_FERNET_KEY_PATH", str(custom_path))
 
         # Force file fallback so key is written to disk
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             home = ensure_home(base_dir=tmp_path / ".worthless")
         assert custom_path.exists()
         assert home.fernet_key_path == custom_path

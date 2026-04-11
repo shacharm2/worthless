@@ -24,7 +24,7 @@ from pathlib import Path
 
 import httpx
 
-from worthless.cli.keystore import _keyring_available
+from worthless.cli.keystore import keyring_available
 from worthless.cli.platform import IS_WINDOWS, check_pid_alive, popen_platform_kwargs
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ def build_proxy_env(home: WorthlessHome) -> dict[str, str]:
         "WORTHLESS_SHARD_A_DIR": str(home.shard_a_dir),
         "WORTHLESS_ALLOW_ALIAS_INFERENCE": "true",
     }
-    if not _keyring_available():
+    if not keyring_available():
         env["WORTHLESS_FERNET_KEY"] = home.fernet_key.decode()
     return env
 
@@ -101,7 +101,7 @@ def fernet_transport(
         (fernet_key, fernet_fd, extra_pass_fds).
     """
     # When keyring is available, the proxy reads the key directly — no pipe needed.
-    if _keyring_available():
+    if keyring_available():
         env.pop("WORTHLESS_FERNET_KEY", None)
         yield None, None, []
         return

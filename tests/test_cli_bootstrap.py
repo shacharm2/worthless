@@ -37,7 +37,7 @@ class TestEnsureHomeErrorBranches:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """PermissionError writing fernet.key -> WorthlessError with BOOTSTRAP_FAILED."""
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             _real_open = os.open
 
             def _fail_fernet_write(path, flags, *args, **kwargs):

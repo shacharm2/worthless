@@ -7,7 +7,7 @@ All tests should fail with ImportError until the module is implemented.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -17,7 +17,7 @@ from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.keystore import (
     _SERVICE,
     _USERNAME,
-    _keyring_available,
+    keyring_available,
     delete_fernet_key,
     read_fernet_key,
     store_fernet_key,
@@ -38,51 +38,52 @@ class TestConstants:
 
 
 # ------------------------------------------------------------------
-# _keyring_available
+# keyring_available
 # ------------------------------------------------------------------
 
 
 class TestKeyringAvailable:
     """Backend detection: reject fail/null/plaintext, accept real backends."""
 
+    @staticmethod
+    def _make_backend(module: str, qualname: str) -> object:
+        """Create a fake backend with the given fully-qualified class identity."""
+        cls = type(qualname, (), {"__module__": module, "__qualname__": qualname})
+        return cls()
+
     def test_fail_keyring_returns_false(self) -> None:
-        backend = MagicMock()
-        backend.__class__.__name__ = "fail.Keyring"
+        backend = self._make_backend("keyring.backends.fail", "Keyring")
         with patch("worthless.cli.keystore.keyring") as mock_kr:
             mock_kr.get_keyring.return_value = backend
-            assert _keyring_available() is False
+            assert keyring_available() is False
 
     def test_null_keyring_returns_false(self) -> None:
-        backend = MagicMock()
-        backend.__class__.__name__ = "null.Keyring"
+        backend = self._make_backend("keyring.backends.null", "Keyring")
         with patch("worthless.cli.keystore.keyring") as mock_kr:
             mock_kr.get_keyring.return_value = backend
-            assert _keyring_available() is False
+            assert keyring_available() is False
 
     def test_plaintext_keyring_returns_false(self) -> None:
-        backend = MagicMock()
-        backend.__class__.__name__ = "PlaintextKeyring"
+        backend = self._make_backend("keyrings.alt.file", "PlaintextKeyring")
         with patch("worthless.cli.keystore.keyring") as mock_kr:
             mock_kr.get_keyring.return_value = backend
-            assert _keyring_available() is False
+            assert keyring_available() is False
 
     def test_macos_keychain_returns_true(self) -> None:
-        backend = MagicMock()
-        backend.__class__.__name__ = "Keychain"
+        backend = self._make_backend("keyring.backends.macOS", "Keyring")
         with patch("worthless.cli.keystore.keyring") as mock_kr:
             mock_kr.get_keyring.return_value = backend
-            assert _keyring_available() is True
+            assert keyring_available() is True
 
     def test_secretservice_returns_true(self) -> None:
-        backend = MagicMock()
-        backend.__class__.__name__ = "SecretService"
+        backend = self._make_backend("keyring.backends.SecretService", "Keyring")
         with patch("worthless.cli.keystore.keyring") as mock_kr:
             mock_kr.get_keyring.return_value = backend
-            assert _keyring_available() is True
+            assert keyring_available() is True
 
     def test_keyring_import_error_returns_false(self) -> None:
         with patch("worthless.cli.keystore.keyring", None):
-            assert _keyring_available() is False
+            assert keyring_available() is False
 
 
 # ------------------------------------------------------------------
@@ -96,7 +97,7 @@ class TestStoreFernetKey:
     def test_stores_to_keyring_when_available(self, tmp_path: Path) -> None:
         key = b"test-fernet-key-value"
         with (
-            patch("worthless.cli.keystore._keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
             patch("worthless.cli.keystore.keyring") as mock_kr,
         ):
             store_fernet_key(key, home_dir=tmp_path)
@@ -105,7 +106,7 @@ class TestStoreFernetKey:
 
     def test_falls_back_to_file_when_keyring_unavailable(self, tmp_path: Path) -> None:
         key = b"test-fernet-key-value"
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             store_fernet_key(key, home_dir=tmp_path)
 
             fernet_path = tmp_path / "fernet.key"
@@ -114,7 +115,7 @@ class TestStoreFernetKey:
 
     def test_file_has_0600_permissions(self, tmp_path: Path) -> None:
         key = b"test-fernet-key-value"
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             store_fernet_key(key, home_dir=tmp_path)
 
             fernet_path = tmp_path / "fernet.key"
@@ -124,7 +125,7 @@ class TestStoreFernetKey:
     def test_falls_back_to_file_when_keyring_raises(self, tmp_path: Path) -> None:
         key = b"test-fernet-key-value"
         with (
-            patch("worthless.cli.keystore._keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
             patch("worthless.cli.keystore.keyring") as mock_kr,
         ):
             mock_kr.set_password.side_effect = Exception("Keyring locked")
@@ -155,7 +156,7 @@ class TestReadFernetKeyCascade:
         monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
 
         with (
-            patch("worthless.cli.keystore._keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
             patch("worthless.cli.keystore.keyring") as mock_kr,
         ):
             mock_kr.get_password.return_value = "keyring-key-value"
@@ -170,7 +171,7 @@ class TestReadFernetKeyCascade:
         fernet_path = tmp_path / "fernet.key"
         fernet_path.write_bytes(b"file-key-value\n")
 
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             result = read_fernet_key(home_dir=tmp_path)
 
         assert result == bytearray(b"file-key-value")
@@ -181,7 +182,7 @@ class TestReadFernetKeyCascade:
         monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
         monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
 
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             with pytest.raises(WorthlessError) as exc_info:
                 read_fernet_key(home_dir=tmp_path)
 
@@ -198,7 +199,7 @@ class TestReadFernetKeyCascade:
         fernet_path.write_bytes(b"file-value")
 
         with (
-            patch("worthless.cli.keystore._keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
             patch("worthless.cli.keystore.keyring") as mock_kr,
         ):
             mock_kr.get_password.return_value = "keyring-value"
@@ -218,7 +219,7 @@ class TestReadFernetKeyCascade:
         fernet_path.write_bytes(b"file-fallback-value\n")
 
         with (
-            patch("worthless.cli.keystore._keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
             patch("worthless.cli.keystore.keyring") as mock_kr,
         ):
             mock_kr.get_password.return_value = None
@@ -251,9 +252,9 @@ class TestReturnTypeBytearray:
 
         if source == "env":
             monkeypatch.setenv("WORTHLESS_FERNET_KEY", "some-key")
-            ctx = patch("worthless.cli.keystore._keyring_available", return_value=False)
+            ctx = patch("worthless.cli.keystore.keyring_available", return_value=False)
         elif source == "keyring":
-            ctx_avail = patch("worthless.cli.keystore._keyring_available", return_value=True)
+            ctx_avail = patch("worthless.cli.keystore.keyring_available", return_value=True)
             ctx_kr = patch("worthless.cli.keystore.keyring")
             # Stack two context managers
             import contextlib
@@ -268,7 +269,7 @@ class TestReturnTypeBytearray:
         else:  # file
             fernet_path = tmp_path / "fernet.key"
             fernet_path.write_bytes(b"some-key\n")
-            ctx = patch("worthless.cli.keystore._keyring_available", return_value=False)
+            ctx = patch("worthless.cli.keystore.keyring_available", return_value=False)
 
         with ctx:
             result = read_fernet_key(home_dir=tmp_path)
@@ -292,7 +293,7 @@ class TestSR04NoKeyLeakage:
         monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
         monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
 
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             with pytest.raises(WorthlessError) as exc_info:
                 read_fernet_key(home_dir=tmp_path)
 
@@ -313,7 +314,7 @@ class TestSR04NoKeyLeakage:
         monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
         monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
 
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             with pytest.raises(WorthlessError) as exc_info:
                 read_fernet_key(home_dir=tmp_path)
 
@@ -334,7 +335,7 @@ class TestDeleteFernetKey:
         fernet_path.write_bytes(b"some-key")
 
         with (
-            patch("worthless.cli.keystore._keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
             patch("worthless.cli.keystore.keyring") as mock_kr,
         ):
             delete_fernet_key(home_dir=tmp_path)
@@ -346,7 +347,7 @@ class TestDeleteFernetKey:
         fernet_path = tmp_path / "fernet.key"
         fernet_path.write_bytes(b"some-key")
 
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             delete_fernet_key(home_dir=tmp_path)
 
         assert not fernet_path.exists()
@@ -356,7 +357,7 @@ class TestDeleteFernetKey:
         fernet_path.write_bytes(b"some-key")
 
         with (
-            patch("worthless.cli.keystore._keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
             patch("worthless.cli.keystore.keyring") as mock_kr,
         ):
             mock_kr.delete_password.side_effect = Exception("Keyring locked")
@@ -365,13 +366,13 @@ class TestDeleteFernetKey:
         assert not fernet_path.exists()
 
     def test_no_error_when_neither_exists(self, tmp_path: Path) -> None:
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             # Should not raise
             delete_fernet_key(home_dir=tmp_path)
 
     def test_no_error_when_only_keyring_fails_and_no_file(self, tmp_path: Path) -> None:
         with (
-            patch("worthless.cli.keystore._keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
             patch("worthless.cli.keystore.keyring") as mock_kr,
         ):
             mock_kr.delete_password.side_effect = Exception("Not found")

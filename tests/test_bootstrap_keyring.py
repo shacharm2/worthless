@@ -53,7 +53,7 @@ class TestEnsureHomeUsesKeystore:
     def test_does_not_call_store_when_key_exists(self, tmp_path: Path):
         """When fernet key already exists, store_fernet_key is NOT called."""
         base = tmp_path / ".worthless"
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             ensure_home(base_dir=base)
 
         with (
@@ -69,7 +69,7 @@ class TestEnsureHomeUsesKeystore:
     def test_idempotent_no_error_on_second_call(self, tmp_path: Path):
         """Calling ensure_home twice does not raise."""
         base = tmp_path / ".worthless"
-        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
             ensure_home(base_dir=base)
             ensure_home(base_dir=base)
 
