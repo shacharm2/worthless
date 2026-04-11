@@ -8,15 +8,18 @@ FERNET_PATH="${WORTHLESS_FERNET_KEY_PATH:-$HOME_DIR/fernet.key}"
 # explicitly set (e.g., docker-compose with a secrets volume).  Without the
 # env var the key stays on the data volume — safe for single-volume PaaS.
 if [ -n "$WORTHLESS_FERNET_KEY_PATH" ] && [ ! -f "$FERNET_PATH" ] && [ -f "$HOME_DIR/fernet.key" ]; then
-  cp "$HOME_DIR/fernet.key" "$FERNET_PATH"
-  chmod 0400 "$FERNET_PATH"
+  install -m 0400 "$HOME_DIR/fernet.key" "$FERNET_PATH"
   rm "$HOME_DIR/fernet.key"
 fi
 
 # Bootstrap on first boot only (idempotent but skips Python startup on restarts)
 if [ ! -f "$FERNET_PATH" ]; then
+  # Set restrictive umask so fernet.key is created as 0400 from birth —
+  # no window where the key is world-readable before chmod.
+  old_umask=$(umask)
+  umask 0377
   python -c "from worthless.cli.bootstrap import get_home; get_home()"
-  chmod 0400 "$FERNET_PATH"
+  umask "$old_umask"
 fi
 
 # Pass Fernet key via file descriptor (not env var — env is visible in /proc)

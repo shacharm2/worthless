@@ -107,45 +107,60 @@ class TestRailwayConfig:
 class TestRenderConfig:
     """Validate deploy/render.yaml structure and required fields."""
 
-    def test_service_type_is_web(self, render_data: dict):
+    @pytest.fixture(scope="module")
+    def render_service(self, render_data: dict) -> dict:
+        """Extract the first (only) Render service definition."""
+        return render_data["services"][0]
+
+    @pytest.fixture(scope="module")
+    def render_env_vars(self, render_service: dict) -> dict[str, str]:
+        """Build env var lookup from Render service config."""
+        return {v["key"]: v["value"] for v in render_service["envVars"]}
+
+    def test_service_type_is_web(self, render_service: dict):
         """Render service must be type 'web' for HTTP traffic."""
-        svc = render_data["services"][0]
-        assert svc["type"] == "web"
+        assert render_service["type"] == "web"
 
-    def test_runtime_is_docker(self, render_data: dict):
+    def test_runtime_is_docker(self, render_service: dict):
         """Render must use Docker runtime, not native buildpack."""
-        svc = render_data["services"][0]
-        assert svc["runtime"] == "docker"
+        assert render_service["runtime"] == "docker"
 
-    def test_healthcheck_path(self, render_data: dict):
+    def test_healthcheck_path(self, render_service: dict):
         """Render must probe /healthz, matching Railway and Dockerfile."""
-        svc = render_data["services"][0]
-        assert svc["healthCheckPath"] == "/healthz"
+        assert render_service["healthCheckPath"] == "/healthz"
 
-    def test_disk_mount_at_data(self, render_data: dict):
+    def test_disk_mount_at_data(self, render_service: dict):
         """Render persistent disk must mount at /data to survive redeploys."""
-        svc = render_data["services"][0]
-        assert svc["disk"]["mountPath"] == "/data"
+        assert render_service["disk"]["mountPath"] == "/data"
 
-    def test_disk_size_reasonable(self, render_data: dict):
+    def test_disk_size_reasonable(self, render_service: dict):
         """Disk must be >= 1 GB (SQLite + shards need headroom)."""
-        svc = render_data["services"][0]
-        assert svc["disk"]["sizeGB"] >= 1
+        assert render_service["disk"]["sizeGB"] >= 1
 
-    def test_allow_insecure_set(self, render_data: dict):
+    def test_allow_insecure_set(self, render_env_vars: dict[str, str]):
         """Render terminates TLS at edge; container must allow plain HTTP.
 
         Without WORTHLESS_ALLOW_INSECURE=true, the proxy rejects non-TLS
         requests and becomes unreachable behind Render's load balancer.
         """
-        svc = render_data["services"][0]
-        env_vars = {v["key"]: v["value"] for v in svc["envVars"]}
-        assert env_vars.get("WORTHLESS_ALLOW_INSECURE") == "true"
+        assert render_env_vars.get("WORTHLESS_ALLOW_INSECURE") == "true"
 
-    def test_dockerfile_path(self, render_data: dict):
+    def test_dockerfile_path(self, render_service: dict):
         """Render must reference the correct Dockerfile."""
-        svc = render_data["services"][0]
-        assert svc["dockerfilePath"] == "./Dockerfile"
+        assert render_service["dockerfilePath"] == "./Dockerfile"
+
+    def test_port_env_var_set(self, render_env_vars: dict[str, str]):
+        """Render must set PORT to match Dockerfile default (8787).
+
+        Render defaults to PORT=10000. If PORT is not overridden, the
+        container listens on 8787 while Render probes 10000, causing
+        healthcheck failures and deploy rollback.
+        """
+        assert "PORT" in render_env_vars, (
+            "Render config must set PORT env var — Render defaults to 10000 "
+            "but Dockerfile defaults to 8787. Deploy will fail on healthcheck."
+        )
+        assert render_env_vars["PORT"] == "8787"
 
 
 # ------------------------------------------------------------------
@@ -250,10 +265,12 @@ class TestEntrypoint:
         """entrypoint.sh must parse without syntax errors.
 
         A broken entrypoint prevents the container from starting at all,
-        so this is a high-value check.
+        so this is a high-value check. Uses sh -n (not bash -n) because
+        the shebang is #!/bin/sh — Debian slim uses dash, which rejects
+        bashisms that bash -n would silently accept.
         """
         result = subprocess.run(
-            ["bash", "-n", str(ENTRYPOINT)],
+            ["sh", "-n", str(ENTRYPOINT)],
             capture_output=True,
             text=True,
         )
@@ -288,9 +305,32 @@ class TestEntrypoint:
         assert "exec 3<" in entrypoint_text
         assert "WORTHLESS_FERNET_FD=3" in entrypoint_text
 
-    def test_fernet_key_permissions_locked(self, entrypoint_text: str):
-        """Bootstrap must chmod the Fernet key to 0400 (owner-read-only)."""
-        assert "chmod 0400" in entrypoint_text
+    def test_fernet_migration_uses_install_not_cp(self, entrypoint_text: str):
+        """Migration must use 'install -m 0400' instead of cp+chmod.
+
+        cp creates the file with default perms, leaving a brief window
+        where the key is world-readable. install -m sets perms atomically.
+        """
+        assert "install -m 0400" in entrypoint_text, (
+            "Fernet migration should use 'install -m 0400' for atomic permissions. "
+            "cp + chmod leaves a race window where the key is world-readable."
+        )
+        # Ensure no bare 'cp' of the fernet key — only 'install -m' is safe
+        migration_block = entrypoint_text.split("install -m 0400")[0]
+        assert "cp " not in migration_block, (
+            "Fernet migration should not use bare 'cp' before 'install -m 0400'."
+        )
+
+    def test_bootstrap_sets_umask(self, entrypoint_text: str):
+        """Bootstrap must set restrictive umask before creating fernet.key.
+
+        Without umask 0377, the key is created with default perms (0644)
+        and there's a race window before chmod where any process can read it.
+        """
+        assert "umask 0377" in entrypoint_text, (
+            "Bootstrap should set 'umask 0377' before creating fernet.key "
+            "so the file is born with 0400 permissions — no race window."
+        )
 
     def test_no_hardcoded_secrets(self, entrypoint_text: str):
         """Entrypoint must not contain hardcoded secrets or keys."""
@@ -541,22 +581,6 @@ class TestEdgeCaseAwareness:
                 "SECURITY VIOLATION: Data and secrets share the same volume! "
                 "Compromise of one volume would expose both Fernet key and shard data."
             )
-
-    def test_entrypoint_syntax_error_caught(self):
-        """Entrypoint with syntax errors would prevent container startup entirely.
-
-        This is a catastrophic failure: no error page, no logs, no recovery.
-        The bash -n check catches this before deployment.
-        """
-        result = subprocess.run(
-            ["bash", "-n", str(ENTRYPOINT)],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, (
-            f"CRITICAL: entrypoint.sh has syntax errors and will fail at container "
-            f"startup:\n{result.stderr}"
-        )
 
     def test_railway_healthcheck_required(self, railway_data: dict):
         """Railway without healthcheckPath will never know if the app is alive.

@@ -159,6 +159,11 @@ def container(docker_image: str) -> tuple[str, int]:
             f"127.0.0.1:{port}:8787",
             "-e",
             "WORTHLESS_ALLOW_INSECURE=true",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:noexec,nosuid",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
             docker_image,
         ]
     )
@@ -593,8 +598,13 @@ class TestLockWrapE2E:
                 "sh",
                 "-c",
                 (
-                    # Extract port from OPENAI_BASE_URL
-                    'PORT=$(echo "$OPENAI_BASE_URL" | grep -oP ":\\K[0-9]+$"); '
+                    # Extract port from OPENAI_BASE_URL using Python (grep -oP
+                    # requires PCRE which is not in slim images)
+                    'PORT=$(python -c "'
+                    "import os; "
+                    "url = os.environ.get('OPENAI_BASE_URL', ''); "
+                    "print(url.rsplit(':', 1)[-1].strip('/'))"
+                    '"); '
                     # Retry healthz a few times (proxy may still be settling)
                     "for i in 1 2 3 4 5; do "
                     '  RESP=$(python -c "'
@@ -751,8 +761,16 @@ class TestDockerEdgeCases:
             "wrap should exit non-zero when child binary does not exist"
         )
 
-        # Check no orphan proxy process
-        ps_result = _docker_exec(name, ["sh", "-c", "ps aux | grep -c '[u]vicorn'"])
+        # Check no orphan proxy process. Use /proc instead of ps aux
+        # because slim images may not have procps installed.
+        ps_result = _docker_exec(
+            name,
+            [
+                "sh",
+                "-c",
+                "ls /proc/*/cmdline 2>/dev/null | xargs grep -l '[u]vicorn' 2>/dev/null | wc -l",
+            ],
+        )
         if ps_result.returncode == 0:
             proxy_count = int(ps_result.stdout.strip())
             assert proxy_count == 0, (
@@ -840,14 +858,14 @@ class TestDockerEdgeCases:
         # Clean up
         _docker_exec(name, ["rm", "-f", "/data/test-rw-check"])
 
-        # /app should be read-only (if container uses read-only root)
-        # Note: this test may pass even without --read-only if /app is
-        # owned by root and container runs as non-root user. Both are
-        # valid security postures.
-        app_write = _docker_exec(name, ["touch", "/app/test-ro-check"])
-        assert app_write.returncode != 0, (
-            "/app should not be writable -- container may not have read-only root "
-            "or may be running as root. Check Dockerfile USER directive."
+        # Root filesystem should be read-only. Write to /usr which is
+        # always root-owned and not a mount/tmpfs — if this succeeds,
+        # --read-only is not active. (The standalone container fixture
+        # now passes --read-only, so this is a real test.)
+        usr_write = _docker_exec(name, ["touch", "/usr/test-ro-check"])
+        assert usr_write.returncode != 0, (
+            "/usr should not be writable -- container root filesystem is not "
+            "read-only. Ensure container runs with --read-only flag."
         )
 
 
