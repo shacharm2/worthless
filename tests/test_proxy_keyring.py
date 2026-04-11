@@ -162,6 +162,7 @@ class TestFernetTransportKeyring:
                     assert isinstance(fernet_fd, int)
                     assert fernet_fds == [fernet_fd]
                     data = os.read(fernet_fd, 4096)
+                    os.close(fernet_fd)
                     assert data == b"pipe-me"
 
     def test_keyring_unavailable_env_key_popped(self) -> None:

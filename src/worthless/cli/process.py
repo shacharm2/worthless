@@ -157,7 +157,10 @@ def prepare_proxy_env(
         **env,
         "WORTHLESS_ALLOW_INSECURE": insecure,
     }
+    # Scrub inherited WORTHLESS_FERNET_KEY from parent env — the proxy
+    # receives the key via fd (secure) or keyring, never via env.
     if fernet_fd is not None:
+        full_env.pop("WORTHLESS_FERNET_KEY", None)
         full_env["WORTHLESS_FERNET_FD"] = str(fernet_fd)
     if liveness_fd is not None:
         full_env["WORTHLESS_LIVENESS_FD"] = str(liveness_fd)

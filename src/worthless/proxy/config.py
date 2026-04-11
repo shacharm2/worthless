@@ -45,7 +45,7 @@ def _read_fernet_key() -> str:
 
     # 2. Keystore cascade (env -> keyring -> file)
     try:
-        return bytes(read_fernet_key()).decode()
+        return read_fernet_key().decode()
     except Exception:
         return ""
 

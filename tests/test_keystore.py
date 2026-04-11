@@ -141,7 +141,7 @@ class TestStoreFernetKey:
 
 
 class TestReadFernetKeyCascade:
-    """Detection cascade: env var -> fd -> keyring -> file -> error."""
+    """Detection cascade: env var -> keyring -> file -> error."""
 
     def test_reads_from_env_var(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-key-value")

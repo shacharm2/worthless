@@ -53,7 +53,8 @@ class TestEnsureHomeUsesKeystore:
     def test_does_not_call_store_when_key_exists(self, tmp_path: Path):
         """When fernet key already exists, store_fernet_key is NOT called."""
         base = tmp_path / ".worthless"
-        ensure_home(base_dir=base)
+        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+            ensure_home(base_dir=base)
 
         with (
             patch("worthless.cli.bootstrap.store_fernet_key") as mock_store,
@@ -68,8 +69,9 @@ class TestEnsureHomeUsesKeystore:
     def test_idempotent_no_error_on_second_call(self, tmp_path: Path):
         """Calling ensure_home twice does not raise."""
         base = tmp_path / ".worthless"
-        ensure_home(base_dir=base)
-        ensure_home(base_dir=base)
+        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+            ensure_home(base_dir=base)
+            ensure_home(base_dir=base)
 
     def test_store_fernet_key_error_wrapped_in_worthless_error(self, tmp_path: Path):
         """If store_fernet_key raises, ensure_home wraps it in WorthlessError."""
@@ -129,8 +131,8 @@ class TestFernetKeyPropertyUsesKeystore:
             _ = home.fernet_key
             mock_read.assert_called_once_with(home.base_dir)
 
-    def test_returns_bytes_not_bytearray(self, tmp_path: Path):
-        """fernet_key property returns bytes for backward compat."""
+    def test_returns_bytearray(self, tmp_path: Path):
+        """fernet_key property returns bytearray per SR-01."""
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
         fake_key = bytearray(b"fake-fernet-key-44-chars-padded-to-44-bytes")
 
@@ -139,7 +141,7 @@ class TestFernetKeyPropertyUsesKeystore:
             return_value=fake_key,
         ):
             result = home.fernet_key
-            assert isinstance(result, bytes), f"Expected bytes, got {type(result).__name__}"
+            assert isinstance(result, bytearray), f"Expected bytearray, got {type(result).__name__}"
             assert result == bytes(fake_key)
 
     def test_propagates_key_not_found_error(self, tmp_path: Path):

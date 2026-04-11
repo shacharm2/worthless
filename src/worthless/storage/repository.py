@@ -82,10 +82,11 @@ class ShardRepository:
     .. todo:: Use a persistent connection or pool before production (STOR-01).
     """
 
-    def __init__(self, db_path: str, fernet_key: bytes) -> None:
+    def __init__(self, db_path: str, fernet_key: bytes | bytearray) -> None:
         self._db_path = db_path
-        self._fernet = Fernet(fernet_key)
-        self._fernet_key_bytes = fernet_key  # kept for HMAC-SHA256 decoy hashing
+        key_bytes = bytes(fernet_key)
+        self._fernet = Fernet(key_bytes)
+        self._fernet_key_bytes = key_bytes  # kept for HMAC-SHA256 decoy hashing
 
     @asynccontextmanager
     async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:

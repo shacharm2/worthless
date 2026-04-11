@@ -46,9 +46,9 @@ class WorthlessHome:
         return self.base_dir / ".lock-in-progress"
 
     @property
-    def fernet_key(self) -> bytes:
-        """Read the Fernet key via keystore cascade."""
-        return bytes(read_fernet_key(self.base_dir))
+    def fernet_key(self) -> bytearray:
+        """Read the Fernet key via keystore cascade (SR-01: mutable bytearray)."""
+        return read_fernet_key(self.base_dir)
 
 
 def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
@@ -82,7 +82,9 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
         # Generate Fernet key if missing (keyring or file fallback)
         try:
             read_fernet_key(home.base_dir)
-        except WorthlessError:
+        except WorthlessError as exc:
+            if exc.code != ErrorCode.KEY_NOT_FOUND:
+                raise
             key = Fernet.generate_key()
             store_fernet_key(key, home_dir=home.base_dir)
     except WorthlessError:
