@@ -13,6 +13,9 @@ services:
       # Render terminates TLS at its edge; the container receives plain HTTP.
       - key: WORTHLESS_ALLOW_INSECURE
         value: "true"
+      # Render defaults to PORT=10000; override to match Dockerfile's 8787.
+      - key: PORT
+        value: "8787"
     disk:
       name: worthless-data
       mountPath: /data

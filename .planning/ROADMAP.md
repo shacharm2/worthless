@@ -3,7 +3,8 @@
 ## Milestones
 
 - [x] **v1.0 MVP** -- Phases 1-5 (shipped 2026-04-03)
-- [ ] **v2.0 Harden** -- Phases 6-13 (in progress)
+- [ ] **v1.1 Release** -- Phases 5.1-5.6 (in progress)
+- [ ] **v2.0 Harden** -- Phases 6-13 (not started)
 
 ## Phases
 
@@ -23,6 +24,23 @@ Full details: [milestones/v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 
 </details>
 
+### v1.1 Release
+
+**Milestone Goal:** Open-source launch of light mode (XOR + Fernet). Rules engine, agent discovery, deployment verification, and PyPI release.
+
+**Version:** 0.2.0 (saving 1.0 for Rust-hardened v2.0)
+
+**Linear Project:** [Worthless v1.1 Release](https://linear.app/plumbusai/project/worthless-v11-release-d6d757f021d1)
+
+**Execution Order:** 5.1 -> 5.2 -> 5.3 -> 5.4 -> 5.5 -> 5.6
+
+- [x] **Phase 5.1: CLI + Daemon Fixes** - Version bump, tagline, spend cap display, request counter, CI fixes (WOR-162,164,168,169,171,176,177,178,179)
+- [x] **Phase 5.2: Docker + Windows + PaaS** - `worthless down` command, PID hardening, Docker image hardening (WOR-172,173)
+- [x] **Phase 5.3: Rules Engine** - TokenBudgetRule, TimeWindowRule, CLI rules config, schema migration (WOR-182,183,160,159,161,184)
+- [x] **Phase 5.4: SKILL.md + Deploy Verification** - Agent discovery file, MCP server validation, deploy smoke tests (WOR-163,170)
+- [ ] **Phase 5.5: README + Service Install** - Open-source README, systemd/launchd service install, desktop notifications (WOR-165,174,175)
+- [ ] **Phase 5.6: Version Bump + PyPI + Smoke Test** - 0.2.0 version, PyPI publish, end-to-end smoke test (WOR-166,167,180)
+
 ### v2.0 Harden
 
 **Milestone Goal:** Add secure mode (Shamir 2-of-3 + Rust sidecar) alongside the permanent light mode (XOR + Fernet). Light mode stays unchanged forever. Secure mode is purely additive.
@@ -41,6 +59,46 @@ Full details: [milestones/v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 - [ ] **Phase 13: Security Hardening and Documentation** - Security gates, pre-commit hooks, install target, security tier docs
 
 ## Phase Details
+
+### Phase 5.1: CLI + Daemon Fixes
+**Goal**: CLI UX polish and daemon reliability for open-source first impression
+**Depends on**: v1.0 MVP
+**Linear**: WOR-162, WOR-164, WOR-168, WOR-169, WOR-171, WOR-176, WOR-177, WOR-178, WOR-179
+**Status**: Done (PR #40, merged 2026-04-08)
+
+### Phase 5.2: Docker + Windows + PaaS
+**Goal**: `worthless down` command, PID file hardening, Docker image security (python:3.13-slim-bookworm, Trivy scan)
+**Depends on**: Phase 5.1
+**Linear**: WOR-172, WOR-173
+**Status**: Done (PR #41, merged 2026-04-09)
+
+### Phase 5.3: Rules Engine
+**Goal**: Four-rule engine (spend_cap, rate_limit, token_budget, time_window) with schema migration, structured errors, and CLI configuration
+**Depends on**: Phase 5.2
+**Linear**: WOR-182, WOR-183, WOR-160, WOR-159, WOR-161, WOR-184
+**Branch**: `gsd/v1.1-wave3`
+**Plan**: [docs/research/wave3-rules-plan.md](../../docs/research/wave3-rules-plan.md)
+**Status**: Done (2026-04-10)
+
+### Phase 5.4: SKILL.md + Deploy Verification
+**Goal**: Agent discovery file (SKILL.md) ships with the package, MCP server validated end-to-end, deploy configs smoke-tested
+**Depends on**: Phase 5.3
+**Linear**: WOR-163, WOR-170
+**Status**: Done (2026-04-11)
+
+### Phase 5.5: README + Service Install
+**Goal**: Open-source README with badges, install instructions, and architecture diagram. Optional systemd/launchd service install for always-on proxy
+**Depends on**: Phase 5.4
+**Linear**: WOR-165, WOR-174, WOR-175
+**Status**: Backlog
+**Plans**: TBD
+
+### Phase 5.6: Version Bump + PyPI + Smoke Test
+**Goal**: Tag 0.2.0, publish to PyPI, run end-to-end smoke test proving `pip install worthless && worthless lock` works from a clean env
+**Depends on**: Phase 5.5
+**Linear**: WOR-166, WOR-167, WOR-180
+**Status**: Backlog
+**Plans**: TBD
 
 ### Phase 6: Shamir Core
 **Goal**: Developers have a verified Shamir 2-of-3 secret sharing implementation that produces cross-compatible shares between Rust and Python
@@ -159,7 +217,7 @@ Plans:
 
 ### Phase 13: Security Hardening and Documentation
 **Goal**: Security posture is documented with platform-specific trust tiers, CI gates enforce Shamir + sidecar invariants, and the 90-second install target is maintained
-**Depends on**: Phase 11, Phase 12
+**Depends on**: Phase 11
 **Requirements**: HARD-06, HARD-07, HARD-08, HARD-09, HARD-10
 **Success Criteria** (what must be TRUE):
   1. Security tiers (Tier 1/2/3) are documented per platform with trust domain analysis
@@ -175,7 +233,18 @@ Plans:
 
 ## Progress
 
-**Execution Order:** (6 || 7) -> 8 -> 9 -> (10 || 11) -> 12 -> 13
+**v1.1 Execution Order:** 5.1 -> 5.2 -> 5.3 -> 5.4 -> 5.5 -> 5.6
+
+| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|----------------|--------|-----------|
+| 5.1 CLI + Daemon Fixes | v1.1 | - | Done | 2026-04-08 |
+| 5.2 Docker + Windows + PaaS | v1.1 | - | Done | 2026-04-09 |
+| 5.3 Rules Engine | v1.1 | 1/1 | Done | 2026-04-10 |
+| 5.4 SKILL.md + Deploy Verification | v1.1 | - | Done | 2026-04-11 |
+| 5.5 README + Service Install | v1.1 | 0/? | Backlog | - |
+| 5.6 Version Bump + PyPI + Smoke Test | v1.1 | 0/? | Backlog | - |
+
+**v2.0 Execution Order:** (6 || 7) -> 8 -> 9 -> (10 || 11) -> 12 -> 13
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|

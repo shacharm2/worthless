@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import time
 from pathlib import Path
 
 import typer
@@ -177,27 +178,27 @@ def register_up_commands(app: typer.Typer) -> None:
         # Write PID file
         write_pid(pid_file, proxy.pid, actual_port)
 
-        # Register signal handler BEFORE health poll to prevent orphans
-        def _cleanup(_signum, _frame):
-            proxy.terminate()
-            try:
-                proxy.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proxy.kill()
-                proxy.wait(timeout=2)
-            pid_file.unlink(missing_ok=True)
-            console.print_warning("Proxy stopped.")
-            raise SystemExit(0)
+        # Signal handler ONLY sets a flag — all cleanup in main thread.
+        # This avoids reentrant wait() calls and blocking I/O in handlers.
+        _shutdown = False
 
-        signal.signal(signal.SIGINT, _cleanup)
+        def _on_signal(_signum=None, _frame=None):
+            nonlocal _shutdown
+            _shutdown = True
+
+        signal.signal(signal.SIGINT, _on_signal)
         if not IS_WINDOWS:
-            signal.signal(signal.SIGTERM, _cleanup)
+            signal.signal(signal.SIGTERM, _on_signal)
 
         # Poll health
         healthy = poll_health(actual_port, timeout=15.0)
         if not healthy:
             proxy.terminate()
-            proxy.wait(timeout=5)
+            try:
+                proxy.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proxy.kill()
+                proxy.wait(timeout=2)  # reap after kill to prevent zombies
             pid_file.unlink(missing_ok=True)
             console.print_error(
                 WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
@@ -206,6 +207,20 @@ def register_up_commands(app: typer.Typer) -> None:
 
         console.print_success(f"Proxy running on 127.0.0.1:{actual_port} (Ctrl+C to stop)")
 
-        # Wait for proxy to exit (either by signal or crash)
-        proxy.wait()
+        # Wait for proxy exit or signal. time.sleep is interrupted by
+        # signals, so _shutdown gets checked within 0.5s of Ctrl+C.
+        while proxy.poll() is None and not _shutdown:
+            time.sleep(0.5)
+
+        # Cleanup — always in main thread, never in handler
+        proxy.terminate()
+        try:
+            proxy.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proxy.kill()
+            try:
+                proxy.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
         pid_file.unlink(missing_ok=True)
+        console.print_warning("Proxy stopped.")

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP  # type: ignore[import-not-found]  # optional dep
 
 from worthless.cli.bootstrap import (
     WorthlessHome,
