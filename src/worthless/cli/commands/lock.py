@@ -126,6 +126,8 @@ def _lock_keys(
             f"Refusing to follow symlink: {env_path}",
         )
 
+    console.print_hint(f"Scanning {env_path} for API keys...")
+
     async def _lock_async() -> int:
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         await repo.initialize()
@@ -144,9 +146,11 @@ def _lock_keys(
             console.print_warning("No unprotected API keys found.")
             return 0
 
+        total = len(keys)
         count = 0
 
-        for var_name, value, detected_provider in keys:
+        for i, (var_name, value, detected_provider) in enumerate(keys, 1):
+            console.print_hint(f"  [{i}/{total}] Protecting {var_name}...")
             provider = provider_override or detected_provider
 
             # Only enroll providers that wrap can redirect

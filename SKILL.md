@@ -396,6 +396,19 @@ worthless lock
 # Split again, back to decoy
 ```
 
+### Pre-commit hook (scan before every commit)
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: local
+    hooks:
+      - id: worthless-scan
+        name: Scan for exposed API keys
+        entry: worthless scan --format sarif
+        language: system
+        pass_filenames: false
+```
+
 ---
 
 ## Integration with AI Agents
