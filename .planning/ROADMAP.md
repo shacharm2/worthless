@@ -186,4 +186,4 @@ Plans:
 | 10. Distribution | v2.0 | 0/? | Not started | - |
 | 11. Python Layer Rewire | v2.0 | 0/? | Not started | - |
 | 12. Migration | v2.0 | 0/? | Not started | - |
-| 13. Security Hardening | v2.0 | 0/? | Not started | - |
+| 13. Security Hardening and Documentation | v2.0 | 0/? | Not started | - |
