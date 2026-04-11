@@ -6,6 +6,7 @@ All tests should fail with ImportError until the module is implemented.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -113,6 +114,7 @@ class TestStoreFernetKey:
             assert fernet_path.exists()
             assert fernet_path.read_bytes() == key
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions not applicable")
     def test_file_has_0600_permissions(self, tmp_path: Path) -> None:
         key = b"test-fernet-key-value"
         with patch("worthless.cli.keystore.keyring_available", return_value=False):
