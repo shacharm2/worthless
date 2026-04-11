@@ -6,7 +6,6 @@ All tests should fail with ImportError until the module is implemented.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -152,27 +151,8 @@ class TestReadFernetKeyCascade:
 
         assert result == bytearray(b"env-key-value")
 
-    def test_reads_from_fd(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
-
-        # Create a pipe, write key data, set env var to read fd
-        r_fd, w_fd = os.pipe()
-        os.write(w_fd, b"fd-key-value\n")
-        os.close(w_fd)
-        monkeypatch.setenv("WORTHLESS_FERNET_FD", str(r_fd))
-
-        result = read_fernet_key(home_dir=tmp_path)
-
-        assert result == bytearray(b"fd-key-value")
-        # fd should be consumed; close if still open
-        try:
-            os.close(r_fd)
-        except OSError:
-            pass  # already closed by read_fernet_key
-
     def test_reads_from_keyring(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
-        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
 
         with (
             patch("worthless.cli.keystore._keyring_available", return_value=True),

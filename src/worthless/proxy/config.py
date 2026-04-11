@@ -23,11 +23,27 @@ def _env_bool(name: str) -> bool:
 
 
 def _read_fernet_key() -> str:
-    """Read Fernet key via keystore cascade (fd -> env -> keyring -> file).
+    """Read Fernet key: fd (secure pipe) -> keystore (env/keyring/file).
+
+    Fd is checked first because it's the secure pipe transport from the
+    parent CLI — env vars leak via /proc on Linux. The keystore cascade
+    handles persistent storage backends (env override, keyring, file).
 
     Returns empty string if no key found — ProxySettings.validate()
     catches that as a startup error.
     """
+    # 1. Inherited fd — secure pipe from parent CLI, always preferred
+    fd_str = os.environ.get("WORTHLESS_FERNET_FD")
+    if fd_str:
+        try:
+            fd = int(fd_str)
+            key = os.read(fd, 4096).decode().strip()
+            os.close(fd)
+            return key
+        except (ValueError, OSError):
+            pass
+
+    # 2. Keystore cascade (env -> keyring -> file)
     try:
         return bytes(read_fernet_key()).decode()
     except Exception:

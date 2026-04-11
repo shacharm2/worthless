@@ -79,28 +79,20 @@ def _write_key_file(key: bytes, home_dir: Path | None) -> None:
 
 
 def read_fernet_key(home_dir: Path | None = None) -> bytearray:
-    """Read Fernet key using detection cascade.
+    """Read Fernet key from storage backends.
 
-    Order: env var -> fd -> keyring -> file -> error.
+    Order: env var -> keyring -> file -> error.
     Returns bytearray per SR-01 (mutable, can be zeroed).
+
+    Note: pipe fd transport (WORTHLESS_FERNET_FD) is handled by
+    proxy/config.py, not here. Fd is a transport mechanism, not storage.
     """
     # 1. Environment variable
     env_val = os.environ.get("WORTHLESS_FERNET_KEY")
     if env_val:
         return bytearray(env_val.encode())
 
-    # 2. File descriptor
-    fd_str = os.environ.get("WORTHLESS_FERNET_FD")
-    if fd_str:
-        try:
-            fd = int(fd_str)
-            data = os.read(fd, 4096)
-            os.close(fd)
-            return bytearray(data.strip())
-        except (ValueError, OSError):
-            pass
-
-    # 3. Keyring
+    # 2. Keyring
     if _keyring_available():
         try:
             value = keyring.get_password(_SERVICE, _USERNAME)
@@ -109,12 +101,12 @@ def read_fernet_key(home_dir: Path | None = None) -> bytearray:
         except Exception:
             logger.debug("Keyring read failed, falling back to file")
 
-    # 4. File
+    # 3. File
     fernet_path = _fernet_file_path(home_dir)
     if fernet_path.exists():
         return bytearray(fernet_path.read_bytes().strip())
 
-    # 5. Error
+    # 4. Error
     raise WorthlessError(
         ErrorCode.KEY_NOT_FOUND,
         "No Fernet key found. Run 'worthless enroll' or set WORTHLESS_FERNET_KEY.",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -36,18 +37,19 @@ class TestEnsureHomeErrorBranches:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """PermissionError writing fernet.key -> WorthlessError with BOOTSTRAP_FAILED."""
-        _real_open = os.open
+        with patch("worthless.cli.keystore._keyring_available", return_value=False):
+            _real_open = os.open
 
-        def _fail_fernet_write(path, flags, *args, **kwargs):
-            if "fernet.key" in str(path) and (flags & os.O_CREAT):
-                raise PermissionError(13, "Permission denied", path)
-            return _real_open(path, flags, *args, **kwargs)
+            def _fail_fernet_write(path, flags, *args, **kwargs):
+                if "fernet.key" in str(path) and (flags & os.O_CREAT):
+                    raise PermissionError(13, "Permission denied", path)
+                return _real_open(path, flags, *args, **kwargs)
 
-        monkeypatch.setattr(os, "open", _fail_fernet_write)
+            monkeypatch.setattr(os, "open", _fail_fernet_write)
 
-        with pytest.raises(WorthlessError) as exc_info:
-            ensure_home(tmp_path / ".worthless")
-        assert exc_info.value.code == ErrorCode.BOOTSTRAP_FAILED
+            with pytest.raises(WorthlessError) as exc_info:
+                ensure_home(tmp_path / ".worthless")
+            assert exc_info.value.code == ErrorCode.BOOTSTRAP_FAILED
 
     def test_ensure_home_db_init_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
