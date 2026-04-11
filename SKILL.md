@@ -227,10 +227,9 @@ Starts a Model Context Protocol (MCP) server over stdin/stdout. Available when i
 
 Exposes the following tools:
 - `worthless_status()`: Show enrolled keys and proxy health (JSON)
-- `worthless_wrap(command, args)`: Run a command through the proxy (streaming)
-- `worthless_lock()`: Lock all keys in `.env` (returns summary)
-- `worthless_unlock()`: Unlock all keys (returns summary)
+- `worthless_lock(env_path)`: Lock all keys in a `.env` file (returns summary)
 - `worthless_scan(paths, deep)`: Scan for exposed keys (returns SARIF or JSON)
+- `worthless_spend(alias)`: Token spend history per key alias (JSON)
 
 **Options:**
 - (None)
@@ -314,17 +313,14 @@ Show enrolled keys and proxy health. Returns JSON:
 }
 ```
 
-### `worthless_wrap(command: str, args: list[str]) -> str`
-Run a command through the proxy. Returns the command's stdout/stderr output.
-
-### `worthless_lock() -> str`
-Lock all keys in `.env`. Returns summary of keys locked.
-
-### `worthless_unlock() -> str`
-Unlock all keys. Returns summary of keys unlocked.
+### `worthless_lock(env_path: str = ".env") -> str`
+Lock all keys in a `.env` file. Returns summary of keys locked.
 
 ### `worthless_scan(paths: list[str], deep: bool) -> str`
 Scan files for exposed keys. Returns SARIF or human-readable findings.
+
+### `worthless_spend(alias: str | None = None) -> str`
+Token spend history. Pass alias for one key, omit for all. Returns JSON.
 
 ---
 

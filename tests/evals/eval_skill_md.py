@@ -133,6 +133,12 @@ def run_eval(case: EvalCase, model: str = "sonnet", verbose: bool = False) -> bo
 
     passed = True
 
+    # Check expected commands are referenced
+    for cmd in case.expect_commands:
+        if cmd.lower() not in response:
+            print(f"  FAIL {case.name}: expected command '{cmd}' not referenced")
+            passed = False
+
     # Check expected patterns
     for pattern in case.expect_patterns:
         if pattern.lower() not in response:

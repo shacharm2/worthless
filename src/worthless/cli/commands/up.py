@@ -198,6 +198,7 @@ def register_up_commands(app: typer.Typer) -> None:
                 proxy.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proxy.kill()
+                proxy.wait(timeout=2)  # reap after kill to prevent zombies
             pid_file.unlink(missing_ok=True)
             console.print_error(
                 WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")

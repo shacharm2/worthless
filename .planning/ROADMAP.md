@@ -37,7 +37,7 @@ Full details: [milestones/v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 - [x] **Phase 5.1: CLI + Daemon Fixes** - Version bump, tagline, spend cap display, request counter, CI fixes (WOR-162,164,168,169,171,176,177,178,179)
 - [x] **Phase 5.2: Docker + Windows + PaaS** - `worthless down` command, PID hardening, Docker image hardening (WOR-172,173)
 - [x] **Phase 5.3: Rules Engine** - TokenBudgetRule, TimeWindowRule, CLI rules config, schema migration (WOR-182,183,160,159,161,184)
-- [ ] **Phase 5.4: SKILL.md + Deploy Verification** - Agent discovery file, MCP server validation, deploy smoke tests (WOR-163,170)
+- [x] **Phase 5.4: SKILL.md + Deploy Verification** - Agent discovery file, MCP server validation, deploy smoke tests (WOR-163,170)
 - [ ] **Phase 5.5: README + Service Install** - Open-source README, systemd/launchd service install, desktop notifications (WOR-165,174,175)
 - [ ] **Phase 5.6: Version Bump + PyPI + Smoke Test** - 0.2.0 version, PyPI publish, end-to-end smoke test (WOR-166,167,180)
 
@@ -84,8 +84,7 @@ Full details: [milestones/v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 **Goal**: Agent discovery file (SKILL.md) ships with the package, MCP server validated end-to-end, deploy configs smoke-tested
 **Depends on**: Phase 5.3
 **Linear**: WOR-163, WOR-170
-**Status**: Backlog
-**Plans**: TBD
+**Status**: Done (2026-04-11)
 
 ### Phase 5.5: README + Service Install
 **Goal**: Open-source README with badges, install instructions, and architecture diagram. Optional systemd/launchd service install for always-on proxy
@@ -241,7 +240,7 @@ Plans:
 | 5.1 CLI + Daemon Fixes | v1.1 | - | Done | 2026-04-08 |
 | 5.2 Docker + Windows + PaaS | v1.1 | - | Done | 2026-04-09 |
 | 5.3 Rules Engine | v1.1 | 1/1 | Done | 2026-04-10 |
-| 5.4 SKILL.md + Deploy Verification | v1.1 | 0/? | Backlog | - |
+| 5.4 SKILL.md + Deploy Verification | v1.1 | - | Done | 2026-04-11 |
 | 5.5 README + Service Install | v1.1 | 0/? | Backlog | - |
 | 5.6 Version Bump + PyPI + Smoke Test | v1.1 | 0/? | Backlog | - |
 
