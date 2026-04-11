@@ -13,6 +13,7 @@ from collections.abc import Generator
 from cryptography.fernet import Fernet
 
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
+from worthless.cli.keystore import read_fernet_key, store_fernet_key
 from worthless.cli.platform import IS_WINDOWS
 
 _DEFAULT_BASE = Path.home() / ".worthless"
@@ -46,8 +47,8 @@ class WorthlessHome:
 
     @property
     def fernet_key(self) -> bytes:
-        """Read the Fernet key from disk."""
-        return self.fernet_key_path.read_bytes().strip()
+        """Read the Fernet key via keystore cascade."""
+        return bytes(read_fernet_key(self.base_dir))
 
 
 def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
@@ -78,19 +79,12 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 "Create it or mount a volume at that path.",
             )
 
-        # Generate Fernet key if missing
-        if not fernet_path.exists():
+        # Generate Fernet key if missing (keyring or file fallback)
+        try:
+            read_fernet_key(home.base_dir)
+        except WorthlessError:
             key = Fernet.generate_key()
-            fd = os.open(
-                str(fernet_path),
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o600,
-            )
-            try:
-                os.write(fd, key)
-                os.write(fd, b"\n")
-            finally:
-                os.close(fd)
+            store_fernet_key(key, home_dir=home.base_dir)
     except WorthlessError:
         raise
     except OSError as exc:

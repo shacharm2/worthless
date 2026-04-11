@@ -62,11 +62,19 @@ def store_fernet_key(key: bytes, home_dir: Path | None = None) -> None:
     _write_key_file(key, home_dir)
 
 
-def _write_key_file(key: bytes, home_dir: Path | None) -> None:
-    """Write key to file with 0o600 permissions."""
+def _fernet_file_path(home_dir: Path | None) -> Path:
+    """Resolve fernet key file path, respecting WORTHLESS_FERNET_KEY_PATH."""
+    env_path = os.environ.get("WORTHLESS_FERNET_KEY_PATH")
+    if env_path:
+        return Path(env_path)
     if home_dir is None:
         home_dir = Path.home() / ".worthless"
-    fernet_path = home_dir / "fernet.key"
+    return home_dir / "fernet.key"
+
+
+def _write_key_file(key: bytes, home_dir: Path | None) -> None:
+    """Write key to file with 0o600 permissions."""
+    fernet_path = _fernet_file_path(home_dir)
     fd = os.open(str(fernet_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.write(fd, key)
@@ -107,9 +115,7 @@ def read_fernet_key(home_dir: Path | None = None) -> bytearray:
             logger.debug("Keyring read failed, falling back to file")
 
     # 4. File
-    if home_dir is None:
-        home_dir = Path.home() / ".worthless"
-    fernet_path = home_dir / "fernet.key"
+    fernet_path = _fernet_file_path(home_dir)
     if fernet_path.exists():
         return bytearray(fernet_path.read_bytes().strip())
 
@@ -128,7 +134,5 @@ def delete_fernet_key(home_dir: Path | None = None) -> None:
         except Exception:
             logger.debug("Keyring delete failed (may not exist)")
 
-    if home_dir is None:
-        home_dir = Path.home() / ".worthless"
-    fernet_path = home_dir / "fernet.key"
+    fernet_path = _fernet_file_path(home_dir)
     fernet_path.unlink(missing_ok=True)
