@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.proxy.config import ProxySettings, _read_fernet_key
 
 
@@ -37,7 +38,11 @@ class TestDefaults:
         assert s.db_path == str(Path.home() / ".worthless" / "worthless.db")
 
     def test_default_fernet_key_empty(self) -> None:
-        s = ProxySettings()
+        with patch(
+            "worthless.proxy.config.read_fernet_key",
+            side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
+        ):
+            s = ProxySettings()
         assert s.fernet_key == ""
 
     def test_default_rate_limit_rps(self) -> None:
@@ -140,7 +145,11 @@ class TestFernetKeyEnv:
 
     def test_fernet_env_empty_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "")
-        s = ProxySettings()
+        with patch(
+            "worthless.proxy.config.read_fernet_key",
+            side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
+        ):
+            s = ProxySettings()
         assert s.fernet_key == ""
 
 
@@ -215,8 +224,12 @@ class TestValidation:
     """ProxySettings.validate() should raise on missing fernet key."""
 
     def test_missing_fernet_raises(self) -> None:
-        s = ProxySettings()
-        with pytest.raises(ValueError, match="WORTHLESS_FERNET_KEY"):
+        with patch(
+            "worthless.proxy.config.read_fernet_key",
+            side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
+        ):
+            s = ProxySettings()
+        with pytest.raises(ValueError, match="Fernet key not available"):
             s.validate()
 
     def test_valid_fernet_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:

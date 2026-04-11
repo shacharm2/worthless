@@ -12,6 +12,7 @@ dependencies = [
     "typer[all]>=0.15",
     "python-dotenv>=1.0",
     "psutil>=5.9",
+    "keyring>=25.0",
 ]
 
 [project.scripts]

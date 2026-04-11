@@ -3,17 +3,34 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import stat
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from cryptography.fernet import Fernet
+
+from worthless.cli.bootstrap import (
+    WorthlessHome,
+    _init_db,
+    acquire_lock,
+    check_stale_lock,
+    ensure_home,
+)
+from worthless.cli.errors import WorthlessError
+
+
+@pytest.fixture(autouse=True)
+def _force_file_fallback():
+    """Force file fallback in all bootstrap tests for hermetic behavior."""
+    with patch("worthless.cli.keystore.keyring_available", return_value=False):
+        yield
 
 
 class TestEnsureHome:
     def test_creates_directory_structure(self, tmp_path: Path):
-        from worthless.cli.bootstrap import ensure_home
-
         home = ensure_home(base_dir=tmp_path / ".worthless")
         assert home.base_dir.exists()
         assert home.shard_a_dir.exists()
@@ -21,22 +38,16 @@ class TestEnsureHome:
         assert home.fernet_key_path.exists()
 
     def test_directory_permissions(self, tmp_path: Path):
-        from worthless.cli.bootstrap import ensure_home
-
         home = ensure_home(base_dir=tmp_path / ".worthless")
         mode = home.base_dir.stat().st_mode
         assert stat.S_IMODE(mode) == 0o700
 
     def test_fernet_key_permissions(self, tmp_path: Path):
-        from worthless.cli.bootstrap import ensure_home
-
         home = ensure_home(base_dir=tmp_path / ".worthless")
         mode = home.fernet_key_path.stat().st_mode
         assert stat.S_IMODE(mode) == 0o600
 
     def test_idempotent(self, tmp_path: Path):
-        from worthless.cli.bootstrap import ensure_home
-
         base = tmp_path / ".worthless"
         home1 = ensure_home(base_dir=base)
         key1 = home1.fernet_key
@@ -46,10 +57,6 @@ class TestEnsureHome:
         assert key1 == key2
 
     def test_fernet_key_is_valid(self, tmp_path: Path):
-        from cryptography.fernet import Fernet
-
-        from worthless.cli.bootstrap import ensure_home
-
         home = ensure_home(base_dir=tmp_path / ".worthless")
         # Should not raise
         f = Fernet(home.fernet_key)
@@ -57,8 +64,6 @@ class TestEnsureHome:
         assert f.decrypt(ct) == b"test"
 
     def test_worthless_home_properties(self, tmp_path: Path):
-        from worthless.cli.bootstrap import WorthlessHome
-
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
         assert home.db_path == tmp_path / ".worthless" / "worthless.db"
         assert home.fernet_key_path == tmp_path / ".worthless" / "fernet.key"
@@ -66,8 +71,6 @@ class TestEnsureHome:
         assert home.lock_file == tmp_path / ".worthless" / ".lock-in-progress"
 
     def test_fernet_key_path_env_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        from worthless.cli.bootstrap import WorthlessHome
-
         custom_path = tmp_path / "secrets" / "fernet.key"
         monkeypatch.setenv("WORTHLESS_FERNET_KEY_PATH", str(custom_path))
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
@@ -76,8 +79,6 @@ class TestEnsureHome:
     def test_fernet_key_written_to_custom_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        from worthless.cli.bootstrap import ensure_home
-
         secrets_dir = tmp_path / "secrets"
         secrets_dir.mkdir(mode=0o700)
         custom_path = secrets_dir / "fernet.key"
@@ -92,9 +93,6 @@ class TestEnsureHome:
     def test_custom_fernet_path_missing_dir_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        from worthless.cli.bootstrap import ensure_home
-        from worthless.cli.errors import WorthlessError
-
         monkeypatch.setenv(
             "WORTHLESS_FERNET_KEY_PATH", str(tmp_path / "nonexistent" / "fernet.key")
         )
@@ -109,10 +107,6 @@ class TestInitDbMigration:
 
     def test_upgrade_adds_decoy_hash_column(self, tmp_path: Path):
         """_init_db on an old DB (enrollments without decoy_hash) must add the column."""
-        import sqlite3
-
-        from worthless.cli.bootstrap import WorthlessHome, _init_db
-
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
         home.base_dir.mkdir(mode=0o700, parents=True)
 
@@ -147,7 +141,6 @@ class TestInitDbMigration:
         conn.commit()
         conn.close()
 
-        # Run _init_db — must NOT crash, must add decoy_hash
         _init_db(home)
 
         conn = sqlite3.connect(str(home.db_path))
@@ -157,10 +150,6 @@ class TestInitDbMigration:
 
     def test_fresh_db_has_decoy_hash(self, tmp_path: Path):
         """_init_db on a fresh DB creates enrollments with decoy_hash."""
-        import sqlite3
-
-        from worthless.cli.bootstrap import WorthlessHome, _init_db
-
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
         home.base_dir.mkdir(mode=0o700, parents=True)
 
@@ -173,9 +162,6 @@ class TestInitDbMigration:
 
     def test_upgrade_schema_matches_fresh(self, tmp_path: Path):
         """Upgraded DB schema must converge to the same state as a fresh install."""
-        import sqlite3
-
-        from worthless.cli.bootstrap import WorthlessHome, _init_db
 
         def _get_schema(db_path):
             conn = sqlite3.connect(db_path)
@@ -251,17 +237,12 @@ class TestInitDbMigration:
 
 class TestLocking:
     def test_acquire_lock(self, tmp_path: Path):
-        from worthless.cli.bootstrap import acquire_lock, ensure_home
-
         home = ensure_home(base_dir=tmp_path / ".worthless")
         with acquire_lock(home):
             assert home.lock_file.exists()
         assert not home.lock_file.exists()
 
     def test_lock_prevents_double_acquire(self, tmp_path: Path):
-        from worthless.cli.bootstrap import acquire_lock, ensure_home
-        from worthless.cli.errors import WorthlessError
-
         home = ensure_home(base_dir=tmp_path / ".worthless")
         with acquire_lock(home):
             with pytest.raises(WorthlessError) as exc_info:
@@ -270,8 +251,6 @@ class TestLocking:
             assert exc_info.value.code.value == 105  # LOCK_IN_PROGRESS
 
     def test_stale_lock_cleanup(self, tmp_path: Path):
-        from worthless.cli.bootstrap import check_stale_lock, ensure_home
-
         home = ensure_home(base_dir=tmp_path / ".worthless")
         # Create a lock file and backdate it > 5 minutes
         home.lock_file.touch()
@@ -282,9 +261,6 @@ class TestLocking:
         assert not home.lock_file.exists()
 
     def test_fresh_lock_raises(self, tmp_path: Path):
-        from worthless.cli.bootstrap import check_stale_lock, ensure_home
-        from worthless.cli.errors import WorthlessError
-
         home = ensure_home(base_dir=tmp_path / ".worthless")
         home.lock_file.touch()
         with pytest.raises(WorthlessError):

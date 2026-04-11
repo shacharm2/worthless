@@ -24,6 +24,7 @@ from pathlib import Path
 
 import httpx
 
+from worthless.cli.keystore import keyring_available
 from worthless.cli.platform import IS_WINDOWS, check_pid_alive, popen_platform_kwargs
 
 logger = logging.getLogger(__name__)
@@ -38,13 +39,19 @@ _UVICORN_PORT_RE = re.compile(r"Uvicorn running on http://[\d.]+:(\d+)")
 
 
 def build_proxy_env(home: WorthlessHome) -> dict[str, str]:
-    """Build the environment dict for spawning a proxy process."""
-    return {
+    """Build the environment dict for spawning a proxy process.
+
+    When OS keyring is available, omits WORTHLESS_FERNET_KEY — the proxy
+    reads from keyring directly via ``read_fernet_key()``.
+    """
+    env: dict[str, str] = {
         "WORTHLESS_DB_PATH": str(home.db_path),
-        "WORTHLESS_FERNET_KEY": home.fernet_key.decode(),
         "WORTHLESS_SHARD_A_DIR": str(home.shard_a_dir),
         "WORTHLESS_ALLOW_ALIAS_INFERENCE": "true",
     }
+    if not keyring_available():
+        env["WORTHLESS_FERNET_KEY"] = home.fernet_key.decode()
+    return env
 
 
 def disable_core_dumps() -> None:
@@ -93,6 +100,12 @@ def fernet_transport(
     Yields:
         (fernet_key, fernet_fd, extra_pass_fds).
     """
+    # When keyring is available, the proxy reads the key directly — no pipe needed.
+    if keyring_available():
+        env.pop("WORTHLESS_FERNET_KEY", None)
+        yield None, None, []
+        return
+
     raw_key = env.pop("WORTHLESS_FERNET_KEY", None)
     fernet_fd: int | None = None
     fernet_fds: list[int] = []
@@ -144,6 +157,10 @@ def prepare_proxy_env(
         **env,
         "WORTHLESS_ALLOW_INSECURE": insecure,
     }
+    # Always scrub WORTHLESS_FERNET_KEY from child env — the proxy
+    # receives the key via fd (secure) or keyring, never via env.
+    # Without this, os.environ bleed-through leaks the key in /proc.
+    full_env.pop("WORTHLESS_FERNET_KEY", None)
     if fernet_fd is not None:
         full_env["WORTHLESS_FERNET_FD"] = str(fernet_fd)
     if liveness_fd is not None:
