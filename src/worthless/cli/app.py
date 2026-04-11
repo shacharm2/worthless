@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version as pkg_version
+
 import typer
 
 from worthless.cli.console import WorthlessConsole, set_console
 from worthless.cli.errors import set_debug
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"worthless {pkg_version('worthless')}")
+        raise typer.Exit()
+
 
 app = typer.Typer(
     name="worthless",
@@ -20,8 +29,16 @@ def _main(
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress non-error output"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     debug: bool = typer.Option(False, "--debug", help="Show full tracebacks on error"),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        help="Show version and exit",
+        callback=_version_callback,
+        is_eager=True,
+    ),
 ) -> None:
-    """Worthless — make stolen API keys architecturally worthless."""
+    """Worthless — make leaked API keys worthless."""
     set_debug(debug)
     set_console(WorthlessConsole(quiet=quiet, json_mode=json_output))
 
@@ -51,9 +68,16 @@ from worthless.cli.commands.up import register_up_commands  # noqa: E402
 
 register_up_commands(app)
 
-from worthless.cli.commands.mcp import register_mcp_commands  # noqa: E402
+from worthless.cli.commands.down import register_down_commands  # noqa: E402
 
-register_mcp_commands(app)
+register_down_commands(app)
+
+try:
+    from worthless.cli.commands.mcp import register_mcp_commands  # noqa: E402
+
+    register_mcp_commands(app)
+except ImportError:
+    pass  # mcp extra not installed — worthless[mcp]
 
 from worthless.cli.commands.revoke import register_revoke_commands  # noqa: E402
 

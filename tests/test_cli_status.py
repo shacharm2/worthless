@@ -166,3 +166,82 @@ class TestStatusProxy:
         assert data["proxy"]["healthy"] is True
         assert data["proxy"]["port"] == 18787
         assert data["proxy"]["mode"] == "up"
+
+
+# ---------------------------------------------------------------------------
+# Tests: requests_proxied in status
+# ---------------------------------------------------------------------------
+
+
+class TestStatusRequestsProxied:
+    """Tests for requests_proxied display in status output."""
+
+    def test_status_shows_requests_proxied(self, home_with_key: WorthlessHome) -> None:
+        """Status with healthy proxy shows 'Requests proxied: N'."""
+        pid_file = home_with_key.base_dir / "proxy.pid"
+        pid_file.write_text("99999\n18787\n")
+
+        class MockResponse:
+            status_code = 200
+
+            def json(self):
+                return {"status": "ok", "mode": "up", "requests_proxied": 42}
+
+        with patch("worthless.cli.commands.status.httpx") as mock_httpx:
+            mock_httpx.get.return_value = MockResponse()
+            result = runner.invoke(
+                app,
+                ["status"],
+                env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+            )
+
+        assert result.exit_code == 0
+        output = result.stderr + result.stdout
+        assert "42" in output
+        assert "proxied" in output.lower()
+
+    def test_status_json_includes_requests_proxied(self, home_with_key: WorthlessHome) -> None:
+        """Status --json includes requests_proxied from proxy health."""
+        pid_file = home_with_key.base_dir / "proxy.pid"
+        pid_file.write_text("99999\n18787\n")
+
+        class MockResponse:
+            status_code = 200
+
+            def json(self):
+                return {"status": "ok", "mode": "up", "requests_proxied": 7}
+
+        with patch("worthless.cli.commands.status.httpx") as mock_httpx:
+            mock_httpx.get.return_value = MockResponse()
+            result = runner.invoke(
+                app,
+                ["--json", "status"],
+                env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+            )
+
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["proxy"]["requests_proxied"] == 7
+
+    def test_status_zero_requests_proxied(self, home_with_key: WorthlessHome) -> None:
+        """Status shows 0 requests when proxy has no spend_log entries."""
+        pid_file = home_with_key.base_dir / "proxy.pid"
+        pid_file.write_text("99999\n18787\n")
+
+        class MockResponse:
+            status_code = 200
+
+            def json(self):
+                return {"status": "ok", "mode": "up", "requests_proxied": 0}
+
+        with patch("worthless.cli.commands.status.httpx") as mock_httpx:
+            mock_httpx.get.return_value = MockResponse()
+            result = runner.invoke(
+                app,
+                ["status"],
+                env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+            )
+
+        assert result.exit_code == 0
+        output = result.stderr + result.stdout
+        assert "0" in output

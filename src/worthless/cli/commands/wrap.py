@@ -17,6 +17,7 @@ import typer
 
 from worthless.cli.bootstrap import WorthlessHome, get_home
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
+from worthless.cli.platform import popen_platform_kwargs, warn_windows_once
 from worthless.cli.process import (
     build_proxy_env,
     create_liveness_pipe,
@@ -117,6 +118,8 @@ def register_wrap_commands(app: typer.Typer) -> None:
         command: list[str] = typer.Argument(..., help="Command to run (e.g. python main.py)"),
     ) -> None:
         """Start ephemeral proxy, inject env vars, run COMMAND, clean up."""
+        warn_windows_once()
+
         # Load home, verify keys enrolled
         home = get_home()
         providers = _list_enrolled_providers(home)
@@ -168,7 +171,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
             child = subprocess.Popen(
                 full_command,
                 env=child_env,
-                process_group=0,
+                **popen_platform_kwargs(detach=True),
             )
         except Exception as exc:
             _cleanup_proxy(proxy, write_fd)
@@ -196,6 +199,18 @@ def register_wrap_commands(app: typer.Typer) -> None:
 
         # Wait for child
         exit_code = _run_child_and_wait(child)
+
+        # Print post-run summary before cleanup
+        try:
+            from worthless.cli.commands.status import _check_proxy_health
+
+            info = _check_proxy_health(port)
+            count = info.get("requests_proxied", 0)
+            if count:
+                sys.stderr.write(f"worthless: proxied {count} requests\n")
+                sys.stderr.flush()
+        except Exception:  # noqa: S110 — best-effort summary
+            pass
 
         # Clean up proxy
         _cleanup_proxy(proxy, write_fd)

@@ -12,7 +12,17 @@ from typing import NamedTuple
 import aiosqlite
 from cryptography.fernet import Fernet
 
+from worthless.defaults import DEFAULT_SPEND_CAP_TOKENS
 from worthless.storage.schema import init_db, migrate_db
+
+from enum import Enum
+
+
+class _Sentinel(Enum):
+    USE_DEFAULT = "USE_DEFAULT"
+
+
+_USE_DEFAULT = _Sentinel.USE_DEFAULT
 
 
 class EncryptedShard(NamedTuple):
@@ -211,12 +221,28 @@ class ShardRepository:
         *,
         var_name: str,
         env_path: str | None = None,
+        spend_cap: int | None | _Sentinel = _USE_DEFAULT,
+        token_budget_daily: int | None = None,
     ) -> None:
-        """Atomically store a shard and its enrollment record.
+        """Atomically store a shard, enrollment record, and enrollment config.
 
         If the shard already exists (same alias), only the enrollment row
-        is inserted.
+        is inserted.  The enrollment_config row uses INSERT OR IGNORE so
+        re-enrollment never overwrites a user-modified spend cap.
+
+        *spend_cap* semantics:
+
+        - omitted / ``_USE_DEFAULT`` -> ``DEFAULT_SPEND_CAP_TOKENS``
+        - explicit ``None`` -> NULL (unlimited)
+        - integer -> that value
         """
+        # Resolve sentinel to the concrete default
+        effective_cap: int | None
+        if spend_cap is _USE_DEFAULT:
+            effective_cap = DEFAULT_SPEND_CAP_TOKENS
+        else:
+            effective_cap = spend_cap  # type: ignore[assignment]  # int | None at this point
+
         # nosemgrep: sr01-key-material-not-bytearray (ephemeral bytes for Fernet/sqlite I/O)
         shard_b_enc = self._fernet.encrypt(bytes(shard.shard_b))
         async with self._connect() as db:
@@ -238,6 +264,12 @@ class ShardRepository:
                 "(key_alias, var_name, env_path) "
                 "VALUES (?, ?, ?)",
                 (alias, var_name, env_path),
+            )
+            await db.execute(
+                "INSERT OR IGNORE INTO enrollment_config"
+                " (key_alias, spend_cap, token_budget_daily)"
+                " VALUES (?, ?, ?)",
+                (alias, effective_cap, token_budget_daily),
             )
             await db.commit()
 

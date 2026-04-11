@@ -159,7 +159,7 @@ Plans:
 
 ### Phase 13: Security Hardening and Documentation
 **Goal**: Security posture is documented with platform-specific trust tiers, CI gates enforce Shamir + sidecar invariants, and the 90-second install target is maintained
-**Depends on**: Phase 11
+**Depends on**: Phase 11, Phase 12
 **Requirements**: HARD-06, HARD-07, HARD-08, HARD-09, HARD-10
 **Success Criteria** (what must be TRUE):
   1. Security tiers (Tier 1/2/3) are documented per platform with trust domain analysis

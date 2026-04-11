@@ -1,0 +1,11 @@
+# Trivy ignore list — unpatched Debian CVEs with no fix available
+# Review monthly or when base image is updated
+# Last reviewed: 2026-04-09
+
+# glibc: Integer overflow in memalign — no fix in bookworm yet
+# Track: https://security-tracker.debian.org/tracker/CVE-2026-0861
+CVE-2026-0861
+
+# ncurses: Buffer overflow — no fix in bookworm yet
+# Track: https://security-tracker.debian.org/tracker/CVE-2025-69720
+CVE-2025-69720

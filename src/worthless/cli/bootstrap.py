@@ -13,6 +13,7 @@ from collections.abc import Generator
 from cryptography.fernet import Fernet
 
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
+from worthless.cli.platform import IS_WINDOWS
 
 _DEFAULT_BASE = Path.home() / ".worthless"
 _STALE_LOCK_SECONDS = 300  # 5 minutes
@@ -30,6 +31,9 @@ class WorthlessHome:
 
     @property
     def fernet_key_path(self) -> Path:
+        env_path = os.environ.get("WORTHLESS_FERNET_KEY_PATH")
+        if env_path:
+            return Path(env_path)
         return self.base_dir / "fernet.key"
 
     @property
@@ -60,14 +64,25 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
         home.shard_a_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
         # Ensure permissions are correct even if dir already existed
-        home.base_dir.chmod(0o700)
-        home.shard_a_dir.chmod(0o700)
+        if not IS_WINDOWS:
+            home.base_dir.chmod(0o700)
+            home.shard_a_dir.chmod(0o700)
+
+        # Validate custom fernet key path if set via env var
+        fernet_path = home.fernet_key_path
+        fernet_parent = fernet_path.parent
+        if os.environ.get("WORTHLESS_FERNET_KEY_PATH") and not fernet_parent.is_dir():
+            raise WorthlessError(
+                ErrorCode.BOOTSTRAP_FAILED,
+                f"WORTHLESS_FERNET_KEY_PATH directory does not exist: {fernet_parent}\n"
+                "Create it or mount a volume at that path.",
+            )
 
         # Generate Fernet key if missing
-        if not home.fernet_key_path.exists():
+        if not fernet_path.exists():
             key = Fernet.generate_key()
             fd = os.open(
-                str(home.fernet_key_path),
+                str(fernet_path),
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                 0o600,
             )
@@ -76,7 +91,17 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 os.write(fd, b"\n")
             finally:
                 os.close(fd)
+    except WorthlessError:
+        raise
     except OSError as exc:
+        fernet_env = os.environ.get("WORTHLESS_FERNET_KEY_PATH")
+        if fernet_env:
+            raise WorthlessError(
+                ErrorCode.BOOTSTRAP_FAILED,
+                f"Cannot write fernet key to {fernet_env}: "
+                f"{sanitize_exception(exc, generic='permission denied or path invalid')}\n"
+                "Check that the directory exists and is writable.",
+            ) from exc
         raise WorthlessError(
             ErrorCode.BOOTSTRAP_FAILED,
             sanitize_exception(exc, generic="failed to initialise home directory"),
@@ -96,7 +121,9 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
 
 def _init_db(home: WorthlessHome) -> None:
     """Create the SQLite database using the canonical schema and run migrations."""
-    from worthless.storage.schema import SCHEMA
+    import asyncio
+
+    from worthless.storage.schema import SCHEMA, migrate_db
 
     conn = sqlite3.connect(str(home.db_path))
     try:
@@ -126,8 +153,22 @@ def _init_db(home: WorthlessHome) -> None:
     finally:
         conn.close()
 
-    # Restrict DB file permissions
-    home.db_path.chmod(0o600)
+    # Run async migrations (WOR-183: rules engine columns, spend_log cleanup)
+    try:
+        asyncio.get_running_loop()
+        # Already in async context — schedule as a task won't work from sync.
+        # Use a new thread's event loop instead.
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(asyncio.run, migrate_db(str(home.db_path))).result()
+    except RuntimeError:
+        # No running loop — safe to use asyncio.run()
+        asyncio.run(migrate_db(str(home.db_path)))
+
+    # Restrict DB file permissions (no-op on Windows — NTFS ACLs are different)
+    if not IS_WINDOWS:
+        home.db_path.chmod(0o600)
 
 
 @contextmanager

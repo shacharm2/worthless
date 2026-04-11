@@ -1,6 +1,6 @@
 # Worthless
 
-**Make your API keys worthless to steal.**
+**Make your leaked API keys worthless.** *(Maybe stolen too, who knows.)*
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green)

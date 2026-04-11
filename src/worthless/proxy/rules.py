@@ -6,9 +6,12 @@ A denied request means zero KMS calls, zero reconstruction, zero key material.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, time as dt_time
 from typing import Protocol, runtime_checkable
+from zoneinfo import ZoneInfo
 
 import aiosqlite
 
@@ -16,6 +19,8 @@ from worthless.proxy.errors import (
     ErrorResponse,
     rate_limit_error_response,
     spend_cap_error_response,
+    time_window_error_response,
+    token_budget_error_response,
 )
 
 
@@ -24,7 +29,7 @@ class Rule(Protocol):
     """Protocol for a single rule in the gate-before-reconstruct pipeline."""
 
     async def evaluate(
-        self, alias: str, request: object, *, provider: str = "openai"
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
     ) -> ErrorResponse | None: ...
 
 
@@ -35,10 +40,10 @@ class RulesEngine:
     rules: list[Rule]
 
     async def evaluate(
-        self, alias: str, request: object, *, provider: str = "openai"
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
     ) -> ErrorResponse | None:
         for rule in self.rules:
-            result = await rule.evaluate(alias, request, provider=provider)
+            result = await rule.evaluate(alias, request, provider=provider, body=body)
             if result is not None:
                 return result
         return None
@@ -65,7 +70,7 @@ class SpendCapRule:
     db: aiosqlite.Connection
 
     async def evaluate(
-        self, alias: str, request: object, *, provider: str = "openai"
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
     ) -> ErrorResponse | None:
         try:
             # BEGIN IMMEDIATE acquires a write lock, preventing TOCTOU races
@@ -113,6 +118,170 @@ class SpendCapRule:
 
 
 @dataclass
+class TokenBudgetRule:
+    """Denies requests when token usage exceeds daily/weekly/monthly budgets.
+
+    Queries spend_log with time-windowed SUM against enrollment_config budgets.
+    Uses BEGIN IMMEDIATE like SpendCapRule for serialization.
+    Fails closed on any DB error.
+    Budget periods are UTC-anchored (SQLite datetime('now') is always UTC).
+
+    .. note:: Same TOCTOU caveat as SpendCapRule — token count is only known
+       after the upstream response. Two concurrent requests can both pass.
+    """
+
+    db: aiosqlite.Connection
+
+    _PERIODS: tuple[tuple[str, str], ...] = (
+        ("daily", "-1 day"),
+        ("weekly", "-7 days"),
+        ("monthly", "-30 days"),
+    )
+
+    async def evaluate(
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
+    ) -> ErrorResponse | None:
+        try:
+            await self.db.execute("BEGIN IMMEDIATE")
+            try:
+                async with self.db.execute(
+                    "SELECT token_budget_daily, token_budget_weekly,"
+                    " token_budget_monthly"
+                    " FROM enrollment_config WHERE key_alias = ?",
+                    (alias,),
+                ) as cur:
+                    row = await cur.fetchone()
+
+                if row is None:
+                    await self.db.execute("ROLLBACK")
+                    return None
+
+                budgets = {
+                    "daily": row[0],
+                    "weekly": row[1],
+                    "monthly": row[2],
+                }
+
+                # If all budgets are NULL, no limit
+                if all(v is None for v in budgets.values()):
+                    await self.db.execute("ROLLBACK")
+                    return None
+
+                # Single scan with conditional aggregation (efficiency: 1 query not 3)
+                async with self.db.execute(
+                    "SELECT"
+                    " COALESCE(SUM(CASE WHEN created_at >= datetime('now','-1 day')"
+                    "   THEN tokens END), 0),"
+                    " COALESCE(SUM(CASE WHEN created_at >= datetime('now','-7 days')"
+                    "   THEN tokens END), 0),"
+                    " COALESCE(SUM(tokens), 0)"
+                    " FROM spend_log"
+                    " WHERE key_alias = ?"
+                    " AND created_at >= datetime('now', '-30 days')",
+                    (alias,),
+                ) as cur:
+                    used_daily, used_weekly, used_monthly = await cur.fetchone()  # type: ignore[assignment]
+
+                usage = {
+                    "daily": int(used_daily),
+                    "weekly": int(used_weekly),
+                    "monthly": int(used_monthly),
+                }
+
+                for period, _interval in self._PERIODS:
+                    limit = budgets[period]
+                    if limit is None:
+                        continue
+                    if usage[period] >= limit:
+                        await self.db.execute("ROLLBACK")
+                        return token_budget_error_response(
+                            period=period,
+                            used=usage[period],
+                            limit=int(limit),
+                            provider=provider,
+                        )
+
+                await self.db.execute("ROLLBACK")  # read-only, release lock
+                return None
+            except Exception:
+                try:
+                    await self.db.execute("ROLLBACK")
+                except Exception:  # noqa: S110
+                    pass
+                raise
+        except Exception:
+            # Fail-closed: any DB error -> deny request
+            return token_budget_error_response(period="unknown", used=0, limit=0, provider=provider)
+
+
+@dataclass
+class TimeWindowRule:
+    """Denies requests outside configured time windows.
+
+    Reads time_window JSON from enrollment_config. No BEGIN IMMEDIATE needed —
+    pure read of config + clock check. Fails closed on invalid tz, malformed
+    JSON, or any error.
+
+    JSON format: {"start":"09:00","end":"17:00","tz":"America/New_York","days":[1,2,3,4,5]}
+    - days: isoweekday (1=Monday, 7=Sunday). Missing → all days allowed.
+    - tz: IANA timezone. Missing → UTC.
+    - Overnight windows supported (end < start spans midnight).
+    """
+
+    db: aiosqlite.Connection
+
+    async def evaluate(
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
+    ) -> ErrorResponse | None:
+        try:
+            async with self.db.execute(
+                "SELECT time_window FROM enrollment_config WHERE key_alias = ?",
+                (alias,),
+            ) as cur:
+                row = await cur.fetchone()
+
+            if row is None or row[0] is None:
+                return None
+
+            config = json.loads(row[0])
+            tz = ZoneInfo(config.get("tz", "UTC"))
+            now = datetime.now(tz)
+
+            # Check day of week
+            allowed_days = config.get("days", [1, 2, 3, 4, 5, 6, 7])
+            if now.isoweekday() not in allowed_days:
+                return time_window_error_response(
+                    current_time=now.strftime("%H:%M %Z"),
+                    window=f"{config.get('start', '?')}-{config.get('end', '?')}",
+                    provider=provider,
+                )
+
+            # Parse start/end times
+            start = dt_time.fromisoformat(config["start"])
+            end = dt_time.fromisoformat(config["end"])
+            current = now.time()
+
+            # Check time range (handle overnight windows where end < start)
+            if start <= end:
+                in_window = start <= current < end
+            else:
+                in_window = current >= start or current < end
+
+            if not in_window:
+                return time_window_error_response(
+                    current_time=now.strftime("%H:%M %Z"),
+                    window=f"{config['start']}-{config['end']}",
+                    provider=provider,
+                )
+
+            return None
+        except Exception:
+            return time_window_error_response(
+                current_time="unknown", window="unknown", provider=provider
+            )
+
+
+@dataclass
 class RateLimitRule:
     """In-memory sliding window rate limiter keyed by (alias, client_ip).
 
@@ -135,7 +304,7 @@ class RateLimitRule:
     _limits: dict[str, float] = field(default_factory=dict, init=False, repr=False)
 
     async def evaluate(
-        self, alias: str, request: object, *, provider: str = "openai"
+        self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
     ) -> ErrorResponse | None:
         client_ip = getattr(getattr(request, "client", None), "host", "unknown")
         now = time.monotonic()

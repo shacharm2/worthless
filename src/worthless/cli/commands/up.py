@@ -9,29 +9,29 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-import sys
 from pathlib import Path
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, get_home
+from worthless.cli.bootstrap import get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
+from worthless.cli.platform import IS_WINDOWS, popen_platform_kwargs, warn_windows_once
 from worthless.cli.process import (
     build_proxy_env,
     check_pid,
     cleanup_stale_pid,
     disable_core_dumps,
+    fernet_transport,
+    finalize_fernet_transport,
+    pid_path,
     poll_health,
+    prepare_proxy_env,
+    proxy_cmd,
     read_pid,
     spawn_proxy,
     write_pid,
 )
-
-
-def _pid_path(home: WorthlessHome) -> Path:
-    """Return the PID file path."""
-    return home.base_dir / "proxy.pid"
 
 
 def _resolve_port(port_arg: int | None) -> int:
@@ -63,11 +63,12 @@ def register_up_commands(app: typer.Typer) -> None:
         """Start the proxy server (foreground or daemon)."""
         console = get_console()
         home = get_home()
+        warn_windows_once(quiet=console.quiet)
 
         actual_port = _resolve_port(port)
 
         # Check PID file for existing proxy
-        pid_file = _pid_path(home)
+        pid_file = pid_path(home)
         if pid_file.exists():
             info = read_pid(pid_file)
             if info is not None:
@@ -93,7 +94,8 @@ def register_up_commands(app: typer.Typer) -> None:
         proxy_env = build_proxy_env(home)
 
         if daemon:
-            _start_daemon(proxy_env, actual_port, pid_file, console)
+            log_file = home.base_dir / "proxy.log"
+            _start_daemon(proxy_env, actual_port, pid_file, log_file, console)
         else:
             _start_foreground(proxy_env, actual_port, pid_file, console)
 
@@ -101,61 +103,49 @@ def register_up_commands(app: typer.Typer) -> None:
         proxy_env: dict[str, str],
         port: int,
         pid_file: Path,
+        log_file: Path,
         console,
     ) -> None:
         """Start proxy in daemon mode (setsid, write PID, detach)."""
-        cmd = [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "worthless.proxy.app:create_app",
-            "--factory",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-        ]
+        cmd = proxy_cmd(port)
 
-        # Pass Fernet key via fd, not env var
-        fernet_key = proxy_env.pop("WORTHLESS_FERNET_KEY", None)
-        fernet_fd: int | None = None
-        if fernet_key:
-            r_fd, w_fd = os.pipe()
-            os.write(w_fd, fernet_key.encode() if isinstance(fernet_key, str) else fernet_key)
-            os.close(w_fd)
-            fernet_fd = r_fd
-
-        full_env = {
-            **os.environ,
-            **proxy_env,
-            "WORTHLESS_ALLOW_INSECURE": proxy_env.get("WORTHLESS_ALLOW_INSECURE", "true"),
-        }
-        pass_fds: list[int] = []
-        if fernet_fd is not None:
-            full_env["WORTHLESS_FERNET_FD"] = str(fernet_fd)
-            pass_fds.append(fernet_fd)
-
-        # Start detached process
+        log_fd: int = -1
         try:
-            proc = subprocess.Popen(
-                cmd,
-                env=full_env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-                pass_fds=tuple(pass_fds),
-            )
-        except Exception as exc:
-            console.print_error(
-                WorthlessError(
-                    ErrorCode.PROXY_UNREACHABLE,
-                    sanitize_exception(exc, generic="failed to start daemon"),
-                )
-            )
-            raise typer.Exit(code=1) from exc
+            with fernet_transport(proxy_env) as (fernet_key, fernet_fd, fernet_fds):
+                full_env = prepare_proxy_env(proxy_env, fernet_fd)
+                platform_kwargs = popen_platform_kwargs(detach=True, pass_fds=tuple(fernet_fds))
 
-        # Write PID file
-        write_pid(pid_file, proc.pid, port)
+                log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+
+                proc = subprocess.Popen(
+                    cmd,
+                    env=full_env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=log_fd,
+                    stdin=subprocess.PIPE if fernet_key else None,
+                    **platform_kwargs,
+                )
+
+                finalize_fernet_transport(proc, fernet_key, fernet_fd)
+        except Exception as exc:
+            if not isinstance(exc, typer.Exit):
+                console.print_error(
+                    WorthlessError(
+                        ErrorCode.PROXY_UNREACHABLE,
+                        sanitize_exception(exc, generic="failed to start daemon"),
+                    )
+                )
+            raise typer.Exit(code=1) from exc
+        finally:
+            if log_fd >= 0:
+                os.close(log_fd)
+
+        # Write PID file — kill daemon if this fails to prevent orphans
+        try:
+            write_pid(pid_file, proc.pid, port)
+        except OSError:
+            proc.kill()
+            raise
 
         # Brief health check
         healthy = poll_health(port, timeout=10.0)
@@ -187,20 +177,7 @@ def register_up_commands(app: typer.Typer) -> None:
         # Write PID file
         write_pid(pid_file, proxy.pid, actual_port)
 
-        # Poll health
-        healthy = poll_health(actual_port, timeout=15.0)
-        if not healthy:
-            proxy.terminate()
-            proxy.wait(timeout=5)
-            pid_file.unlink(missing_ok=True)
-            console.print_error(
-                WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
-            )
-            raise typer.Exit(code=1)
-
-        console.print_success(f"Proxy running on 127.0.0.1:{actual_port} (Ctrl+C to stop)")
-
-        # Register signal handler that cleans up PID file and stops proxy
+        # Register signal handler BEFORE health poll to prevent orphans
         def _cleanup(_signum, _frame):
             proxy.terminate()
             try:
@@ -213,7 +190,21 @@ def register_up_commands(app: typer.Typer) -> None:
             raise SystemExit(0)
 
         signal.signal(signal.SIGINT, _cleanup)
-        signal.signal(signal.SIGTERM, _cleanup)
+        if not IS_WINDOWS:
+            signal.signal(signal.SIGTERM, _cleanup)
+
+        # Poll health
+        healthy = poll_health(actual_port, timeout=15.0)
+        if not healthy:
+            proxy.terminate()
+            proxy.wait(timeout=5)
+            pid_file.unlink(missing_ok=True)
+            console.print_error(
+                WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
+            )
+            raise typer.Exit(code=1)
+
+        console.print_success(f"Proxy running on 127.0.0.1:{actual_port} (Ctrl+C to stop)")
 
         # Wait for proxy to exit (either by signal or crash)
         proxy.wait()

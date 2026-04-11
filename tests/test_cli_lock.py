@@ -371,6 +371,89 @@ class TestLockErrorBranches:
         assert result.exit_code == 1
 
 
+class TestLockNextStepHint:
+    """Tests for post-lock next-step guidance (WOR-178)."""
+
+    def test_lock_prints_next_step_hint(self, home_dir: WorthlessHome, env_file: Path) -> None:
+        """After successful lock, output should contain a 'Next:' hint."""
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+        assert "Next:" in result.output
+
+    def test_lock_hint_suppressed_in_json_mode(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        """In --json mode, the 'Next:' hint should not appear."""
+        result = runner.invoke(
+            app,
+            ["--json", "lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+        assert "Next:" not in result.output
+
+    def test_lock_hint_suppressed_in_quiet_mode(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        """In --quiet mode, the 'Next:' hint should not appear."""
+        result = runner.invoke(
+            app,
+            ["--quiet", "lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+        assert "Next:" not in result.output
+
+    def test_lock_no_hint_when_no_keys_found(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """When no keys are found, the hint should not appear."""
+        env = tmp_path / ".env"
+        env.write_text("DATABASE_URL=postgres://localhost/db\n")
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+        assert "Next:" not in result.output
+
+
+class TestPrintHint:
+    """Unit tests for WorthlessConsole.print_hint (WOR-178)."""
+
+    def test_print_hint_normal_mode(self, capsys: pytest.CaptureFixture) -> None:
+        """print_hint should output the message in normal mode."""
+        from worthless.cli.console import WorthlessConsole
+
+        c = WorthlessConsole(quiet=False, json_mode=False)
+        c.print_hint("Next: do something")
+        captured = capsys.readouterr()
+        assert "Next: do something" in captured.err
+
+    def test_print_hint_suppressed_quiet(self, capsys: pytest.CaptureFixture) -> None:
+        """print_hint should be suppressed in quiet mode."""
+        from worthless.cli.console import WorthlessConsole
+
+        c = WorthlessConsole(quiet=True, json_mode=False)
+        c.print_hint("Next: do something")
+        captured = capsys.readouterr()
+        assert "Next:" not in captured.err
+        assert "Next:" not in captured.out
+
+    def test_print_hint_suppressed_json(self, capsys: pytest.CaptureFixture) -> None:
+        """print_hint should be suppressed in json_mode."""
+        from worthless.cli.console import WorthlessConsole
+
+        c = WorthlessConsole(quiet=False, json_mode=True)
+        c.print_hint("Next: do something")
+        captured = capsys.readouterr()
+        assert "Next:" not in captured.err
+        assert "Next:" not in captured.out
+
+
 class TestEnrollCommand:
     """Tests for `worthless enroll`."""
 

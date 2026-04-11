@@ -31,10 +31,14 @@ CREATE TABLE IF NOT EXISTS spend_log (
 );
 
 CREATE TABLE IF NOT EXISTS enrollment_config (
-    key_alias      TEXT PRIMARY KEY,
-    spend_cap      REAL,
-    rate_limit_rps REAL NOT NULL DEFAULT 100.0,
-    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    key_alias            TEXT PRIMARY KEY,
+    spend_cap            REAL,
+    rate_limit_rps       REAL NOT NULL DEFAULT 100.0,
+    token_budget_daily   INTEGER,
+    token_budget_weekly  INTEGER,
+    token_budget_monthly INTEGER,
+    time_window          TEXT,
+    created_at           TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS enrollments (
@@ -48,6 +52,7 @@ CREATE TABLE IF NOT EXISTS enrollments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_spend_log_alias ON spend_log (key_alias);
+CREATE INDEX IF NOT EXISTS idx_spend_log_alias_created ON spend_log (key_alias, created_at);
 CREATE INDEX IF NOT EXISTS idx_enrollments_alias ON enrollments (key_alias);
 CREATE INDEX IF NOT EXISTS idx_enrollments_decoy_hash
     ON enrollments (decoy_hash) WHERE decoy_hash IS NOT NULL;
@@ -68,6 +73,13 @@ async def init_db(db_path: str) -> None:
 async def migrate_db(db_path: str) -> None:
     """Apply forward-only migrations for existing databases."""
     async with aiosqlite.connect(db_path) as db:
+        # WOR-182: Prune spend_log entries older than 90 days
+        try:
+            await db.execute("DELETE FROM spend_log WHERE created_at < datetime('now', '-90 days')")
+            await db.commit()
+        except Exception:  # noqa: S110 — spend_log may not exist in pre-schema DBs
+            pass
+
         # WOR-31: Add decoy_hash column to enrollments
         cursor = await db.execute("PRAGMA table_info(enrollments)")
         columns = {row[1] for row in await cursor.fetchall()}
@@ -82,3 +94,33 @@ async def migrate_db(db_path: str) -> None:
             except Exception as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
+
+        # WOR-183: Add rules engine columns to enrollment_config
+        # Guard: table may not exist in very old DBs
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='enrollment_config'"
+        )
+        if await cursor.fetchone() is None:
+            return
+        cursor = await db.execute("PRAGMA table_info(enrollment_config)")
+        config_columns = {row[1] for row in await cursor.fetchall()}
+        new_columns = [
+            ("token_budget_daily", "INTEGER"),
+            ("token_budget_weekly", "INTEGER"),
+            ("token_budget_monthly", "INTEGER"),
+            ("time_window", "TEXT"),
+        ]
+        for col_name, col_type in new_columns:
+            if col_name not in config_columns:
+                try:
+                    await db.execute(
+                        f"ALTER TABLE enrollment_config ADD COLUMN {col_name} {col_type}"
+                    )
+                except Exception as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_spend_log_alias_created "
+            "ON spend_log (key_alias, created_at)"
+        )
+        await db.commit()

@@ -7,8 +7,17 @@ services:
       # Bind to localhost only; use a reverse proxy for external access
       - "127.0.0.1:8787:8787"
     env_file: docker-compose.env
+    environment:
+      # Separate fernet key from shard data — requires the worthless-secrets
+      # volume below. Remove this for single-volume PaaS deployments.
+      WORTHLESS_FERNET_KEY_PATH: /secrets/fernet.key
     volumes:
       - worthless-data:/data
+      # Keeps the decryption key off the same volume as shard data.
+      # Compromise of one volume alone cannot reconstruct API keys.
+      - worthless-secrets:/secrets
+    networks:
+      - frontend
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -22,11 +31,18 @@ services:
         limits:
           memory: 512M
           cpus: "1.0"
+          pids: 100
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 
+networks:
+  frontend:
+    driver: bridge
+  # Future: add `backend` with `internal: true` for Redis/DB services
+
 volumes:
   worthless-data:
+  worthless-secrets:

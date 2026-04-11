@@ -23,6 +23,7 @@ class ErrorCode(IntEnum):
     SCAN_ERROR = 106
     PORT_IN_USE = 107
     WRAP_CHILD_FAILED = 108
+    PROXY_NOT_RUNNING = 109
     UNKNOWN = 199
 
 
