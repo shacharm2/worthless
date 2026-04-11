@@ -326,15 +326,14 @@ class TestEntrypoint:
             "Fernet migration should not use bare 'cp' before 'install -m 0400'."
         )
 
-    def test_bootstrap_sets_umask(self, entrypoint_text: str):
-        """Bootstrap must set restrictive umask before creating fernet.key.
+    def test_bootstrap_locks_fernet_key(self, entrypoint_text: str):
+        """Bootstrap must chmod fernet.key to 0400 after creation.
 
-        Without umask 0377, the key is created with default perms (0644)
-        and there's a race window before chmod where any process can read it.
+        Cannot use umask 0377 during bootstrap because SQLite WAL/SHM
+        files are also created and must remain writable.
         """
-        assert "umask 0377" in entrypoint_text, (
-            "Bootstrap should set 'umask 0377' before creating fernet.key "
-            "so the file is born with 0400 permissions — no race window."
+        assert "chmod 0400" in entrypoint_text, (
+            "Bootstrap should chmod fernet.key to 0400 after creation."
         )
 
     def test_no_hardcoded_secrets(self, entrypoint_text: str):

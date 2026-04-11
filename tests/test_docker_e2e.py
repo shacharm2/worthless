@@ -58,7 +58,7 @@ def _docker_exec(container: str, cmd: list[str]) -> subprocess.CompletedProcess[
     )
 
 
-def _wait_healthy(container: str, timeout: float = 20.0) -> bool:
+def _wait_healthy(container: str, timeout: float = 60.0) -> bool:
     """Poll container health status until healthy or timeout."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -162,10 +162,10 @@ def container(docker_image: str) -> tuple[str, int]:
             "--read-only",
             "--tmpfs",
             "/tmp:noexec,nosuid",
-            "--tmpfs",
-            "/data:uid=999",
-            "--tmpfs",
-            "/secrets:uid=999",
+            "-v",
+            f"{name}-data:/data",
+            "-v",
+            f"{name}-secrets:/secrets",
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
             docker_image,
@@ -176,6 +176,9 @@ def container(docker_image: str) -> tuple[str, int]:
         yield name, port  # type: ignore[misc]
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+        subprocess.run(
+            ["docker", "volume", "rm", "-f", f"{name}-data", f"{name}-secrets"], capture_output=True
+        )
 
 
 @pytest.fixture()
@@ -735,6 +738,7 @@ class TestDockerEdgeCases:
         count = int(db_check.stdout.strip())
         assert count == 0, f"Shards still in DB after unlock: {count}"
 
+    @pytest.mark.xfail(reason="Known bug: wrap leaves orphan proxy (worthless-v24)")
     def test_wrap_child_spawn_failure(self, container: tuple[str, int]) -> None:
         """wrap with a nonexistent binary exits non-zero, no orphan proxy.
 

@@ -14,12 +14,11 @@ fi
 
 # Bootstrap on first boot only (idempotent but skips Python startup on restarts)
 if [ ! -f "$FERNET_PATH" ]; then
-  # Set restrictive umask so fernet.key is created as 0400 from birth —
-  # no window where the key is world-readable before chmod.
-  old_umask=$(umask)
-  umask 0377
   python -c "from worthless.cli.bootstrap import get_home; get_home()"
-  umask "$old_umask"
+  # Lock down fernet.key after bootstrap — can't use umask 0377 during
+  # bootstrap because SQLite WAL/SHM files also get created and need
+  # to be writable.
+  chmod 0400 "$FERNET_PATH"
 fi
 
 # Pass Fernet key via file descriptor (not env var — env is visible in /proc)
