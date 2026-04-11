@@ -177,7 +177,7 @@ def _lock_keys(
                 # Shard fully enrolled -- still need to:
                 # 1. Create enrollment for THIS var_name/env_path
                 # 2. Rewrite THIS .env line with a decoy
-                shard_a_path.read_bytes()  # validate file is readable
+                shard_a_path.stat()  # validate file exists and is accessible
                 await repo.add_enrollment(
                     alias,
                     var_name=var_name,
