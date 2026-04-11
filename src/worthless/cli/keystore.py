@@ -6,6 +6,8 @@ import logging
 import os
 from pathlib import Path
 
+import keyring
+
 from worthless.cli.errors import ErrorCode, WorthlessError
 
 logger = logging.getLogger(__name__)
@@ -22,16 +24,9 @@ _REJECTED_BACKENDS = frozenset(
     }
 )
 
-try:
-    import keyring
-except ImportError:  # pragma: no cover
-    keyring = None  # type: ignore[assignment]
-
 
 def _keyring_available() -> bool:
     """Return True if the OS keyring backend is a real credential store."""
-    if keyring is None:
-        return False
     try:
         backend = keyring.get_keyring()
         name = type(backend).__name__
@@ -57,7 +52,7 @@ def store_fernet_key(key: bytes, home_dir: Path | None = None) -> None:
             logger.info("Fernet key stored in OS keyring")
             return
         except Exception:
-            logger.debug("Keyring write failed, falling back to file")
+            logger.warning("Keyring write failed, falling back to file")
 
     _write_key_file(key, home_dir)
 

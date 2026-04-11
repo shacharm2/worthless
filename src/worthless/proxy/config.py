@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from worthless.cli.keystore import read_fernet_key
+
 
 def _default_db_path() -> str:
     return str(Path.home() / ".worthless" / "worthless.db")
@@ -21,17 +23,15 @@ def _env_bool(name: str) -> bool:
 
 
 def _read_fernet_key() -> str:
-    """Read Fernet key from inherited fd (preferred) or env var (fallback)."""
-    fd_str = os.environ.get("WORTHLESS_FERNET_FD")
-    if fd_str:
-        try:
-            fd = int(fd_str)
-            key = os.read(fd, 4096).decode().strip()
-            os.close(fd)
-            return key
-        except (ValueError, OSError):
-            pass
-    return os.environ.get("WORTHLESS_FERNET_KEY", "")
+    """Read Fernet key via keystore cascade (fd -> env -> keyring -> file).
+
+    Returns empty string if no key found — ProxySettings.validate()
+    catches that as a startup error.
+    """
+    try:
+        return bytes(read_fernet_key()).decode()
+    except Exception:
+        return ""
 
 
 @dataclass
@@ -69,6 +69,6 @@ class ProxySettings:
         if not self.fernet_key:
             raise ValueError(
                 "Fernet key not available. "
-                "Set WORTHLESS_FERNET_KEY or WORTHLESS_FERNET_KEY_PATH, "
-                "or check that entrypoint.sh ran successfully in Docker."
+                "Set WORTHLESS_FERNET_KEY or check OS keyring, "
+                "or verify entrypoint.sh ran successfully in Docker."
             )
