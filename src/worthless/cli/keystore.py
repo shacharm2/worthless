@@ -51,6 +51,14 @@ def store_fernet_key(key: bytes, home_dir: Path | None = None) -> None:
         try:
             keyring.set_password(_SERVICE, _USERNAME, key.decode())
             logger.info("Fernet key stored in OS keyring")
+            # Clean up stale fernet.key file left from pre-keyring installs
+            try:
+                stale = _fernet_file_path(home_dir)
+                if stale.exists():
+                    stale.unlink()
+                    logger.info("Removed stale fernet.key file")
+            except OSError:
+                logger.warning("Could not remove stale fernet.key file; remove it manually")
             return
         except Exception:
             logger.warning("Keyring write failed, falling back to file")

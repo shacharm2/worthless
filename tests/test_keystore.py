@@ -6,6 +6,7 @@ All tests should fail with ImportError until the module is implemented.
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -123,6 +124,57 @@ class TestStoreFernetKey:
             fernet_path = tmp_path / "fernet.key"
             mode = fernet_path.stat().st_mode & 0o777
             assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
+
+    def test_keyring_success_removes_stale_file(self, tmp_path: Path) -> None:
+        """After successful keyring write, leftover fernet.key must be removed."""
+        key = b"test-fernet-key-value"
+        stale_file = tmp_path / "fernet.key"
+        stale_file.write_bytes(b"old-key-from-previous-fallback")
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            store_fernet_key(key, home_dir=tmp_path)
+            mock_kr.set_password.assert_called_once()
+
+        assert not stale_file.exists(), "Stale fernet.key should be removed after keyring success"
+
+    def test_keyring_success_no_file_no_error(self, tmp_path: Path) -> None:
+        """Keyring success with no stale file on disk must not raise."""
+        key = b"test-fernet-key-value"
+        stale_file = tmp_path / "fernet.key"
+        assert not stale_file.exists()  # precondition
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            store_fernet_key(key, home_dir=tmp_path)
+            mock_kr.set_password.assert_called_once()
+
+    def test_keyring_success_file_removal_failure_logs_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """If stale file removal fails, log warning but don't raise."""
+        key = b"test-fernet-key-value"
+        stale_file = tmp_path / "fernet.key"
+        stale_file.write_bytes(b"old-key")
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+            patch.object(Path, "unlink", side_effect=OSError("Permission denied")),
+            caplog.at_level(logging.WARNING, logger="worthless.cli.keystore"),
+        ):
+            store_fernet_key(key, home_dir=tmp_path)
+            mock_kr.set_password.assert_called_once()
+
+        assert any(
+            "fernet.key" in rec.message.lower() or "stale" in rec.message.lower()
+            for rec in caplog.records
+            if rec.levelno >= logging.WARNING
+        ), "Expected a warning log about stale file removal failure"
 
     def test_falls_back_to_file_when_keyring_raises(self, tmp_path: Path) -> None:
         key = b"test-fernet-key-value"
