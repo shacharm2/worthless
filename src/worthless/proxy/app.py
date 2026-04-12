@@ -33,8 +33,12 @@ from worthless.adapters.types import INTERNAL_HEADER_PREFIX
 from worthless.crypto.splitter import reconstruct_key, secure_key
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
-from worthless.proxy.metering import extract_usage_anthropic, extract_usage_openai, record_spend
-from worthless.proxy.middleware import BodySizeLimitMiddleware
+from worthless.proxy.metering import (
+    StreamingUsageCollector,
+    extract_usage_anthropic,
+    extract_usage_openai,
+    record_spend,
+)
 from worthless.proxy.rules import (
     RateLimitRule,
     RulesEngine,
@@ -196,7 +200,6 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
 
     # Middleware stack (reverse order: last registered runs first)
     app.add_middleware(CORSMiddleware, allow_origins=[], allow_methods=["GET"], allow_headers=[])
-    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
 
     # Health endpoints (no auth)
 
@@ -381,19 +384,27 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 )
 
             if adapter_resp.is_streaming and adapter_resp.stream is not None:
-                collected_chunks: list[bytes] = []
+                usage_collector = StreamingUsageCollector(provider=encrypted.provider)
 
                 async def _stream_with_metering() -> AsyncIterator[bytes]:
                     try:
                         async for chunk in adapter_resp.stream:  # type: ignore[union-attr]
-                            collected_chunks.append(chunk)
+                            usage_collector.feed(chunk)
                             yield chunk
                     finally:
                         # Client disconnect or stream end: close upstream
                         await upstream_resp.aclose()  # type: ignore[union-attr]
 
                 async def _record_metering():
-                    await _do_record_spend(b"".join(collected_chunks))
+                    usage = usage_collector.result()
+                    if usage is not None:
+                        await record_spend(
+                            settings.db_path,
+                            alias,
+                            usage.total_tokens,
+                            usage.model,
+                            encrypted.provider,
+                        )
 
                 return StreamingResponse(
                     _stream_with_metering(),

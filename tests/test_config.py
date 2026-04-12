@@ -65,10 +65,6 @@ class TestDefaults:
         s = ProxySettings()
         assert s.shard_a_dir == str(Path.home() / ".worthless" / "shard_a")
 
-    def test_default_max_request_bytes(self) -> None:
-        s = ProxySettings()
-        assert s.max_request_bytes == 10 * 1024 * 1024
-
 
 # ---------------------------------------------------------------------------
 # Tests: custom values from env
@@ -102,11 +98,6 @@ class TestCustomValues:
         monkeypatch.setenv("WORTHLESS_SHARD_A_DIR", "/tmp/shards")  # noqa: S108
         s = ProxySettings()
         assert s.shard_a_dir == "/tmp/shards"  # noqa: S108
-
-    def test_custom_max_request_bytes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("WORTHLESS_MAX_REQUEST_BYTES", "1024")
-        s = ProxySettings()
-        assert s.max_request_bytes == 1024
 
 
 # ---------------------------------------------------------------------------
@@ -258,11 +249,6 @@ class TestInvalidValues:
 
     def test_empty_string_for_float(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_RATE_LIMIT_RPS", "")
-        with pytest.raises(ValueError):
-            ProxySettings()
-
-    def test_empty_string_for_int(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("WORTHLESS_MAX_REQUEST_BYTES", "")
         with pytest.raises(ValueError):
             ProxySettings()
 

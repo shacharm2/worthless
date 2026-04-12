@@ -75,11 +75,6 @@ class ProxySettings:
     allow_alias_inference: bool = field(
         default_factory=lambda: _env_bool("WORTHLESS_ALLOW_ALIAS_INFERENCE")
     )
-    max_request_bytes: int = field(
-        default_factory=lambda: int(
-            os.environ.get("WORTHLESS_MAX_REQUEST_BYTES", str(10 * 1024 * 1024))
-        )
-    )
 
     def validate(self) -> None:
         """Raise if required settings are missing."""
