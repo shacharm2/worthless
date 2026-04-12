@@ -139,12 +139,19 @@ class StreamingUsageCollector:
         self._pending_event: str | None = None
         self._found_usage = False
 
+    # No legitimate SSE line exceeds 64KB; cap _partial_line to prevent
+    # a malicious upstream without newlines from growing it unbounded.
+    _MAX_PARTIAL_LINE = 65_536
+
     def feed(self, chunk: bytes) -> None:
         """Process an SSE chunk, extracting usage data."""
         text = self._partial_line + chunk.decode("utf-8", errors="replace")
         lines = text.split("\n")
         # Last element may be incomplete — save for next feed
-        self._partial_line = lines[-1]
+        partial = lines[-1]
+        if len(partial) > self._MAX_PARTIAL_LINE:
+            partial = ""  # discard oversized partial — no legitimate SSE line is this big
+        self._partial_line = partial
 
         for line in lines[:-1]:
             stripped = line.strip()

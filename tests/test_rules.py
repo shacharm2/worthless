@@ -1082,6 +1082,9 @@ async def test_rate_limiter_ttl_cleanup():
     assert ("k1", "10.0.0.1") not in rule._windows
     assert ("k2", "10.0.0.2") not in rule._windows
     assert ("k3", "10.0.0.3") in rule._windows
+    # Locks should be cleaned alongside windows
+    assert ("k1", "10.0.0.1") not in rule._locks
+    assert ("k2", "10.0.0.2") not in rule._locks
 
 
 @pytest.mark.asyncio
@@ -1105,6 +1108,7 @@ async def test_rate_limiter_expired_keys_removed():
     # All old entries should be removed
     for i in range(5):
         assert (f"alias-{i}", "10.0.0.1") not in rule._windows
+        assert (f"alias-{i}", "10.0.0.1") not in rule._locks
     assert ("fresh-alias", "10.0.0.1") in rule._windows
 
 
