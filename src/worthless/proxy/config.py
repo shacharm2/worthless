@@ -45,8 +45,12 @@ def _read_fernet_key() -> bytearray:
             pass
 
     # 2. Keystore cascade (env -> keyring -> file)
+    # Respect WORTHLESS_HOME so the keyring username hash matches the
+    # home_dir used at enrollment time (worthless-2fd namespacing).
     try:
-        return read_fernet_key()
+        home_env = os.environ.get("WORTHLESS_HOME")
+        home_dir = Path(home_env) if home_env else None
+        return read_fernet_key(home_dir)
     except Exception:
         return bytearray()
 
