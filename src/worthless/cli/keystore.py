@@ -80,6 +80,33 @@ def store_fernet_key(key: bytes, home_dir: Path | None = None) -> None:
     _write_key_file(key, home_dir)
 
 
+def migrate_file_to_keyring(home_dir: Path | None = None) -> bool:
+    """Opportunistically promote a file-based Fernet key to the OS keyring.
+
+    Returns True if migration succeeded, False if skipped or failed.
+    Never raises — all failures are swallowed to debug log.
+    """
+    try:
+        if not keyring_available():
+            return False
+        # Already in keyring? Nothing to do.
+        username = _keyring_username(home_dir)
+        if keyring.get_password(_SERVICE, username) is not None:
+            return False
+        # File exists?
+        fernet_path = _fernet_file_path(home_dir)
+        if not fernet_path.exists():
+            return False
+        # Read from file and store to keyring (which also cleans up the file)
+        key_bytes = fernet_path.read_bytes().strip()
+        store_fernet_key(key_bytes, home_dir)
+        logger.info("Migrated Fernet key from file to OS keyring")
+        return True
+    except Exception:
+        logger.debug("File-to-keyring migration skipped", exc_info=True)
+        return False
+
+
 def _fernet_file_path(home_dir: Path | None) -> Path:
     """Resolve fernet key file path, respecting WORTHLESS_FERNET_KEY_PATH."""
     env_path = os.environ.get("WORTHLESS_FERNET_KEY_PATH")

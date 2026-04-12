@@ -22,6 +22,7 @@ from worthless.cli.keystore import (
     _keyring_username,
     keyring_available,
     delete_fernet_key,
+    migrate_file_to_keyring,
     read_fernet_key,
     store_fernet_key,
 )
@@ -591,3 +592,97 @@ class TestStoreUsesNamespacedUsername:
                 f"Expected store to use namespaced username {new_username!r}, "
                 f"got {stored_username!r}"
             )
+
+
+# ------------------------------------------------------------------
+# migrate_file_to_keyring
+# ------------------------------------------------------------------
+
+
+class TestMigrateFileToKeyring:
+    """Upgrade path: migrate fernet.key from file to OS keyring."""
+
+    def test_migrates_file_key_to_keyring(self, tmp_path: Path) -> None:
+        """File exists, keyring available and empty -> migrate and return True."""
+        fernet_path = tmp_path / "fernet.key"
+        fernet_path.write_bytes(b"my-secret-fernet-key")
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            mock_kr.get_password.return_value = None
+            result = migrate_file_to_keyring(home_dir=tmp_path)
+
+        assert result is True
+        mock_kr.set_password.assert_called_once_with(
+            "worthless",
+            _keyring_username(tmp_path),
+            "my-secret-fernet-key",
+        )
+
+    def test_noop_when_keyring_already_has_key(self, tmp_path: Path) -> None:
+        """Keyring already has a value -> no migration, return False, file untouched."""
+        fernet_path = tmp_path / "fernet.key"
+        fernet_path.write_bytes(b"file-key")
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            mock_kr.get_password.return_value = "existing-keyring-key"
+            result = migrate_file_to_keyring(home_dir=tmp_path)
+
+        assert result is False
+        assert fernet_path.exists(), "File should not be removed when migration is skipped"
+
+    def test_noop_when_no_file(self, tmp_path: Path) -> None:
+        """No fernet.key file on disk -> return False."""
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            mock_kr.get_password.return_value = None
+            result = migrate_file_to_keyring(home_dir=tmp_path)
+
+        assert result is False
+
+    def test_noop_when_keyring_unavailable(self, tmp_path: Path) -> None:
+        """Keyring not available -> return False even if file exists."""
+        fernet_path = tmp_path / "fernet.key"
+        fernet_path.write_bytes(b"some-key")
+
+        with patch("worthless.cli.keystore.keyring_available", return_value=False):
+            result = migrate_file_to_keyring(home_dir=tmp_path)
+
+        assert result is False
+
+    def test_swallows_exceptions(self, tmp_path: Path) -> None:
+        """If store_fernet_key raises, return False without propagating."""
+        fernet_path = tmp_path / "fernet.key"
+        fernet_path.write_bytes(b"some-key")
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+            patch("worthless.cli.keystore.store_fernet_key", side_effect=Exception("boom")),
+        ):
+            mock_kr.get_password.return_value = None
+            result = migrate_file_to_keyring(home_dir=tmp_path)
+
+        assert result is False
+
+    def test_file_removed_after_migration(self, tmp_path: Path) -> None:
+        """After successful migration, the fernet.key file must be deleted."""
+        fernet_path = tmp_path / "fernet.key"
+        fernet_path.write_bytes(b"migrate-me")
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            mock_kr.get_password.return_value = None
+            result = migrate_file_to_keyring(home_dir=tmp_path)
+
+        assert result is True
+        assert not fernet_path.exists(), "fernet.key should be removed after successful migration"
