@@ -19,6 +19,7 @@ from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.keystore import (
     _SERVICE,
     _USERNAME,
+    _keyring_username,
     keyring_available,
     delete_fernet_key,
     read_fernet_key,
@@ -104,7 +105,9 @@ class TestStoreFernetKey:
         ):
             store_fernet_key(key, home_dir=tmp_path)
 
-            mock_kr.set_password.assert_called_once_with("worthless", "fernet-key", key.decode())
+            mock_kr.set_password.assert_called_once_with(
+                "worthless", _keyring_username(tmp_path), key.decode()
+            )
 
     def test_falls_back_to_file_when_keyring_unavailable(self, tmp_path: Path) -> None:
         key = b"test-fernet-key-value"
@@ -394,7 +397,9 @@ class TestDeleteFernetKey:
         ):
             delete_fernet_key(home_dir=tmp_path)
 
-            mock_kr.delete_password.assert_called_once_with("worthless", "fernet-key")
+            assert mock_kr.delete_password.call_count == 2
+            mock_kr.delete_password.assert_any_call("worthless", _keyring_username(tmp_path))
+            mock_kr.delete_password.assert_any_call("worthless", "fernet-key")
         assert not fernet_path.exists()
 
     def test_deletes_file_only_when_keyring_unavailable(self, tmp_path: Path) -> None:
@@ -432,3 +437,157 @@ class TestDeleteFernetKey:
             mock_kr.delete_password.side_effect = Exception("Not found")
             # Should not raise
             delete_fernet_key(home_dir=tmp_path)
+
+
+# ------------------------------------------------------------------
+# Keyring namespacing — per-install collision prevention
+# ------------------------------------------------------------------
+
+
+class TestKeyringNamespacing:
+    """_keyring_username must produce unique, deterministic usernames per home_dir."""
+
+    def test_two_homedirs_different_usernames(self, tmp_path: Path) -> None:
+        """Two distinct home_dir paths must produce different keyring usernames."""
+        dir_a = tmp_path / "install-a"
+        dir_b = tmp_path / "install-b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+
+        username_a = _keyring_username(dir_a)
+        username_b = _keyring_username(dir_b)
+
+        assert username_a != username_b, (
+            f"Expected different usernames for different home_dirs, got {username_a!r} for both"
+        )
+
+    def test_default_homedir_deterministic(self) -> None:
+        """Calling with None twice must return the same username."""
+        result_1 = _keyring_username(None)
+        result_2 = _keyring_username(None)
+
+        assert result_1 == result_2
+
+    def test_username_starts_with_prefix(self, tmp_path: Path) -> None:
+        """Namespaced username must start with 'fernet-key-' prefix."""
+        result = _keyring_username(tmp_path)
+
+        assert result.startswith("fernet-key-"), (
+            f"Expected username to start with 'fernet-key-', got {result!r}"
+        )
+
+    def test_same_path_is_deterministic(self, tmp_path: Path) -> None:
+        """Same home_dir must always produce the same username."""
+        result_1 = _keyring_username(tmp_path)
+        result_2 = _keyring_username(tmp_path)
+
+        assert result_1 == result_2
+
+
+# ------------------------------------------------------------------
+# Legacy migration — read falls back, delete cleans both
+# ------------------------------------------------------------------
+
+
+class TestLegacyMigration:
+    """read_fernet_key must try new username first, fall back to legacy.
+    delete_fernet_key must clean both new and legacy usernames.
+    """
+
+    def test_read_tries_new_username_first(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """When new namespaced username has a value, legacy is never queried."""
+        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
+        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
+
+        new_username = _keyring_username(tmp_path)
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+
+            def _get_password(_service: str, username: str) -> str | None:
+                if username == new_username:
+                    return "new-key-value"
+                return None
+
+            mock_kr.get_password.side_effect = _get_password
+            result = read_fernet_key(home_dir=tmp_path)
+
+        assert result == bytearray(b"new-key-value")
+        # Should have been called with new username; legacy should NOT be called
+        calls = [c.args[1] for c in mock_kr.get_password.call_args_list]
+        assert new_username in calls, "Expected call with new namespaced username"
+        assert _USERNAME not in calls or new_username == _USERNAME, (
+            "Legacy username should not be queried when new username succeeds"
+        )
+
+    def test_read_falls_back_to_legacy(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """When new username returns None, fall back to legacy username."""
+        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
+        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+
+            def _get_password(_service: str, username: str) -> str | None:
+                if username == _USERNAME:
+                    return "legacy-key-value"
+                return None
+
+            mock_kr.get_password.side_effect = _get_password
+            result = read_fernet_key(home_dir=tmp_path)
+
+        assert result == bytearray(b"legacy-key-value")
+
+    def test_delete_cleans_both_new_and_legacy(self, tmp_path: Path) -> None:
+        """delete_fernet_key must call delete_password for both usernames."""
+        new_username = _keyring_username(tmp_path)
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            delete_fernet_key(home_dir=tmp_path)
+
+        deleted_usernames = [c.args[1] for c in mock_kr.delete_password.call_args_list]
+        assert new_username in deleted_usernames, (
+            "Expected delete_password called with new namespaced username"
+        )
+        # Legacy must also be cleaned — unless new == legacy (stub), which is the
+        # current state. Once implemented, both must be present.
+        if new_username != _USERNAME:
+            assert _USERNAME in deleted_usernames, (
+                "Expected delete_password called with legacy username too"
+            )
+
+
+# ------------------------------------------------------------------
+# Store uses namespaced username
+# ------------------------------------------------------------------
+
+
+class TestStoreUsesNamespacedUsername:
+    """store_fernet_key must use _keyring_username, not hardcoded _USERNAME."""
+
+    def test_store_uses_namespaced_username(self, tmp_path: Path) -> None:
+        key = b"test-fernet-key-value"
+        new_username = _keyring_username(tmp_path)
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            store_fernet_key(key, home_dir=tmp_path)
+
+            stored_username = mock_kr.set_password.call_args.args[1]
+            assert stored_username == new_username, (
+                f"Expected store to use namespaced username {new_username!r}, "
+                f"got {stored_username!r}"
+            )

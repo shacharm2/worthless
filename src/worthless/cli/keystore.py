@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -14,6 +15,19 @@ logger = logging.getLogger(__name__)
 
 _SERVICE = "worthless"
 _USERNAME = "fernet-key"
+
+
+def _keyring_username(home_dir: Path | None = None) -> str:
+    """Derive a per-install keyring username to avoid collisions.
+
+    Two worthless installs on the same machine (e.g. staging vs prod) get
+    unique keyring entries based on the resolved home directory path.
+    """
+    if home_dir is None:
+        home_dir = Path.home() / ".worthless"
+    digest = hashlib.sha256(str(home_dir.resolve()).encode()).hexdigest()[:12]
+    return f"fernet-key-{digest}"
+
 
 # Fully-qualified backend names that are not real credential stores.
 # Matched against module.qualname (e.g. "keyring.backends.fail.Keyring").
@@ -49,7 +63,7 @@ def store_fernet_key(key: bytes, home_dir: Path | None = None) -> None:
     """
     if keyring_available():
         try:
-            keyring.set_password(_SERVICE, _USERNAME, key.decode())
+            keyring.set_password(_SERVICE, _keyring_username(home_dir), key.decode())
             logger.info("Fernet key stored in OS keyring")
             # Clean up stale fernet.key file left from pre-keyring installs
             try:
@@ -101,11 +115,16 @@ def read_fernet_key(home_dir: Path | None = None) -> bytearray:
     if env_val:
         return bytearray(env_val.encode())
 
-    # 2. Keyring
+    # 2. Keyring (namespaced username first, then legacy fallback)
     if keyring_available():
         try:
+            value = keyring.get_password(_SERVICE, _keyring_username(home_dir))
+            if value is not None:
+                return bytearray(value.encode())
+            # Legacy fallback for pre-namespacing installs
             value = keyring.get_password(_SERVICE, _USERNAME)
             if value is not None:
+                logger.info("Found Fernet key under legacy keyring entry; re-enroll to migrate")
                 return bytearray(value.encode())
         except Exception:
             logger.debug("Keyring read failed, falling back to file")
@@ -125,10 +144,11 @@ def read_fernet_key(home_dir: Path | None = None) -> bytearray:
 def delete_fernet_key(home_dir: Path | None = None) -> None:
     """Remove Fernet key from keyring and file. Never raises on missing."""
     if keyring_available():
-        try:
-            keyring.delete_password(_SERVICE, _USERNAME)
-        except Exception:
-            logger.debug("Keyring delete failed (may not exist)")
+        for username in (_keyring_username(home_dir), _USERNAME):
+            try:
+                keyring.delete_password(_SERVICE, username)
+            except Exception:
+                logger.debug("Keyring delete failed for %s (may not exist)", username)
 
     fernet_path = _fernet_file_path(home_dir)
     fernet_path.unlink(missing_ok=True)
