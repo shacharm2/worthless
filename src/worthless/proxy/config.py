@@ -38,7 +38,7 @@ def _read_fernet_key() -> bytearray:
     if fd_str:
         try:
             fd = int(fd_str)
-            raw = bytearray(os.read(fd, 4096))
+            raw = os.read(fd, 4096)
             os.close(fd)
             return bytearray(raw.strip())
         except (ValueError, OSError):
