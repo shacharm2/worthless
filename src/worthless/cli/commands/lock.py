@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import re
+import sqlite3
 from pathlib import Path
 
 import typer
@@ -307,6 +308,16 @@ def _enroll_single(
         )
 
     try:
+        # Clean up orphan shard_a from a prior failed enrollment
+        if shard_a_path.exists():
+            conn = sqlite3.connect(str(home.db_path))
+            try:
+                row = conn.execute("SELECT 1 FROM shards WHERE key_alias = ?", (alias,)).fetchone()
+            finally:
+                conn.close()
+            if row is None:
+                shard_a_path.unlink()
+
         # DB first — atomic commit point
         asyncio.run(_enroll_async())
         db_written = True
@@ -326,15 +337,15 @@ def _enroll_single(
             # Sync compensation — avoids nested asyncio.run() issues.
             # Only delete THIS enrollment, not all enrollments for the alias
             # (another env_path may have a pre-existing enrollment).
-            import sqlite3
 
             try:
                 conn = sqlite3.connect(str(home.db_path))
                 try:
                     conn.execute("PRAGMA foreign_keys = ON")
                     conn.execute(
-                        "DELETE FROM enrollments WHERE key_alias = ? AND env_path IS NULL",
-                        (alias,),
+                        "DELETE FROM enrollments"
+                        " WHERE key_alias = ? AND var_name = ? AND env_path IS NULL",
+                        (alias, alias),
                     )
                     # If no other enrollments remain, remove the shard too
                     remaining = conn.execute(

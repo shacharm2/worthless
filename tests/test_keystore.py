@@ -398,9 +398,9 @@ class TestDeleteFernetKey:
         ):
             delete_fernet_key(home_dir=tmp_path)
 
-            assert mock_kr.delete_password.call_count == 2
-            mock_kr.delete_password.assert_any_call("worthless", _keyring_username(tmp_path))
-            mock_kr.delete_password.assert_any_call("worthless", "fernet-key")
+            mock_kr.delete_password.assert_called_once_with(
+                "worthless", _keyring_username(tmp_path)
+            )
         assert not fernet_path.exists()
 
     def test_deletes_file_only_when_keyring_unavailable(self, tmp_path: Path) -> None:
@@ -525,48 +525,15 @@ class TestLegacyMigration:
             "Legacy username should not be queried when new username succeeds"
         )
 
-    def test_read_falls_back_to_legacy(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """When new username returns None, fall back to legacy username."""
-        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
-        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
-
-        with (
-            patch("worthless.cli.keystore.keyring_available", return_value=True),
-            patch("worthless.cli.keystore.keyring") as mock_kr,
-        ):
-
-            def _get_password(_service: str, username: str) -> str | None:
-                if username == _USERNAME:
-                    return "legacy-key-value"
-                return None
-
-            mock_kr.get_password.side_effect = _get_password
-            result = read_fernet_key(home_dir=tmp_path)
-
-        assert result == bytearray(b"legacy-key-value")
-
-    def test_delete_cleans_both_new_and_legacy(self, tmp_path: Path) -> None:
-        """delete_fernet_key must call delete_password for both usernames."""
-        new_username = _keyring_username(tmp_path)
-
+    def test_delete_only_namespaced(self, tmp_path: Path) -> None:
+        """delete_fernet_key calls delete_password with namespaced username only."""
         with (
             patch("worthless.cli.keystore.keyring_available", return_value=True),
             patch("worthless.cli.keystore.keyring") as mock_kr,
         ):
             delete_fernet_key(home_dir=tmp_path)
 
-        deleted_usernames = [c.args[1] for c in mock_kr.delete_password.call_args_list]
-        assert new_username in deleted_usernames, (
-            "Expected delete_password called with new namespaced username"
-        )
-        # Legacy must also be cleaned — unless new == legacy (stub), which is the
-        # current state. Once implemented, both must be present.
-        if new_username != _USERNAME:
-            assert _USERNAME in deleted_usernames, (
-                "Expected delete_password called with legacy username too"
-            )
+        mock_kr.delete_password.assert_called_once_with("worthless", _keyring_username(tmp_path))
 
 
 # ------------------------------------------------------------------

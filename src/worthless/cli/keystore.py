@@ -142,16 +142,11 @@ def read_fernet_key(home_dir: Path | None = None) -> bytearray:
     if env_val:
         return bytearray(env_val.encode())
 
-    # 2. Keyring (namespaced username first, then legacy fallback)
+    # 2. Keyring (namespaced username only — no legacy fallback)
     if keyring_available():
         try:
             value = keyring.get_password(_SERVICE, _keyring_username(home_dir))
             if value is not None:
-                return bytearray(value.encode())
-            # Legacy fallback for pre-namespacing installs
-            value = keyring.get_password(_SERVICE, _USERNAME)
-            if value is not None:
-                logger.info("Found Fernet key under legacy keyring entry; re-enroll to migrate")
                 return bytearray(value.encode())
         except Exception:
             logger.debug("Keyring read failed, falling back to file")
@@ -171,11 +166,10 @@ def read_fernet_key(home_dir: Path | None = None) -> bytearray:
 def delete_fernet_key(home_dir: Path | None = None) -> None:
     """Remove Fernet key from keyring and file. Never raises on missing."""
     if keyring_available():
-        for username in (_keyring_username(home_dir), _USERNAME):
-            try:
-                keyring.delete_password(_SERVICE, username)
-            except Exception:
-                logger.debug("Keyring delete failed for %s (may not exist)", username)
+        try:
+            keyring.delete_password(_SERVICE, _keyring_username(home_dir))
+        except Exception:
+            logger.debug("Keyring delete failed (may not exist)")
 
     fernet_path = _fernet_file_path(home_dir)
     fernet_path.unlink(missing_ok=True)

@@ -132,3 +132,61 @@ class TestStreamingUsageCollectorAnthropic:
         assert usage is not None
         assert usage.total_tokens == 35  # 25 input + 10 output
         assert usage.model == "claude-3-5-sonnet-20241022"
+
+
+class TestStreamingUsageCollectorEdgeCases:
+    """Edge cases: split chunks, malformed JSON, empty streams, partial cap."""
+
+    def test_sse_line_split_across_chunks(self):
+        """A single SSE data line split between two feed() calls."""
+        from worthless.proxy.metering import StreamingUsageCollector
+
+        collector = StreamingUsageCollector(provider="openai")
+
+        full_line = (
+            b'data: {"id":"x","choices":[],'
+            b'"usage":{"prompt_tokens":5,"completion_tokens":6,'
+            b'"total_tokens":11},"model":"gpt-4o"}\n\n'
+        )
+        mid = len(full_line) // 2
+        collector.feed(full_line[:mid])
+        collector.feed(full_line[mid:])
+
+        usage = collector.result()
+        assert usage is not None
+        assert usage.total_tokens == 11
+        assert usage.model == "gpt-4o"
+
+    def test_malformed_json_returns_none(self):
+        """Garbage JSON in data lines degrades gracefully to None."""
+        from worthless.proxy.metering import StreamingUsageCollector
+
+        collector = StreamingUsageCollector(provider="openai")
+        collector.feed(b"data: {not valid json}\n\n")
+        collector.feed(b"data: [DONE]\n\n")
+        assert collector.result() is None
+
+    def test_empty_stream_returns_none(self):
+        """No feed() calls at all — result() returns None."""
+        from worthless.proxy.metering import StreamingUsageCollector
+
+        assert StreamingUsageCollector(provider="openai").result() is None
+        assert StreamingUsageCollector(provider="anthropic").result() is None
+
+    def test_partial_line_cap_prevents_oom(self):
+        """100KB without a newline gets capped, then normal data still works."""
+        from worthless.proxy.metering import StreamingUsageCollector
+
+        collector = StreamingUsageCollector(provider="openai")
+
+        # Feed 100KB of garbage with no newline
+        collector.feed(b"x" * 100_000)
+        assert len(collector._partial_line) <= 65_536
+
+        # Feed normal usage data — collector still works
+        collector.feed(
+            b'\ndata: {"id":"x","choices":[],"usage":{"total_tokens":7},"model":"gpt-4o"}\n\n'
+        )
+        usage = collector.result()
+        assert usage is not None
+        assert usage.total_tokens == 7

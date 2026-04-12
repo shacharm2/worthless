@@ -52,10 +52,6 @@ logger = logging.getLogger(__name__)
 
 _ALIAS_RE = re.compile(r"[a-zA-Z0-9_-]+")
 _BAD_HEADER_CHARS = frozenset("\x00\r\n")
-# Pessimistic token estimate when streaming usage extraction fails.
-# Records a conservative spend so the spend cap still enforces.
-# Set high enough to trigger alerts but not so high it blocks after one request.
-_PESSIMISTIC_STREAM_TOKENS = 10_000
 
 
 def _make_uniform_401_bytes() -> tuple[bytes, dict[str, str]]:
@@ -410,20 +406,13 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                             encrypted.provider,
                         )
                     else:
-                        # Fail closed: if we can't extract usage (provider
-                        # changed SSE format, etc.), record a pessimistic
-                        # estimate so spend caps still enforce.
+                        # Zero friction: if we can't extract usage (provider
+                        # changed SSE format, etc.), log a warning but don't
+                        # penalize the user with phantom spend.
                         logger.warning(
                             "Could not extract usage from streaming response "
-                            "for alias=%s; recording pessimistic estimate",
+                            "for alias=%s; spend not recorded",
                             alias,
-                        )
-                        await record_spend(
-                            settings.db_path,
-                            alias,
-                            _PESSIMISTIC_STREAM_TOKENS,
-                            None,
-                            encrypted.provider,
                         )
 
                 return StreamingResponse(
