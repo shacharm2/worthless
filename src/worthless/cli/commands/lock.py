@@ -323,13 +323,29 @@ def _enroll_single(
         if shard_a_written:
             shard_a_path.unlink(missing_ok=True)
         if db_written:
-
-            async def _compensate():
-                repo = ShardRepository(str(home.db_path), home.fernet_key)
-                await repo.delete_enrolled(alias)
+            # Sync compensation — avoids nested asyncio.run() issues.
+            # Only delete THIS enrollment, not all enrollments for the alias
+            # (another env_path may have a pre-existing enrollment).
+            import sqlite3
 
             try:
-                asyncio.run(_compensate())
+                conn = sqlite3.connect(str(home.db_path))
+                try:
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    conn.execute(
+                        "DELETE FROM enrollments WHERE key_alias = ? AND env_path IS NULL",
+                        (alias,),
+                    )
+                    # If no other enrollments remain, remove the shard too
+                    remaining = conn.execute(
+                        "SELECT COUNT(*) FROM enrollments WHERE key_alias = ?",
+                        (alias,),
+                    ).fetchone()[0]
+                    if remaining == 0:
+                        conn.execute("DELETE FROM shards WHERE key_alias = ?", (alias,))
+                    conn.commit()
+                finally:
+                    conn.close()
             except Exception:
                 logger.debug("Compensation cleanup failed for %s", alias, exc_info=True)
         if isinstance(exc, WorthlessError):

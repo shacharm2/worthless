@@ -142,25 +142,35 @@ class TestMemoryDumpKeyExtraction:
             "Key material survives in memory after close -- attacker can extract it"
         )
 
-    def test_settings_key_zeroed_after_proxy_shutdown(self):
+    @pytest.mark.asyncio
+    async def test_settings_key_zeroed_after_lifespan_shutdown(self, tmp_path):
         """Attacker scenario: proxy process exits, attacker finds the
         ProxySettings fernet_key bytearray still in memory.
-        Defense: lifespan handler zeros the bytearray on shutdown."""
+        Defense: _lifespan handler zeros the bytearray on shutdown."""
+        from cryptography.fernet import Fernet as FernetCls
+
+        from worthless.proxy.app import create_app
         from worthless.proxy.config import ProxySettings
 
-        key = bytearray(b"live-fernet-key-that-should-be-zeroed-after!")
-        settings = ProxySettings(
-            db_path=":memory:",
-            fernet_key=key,
-        )
+        db_path = str(tmp_path / "test.db")
+        fernet_key = bytearray(FernetCls.generate_key())
+        key_ref = fernet_key  # hold a reference to the same bytearray
 
-        # Simulate lifespan shutdown: zero the key
-        fk = settings.fernet_key
-        fk[:] = b"\x00" * len(fk)
+        settings = ProxySettings(db_path=db_path, fernet_key=fernet_key)
+        app = create_app(settings)
 
-        # ATTACK: attacker reads the original bytearray reference
-        assert all(b == 0 for b in key), (
-            "ProxySettings fernet_key survives zeroing -- attacker can extract it"
+        # Precondition: key is non-zero
+        assert any(b != 0 for b in key_ref)
+
+        # Exercise actual lifespan (startup + shutdown)
+        async with app.router.lifespan_context(app):
+            # Proxy is "running" — key still alive
+            assert any(b != 0 for b in key_ref)
+
+        # After lifespan shutdown: key should be zeroed
+        assert all(b == 0 for b in key_ref), (
+            "ProxySettings fernet_key survives lifespan shutdown -- "
+            "attacker can extract it from process memory"
         )
 
 
