@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
 from pathlib import Path
@@ -19,6 +20,8 @@ from worthless.cli.key_patterns import ENTROPY_THRESHOLD, detect_prefix
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.crypto.splitter import split_key
 from worthless.storage.repository import ShardRepository, StoredShard
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_PROVIDERS = frozenset(_PROVIDER_ENV_MAP.keys())
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -274,9 +277,18 @@ def _enroll_single(
     provider: str,
     home: WorthlessHome,
 ) -> None:
-    """Enroll a single key (no .env scanning)."""
+    """Enroll a single key (no .env scanning).
+
+    Write order: DB first, file second — matching _lock_keys pattern.
+    Compensation on failure: clean up whichever artifact was written.
+    """
     if not _ALIAS_RE.match(alias):
         raise WorthlessError(ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}")
+
+    sr = split_key(key.encode())
+    db_written = False
+    shard_a_written = False
+    shard_a_path = home.shard_a_dir / alias
 
     async def _enroll_async():
         repo = ShardRepository(str(home.db_path), home.fernet_key)
@@ -294,16 +306,38 @@ def _enroll_single(
             env_path=None,
         )
 
-    sr = split_key(key.encode())
     try:
-        shard_a_path = home.shard_a_dir / alias
+        # DB first — atomic commit point
+        asyncio.run(_enroll_async())
+        db_written = True
+
+        # shard_a file second
         fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             os.write(fd, bytes(sr.shard_a))  # nosemgrep: sr01-key-material-not-bytearray
         finally:
             os.close(fd)
+        shard_a_written = True
+    except Exception as exc:
+        # Compensate: clean up partial state
+        if shard_a_written:
+            shard_a_path.unlink(missing_ok=True)
+        if db_written:
 
-        asyncio.run(_enroll_async())
+            async def _compensate():
+                repo = ShardRepository(str(home.db_path), home.fernet_key)
+                await repo.delete_enrolled(alias)
+
+            try:
+                asyncio.run(_compensate())
+            except Exception:
+                logger.debug("Compensation cleanup failed for %s", alias, exc_info=True)
+        if isinstance(exc, WorthlessError):
+            raise
+        raise WorthlessError(
+            ErrorCode.SHARD_STORAGE_FAILED,
+            sanitize_exception(exc, generic="failed to enroll key"),
+        ) from exc
     finally:
         sr.zero()
 
