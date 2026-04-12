@@ -84,9 +84,16 @@ class ShardRepository:
 
     def __init__(self, db_path: str, fernet_key: bytes | bytearray) -> None:
         self._db_path = db_path
-        key_bytes = bytes(fernet_key)
-        self._fernet = Fernet(key_bytes)
-        self._fernet_key_bytes = key_bytes  # kept for HMAC-SHA256 decoy hashing
+        self._fernet_key_bytes = bytearray(fernet_key)  # SR-01: mutable for zeroing
+        self._fernet = Fernet(bytes(self._fernet_key_bytes))
+        # Note: Fernet internally stores an immutable copy — unavoidable with
+        # the cryptography library. We zero what we control on close().
+
+    def close(self) -> None:
+        """Zero key material and release the Fernet instance (SR-02)."""
+        for i in range(len(self._fernet_key_bytes)):
+            self._fernet_key_bytes[i] = 0
+        self._fernet = None  # type: ignore[assignment]
 
     @asynccontextmanager
     async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:

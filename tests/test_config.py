@@ -43,7 +43,7 @@ class TestDefaults:
             side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
         ):
             s = ProxySettings()
-        assert s.fernet_key == ""
+        assert s.fernet_key == bytearray()
 
     def test_default_rate_limit_rps(self) -> None:
         s = ProxySettings()
@@ -141,7 +141,7 @@ class TestFernetKeyEnv:
     def test_fernet_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "abc123secret")
         s = ProxySettings()
-        assert s.fernet_key == "abc123secret"
+        assert s.fernet_key == bytearray(b"abc123secret")
 
     def test_fernet_env_empty_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "")
@@ -150,7 +150,7 @@ class TestFernetKeyEnv:
             side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
         ):
             s = ProxySettings()
-        assert s.fernet_key == ""
+        assert s.fernet_key == bytearray()
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ class TestFernetFdFallback:
             patch("worthless.proxy.config.os.close") as mock_close,
         ):
             key = _read_fernet_key()
-        assert key == "fd-secret-key"
+        assert key == bytearray(b"fd-secret-key")
         mock_read.assert_called_once_with(99, 4096)
         mock_close.assert_called_once_with(99)
 
@@ -180,7 +180,7 @@ class TestFernetFdFallback:
         monkeypatch.setenv("WORTHLESS_FERNET_FD", "not-a-number")
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-fallback")
         key = _read_fernet_key()
-        assert key == "env-fallback"
+        assert key == bytearray(b"env-fallback")
 
     @pytest.mark.parametrize(
         "error",
@@ -201,7 +201,7 @@ class TestFernetFdFallback:
             patch("worthless.proxy.config.os.close"),
         ):
             key = _read_fernet_key()
-        assert key == "env-fallback"
+        assert key == bytearray(b"env-fallback")
 
     def test_fernet_fd_preferred_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When both fd and env are set, fd wins."""
@@ -212,7 +212,7 @@ class TestFernetFdFallback:
             patch("worthless.proxy.config.os.close"),
         ):
             key = _read_fernet_key()
-        assert key == "fd-value"
+        assert key == bytearray(b"fd-value")
 
 
 # ---------------------------------------------------------------------------

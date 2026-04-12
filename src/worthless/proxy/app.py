@@ -135,7 +135,7 @@ async def _lifespan(app: FastAPI):
     await db.commit()
     app.state.db = db
 
-    repo = ShardRepository(settings.db_path, settings.fernet_key.encode())
+    repo = ShardRepository(settings.db_path, settings.fernet_key)
     await repo.initialize()
     app.state.repo = repo
 
@@ -168,6 +168,10 @@ async def _lifespan(app: FastAPI):
     # Cleanup
     await client.aclose()
     await db.close()
+    repo.close()
+    # Zero the settings key material (SR-02)
+    for i in range(len(settings.fernet_key)):
+        settings.fernet_key[i] = 0
 
 
 def create_app(settings: ProxySettings | None = None) -> FastAPI:

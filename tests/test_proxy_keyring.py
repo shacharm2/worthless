@@ -52,7 +52,7 @@ class TestReadFernetKeyCascade:
     def test_returns_key_from_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-key-value")
         result = _read_fernet_key()
-        assert result == "env-key-value"
+        assert result == bytearray(b"env-key-value")
 
     def test_returns_key_from_keyring(self) -> None:
         with patch(
@@ -65,7 +65,7 @@ class TestReadFernetKeyCascade:
                 return_value=bytearray(b"keyring-key"),
             ):
                 result = _read_fernet_key()
-        assert result == "keyring-key"
+        assert result == bytearray(b"keyring-key")
 
     def test_returns_empty_when_nothing_found(self) -> None:
         with patch(
@@ -73,7 +73,7 @@ class TestReadFernetKeyCascade:
             side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
         ):
             result = _read_fernet_key()
-        assert result == ""
+        assert result == bytearray()
 
 
 # ===========================================================================
@@ -88,7 +88,7 @@ class TestProxySettingsKeyring:
             return_value=bytearray(b"keyring-settings-key"),
         ):
             s = ProxySettings()
-        assert s.fernet_key == "keyring-settings-key"
+        assert s.fernet_key == bytearray(b"keyring-settings-key")
 
     def test_settings_validate_passes_with_keyring(self) -> None:
         with patch(
