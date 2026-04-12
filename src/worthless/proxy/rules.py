@@ -6,6 +6,7 @@ A denied request means zero KMS calls, zero reconstruction, zero key material.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass, field
@@ -300,6 +301,9 @@ class RateLimitRule:
     _windows: dict[tuple[str, str], list[float]] = field(
         default_factory=dict, init=False, repr=False
     )
+    _locks: dict[tuple[str, str], asyncio.Lock] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _last_cleanup: float = field(default=0.0, init=False, repr=False)
     _limits: dict[str, float] = field(default_factory=dict, init=False, repr=False)
 
@@ -315,25 +319,31 @@ class RateLimitRule:
             self._cleanup(now)
             self._last_cleanup = now
 
-        # Prune timestamps older than 1 second for this key
-        window = self._windows.get(key, [])
-        cutoff = now - 1.0
-        window = [t for t in window if t > cutoff]
+        # Per-key lock serializes the read-check-update cycle to prevent
+        # concurrent requests from observing stale window state (worthless-ks6).
+        if key not in self._locks:
+            self._locks[key] = asyncio.Lock()
 
-        # Use per-enrollment limit if available, otherwise default
-        if alias not in self._limits and self.db_path is not None:
-            await self._load_limit(alias)
-        rps = self._limits.get(alias, self.default_rps)
+        async with self._locks[key]:
+            # Prune timestamps older than 1 second for this key
+            window = self._windows.get(key, [])
+            cutoff = now - 1.0
+            window = [t for t in window if t > cutoff]
 
-        if len(window) >= rps:
-            # Calculate retry-after: time until oldest entry expires
-            retry_after = max(1, int(window[0] + 1.0 - now) + 1)
+            # Use per-enrollment limit if available, otherwise default
+            if alias not in self._limits and self.db_path is not None:
+                await self._load_limit(alias)
+            rps = self._limits.get(alias, self.default_rps)
+
+            if len(window) >= rps:
+                # Calculate retry-after: time until oldest entry expires
+                retry_after = max(1, int(window[0] + 1.0 - now) + 1)
+                self._windows[key] = window
+                return rate_limit_error_response(retry_after=retry_after, provider=provider)
+
+            window.append(now)
             self._windows[key] = window
-            return rate_limit_error_response(retry_after=retry_after, provider=provider)
-
-        window.append(now)
-        self._windows[key] = window
-        return None
+            return None
 
     def _cleanup(self, now: float) -> None:
         """Remove all entries where the latest timestamp is older than 2 seconds."""
@@ -345,6 +355,7 @@ class RateLimitRule:
         ]
         for k in stale_keys:
             del self._windows[k]
+            self._locks.pop(k, None)
 
     async def _load_limit(self, alias: str) -> None:
         """Load per-enrollment rate limit from DB into cache."""
