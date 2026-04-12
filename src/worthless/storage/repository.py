@@ -85,15 +85,21 @@ class ShardRepository:
     def __init__(self, db_path: str, fernet_key: bytes | bytearray) -> None:
         self._db_path = db_path
         self._fernet_key_bytes = bytearray(fernet_key)  # SR-01: mutable for zeroing
-        self._fernet = Fernet(bytes(self._fernet_key_bytes))
+        self._fernet: Fernet | None = Fernet(bytes(self._fernet_key_bytes))
         # Note: Fernet internally stores an immutable copy — unavoidable with
         # the cryptography library. We zero what we control on close().
+
+    def _get_fernet(self) -> Fernet:
+        """Return the Fernet instance, raising if closed."""
+        if self._fernet is None:
+            raise RuntimeError("ShardRepository has been closed")
+        return self._fernet
 
     def close(self) -> None:
         """Zero key material and release the Fernet instance (SR-02)."""
         for i in range(len(self._fernet_key_bytes)):
             self._fernet_key_bytes[i] = 0
-        self._fernet = None  # type: ignore[assignment]
+        self._fernet = None
 
     @asynccontextmanager
     async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -126,7 +132,7 @@ class ShardRepository:
         Raises ``aiosqlite.IntegrityError`` if *alias* already exists.
         """
         # nosemgrep: sr01-key-material-not-bytearray (ephemeral bytes for Fernet/sqlite I/O)
-        shard_b_enc = self._fernet.encrypt(bytes(shard.shard_b))
+        shard_b_enc = self._get_fernet().encrypt(bytes(shard.shard_b))
         async with self._connect() as db:
             await db.execute(
                 "INSERT INTO shards (key_alias, shard_b_enc, commitment, nonce, provider) "
@@ -163,7 +169,7 @@ class ShardRepository:
 
         All byte fields are wrapped in ``bytearray`` per SR-01.
         """
-        shard_b = self._fernet.decrypt(encrypted.shard_b_enc)
+        shard_b = self._get_fernet().decrypt(encrypted.shard_b_enc)
         return StoredShard(
             shard_b=bytearray(shard_b),
             commitment=bytearray(encrypted.commitment),
@@ -252,7 +258,7 @@ class ShardRepository:
             effective_cap = spend_cap  # type: ignore[assignment]  # int | None at this point
 
         # nosemgrep: sr01-key-material-not-bytearray (ephemeral bytes for Fernet/sqlite I/O)
-        shard_b_enc = self._fernet.encrypt(bytes(shard.shard_b))
+        shard_b_enc = self._get_fernet().encrypt(bytes(shard.shard_b))
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
