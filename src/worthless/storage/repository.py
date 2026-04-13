@@ -85,7 +85,9 @@ class ShardRepository:
     def __init__(self, db_path: str, fernet_key: bytes | bytearray) -> None:
         self._db_path = db_path
         self._fernet_key_bytes = bytearray(fernet_key)  # SR-01: mutable for zeroing
-        self._fernet: Fernet | None = Fernet(bytes(self._fernet_key_bytes))
+        self._fernet: Fernet | None = Fernet(
+            bytes(self._fernet_key_bytes)
+        )  # nosemgrep: sr01-key-material-not-bytearray
         # Note: Fernet internally stores an immutable copy — unavoidable with
         # the cryptography library. We zero what we control on close().
 
@@ -131,13 +133,13 @@ class ShardRepository:
         Accepts bytearray or bytes for shard_b (converts to bytes for Fernet).
         Raises ``aiosqlite.IntegrityError`` if *alias* already exists.
         """
-        # nosemgrep: sr01-key-material-not-bytearray (ephemeral bytes for Fernet/sqlite I/O)
-        shard_b_enc = self._get_fernet().encrypt(bytes(shard.shard_b))
+        shard_b_enc = self._get_fernet().encrypt(
+            bytes(shard.shard_b)
+        )  # nosemgrep: sr01-key-material-not-bytearray
         async with self._connect() as db:
             await db.execute(
                 "INSERT INTO shards (key_alias, shard_b_enc, commitment, nonce, provider) "
                 "VALUES (?, ?, ?, ?, ?)",
-                # nosemgrep: sr01-key-material-not-bytearray
                 (alias, shard_b_enc, bytes(shard.commitment), bytes(shard.nonce), shard.provider),
             )
             await db.commit()
@@ -257,8 +259,9 @@ class ShardRepository:
         else:
             effective_cap = spend_cap  # type: ignore[assignment]  # int | None at this point
 
-        # nosemgrep: sr01-key-material-not-bytearray (ephemeral bytes for Fernet/sqlite I/O)
-        shard_b_enc = self._get_fernet().encrypt(bytes(shard.shard_b))
+        shard_b_enc = self._get_fernet().encrypt(
+            bytes(shard.shard_b)
+        )  # nosemgrep: sr01-key-material-not-bytearray
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
