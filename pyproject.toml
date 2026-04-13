@@ -98,7 +98,7 @@ where = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 timeout = 30
-addopts = "--strict-config --strict-markers -n auto --dist loadscope --reruns 1"
+addopts = "--strict-config --strict-markers -n auto --dist loadscope --reruns 1 -m 'not live and not docker'"
 markers = [
     "benchmark: performance and latency regression checks",
     "contract: schema-driven API and protocol checks",
