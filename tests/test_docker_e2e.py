@@ -185,8 +185,8 @@ def container(docker_image: str) -> tuple[str, int]:
 def persistent_container(docker_image: str) -> tuple[str, int, str]:
     """Container with a named volume that survives stop/start."""
     name = f"worthless-e2e-persist-{uuid.uuid4().hex[:8]}"
-    port = _free_port()
     vol = f"worthless-e2e-data-{uuid.uuid4().hex[:8]}"
+    # Let Docker pick the host port to avoid bind conflicts on reruns
     _run(
         [
             "docker",
@@ -195,7 +195,7 @@ def persistent_container(docker_image: str) -> tuple[str, int, str]:
             "--name",
             name,
             "-p",
-            f"127.0.0.1:{port}:8787",
+            "127.0.0.1::8787",
             "-e",
             "WORTHLESS_ALLOW_INSECURE=true",
             "-v",
@@ -203,6 +203,9 @@ def persistent_container(docker_image: str) -> tuple[str, int, str]:
             docker_image,
         ]
     )
+    # Discover the assigned port
+    port_out = _run_ok(["docker", "port", name, "8787"])
+    port = int(port_out.strip().rsplit(":", 1)[-1])
     try:
         assert _wait_healthy(name), f"Container {name} did not become healthy"
         yield name, port, vol  # type: ignore[misc]
