@@ -483,6 +483,148 @@ class TestEnrollCommand:
         assert stored is not None
         assert stored.provider == "openai"
 
+    def test_enroll_duplicate_alias_errors_without_destroying_first(
+        self, home_dir: WorthlessHome
+    ) -> None:
+        """Re-enrolling the same alias must error cleanly without deleting
+        the first enrollment's data."""
+        # First enrollment — should succeed
+        result1 = runner.invoke(
+            app,
+            [
+                "enroll",
+                "--alias",
+                "dup-test",
+                "--key",
+                fake_openai_key(),
+                "--provider",
+                "openai",
+            ],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result1.exit_code == 0, result1.output
+
+        # Verify first enrollment is intact
+        repo = _repo(home_dir)
+        stored_before = asyncio.run(repo.retrieve("dup-test"))
+        assert stored_before is not None
+
+        # Second enrollment — same alias — should fail
+        result2 = runner.invoke(
+            app,
+            [
+                "enroll",
+                "--alias",
+                "dup-test",
+                "--key",
+                fake_openai_key(),
+                "--provider",
+                "openai",
+            ],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result2.exit_code != 0, (
+            "Re-enrolling the same alias should fail, but exit_code was 0"
+        )
+
+        # Original enrollment must still be intact
+        stored_after = asyncio.run(repo.retrieve("dup-test"))
+        assert stored_after is not None, (
+            "First enrollment's shard was destroyed by failed re-enrollment"
+        )
+        assert (home_dir.shard_a_dir / "dup-test").exists(), (
+            "First enrollment's shard_a file was destroyed by failed re-enrollment"
+        )
+
+    def test_enroll_db_failure_no_orphan_file(
+        self, home_dir: WorthlessHome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DB failure during enroll -> no orphan shard_a file on disk.
+
+        With the current code (file-before-DB), this test FAILS because
+        shard_a is written before the DB call and is never cleaned up.
+        After the fix (DB-first + compensation), this test should PASS.
+        """
+
+        async def _db_boom(self, *args, **kwargs):
+            raise sqlite3.DatabaseError("disk I/O error")
+
+        monkeypatch.setattr(
+            "worthless.storage.repository.ShardRepository.store_enrolled",
+            _db_boom,
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "enroll",
+                "--alias",
+                "orphan-test",
+                "--key",
+                fake_openai_key(),
+                "--provider",
+                "openai",
+            ],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        # Command should fail
+        assert result.exit_code != 0
+
+        # No orphan shard_a file should remain
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
+        assert shard_a_files == [], (
+            f"Orphan shard_a file(s) found after DB failure: {[f.name for f in shard_a_files]}"
+        )
+
+    def test_enroll_file_failure_cleans_db_row(
+        self, home_dir: WorthlessHome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """File write failure during enroll -> DB enrollment row cleaned up.
+
+        Monkeypatches os.open so shard_a file creation raises OSError.
+        After the fix (DB-first + compensation), the DB row written before
+        the file attempt should be rolled back.
+        """
+        _real_open = os.open
+
+        def _fail_shard_a(path, flags, *args, **kwargs):
+            if "shard_a" in str(path) and (flags & os.O_CREAT):
+                raise PermissionError(13, "Permission denied", path)
+            return _real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", _fail_shard_a)
+
+        result = runner.invoke(
+            app,
+            [
+                "enroll",
+                "--alias",
+                "comptest",
+                "--key",
+                fake_openai_key(),
+                "--provider",
+                "openai",
+            ],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        # Command should fail
+        assert result.exit_code != 0
+
+        # No shard_a file should exist
+        shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
+        assert shard_a_files == []
+
+        # No DB shard should remain (compensation)
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert aliases == [], f"DB shard row(s) not cleaned up after file failure: {aliases}"
+
+        # No DB enrollment row should remain either
+        enrollments = asyncio.run(repo.list_enrollments(alias="comptest"))
+        assert enrollments == [], (
+            f"DB enrollment row(s) not cleaned up after file failure: {enrollments}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Old decoy migration (WOR-31 Step 5)

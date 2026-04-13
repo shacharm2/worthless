@@ -133,7 +133,7 @@ def live_proxy():
         # Create proxy app
         settings = ProxySettings(
             db_path=db_path,
-            fernet_key=fernet_key.decode(),
+            fernet_key=bytearray(fernet_key),
             shard_a_dir=shard_a_dir,
             allow_insecure=True,
             allow_alias_inference=True,

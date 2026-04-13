@@ -33,8 +33,12 @@ from worthless.adapters.types import INTERNAL_HEADER_PREFIX
 from worthless.crypto.splitter import reconstruct_key, secure_key
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
-from worthless.proxy.metering import extract_usage_anthropic, extract_usage_openai, record_spend
-from worthless.proxy.middleware import BodySizeLimitMiddleware
+from worthless.proxy.metering import (
+    StreamingUsageCollector,
+    extract_usage_anthropic,
+    extract_usage_openai,
+    record_spend,
+)
 from worthless.proxy.rules import (
     RateLimitRule,
     RulesEngine,
@@ -135,7 +139,7 @@ async def _lifespan(app: FastAPI):
     await db.commit()
     app.state.db = db
 
-    repo = ShardRepository(settings.db_path, settings.fernet_key.encode())
+    repo = ShardRepository(settings.db_path, settings.fernet_key)
     await repo.initialize()
     app.state.repo = repo
 
@@ -165,9 +169,14 @@ async def _lifespan(app: FastAPI):
 
     yield
 
-    # Cleanup
-    await client.aclose()
-    await db.close()
+    # Cleanup — zeroing MUST happen even if earlier cleanup steps raise (SR-02)
+    try:
+        await client.aclose()
+        await db.close()
+        repo.close()
+    finally:
+        for i in range(len(settings.fernet_key)):
+            settings.fernet_key[i] = 0
 
 
 def create_app(settings: ProxySettings | None = None) -> FastAPI:
@@ -192,7 +201,6 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
 
     # Middleware stack (reverse order: last registered runs first)
     app.add_middleware(CORSMiddleware, allow_origins=[], allow_methods=["GET"], allow_headers=[])
-    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
 
     # Health endpoints (no auth)
 
@@ -377,19 +385,36 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 )
 
             if adapter_resp.is_streaming and adapter_resp.stream is not None:
-                collected_chunks: list[bytes] = []
+                usage_collector = StreamingUsageCollector(provider=encrypted.provider)
 
                 async def _stream_with_metering() -> AsyncIterator[bytes]:
                     try:
                         async for chunk in adapter_resp.stream:  # type: ignore[union-attr]
-                            collected_chunks.append(chunk)
+                            usage_collector.feed(chunk)
                             yield chunk
                     finally:
                         # Client disconnect or stream end: close upstream
                         await upstream_resp.aclose()  # type: ignore[union-attr]
 
                 async def _record_metering():
-                    await _do_record_spend(b"".join(collected_chunks))
+                    usage = usage_collector.result()
+                    if usage is not None:
+                        await record_spend(
+                            settings.db_path,
+                            alias,
+                            usage.total_tokens,
+                            usage.model,
+                            encrypted.provider,
+                        )
+                    else:
+                        # Zero friction: if we can't extract usage (provider
+                        # changed SSE format, etc.), log a warning but don't
+                        # penalize the user with phantom spend.
+                        logger.warning(
+                            "Could not extract usage from streaming response "
+                            "for alias=%s; spend not recorded",
+                            alias,
+                        )
 
                 return StreamingResponse(
                     _stream_with_metering(),

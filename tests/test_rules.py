@@ -936,6 +936,130 @@ async def test_spend_cap_fail_closed_on_db_error(tmp_path):
         await db_conn.close()
 
 
+# ---------------------------------------------------------------------------
+# RateLimitRule — concurrency (worthless-ks6)
+#
+# The race condition is between window read (line ~319) and window write
+# (line ~335), separated by `await self._load_limit(alias)`.  To expose
+# it we MUST provide a db_path so the await actually yields the event
+# loop.  Without yielding, asyncio.gather runs each coroutine to
+# completion before starting the next — no interleaving, no race.
+# ---------------------------------------------------------------------------
+
+
+async def _setup_rate_limit_db(db_path: str, *, alias: str, rps: float) -> None:
+    """Create a DB with enrollment_config for per-key rate limit."""
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.execute(
+            "INSERT INTO enrollment_config (key_alias, rate_limit_rps) VALUES (?, ?)",
+            (alias, rps),
+        )
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_concurrent_burst_no_overcount(tmp_path):
+    """5 concurrent requests at rps=5 all pass; next 5 all denied.
+
+    Validates that the sliding-window read-modify-write is atomic:
+    no undercounting (security) and no overcounting (false-positive UX).
+
+    Uses db_path to force an await inside evaluate(), which yields
+    to the event loop and exposes the read-modify-write race.
+    """
+    db_path = str(tmp_path / "rl1.db")
+    await _setup_rate_limit_db(db_path, alias="burst-alias", rps=5.0)
+
+    rule = RateLimitRule(default_rps=5.0, db_path=db_path)
+    req = _fake_request("10.0.0.99")
+
+    # Fire 5 concurrent calls — all should be allowed
+    first_batch = await asyncio.gather(*(rule.evaluate("burst-alias", req) for _ in range(5)))
+    allowed = [r for r in first_batch if r is None]
+    assert len(allowed) == 5, (
+        f"Expected exactly 5 allowed, got {len(allowed)}. "
+        f"Race condition: concurrent reads see stale window state."
+    )
+
+    # Fire 5 more — all should be denied (429)
+    second_batch = await asyncio.gather(*(rule.evaluate("burst-alias", req) for _ in range(5)))
+    denied = [r for r in second_batch if r is not None and r.status_code == 429]
+    assert len(denied) == 5, (
+        f"Expected exactly 5 denied, got {len(denied)}. Window lost updates from concurrent writes."
+    )
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_no_false_positive_under_limit(tmp_path):
+    """10 concurrent requests at rps=10 all pass — no false denials.
+
+    Without locking, concurrent reads can overcount the window length
+    and falsely deny requests that should be within the limit.
+
+    We force every call to hit the `await _load_limit()` path by
+    clearing the limits cache before each evaluate, ensuring the
+    event loop yields between window read and write every time.
+    """
+    db_path = str(tmp_path / "rl2.db")
+    await _setup_rate_limit_db(db_path, alias="fp-alias", rps=10.0)
+
+    rule = RateLimitRule(default_rps=10.0, db_path=db_path)
+    req = _fake_request("10.0.0.100")
+
+    async def _evaluate_uncached(alias: str, request: object, **kwargs):
+        """Clear the limit cache so _load_limit always fires (and yields)."""
+        rule._limits.pop(alias, None)
+        return await RateLimitRule.evaluate(rule, alias, request, **kwargs)
+
+    results = await asyncio.gather(*(_evaluate_uncached("fp-alias", req) for _ in range(10)))
+
+    allowed = [r for r in results if r is None]
+    assert len(allowed) == 10, (
+        f"Expected all 10 allowed (within limit), got {len(allowed)} allowed. "
+        f"False positives from concurrent overcounting."
+    )
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_concurrent_exact_boundary(tmp_path):
+    """At rps=3, exactly 3 concurrent pass; the 4th is denied.
+
+    Also verifies a mixed gather of 4 concurrent calls yields exactly
+    3 allows and 1 denial.
+    """
+    db_path = str(tmp_path / "rl3.db")
+    await _setup_rate_limit_db(db_path, alias="boundary-alias", rps=3.0)
+    # Second alias for phase 3
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO enrollment_config (key_alias, rate_limit_rps) VALUES (?, ?)",
+            ("boundary-alias-2", 3.0),
+        )
+        await db.commit()
+
+    rule = RateLimitRule(default_rps=3.0, db_path=db_path)
+    req = _fake_request("10.0.0.101")
+
+    # Phase 1: 3 concurrent — all should pass
+    batch1 = await asyncio.gather(*(rule.evaluate("boundary-alias", req) for _ in range(3)))
+    allowed1 = [r for r in batch1 if r is None]
+    assert len(allowed1) == 3, f"Expected 3 allowed, got {len(allowed1)}."
+
+    # Phase 2: 1 more — should be denied
+    extra = await rule.evaluate("boundary-alias", req)
+    assert extra is not None and extra.status_code == 429, (
+        "4th request should be denied after 3 concurrent fills."
+    )
+
+    # Phase 3: fresh alias, 4 concurrent — exactly 3 pass, 1 denied
+    batch2 = await asyncio.gather(*(rule.evaluate("boundary-alias-2", req) for _ in range(4)))
+    allowed2 = [r for r in batch2 if r is None]
+    denied2 = [r for r in batch2 if r is not None and r.status_code == 429]
+    assert len(allowed2) == 3, f"Expected exactly 3 allowed in mixed gather, got {len(allowed2)}."
+    assert len(denied2) == 1, f"Expected exactly 1 denied in mixed gather, got {len(denied2)}."
+
+
 @pytest.mark.asyncio
 async def test_rate_limiter_ttl_cleanup():
     """Rate limiter _windows dict entries older than 2s are cleaned up."""
@@ -958,6 +1082,9 @@ async def test_rate_limiter_ttl_cleanup():
     assert ("k1", "10.0.0.1") not in rule._windows
     assert ("k2", "10.0.0.2") not in rule._windows
     assert ("k3", "10.0.0.3") in rule._windows
+    # Locks should be cleaned alongside windows
+    assert ("k1", "10.0.0.1") not in rule._locks
+    assert ("k2", "10.0.0.2") not in rule._locks
 
 
 @pytest.mark.asyncio
@@ -981,6 +1108,7 @@ async def test_rate_limiter_expired_keys_removed():
     # All old entries should be removed
     for i in range(5):
         assert (f"alias-{i}", "10.0.0.1") not in rule._windows
+        assert (f"alias-{i}", "10.0.0.1") not in rule._locks
     assert ("fresh-alias", "10.0.0.1") in rule._windows
 
 

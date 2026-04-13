@@ -22,14 +22,15 @@ def _env_bool(name: str) -> bool:
     return os.environ.get(name, "").lower() in ("1", "true", "yes")
 
 
-def _read_fernet_key() -> str:
+def _read_fernet_key() -> bytearray:
     """Read Fernet key: fd (secure pipe) -> keystore (env/keyring/file).
 
     Fd is checked first because it's the secure pipe transport from the
     parent CLI — env vars leak via /proc on Linux. The keystore cascade
     handles persistent storage backends (env override, keyring, file).
 
-    Returns empty string if no key found — ProxySettings.validate()
+    Returns bytearray per SR-01 (mutable, can be zeroed).
+    Returns empty bytearray if no key found — ProxySettings.validate()
     catches that as a startup error.
     """
     # 1. Inherited fd — secure pipe from parent CLI, always preferred
@@ -37,17 +38,26 @@ def _read_fernet_key() -> str:
     if fd_str:
         try:
             fd = int(fd_str)
-            key = os.read(fd, 4096).decode().strip()
-            os.close(fd)
-            return key
-        except (ValueError, OSError):
+        except ValueError:
             pass
+        else:
+            try:
+                raw = os.read(fd, 4096)
+                return bytearray(raw.strip())
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
 
     # 2. Keystore cascade (env -> keyring -> file)
+    # Respect WORTHLESS_HOME so the keyring username hash matches the
+    # home_dir used at enrollment time (worthless-2fd namespacing).
     try:
-        return read_fernet_key().decode()
+        home_env = os.environ.get("WORTHLESS_HOME")
+        home_dir = Path(home_env) if home_env else None
+        return read_fernet_key(home_dir)
     except Exception:
-        return ""
+        return bytearray()
 
 
 @dataclass
@@ -57,7 +67,7 @@ class ProxySettings:
     db_path: str = field(
         default_factory=lambda: os.environ.get("WORTHLESS_DB_PATH", _default_db_path())
     )
-    fernet_key: str = field(default_factory=lambda: _read_fernet_key())
+    fernet_key: bytearray = field(default_factory=lambda: _read_fernet_key())
     default_rate_limit_rps: float = field(
         default_factory=lambda: float(os.environ.get("WORTHLESS_RATE_LIMIT_RPS", "100.0"))
     )
@@ -74,15 +84,10 @@ class ProxySettings:
     allow_alias_inference: bool = field(
         default_factory=lambda: _env_bool("WORTHLESS_ALLOW_ALIAS_INFERENCE")
     )
-    max_request_bytes: int = field(
-        default_factory=lambda: int(
-            os.environ.get("WORTHLESS_MAX_REQUEST_BYTES", str(10 * 1024 * 1024))
-        )
-    )
 
     def validate(self) -> None:
         """Raise if required settings are missing."""
-        if not self.fernet_key:
+        if len(self.fernet_key) == 0:
             raise ValueError(
                 "Fernet key not available. "
                 "Set WORTHLESS_FERNET_KEY or check OS keyring, "

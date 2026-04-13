@@ -13,7 +13,7 @@ from collections.abc import Generator
 from cryptography.fernet import Fernet
 
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
-from worthless.cli.keystore import read_fernet_key, store_fernet_key
+from worthless.cli.keystore import migrate_file_to_keyring, read_fernet_key, store_fernet_key
 from worthless.cli.platform import IS_WINDOWS
 
 _DEFAULT_BASE = Path.home() / ".worthless"
@@ -87,6 +87,8 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 raise
             key = Fernet.generate_key()
             store_fernet_key(key, home_dir=home.base_dir)
+        else:
+            migrate_file_to_keyring(home.base_dir)
     except WorthlessError:
         raise
     except OSError as exc:

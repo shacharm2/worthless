@@ -47,7 +47,7 @@ def _proxy_headers(alias: str, shard_a_b64: str) -> dict[str, str]:
 def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettings:
     return ProxySettings(
         db_path=tmp_db_path,
-        fernet_key=fernet_key.decode(),
+        fernet_key=bytearray(fernet_key),
         default_rate_limit_rps=100.0,
         upstream_timeout=10.0,
         streaming_timeout=30.0,

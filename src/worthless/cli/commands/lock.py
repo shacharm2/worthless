@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
+import sqlite3
+import sys
 from pathlib import Path
 
 import typer
@@ -19,6 +22,8 @@ from worthless.cli.key_patterns import ENTROPY_THRESHOLD, detect_prefix
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.crypto.splitter import split_key
 from worthless.storage.repository import ShardRepository, StoredShard
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_PROVIDERS = frozenset(_PROVIDER_ENV_MAP.keys())
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -274,9 +279,18 @@ def _enroll_single(
     provider: str,
     home: WorthlessHome,
 ) -> None:
-    """Enroll a single key (no .env scanning)."""
+    """Enroll a single key (no .env scanning).
+
+    Write order: DB first, file second — matching _lock_keys pattern.
+    Compensation on failure: clean up whichever artifact was written.
+    """
     if not _ALIAS_RE.match(alias):
         raise WorthlessError(ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}")
+
+    sr = split_key(key.encode())
+    db_written = False
+    shard_a_written = False
+    shard_a_path = home.shard_a_dir / alias
 
     async def _enroll_async():
         repo = ShardRepository(str(home.db_path), home.fernet_key)
@@ -294,16 +308,71 @@ def _enroll_single(
             env_path=None,
         )
 
-    sr = split_key(key.encode())
     try:
-        shard_a_path = home.shard_a_dir / alias
+        # Check for existing enrollment or orphan shard_a from a prior failed one
+        if shard_a_path.exists():
+            conn = sqlite3.connect(str(home.db_path))
+            try:
+                row = conn.execute("SELECT 1 FROM shards WHERE key_alias = ?", (alias,)).fetchone()
+            finally:
+                conn.close()
+            if row is None:
+                # Orphan file from a prior failed enrollment — safe to clean up
+                shard_a_path.unlink()
+            else:
+                # Fully enrolled key — refuse to overwrite
+                raise WorthlessError(
+                    ErrorCode.SCAN_ERROR,
+                    f"Alias {alias!r} is already enrolled",
+                )
+
+        # DB first — atomic commit point
+        asyncio.run(_enroll_async())
+        db_written = True
+
+        # shard_a file second
         fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             os.write(fd, bytes(sr.shard_a))  # nosemgrep: sr01-key-material-not-bytearray
         finally:
             os.close(fd)
+        shard_a_written = True
+    except Exception as exc:
+        # Compensate: clean up partial state
+        if shard_a_written:
+            shard_a_path.unlink(missing_ok=True)
+        if db_written:
+            # Sync compensation — avoids nested asyncio.run() issues.
+            # Only delete THIS enrollment, not all enrollments for the alias
+            # (another env_path may have a pre-existing enrollment).
 
-        asyncio.run(_enroll_async())
+            try:
+                conn = sqlite3.connect(str(home.db_path))
+                try:
+                    conn.execute("PRAGMA foreign_keys = ON")
+                    conn.execute(
+                        "DELETE FROM enrollments"
+                        " WHERE key_alias = ? AND var_name = ? AND env_path IS NULL",
+                        (alias, alias),
+                    )
+                    # If no other enrollments remain, remove the shard too
+                    remaining = conn.execute(
+                        "SELECT COUNT(*) FROM enrollments WHERE key_alias = ?",
+                        (alias,),
+                    ).fetchone()[0]
+                    if remaining == 0:
+                        conn.execute("DELETE FROM shards WHERE key_alias = ?", (alias,))
+                    conn.commit()
+                finally:
+                    conn.close()
+            except Exception:
+                logger.debug("Compensation cleanup failed for %s", alias, exc_info=True)
+        if isinstance(exc, WorthlessError):
+            raise
+        raise WorthlessError(
+            ErrorCode.SHARD_STORAGE_FAILED,
+            sanitize_exception(exc, generic="failed to enroll key"),
+        ) from exc
     finally:
         sr.zero()
 
@@ -344,8 +413,6 @@ def register_lock_commands(app: typer.Typer) -> None:
         provider: str = typer.Option(..., "--provider", "-p", help="Provider name"),
     ) -> None:
         """Enroll a single API key (scripting/CI primitive)."""
-        import sys
-
         home = get_home()
 
         if key_stdin:

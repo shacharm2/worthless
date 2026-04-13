@@ -33,7 +33,7 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettin
     shard_a_dir = str(tmp_path / "shard_a")
     return ProxySettings(
         db_path=tmp_db_path,
-        fernet_key=fernet_key.decode(),
+        fernet_key=bytearray(fernet_key),
         default_rate_limit_rps=100.0,
         upstream_timeout=10.0,
         streaming_timeout=30.0,
@@ -479,7 +479,7 @@ class TestSecurity:
 
         settings = ProxySettings(
             db_path=tmp_db_path,
-            fernet_key=fernet_key.decode(),
+            fernet_key=bytearray(fernet_key),
             allow_insecure=False,
             shard_a_dir=proxy_settings.shard_a_dir,
         )
@@ -538,7 +538,7 @@ class TestSettingsValidation:
         """create_app() should raise ValueError when fernet_key is empty."""
         settings = ProxySettings(
             db_path=str(tmp_path / "test.db"),
-            fernet_key="",
+            fernet_key=bytearray(),
             allow_insecure=True,
         )
         with pytest.raises(ValueError, match="WORTHLESS_FERNET_KEY"):

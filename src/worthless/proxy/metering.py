@@ -121,6 +121,112 @@ def extract_usage_anthropic(data: bytes) -> UsageInfo | None:
     return UsageInfo(total_tokens=input_tokens + output_tokens, model=model)
 
 
+class StreamingUsageCollector:
+    """Incrementally extract usage from SSE chunks without buffering.
+
+    Processes each chunk as it arrives, extracting only usage-bearing
+    data. Does not store raw chunks — bounded memory regardless of
+    stream length.
+    """
+
+    def __init__(self, provider: str) -> None:
+        self.provider = provider
+        self._partial_line: str = ""
+        self._input_tokens: int = 0
+        self._output_tokens: int = 0
+        self._total_tokens: int | None = None
+        self._model: str | None = None
+        self._pending_event: str | None = None
+        self._found_usage = False
+
+    # No legitimate SSE line exceeds 64KB; cap _partial_line to prevent
+    # a malicious upstream without newlines from growing it unbounded.
+    _MAX_PARTIAL_LINE = 65_536
+
+    def feed(self, chunk: bytes) -> None:
+        """Process an SSE chunk, extracting usage data."""
+        text = self._partial_line + chunk.decode("utf-8", errors="replace")
+        lines = text.split("\n")
+        # Last element may be incomplete — save for next feed
+        partial = lines[-1]
+        if len(partial) > self._MAX_PARTIAL_LINE:
+            partial = ""  # discard oversized partial — no legitimate SSE line is this big
+        self._partial_line = partial
+
+        for line in lines[:-1]:
+            stripped = line.strip()
+            if stripped.startswith("event: "):
+                self._pending_event = stripped[7:]
+            elif stripped.startswith("data: "):
+                payload = stripped[6:]
+                if payload == "[DONE]":
+                    continue
+                self._parse_data(payload)
+
+    def _parse_data(self, payload: str) -> None:
+        """Parse a single SSE data line and extract usage if present."""
+        try:
+            parsed = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            return
+
+        if not isinstance(parsed, dict):
+            return
+
+        if self.provider == "openai":
+            usage = parsed.get("usage")
+            if usage and isinstance(usage, dict):
+                self._total_tokens = usage.get("total_tokens", 0)
+                self._model = parsed.get("model", self._model)
+                self._found_usage = True
+        elif self.provider == "anthropic":
+            if self._pending_event == "message_start":
+                msg = parsed.get("message")
+                if not isinstance(msg, dict):
+                    return
+                usage = msg.get("usage")
+                if isinstance(usage, dict):
+                    self._input_tokens = usage.get("input_tokens", 0)
+                self._model = msg.get("model", self._model)
+            elif self._pending_event == "message_delta":
+                usage = parsed.get("usage")
+                if not isinstance(usage, dict):
+                    return
+                if "output_tokens" in usage:
+                    self._output_tokens = usage["output_tokens"]
+                    self._found_usage = True
+
+        self._pending_event = None
+
+    def _flush_partial(self) -> None:
+        """Parse any leftover data in _partial_line before returning results."""
+        if self._partial_line:
+            stripped = self._partial_line.strip()
+            if stripped.startswith("data: "):
+                payload = stripped[6:]
+                if payload != "[DONE]":
+                    self._parse_data(payload)
+            elif stripped.startswith("event: "):
+                self._pending_event = stripped[7:]
+            self._partial_line = ""
+
+    def result(self) -> UsageInfo | None:
+        """Return extracted usage after stream ends."""
+        self._flush_partial()
+        if self.provider == "openai":
+            if self._total_tokens is not None:
+                return UsageInfo(total_tokens=self._total_tokens, model=self._model)
+            return None
+        elif self.provider == "anthropic":
+            if not self._found_usage:
+                return None
+            return UsageInfo(
+                total_tokens=self._input_tokens + self._output_tokens,
+                model=self._model,
+            )
+        return None
+
+
 async def record_spend(
     db_path: str,
     alias: str,

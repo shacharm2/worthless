@@ -43,7 +43,7 @@ class TestDefaults:
             side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
         ):
             s = ProxySettings()
-        assert s.fernet_key == ""
+        assert s.fernet_key == bytearray()
 
     def test_default_rate_limit_rps(self) -> None:
         s = ProxySettings()
@@ -64,10 +64,6 @@ class TestDefaults:
     def test_default_shard_a_dir(self) -> None:
         s = ProxySettings()
         assert s.shard_a_dir == str(Path.home() / ".worthless" / "shard_a")
-
-    def test_default_max_request_bytes(self) -> None:
-        s = ProxySettings()
-        assert s.max_request_bytes == 10 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -103,11 +99,6 @@ class TestCustomValues:
         s = ProxySettings()
         assert s.shard_a_dir == "/tmp/shards"  # noqa: S108
 
-    def test_custom_max_request_bytes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("WORTHLESS_MAX_REQUEST_BYTES", "1024")
-        s = ProxySettings()
-        assert s.max_request_bytes == 1024
-
 
 # ---------------------------------------------------------------------------
 # Tests: ALLOW_INSECURE truthy/falsy
@@ -141,7 +132,7 @@ class TestFernetKeyEnv:
     def test_fernet_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "abc123secret")
         s = ProxySettings()
-        assert s.fernet_key == "abc123secret"
+        assert s.fernet_key == bytearray(b"abc123secret")
 
     def test_fernet_env_empty_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "")
@@ -150,7 +141,7 @@ class TestFernetKeyEnv:
             side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
         ):
             s = ProxySettings()
-        assert s.fernet_key == ""
+        assert s.fernet_key == bytearray()
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +162,7 @@ class TestFernetFdFallback:
             patch("worthless.proxy.config.os.close") as mock_close,
         ):
             key = _read_fernet_key()
-        assert key == "fd-secret-key"
+        assert key == bytearray(b"fd-secret-key")
         mock_read.assert_called_once_with(99, 4096)
         mock_close.assert_called_once_with(99)
 
@@ -180,7 +171,7 @@ class TestFernetFdFallback:
         monkeypatch.setenv("WORTHLESS_FERNET_FD", "not-a-number")
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-fallback")
         key = _read_fernet_key()
-        assert key == "env-fallback"
+        assert key == bytearray(b"env-fallback")
 
     @pytest.mark.parametrize(
         "error",
@@ -201,7 +192,21 @@ class TestFernetFdFallback:
             patch("worthless.proxy.config.os.close"),
         ):
             key = _read_fernet_key()
-        assert key == "env-fallback"
+        assert key == bytearray(b"env-fallback")
+
+    def test_fernet_fd_closed_even_when_read_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If os.read(fd) raises OSError, the fd must still be closed."""
+        monkeypatch.setenv("WORTHLESS_FERNET_FD", "99")
+        monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-fallback")
+        with (
+            patch("worthless.proxy.config.os.read", side_effect=OSError("read boom")),
+            patch("worthless.proxy.config.os.close") as mock_close,
+        ):
+            key = _read_fernet_key()
+        # Key should fall back to env
+        assert key == bytearray(b"env-fallback")
+        # fd must have been closed despite the read failure
+        mock_close.assert_called_once_with(99)
 
     def test_fernet_fd_preferred_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When both fd and env are set, fd wins."""
@@ -212,7 +217,7 @@ class TestFernetFdFallback:
             patch("worthless.proxy.config.os.close"),
         ):
             key = _read_fernet_key()
-        assert key == "fd-value"
+        assert key == bytearray(b"fd-value")
 
 
 # ---------------------------------------------------------------------------
@@ -258,11 +263,6 @@ class TestInvalidValues:
 
     def test_empty_string_for_float(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_RATE_LIMIT_RPS", "")
-        with pytest.raises(ValueError):
-            ProxySettings()
-
-    def test_empty_string_for_int(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("WORTHLESS_MAX_REQUEST_BYTES", "")
         with pytest.raises(ValueError):
             ProxySettings()
 

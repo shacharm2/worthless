@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -14,6 +15,19 @@ logger = logging.getLogger(__name__)
 
 _SERVICE = "worthless"
 _USERNAME = "fernet-key"
+
+
+def _keyring_username(home_dir: Path | None = None) -> str:
+    """Derive a per-install keyring username to avoid collisions.
+
+    Two worthless installs on the same machine (e.g. staging vs prod) get
+    unique keyring entries based on the resolved home directory path.
+    """
+    if home_dir is None:
+        home_dir = Path.home() / ".worthless"
+    digest = hashlib.sha256(str(home_dir.resolve()).encode()).hexdigest()[:12]
+    return f"fernet-key-{digest}"
+
 
 # Fully-qualified backend names that are not real credential stores.
 # Matched against module.qualname (e.g. "keyring.backends.fail.Keyring").
@@ -49,13 +63,54 @@ def store_fernet_key(key: bytes, home_dir: Path | None = None) -> None:
     """
     if keyring_available():
         try:
-            keyring.set_password(_SERVICE, _USERNAME, key.decode())
+            keyring.set_password(_SERVICE, _keyring_username(home_dir), key.decode())
             logger.info("Fernet key stored in OS keyring")
+            # Clean up stale fernet.key file left from pre-keyring installs
+            try:
+                stale = _fernet_file_path(home_dir)
+                if stale.exists():
+                    stale.unlink()
+                    logger.info("Removed stale fernet.key file")
+            except OSError:
+                logger.warning("Could not remove stale fernet.key file; remove it manually")
             return
         except Exception:
             logger.warning("Keyring write failed, falling back to file")
 
     _write_key_file(key, home_dir)
+
+
+def migrate_file_to_keyring(home_dir: Path | None = None) -> bool:
+    """Opportunistically promote a file-based Fernet key to the OS keyring.
+
+    Returns True if migration succeeded, False if skipped or failed.
+    Never raises — all failures are swallowed to debug log.
+    """
+    try:
+        if not keyring_available():
+            return False
+        # Already in keyring? Nothing to do.
+        username = _keyring_username(home_dir)
+        if keyring.get_password(_SERVICE, username) is not None:
+            return False
+        # File exists?
+        fernet_path = _fernet_file_path(home_dir)
+        if not fernet_path.exists():
+            return False
+        # Read from file and store to keyring (which also cleans up the file).
+        # store_fernet_key deletes the file on keyring success and re-creates
+        # it on fallback. If the file still exists afterward, keyring write
+        # failed and the migration did not actually happen.
+        key_bytes = fernet_path.read_bytes().strip()
+        store_fernet_key(key_bytes, home_dir)
+        if fernet_path.exists():
+            logger.debug("Keyring write fell back to file; migration not successful")
+            return False
+        logger.info("Migrated Fernet key from file to OS keyring")
+        return True
+    except Exception:
+        logger.debug("File-to-keyring migration skipped", exc_info=True)
+        return False
 
 
 def _fernet_file_path(home_dir: Path | None) -> Path:
@@ -93,10 +148,10 @@ def read_fernet_key(home_dir: Path | None = None) -> bytearray:
     if env_val:
         return bytearray(env_val.encode())
 
-    # 2. Keyring
+    # 2. Keyring (namespaced username only — no legacy fallback)
     if keyring_available():
         try:
-            value = keyring.get_password(_SERVICE, _USERNAME)
+            value = keyring.get_password(_SERVICE, _keyring_username(home_dir))
             if value is not None:
                 return bytearray(value.encode())
         except Exception:
@@ -118,7 +173,7 @@ def delete_fernet_key(home_dir: Path | None = None) -> None:
     """Remove Fernet key from keyring and file. Never raises on missing."""
     if keyring_available():
         try:
-            keyring.delete_password(_SERVICE, _USERNAME)
+            keyring.delete_password(_SERVICE, _keyring_username(home_dir))
         except Exception:
             logger.debug("Keyring delete failed (may not exist)")
 

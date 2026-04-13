@@ -9,8 +9,8 @@ Run with:
 
 from __future__ import annotations
 
+import os
 import shutil
-import socket
 import subprocess
 import time
 import uuid
@@ -31,7 +31,11 @@ pytestmark = [
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO_ROOT / "Dockerfile"
-IMAGE_TAG = "worthless-test:e2e"
+
+# Use env var if set (CI builds image separately), otherwise build with a
+# unique tag per test session to avoid races between parallel runs.
+_SESSION_ID = uuid.uuid4().hex[:8]
+IMAGE_TAG = os.environ.get("WORTHLESS_DOCKER_IMAGE", f"worthless-test:e2e-{_SESSION_ID}")
 
 
 # ---------------------------------------------------------------------------
@@ -94,11 +98,13 @@ def _wait_healthy(container: str, timeout: float = 60.0) -> bool:
     return False
 
 
-def _free_port() -> int:
-    """Find a free TCP port."""
-    with socket.socket() as s:
-        s.bind(("", 0))
-        return s.getsockname()[1]
+def _cleanup_container(name: str) -> None:
+    """Force-remove a container and its associated volumes if they exist."""
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+    subprocess.run(
+        ["docker", "volume", "rm", "-f", f"{name}-data", f"{name}-secrets"],
+        capture_output=True,
+    )
 
 
 def _fake_openai_key() -> str:
@@ -123,10 +129,18 @@ def _fake_openai_key() -> str:
 
 @pytest.fixture(scope="session")
 def docker_image() -> str:
-    """Build the Docker image once per session."""
+    """Build the Docker image once per session.
+
+    If WORTHLESS_DOCKER_IMAGE is set (CI), skip the build and use that tag.
+    """
     result = subprocess.run(["docker", "info"], capture_output=True)
     if result.returncode != 0:
         pytest.skip("Docker daemon not running")
+
+    if os.environ.get("WORTHLESS_DOCKER_IMAGE"):
+        # CI already built the image -- just use it
+        yield IMAGE_TAG  # type: ignore[misc]
+        return
 
     _run(
         [
@@ -147,7 +161,8 @@ def docker_image() -> str:
 def container(docker_image: str) -> tuple[str, int]:
     """Run a standalone container (single /data volume, no compose)."""
     name = f"worthless-e2e-{uuid.uuid4().hex[:8]}"
-    port = _free_port()
+    # Pre-cleanup in case a previous crashed run left a container with this name
+    _cleanup_container(name)
     _run(
         [
             "docker",
@@ -156,7 +171,7 @@ def container(docker_image: str) -> tuple[str, int]:
             "--name",
             name,
             "-p",
-            f"127.0.0.1:{port}:8787",
+            "127.0.0.1::8787",
             "-e",
             "WORTHLESS_ALLOW_INSECURE=true",
             "--read-only",
@@ -171,22 +186,23 @@ def container(docker_image: str) -> tuple[str, int]:
             docker_image,
         ]
     )
+    port = int(_run_ok(["docker", "port", name, "8787"]).rsplit(":", 1)[-1])
     try:
         assert _wait_healthy(name), f"Container {name} did not become healthy"
         yield name, port  # type: ignore[misc]
     finally:
-        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
-        subprocess.run(
-            ["docker", "volume", "rm", "-f", f"{name}-data", f"{name}-secrets"], capture_output=True
-        )
+        _cleanup_container(name)
 
 
 @pytest.fixture()
 def persistent_container(docker_image: str) -> tuple[str, int, str]:
     """Container with a named volume that survives stop/start."""
     name = f"worthless-e2e-persist-{uuid.uuid4().hex[:8]}"
-    port = _free_port()
     vol = f"worthless-e2e-data-{uuid.uuid4().hex[:8]}"
+    # Pre-cleanup
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+    subprocess.run(["docker", "volume", "rm", "-f", vol], capture_output=True)
+    # Let Docker pick the host port to avoid bind conflicts on reruns
     _run(
         [
             "docker",
@@ -195,7 +211,7 @@ def persistent_container(docker_image: str) -> tuple[str, int, str]:
             "--name",
             name,
             "-p",
-            f"127.0.0.1:{port}:8787",
+            "127.0.0.1::8787",
             "-e",
             "WORTHLESS_ALLOW_INSECURE=true",
             "-v",
@@ -203,6 +219,9 @@ def persistent_container(docker_image: str) -> tuple[str, int, str]:
             docker_image,
         ]
     )
+    # Discover the assigned port
+    port_out = _run_ok(["docker", "port", name, "8787"])
+    port = int(port_out.strip().rsplit(":", 1)[-1])
     try:
         assert _wait_healthy(name), f"Container {name} did not become healthy"
         yield name, port, vol  # type: ignore[misc]

@@ -42,7 +42,7 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettin
     shard_a_dir = str(tmp_path / "shard_a")
     return ProxySettings(
         db_path=tmp_db_path,
-        fernet_key=fernet_key.decode(),
+        fernet_key=bytearray(fernet_key),
         default_rate_limit_rps=100.0,
         upstream_timeout=10.0,
         streaming_timeout=30.0,
@@ -1105,85 +1105,6 @@ class TestGatewayErrorResponse:
 
 
 # ------------------------------------------------------------------
-# M-1: Body Size Limit Middleware
-# ------------------------------------------------------------------
-
-
-class TestBodySizeLimit:
-    """BodySizeLimitMiddleware rejects requests > max_bytes with 413."""
-
-    @pytest.fixture()
-    def body_limit_app(self, proxy_settings: ProxySettings):
-        """App with body size middleware registered."""
-        app = create_app(proxy_settings)
-        return app
-
-    @pytest.fixture()
-    async def body_limit_client(self, body_limit_app, repo):
-        """Client with body size middleware and manually set state."""
-        import aiosqlite
-
-        from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
-
-        db = await aiosqlite.connect(body_limit_app.state.settings.db_path)
-        body_limit_app.state.db = db
-        body_limit_app.state.repo = repo
-        body_limit_app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
-        body_limit_app.state.rules_engine = RulesEngine(
-            rules=[
-                SpendCapRule(db=db),
-                RateLimitRule(default_rps=100.0),
-            ]
-        )
-        transport = httpx.ASGITransport(app=body_limit_app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            yield client
-        await body_limit_app.state.httpx_client.aclose()
-        await db.close()
-
-    async def test_oversized_request_returns_413(self, body_limit_client):
-        """Request with Content-Length > 10MB returns 413."""
-        resp = await body_limit_client.post(
-            "/v1/chat/completions",
-            headers={
-                "content-length": str(11 * 1024 * 1024),
-                "x-worthless-key": "test",
-                "x-worthless-shard-a": "dGVzdA==",
-            },
-            content=b"x",  # actual body doesn't matter, header is checked
-        )
-        assert resp.status_code == 413
-        import json
-
-        body = json.loads(resp.content)
-        assert "error" in body
-
-    async def test_normal_request_passes_through(self, body_limit_client):
-        """Request with Content-Length <= 10MB passes through to handler."""
-        resp = await body_limit_client.post(
-            "/v1/chat/completions",
-            headers={
-                "content-length": "100",
-                "x-worthless-key": "test",
-            },
-            content=b"x" * 100,
-        )
-        # Should reach the handler (401 because no valid shard, but NOT 413)
-        assert resp.status_code != 413
-
-    async def test_no_content_length_passes_through(self, body_limit_client):
-        """Request without Content-Length header passes through (streaming uploads)."""
-        resp = await body_limit_client.post(
-            "/v1/chat/completions",
-            headers={
-                "x-worthless-key": "test",
-            },
-            content=b"small body",
-        )
-        # Should reach the handler, not be rejected by middleware
-        assert resp.status_code != 413
-
-
 # ------------------------------------------------------------------
 # M-11: CORS Denial
 # ------------------------------------------------------------------
@@ -1259,7 +1180,7 @@ async def attack_scenario(
     shard_a_dir = str(tmp_path / "shard_a")
     settings = ProxySettings(
         db_path=tmp_db_path,
-        fernet_key=fernet_key.decode(),
+        fernet_key=bytearray(fernet_key),
         allow_insecure=False,
         shard_a_dir=shard_a_dir,
     )
@@ -1402,7 +1323,7 @@ class TestAuthCollapse:
         shard_a_dir = str(tmp_path / "shard_a")
         settings = ProxySettings(
             db_path=tmp_db_path,
-            fernet_key=fernet_key.decode(),
+            fernet_key=bytearray(fernet_key),
             allow_insecure=True,
             shard_a_dir=shard_a_dir,
             allow_alias_inference=True,
