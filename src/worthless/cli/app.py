@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import sys
+import traceback
 from importlib.metadata import version as pkg_version
 
 import typer
 
-from worthless.cli.console import WorthlessConsole, set_console
-from worthless.cli.errors import set_debug
+from worthless.cli.console import WorthlessConsole, get_console, set_console
+from worthless.cli.default_command import run_default
+from worthless.cli.errors import WorthlessError, set_debug
 
 
 def _version_callback(value: bool) -> None:
@@ -19,16 +22,19 @@ def _version_callback(value: bool) -> None:
 app = typer.Typer(
     name="worthless",
     help="Protect your API keys in 90 seconds.",
-    no_args_is_help=True,
+    no_args_is_help=False,
+    invoke_without_command=True,
     pretty_exceptions_enable=False,
 )
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def _main(
+    ctx: typer.Context,
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress non-error output"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     debug: bool = typer.Option(False, "--debug", help="Show full tracebacks on error"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve prompts"),
     version: bool = typer.Option(
         False,
         "--version",
@@ -41,6 +47,18 @@ def _main(
     """Worthless — make leaked API keys worthless."""
     set_debug(debug)
     set_console(WorthlessConsole(quiet=quiet, json_mode=json_output))
+
+    # When no subcommand is given, run the magic default pipeline
+    if ctx.invoked_subcommand is None:
+        try:
+            interactive = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
+            run_default(interactive=interactive, yes=yes, json_mode=json_output)
+        except WorthlessError as exc:
+            if debug:
+                traceback.print_exc(file=sys.stderr)
+            else:
+                get_console().print_error(exc)
+            raise typer.Exit(code=exc.exit_code) from exc
 
 
 # -- Register command modules --------------------------------------------------
