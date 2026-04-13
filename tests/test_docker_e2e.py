@@ -147,7 +147,6 @@ def docker_image() -> str:
 def container(docker_image: str) -> tuple[str, int]:
     """Run a standalone container (single /data volume, no compose)."""
     name = f"worthless-e2e-{uuid.uuid4().hex[:8]}"
-    port = _free_port()
     _run(
         [
             "docker",
@@ -156,7 +155,7 @@ def container(docker_image: str) -> tuple[str, int]:
             "--name",
             name,
             "-p",
-            f"127.0.0.1:{port}:8787",
+            "127.0.0.1::8787",
             "-e",
             "WORTHLESS_ALLOW_INSECURE=true",
             "--read-only",
@@ -171,6 +170,7 @@ def container(docker_image: str) -> tuple[str, int]:
             docker_image,
         ]
     )
+    port = int(_run_ok(["docker", "port", name, "8787"]).rsplit(":", 1)[-1])
     try:
         assert _wait_healthy(name), f"Container {name} did not become healthy"
         yield name, port  # type: ignore[misc]
