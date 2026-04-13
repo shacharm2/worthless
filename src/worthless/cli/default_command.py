@@ -66,19 +66,32 @@ def _has_enrolled_keys(home: WorthlessHome) -> bool:
 
 
 def _proxy_is_running(home: WorthlessHome) -> tuple[bool, int | None, int]:
-    """Check if the proxy is running via PID file.
+    """Check if the proxy is running via PID file or health probe.
 
     Returns (running, pid, port).
+
+    The PID file can be stale (daemon wrapper PID exits while the
+    actual uvicorn child stays alive).  As a fallback, probe the
+    default port's /healthz endpoint.
     """
+    port = _resolve_port(None)
+
+    # Try PID file first
     pf = pid_path(home)
-    if not pf.exists():
-        return False, None, 0
-    info = read_pid(pf)
-    if info is None:
-        return False, None, 0
-    pid, port = info
-    if check_pid(pid):
-        return True, pid, port
+    if pf.exists():
+        info = read_pid(pf)
+        if info is not None:
+            pid, recorded_port = info
+            if check_pid(pid):
+                return True, pid, recorded_port
+            # PID is dead — clean up stale file
+            pf.unlink(missing_ok=True)
+            port = recorded_port  # use the port from the stale file for health probe
+
+    # Fallback: health probe on default port (catches orphaned proxies)
+    if poll_health(port, timeout=1.0):
+        return True, None, port
+
     return False, None, 0
 
 

@@ -164,9 +164,18 @@ class TestHappyPaths:
             "worthless.cli.default_command.start_daemon",
             mock_start_daemon,
         )
+        # First poll_health call is the detection probe (should say "not running"),
+        # subsequent calls are post-start verification (should say "healthy").
+        health_calls = 0
+
+        def mock_poll_health(*args, **kw):
+            nonlocal health_calls
+            health_calls += 1
+            return health_calls > 1  # False on detection, True on verify
+
         monkeypatch.setattr(
             "worthless.cli.default_command.poll_health",
-            lambda *a, **kw: True,
+            mock_poll_health,
         )
         # No PID file means proxy is not running
         pid_file = home_with_key.base_dir / "proxy.pid"
