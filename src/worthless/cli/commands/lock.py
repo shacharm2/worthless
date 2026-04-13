@@ -118,8 +118,14 @@ def _lock_keys(
     home: WorthlessHome,
     provider_override: str | None = None,
     token_budget_daily: int | None = None,
+    quiet: bool = False,
 ) -> int:
-    """Core lock logic. Returns count of keys protected."""
+    """Core lock logic. Returns count of keys protected.
+
+    When *quiet* is True, suppress progress and summary output.
+    The caller (e.g. the default command pipeline) controls its own
+    output instead.
+    """
     console = get_console()
 
     if not env_path.exists():
@@ -131,7 +137,8 @@ def _lock_keys(
             f"Refusing to follow symlink: {env_path}",
         )
 
-    console.print_hint(f"Scanning {env_path} for API keys...")
+    if not quiet:
+        console.print_hint(f"Scanning {env_path} for API keys...")
 
     async def _lock_async() -> int:
         repo = ShardRepository(str(home.db_path), home.fernet_key)
@@ -155,7 +162,8 @@ def _lock_keys(
         count = 0
 
         for i, (var_name, value, detected_provider) in enumerate(keys, 1):
-            console.print_hint(f"  [{i}/{total}] Protecting {var_name}...")
+            if not quiet:
+                console.print_hint(f"  [{i}/{total}] Protecting {var_name}...")
             provider = provider_override or detected_provider
 
             # Only enroll providers that wrap can redirect
@@ -264,11 +272,14 @@ def _lock_keys(
 
     count = asyncio.run(_lock_async())
 
-    if count:
-        console.print_success(f"{count} key(s) protected.")
-        console.print_hint("Next: run `worthless wrap <command>` or `worthless up` for daemon mode")
-    else:
-        console.print_warning("No unprotected API keys found.")
+    if not quiet:
+        if count:
+            console.print_success(f"{count} key(s) protected.")
+            console.print_hint(
+                "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
+            )
+        else:
+            console.print_warning("No unprotected API keys found.")
 
     return count
 
