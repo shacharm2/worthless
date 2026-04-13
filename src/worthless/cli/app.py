@@ -21,10 +21,15 @@ def _version_callback(value: bool) -> None:
 
 app = typer.Typer(
     name="worthless",
-    help="Protect your API keys in 90 seconds.",
+    help=(
+        "Protect your API keys in 90 seconds.\n\n"
+        "Run 'worthless' with no arguments to auto-detect keys, "
+        "lock them, and start the proxy."
+    ),
     no_args_is_help=False,
     invoke_without_command=True,
     pretty_exceptions_enable=False,
+    add_completion=False,
 )
 
 
