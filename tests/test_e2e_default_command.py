@@ -261,3 +261,44 @@ class TestDefaultCommandE2E:
         # Proxy should be running again
         r = httpx.get(f"http://127.0.0.1:{_TEST_PORT}/healthz", timeout=5.0)
         assert r.status_code == 200
+
+    def test_many_keys_truncated_display(self, e2e_home: Path, tmp_path: Path) -> None:
+        """6+ keys: shows first 5 + '(+ N more)', not all keys listed."""
+        project = tmp_path / "manykeys"
+        project.mkdir()
+        # Create .env with 7 OpenAI-style keys
+        lines = []
+        for i in range(7):
+            lines.append(f"OPENAI_KEY_{i}={fake_openai_key()}")
+        (project / ".env").write_text("\n".join(lines) + "\n")
+
+        result = _run_worthless([], e2e_home, project, input_text="n\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+        combined = result.stdout + result.stderr
+        assert "+ 2 more" in combined or "+2 more" in combined, (
+            f"Expected '(+ 2 more)' for 7 keys but got:\n{combined}"
+        )
+
+    def test_piped_stdin_no_prompts_no_lock(self, e2e_home: Path, project_with_keys: Path) -> None:
+        """Non-interactive piped stdin: report only, no prompts, no auto-lock."""
+        # Pass empty string as input — simulates piped/non-TTY stdin
+        result = _run_worthless([], e2e_home, project_with_keys, input_text="")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+        combined = result.stdout + result.stderr
+        # Should not prompt
+        assert "Lock these keys?" not in combined
+
+        # .env unchanged — no lock happened
+        env_content = (project_with_keys / ".env").read_text()
+        assert fake_openai_key() in env_content
+
+    def test_version_is_0_2_0(self, e2e_home: Path, tmp_path: Path) -> None:
+        """worthless --version reports 0.2.0."""
+        project = tmp_path / "vtest"
+        project.mkdir()
+
+        result = _run_worthless(["--version"], e2e_home, project)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "0.2.0" in result.stdout
