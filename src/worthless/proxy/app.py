@@ -169,13 +169,14 @@ async def _lifespan(app: FastAPI):
 
     yield
 
-    # Cleanup
-    await client.aclose()
-    await db.close()
-    repo.close()
-    # Zero the settings key material (SR-02)
-    for i in range(len(settings.fernet_key)):
-        settings.fernet_key[i] = 0
+    # Cleanup — zeroing MUST happen even if earlier cleanup steps raise (SR-02)
+    try:
+        await client.aclose()
+        await db.close()
+        repo.close()
+    finally:
+        for i in range(len(settings.fernet_key)):
+            settings.fernet_key[i] = 0
 
 
 def create_app(settings: ProxySettings | None = None) -> FastAPI:

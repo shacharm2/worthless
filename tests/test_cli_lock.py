@@ -483,6 +483,59 @@ class TestEnrollCommand:
         assert stored is not None
         assert stored.provider == "openai"
 
+    def test_enroll_duplicate_alias_errors_without_destroying_first(
+        self, home_dir: WorthlessHome
+    ) -> None:
+        """Re-enrolling the same alias must error cleanly without deleting
+        the first enrollment's data."""
+        # First enrollment — should succeed
+        result1 = runner.invoke(
+            app,
+            [
+                "enroll",
+                "--alias",
+                "dup-test",
+                "--key",
+                fake_openai_key(),
+                "--provider",
+                "openai",
+            ],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result1.exit_code == 0, result1.output
+
+        # Verify first enrollment is intact
+        repo = _repo(home_dir)
+        stored_before = asyncio.run(repo.retrieve("dup-test"))
+        assert stored_before is not None
+
+        # Second enrollment — same alias — should fail
+        result2 = runner.invoke(
+            app,
+            [
+                "enroll",
+                "--alias",
+                "dup-test",
+                "--key",
+                fake_openai_key(),
+                "--provider",
+                "openai",
+            ],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result2.exit_code != 0, (
+            "Re-enrolling the same alias should fail, but exit_code was 0"
+        )
+
+        # Original enrollment must still be intact
+        stored_after = asyncio.run(repo.retrieve("dup-test"))
+        assert stored_after is not None, (
+            "First enrollment's shard was destroyed by failed re-enrollment"
+        )
+        assert (home_dir.shard_a_dir / "dup-test").exists(), (
+            "First enrollment's shard_a file was destroyed by failed re-enrollment"
+        )
+
     def test_enroll_db_failure_no_orphan_file(
         self, home_dir: WorthlessHome, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -561,10 +614,16 @@ class TestEnrollCommand:
         shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
         assert shard_a_files == []
 
-        # No DB enrollment should remain (compensation)
+        # No DB shard should remain (compensation)
         repo = _repo(home_dir)
         aliases = asyncio.run(repo.list_keys())
-        assert aliases == [], f"DB enrollment row(s) not cleaned up after file failure: {aliases}"
+        assert aliases == [], f"DB shard row(s) not cleaned up after file failure: {aliases}"
+
+        # No DB enrollment row should remain either
+        enrollments = asyncio.run(repo.list_enrollments(alias="comptest"))
+        assert enrollments == [], (
+            f"DB enrollment row(s) not cleaned up after file failure: {enrollments}"
+        )
 
 
 # ---------------------------------------------------------------------------

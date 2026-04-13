@@ -174,26 +174,45 @@ class StreamingUsageCollector:
             return
 
         if self.provider == "openai":
-            if "usage" in parsed and parsed["usage"]:
-                usage = parsed["usage"]
+            usage = parsed.get("usage")
+            if usage and isinstance(usage, dict):
                 self._total_tokens = usage.get("total_tokens", 0)
                 self._model = parsed.get("model", self._model)
                 self._found_usage = True
         elif self.provider == "anthropic":
             if self._pending_event == "message_start":
-                msg = parsed.get("message", {})
-                self._input_tokens = msg.get("usage", {}).get("input_tokens", 0)
+                msg = parsed.get("message")
+                if not isinstance(msg, dict):
+                    return
+                usage = msg.get("usage")
+                if isinstance(usage, dict):
+                    self._input_tokens = usage.get("input_tokens", 0)
                 self._model = msg.get("model", self._model)
             elif self._pending_event == "message_delta":
-                usage = parsed.get("usage", {})
+                usage = parsed.get("usage")
+                if not isinstance(usage, dict):
+                    return
                 if "output_tokens" in usage:
                     self._output_tokens = usage["output_tokens"]
                     self._found_usage = True
 
         self._pending_event = None
 
+    def _flush_partial(self) -> None:
+        """Parse any leftover data in _partial_line before returning results."""
+        if self._partial_line:
+            stripped = self._partial_line.strip()
+            if stripped.startswith("data: "):
+                payload = stripped[6:]
+                if payload != "[DONE]":
+                    self._parse_data(payload)
+            elif stripped.startswith("event: "):
+                self._pending_event = stripped[7:]
+            self._partial_line = ""
+
     def result(self) -> UsageInfo | None:
         """Return extracted usage after stream ends."""
+        self._flush_partial()
         if self.provider == "openai":
             if self._total_tokens is not None:
                 return UsageInfo(total_tokens=self._total_tokens, model=self._model)

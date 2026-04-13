@@ -190,3 +190,45 @@ class TestStreamingUsageCollectorEdgeCases:
         usage = collector.result()
         assert usage is not None
         assert usage.total_tokens == 7
+
+    def test_partial_line_flushed_on_result(self):
+        """Usage data stuck in _partial_line (no trailing newline) must be
+        parsed when result() is called."""
+        from worthless.proxy.metering import StreamingUsageCollector
+
+        collector = StreamingUsageCollector(provider="openai")
+
+        # Feed a chunk that ends WITHOUT a trailing newline — usage sits in _partial_line
+        collector.feed(
+            b'data: {"id":"x","choices":[],'
+            b'"usage":{"prompt_tokens":5,"completion_tokens":3,'
+            b'"total_tokens":8},"model":"gpt-4o"}'
+        )
+        # _partial_line holds the usage data; no newline means it was never parsed
+        assert collector._partial_line != ""
+
+        usage = collector.result()
+        assert usage is not None, "result() must flush _partial_line before returning"
+        assert usage.total_tokens == 8
+        assert usage.model == "gpt-4o"
+
+    def test_non_dict_usage_does_not_crash(self):
+        """data: {"usage": 1} and data: {"message": []} must not crash."""
+        from worthless.proxy.metering import StreamingUsageCollector
+
+        collector = StreamingUsageCollector(provider="openai")
+        collector.feed(b'data: {"usage": 1}\n\n')
+        assert collector.result() is None
+
+        collector2 = StreamingUsageCollector(provider="anthropic")
+        collector2.feed(b"event: message_start\n")
+        collector2.feed(b'data: {"message": []}\n\n')
+        assert collector2.result() is None
+
+    def test_non_dict_message_in_anthropic_does_not_crash(self):
+        """Anthropic message_start with non-dict message field must not crash."""
+        from worthless.proxy.metering import StreamingUsageCollector
+
+        collector = StreamingUsageCollector(provider="anthropic")
+        collector.feed(b'event: message_start\ndata: {"message": "string-not-dict"}\n\n')
+        assert collector.result() is None

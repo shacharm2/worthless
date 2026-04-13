@@ -38,11 +38,16 @@ def _read_fernet_key() -> bytearray:
     if fd_str:
         try:
             fd = int(fd_str)
-            raw = os.read(fd, 4096)
-            os.close(fd)
-            return bytearray(raw.strip())
-        except (ValueError, OSError):
+        except ValueError:
             pass
+        else:
+            try:
+                raw = os.read(fd, 4096)
+                return bytearray(raw.strip())
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
 
     # 2. Keystore cascade (env -> keyring -> file)
     # Respect WORTHLESS_HOME so the keyring username hash matches the

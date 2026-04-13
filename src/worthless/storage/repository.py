@@ -117,6 +117,8 @@ class ShardRepository:
 
     def _compute_decoy_hash(self, value: str) -> str:
         """Compute HMAC-SHA256 of *value* keyed with the Fernet key material."""
+        if self._fernet is None:
+            raise RuntimeError("ShardRepository has been closed")
         return hmac.new(self._fernet_key_bytes, value.encode(), hashlib.sha256).hexdigest()
 
     # ------------------------------------------------------------------

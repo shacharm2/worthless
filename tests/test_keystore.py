@@ -639,6 +639,26 @@ class TestMigrateFileToKeyring:
 
         assert result is False
 
+    def test_returns_false_when_keyring_write_falls_back_to_file(self, tmp_path: Path) -> None:
+        """If keyring.set_password raises (triggering file fallback),
+        migrate must return False — the key is NOT in keyring."""
+        fernet_path = tmp_path / "fernet.key"
+        fernet_path.write_bytes(b"my-secret-fernet-key")
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            mock_kr.get_password.return_value = None
+            # Keyring write fails, store_fernet_key falls back to file
+            mock_kr.set_password.side_effect = Exception("Keyring locked")
+            result = migrate_file_to_keyring(home_dir=tmp_path)
+
+        assert result is False, (
+            "migrate_file_to_keyring returned True but keyring write failed "
+            "and store fell back to file"
+        )
+
     def test_file_removed_after_migration(self, tmp_path: Path) -> None:
         """After successful migration, the fernet.key file must be deleted."""
         fernet_path = tmp_path / "fernet.key"

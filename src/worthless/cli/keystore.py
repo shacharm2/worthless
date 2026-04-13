@@ -97,9 +97,15 @@ def migrate_file_to_keyring(home_dir: Path | None = None) -> bool:
         fernet_path = _fernet_file_path(home_dir)
         if not fernet_path.exists():
             return False
-        # Read from file and store to keyring (which also cleans up the file)
+        # Read from file and store to keyring (which also cleans up the file).
+        # store_fernet_key deletes the file on keyring success and re-creates
+        # it on fallback. If the file still exists afterward, keyring write
+        # failed and the migration did not actually happen.
         key_bytes = fernet_path.read_bytes().strip()
         store_fernet_key(key_bytes, home_dir)
+        if fernet_path.exists():
+            logger.debug("Keyring write fell back to file; migration not successful")
+            return False
         logger.info("Migrated Fernet key from file to OS keyring")
         return True
     except Exception:

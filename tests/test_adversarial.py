@@ -173,6 +173,38 @@ class TestMemoryDumpKeyExtraction:
             "attacker can extract it from process memory"
         )
 
+    @pytest.mark.asyncio
+    async def test_settings_key_zeroed_even_when_db_close_raises(self, tmp_path):
+        """Attacker scenario: db.close() throws during shutdown, attacker
+        hopes the fernet_key zeroing is skipped due to the exception.
+        Defense: zeroing runs in a finally block."""
+        from cryptography.fernet import Fernet as FernetCls
+
+        from worthless.proxy.app import create_app
+        from worthless.proxy.config import ProxySettings
+
+        db_path = str(tmp_path / "test.db")
+        fernet_key = bytearray(FernetCls.generate_key())
+        key_ref = fernet_key
+
+        settings = ProxySettings(db_path=db_path, fernet_key=fernet_key)
+        app = create_app(settings)
+
+        assert any(b != 0 for b in key_ref)
+
+        try:
+            async with app.router.lifespan_context(app):
+                # Sabotage db.close so it raises during shutdown
+                real_db = app.state.db
+                real_db.close = AsyncMock(side_effect=RuntimeError("db boom"))
+        except RuntimeError:
+            pass  # expected from the sabotaged close
+
+        assert all(b == 0 for b in key_ref), (
+            "ProxySettings fernet_key not zeroed when db.close() raises -- "
+            "attacker can extract key from memory after crash"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Attack 4: Rate limit burst bypass (worthless-ks6)

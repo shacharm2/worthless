@@ -194,6 +194,20 @@ class TestFernetFdFallback:
             key = _read_fernet_key()
         assert key == bytearray(b"env-fallback")
 
+    def test_fernet_fd_closed_even_when_read_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If os.read(fd) raises OSError, the fd must still be closed."""
+        monkeypatch.setenv("WORTHLESS_FERNET_FD", "99")
+        monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-fallback")
+        with (
+            patch("worthless.proxy.config.os.read", side_effect=OSError("read boom")),
+            patch("worthless.proxy.config.os.close") as mock_close,
+        ):
+            key = _read_fernet_key()
+        # Key should fall back to env
+        assert key == bytearray(b"env-fallback")
+        # fd must have been closed despite the read failure
+        mock_close.assert_called_once_with(99)
+
     def test_fernet_fd_preferred_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When both fd and env are set, fd wins."""
         monkeypatch.setenv("WORTHLESS_FERNET_FD", "7")

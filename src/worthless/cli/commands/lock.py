@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 from pathlib import Path
 
 import typer
@@ -308,7 +309,7 @@ def _enroll_single(
         )
 
     try:
-        # Clean up orphan shard_a from a prior failed enrollment
+        # Check for existing enrollment or orphan shard_a from a prior failed one
         if shard_a_path.exists():
             conn = sqlite3.connect(str(home.db_path))
             try:
@@ -316,7 +317,14 @@ def _enroll_single(
             finally:
                 conn.close()
             if row is None:
+                # Orphan file from a prior failed enrollment — safe to clean up
                 shard_a_path.unlink()
+            else:
+                # Fully enrolled key — refuse to overwrite
+                raise WorthlessError(
+                    ErrorCode.SCAN_ERROR,
+                    f"Alias {alias!r} is already enrolled",
+                )
 
         # DB first — atomic commit point
         asyncio.run(_enroll_async())
@@ -405,8 +413,6 @@ def register_lock_commands(app: typer.Typer) -> None:
         provider: str = typer.Option(..., "--provider", "-p", help="Provider name"),
     ) -> None:
         """Enroll a single API key (scripting/CI primitive)."""
-        import sys
-
         home = get_home()
 
         if key_stdin:

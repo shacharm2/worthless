@@ -137,6 +137,16 @@ class TestRepositoryZeroing:
 class TestRepositoryBytearray:
     """ShardRepository must work with bytearray keys."""
 
+    def test_compute_decoy_hash_raises_after_close(self, tmp_db_path: str) -> None:
+        """After close(), _compute_decoy_hash must raise RuntimeError
+        instead of silently producing wrong HMACs with zeroed key."""
+        key = Fernet.generate_key()
+        repo = ShardRepository(tmp_db_path, bytearray(key))
+        repo.close()
+
+        with pytest.raises(RuntimeError, match="closed"):
+            repo._compute_decoy_hash("test")
+
     @pytest.mark.asyncio
     async def test_repository_accepts_bytearray_key(
         self, tmp_db_path: str, sample_split_result
