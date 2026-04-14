@@ -727,50 +727,54 @@
       </div>
     </div>
 
-    <div class="hero-media" style="position: relative;">
-      <div class="terminal-wrap">
-        <div class="term-bar">
-          <div class="td r"></div>
-          <div class="td y"></div>
-          <div class="td g"></div>
-          <span class="term-title" id="term-title">~ worthless</span>
-        </div>
-        <div class="term-body" id="term-slider">
-          <div class="term-pane">
-            <div><span class="tp">$ </span><span class="tk">pip</span> install worthless</div>
-            <div class="to">Installed worthless successfully</div>
-            <br />
-            <div><span class="tp">$ </span><span class="tk">worthless</span> lock</div>
-            <div class="to">1 key protected</div>
+    <div class="hero-media">
+      <div style="position: relative; display: inline-block;">
+        <div class="terminal-wrap">
+          <div class="term-bar">
+            <div class="td r"></div>
+            <div class="td y"></div>
+            <div class="td g"></div>
+            <span class="term-title" id="term-title">~ worthless</span>
           </div>
-          <div class="term-pane">
-            <div><span class="tp">$ </span><span class="tk">git</span> add . && commit -m "feat"</div>
-            <div class="to">[main c7d8e9f] feat</div>
-            <br />
-            <div><span class="tp">$ </span><span class="tk">git</span> push origin main</div>
-            <div class="to">Pushing to github.com...</div>
-          </div>
-          <div class="term-pane">
-            <div><span class="tp">$ </span><span class="tc">(ATTACKER)</span> gh-scan</div>
-            <div class="to">Scanning public repos...</div>
-            <div style="color:var(--text2); margin-top:0.5rem; font-size:0.9em;">
-              Found /targets/repo - sk-proj-wrthlss-share...
+          <div class="term-body" id="term-slider">
+            <div class="term-pane">
+              <div><span class="tp">$ </span><span class="tk">pip</span> install worthless</div>
+              <div class="to">Installed worthless successfully</div>
+              <br />
+              <div>
+                <span class="tp">$ </span><span class="tk">worthless</span> lock
+              </div>
+              <div class="to">1 key protected</div>
             </div>
-            <div class="to" style="margin-top:0.5rem;">4 worthless keys found.</div>
-          </div>
-          <div class="term-pane">
-            <div><span class="tp">$ </span><span class="tc">(ATTACKER)</span> curl api.openai.com</div>
-            <div class="to" style="color:#ff6b6b; margin-top:1rem;">{ "error": "Incorrect API key provided" }</div>
+            <div class="term-pane">
+              <div><span class="tp">$ </span><span class="tk">git</span> add . && commit -m "feat"</div>
+              <div class="to">[main c7d8e9f] feat</div>
+              <br />
+              <div><span class="tp">$ </span><span class="tk">git</span> push origin main</div>
+              <div class="to">Pushing to github.com...</div>
+            </div>
+            <div class="term-pane">
+              <div><span class="tp">$ </span><span class="tc">(ATTACKER)</span> gh-scan</div>
+              <div class="to">Scanning public repos...</div>
+              <div style="color:var(--text2); margin-top:0.5rem; font-size:0.9em;">
+                Found /targets/repo - sk-proj-wrthlss-share...
+              </div>
+              <div class="to" style="margin-top:0.5rem;">4 worthless keys found.</div>
+            </div>
+            <div class="term-pane">
+              <div><span class="tp">$ </span><span class="tc">(ATTACKER)</span> curl api.openai.com</div>
+              <div class="to" style="color:#ff6b6b; margin-top:1rem;">{ "error": "Incorrect API key provided" }</div>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Github Popover (Anchored to Terminal) -->
-      <div id="gh-popover" style="position:absolute; top: -10px; right: -40px; width:260px; background:#fff; border:1px solid #e1e4e8; border-radius:6px; box-shadow:0 12px 30px rgba(0,0,0,0.15); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(10px) scale(0.95); transition:all 0.4s ease; pointer-events:none; z-index:100; color:#24292e;">
-        <div style="background:#f6f8fa; padding:8px 12px; border-bottom:1px solid #e1e4e8; font-size:12px; font-weight:600; border-radius: 6px 6px 0 0;">.env</div>
-        <div style="padding:12px; font-family:var(--mono); font-size:11px; line-height:1.4;">
-          <div style="color:#b31d28;">- OPENAI_API_KEY=sk-real...</div>
-          <div style="color:#22863a;">+ OPENAI_API_KEY=sk-proj-wrthlss-share...</div>
+        <!-- Github Popover (Anchored snug to Terminal) -->
+        <div id="gh-popover" style="position:absolute; top: 10px; left: calc(100% + 15px); width:260px; background:#fff; border:1px solid #e1e4e8; border-radius:6px; box-shadow:0 12px 30px rgba(0,0,0,0.15); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(10px) scale(0.95); transition:all 0.4s ease; pointer-events:none; z-index:100; color:#24292e;">
+          <div style="background:#f6f8fa; padding:8px 12px; border-bottom:1px solid #e1e4e8; font-size:12px; font-weight:600; border-radius: 6px 6px 0 0;">.env</div>
+          <div style="padding:12px; font-family:var(--mono); font-size:11px; line-height:1.4;">
+            <div style="color:#b31d28;">- OPENAI_API_KEY=sk-real...</div>
+            <div style="color:#22863a;">+ OPENAI_API_KEY=sk-proj-wrthlss-share...</div>
+          </div>
         </div>
       </div>
 
