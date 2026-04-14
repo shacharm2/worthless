@@ -938,17 +938,20 @@
       if (stage === 1) { // Git push stage
         localEnv.style.opacity = '1'; localEnv.style.transform = 'translateY(0) scale(1)';
         termToLocal.style.opacity = '1';
-        githubRepo.style.opacity = '1'; githubRepo.style.transform = 'translateY(0)';
+        githubRepo.style.opacity = '1'; githubRepo.style.transform = 'translateY(0) translateX(0)';
+        githubRepo.style.top = '-140px'; githubRepo.style.left = 'calc(100% + 100px)';
         localToGithub.style.opacity = '1';
       } else if (stage === 0) { // Lock stage
         localEnv.style.opacity = '1'; localEnv.style.transform = 'translateY(0) scale(1)';
         termToLocal.style.opacity = '1';
         githubRepo.style.opacity = '0'; githubRepo.style.transform = 'translateY(20px)';
         localToGithub.style.opacity = '0';
-      } else { // Attack stages
-        localEnv.style.opacity = '0';
+      } else { // Attack stages - Slide GitHub repo down to .env's spot
+        localEnv.style.opacity = '0'; localEnv.style.transform = 'translateY(10px) scale(0.95)';
         termToLocal.style.opacity = '0';
-        githubRepo.style.opacity = '1'; githubRepo.style.transform = 'translateY(0)';
+        githubRepo.style.opacity = '1'; 
+        githubRepo.style.top = '10px'; 
+        githubRepo.style.left = 'calc(100% + 15px)';
         localToGithub.style.opacity = '0';
       }
     }, 4500);
