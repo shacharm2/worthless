@@ -777,12 +777,21 @@
           </div>
         </div>
 
-        <!-- Red Curved Arrow -->
+        <!-- Red Curved Arrow 1: To .env -->
         <div id="hero-arrow" style="position:absolute; top: 110px; left: 100%; width: 100px; height: 60px; pointer-events:none; opacity:0; transition: opacity 0.4s ease; transform: rotate(-10deg);">
           <svg width="100" height="60" viewBox="0 0 100 60" fill="none">
             <path d="M5,50 Q40,45 80,10" stroke="#ff6b6b" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="0" />
             <path d="M72,12 L82,8 L78,18" stroke="#ff6b6b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
             <text x="5" y="58" fill="#ff6b6b" font-family="var(--mono)" font-size="10" font-weight="700">automagic</text>
+          </svg>
+        </div>
+
+        <!-- Red Curved Arrow 2: To GitHub -->
+        <div id="github-arrow" style="position:absolute; bottom: 100%; left: 50%; width: 120px; height: 160px; pointer-events:none; opacity:0; transition: opacity 0.4s ease; transform: translateX(-50%) rotate(-15deg);">
+          <svg width="120" height="160" viewBox="0 0 120 160" fill="none">
+            <path d="M20,150 Q60,100 100,20" stroke="#ff6b6b" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="0" />
+            <path d="M90,30 L102,15 L108,35" stroke="#ff6b6b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+            <text x="35" y="155" fill="#ff6b6b" font-family="var(--mono)" font-size="10" font-weight="700">pushed</text>
           </svg>
         </div>
       </div>
@@ -899,6 +908,7 @@
     const title = document.getElementById('term-title');
     const popover = document.getElementById('gh-popover');
     const arrow = document.getElementById('hero-arrow');
+    const ghArrow = document.getElementById('github-arrow');
     const titles = ['~ worthless', '~ developer', '~ attacker', '~ attacker'];
     let stage = 0;
     setInterval(() => {
@@ -908,9 +918,11 @@
       if (stage === 1) {
         popover.style.opacity = '1'; popover.style.transform = 'translateY(0) scale(1)';
         if (arrow) arrow.style.opacity = '1';
+        if (ghArrow) ghArrow.style.opacity = '1';
       } else {
         popover.style.opacity = '0'; popover.style.transform = 'translateY(10px) scale(0.95)';
         if (arrow) arrow.style.opacity = '0';
+        if (ghArrow) ghArrow.style.opacity = '0';
       }
     }, 4500);
   </script>
