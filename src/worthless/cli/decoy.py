@@ -8,21 +8,15 @@ indistinguishable from real API keys.
 from __future__ import annotations
 
 import secrets
-import string
 
-# ---------------------------------------------------------------------------
-# Provider format registry
-# ---------------------------------------------------------------------------
-
-_BASE64URL = string.ascii_letters + string.digits + "_-"
-_ALPHANUMERIC = string.ascii_letters + string.digits
+from worthless.crypto.charsets import ALPHANUMERIC, BASE64URL
 
 # Default random body length for unknown providers.
 _FALLBACK_BODY_LEN = 40
 
 PROVIDER_FORMATS: dict[str, dict] = {
     "openai": {
-        "charset": _BASE64URL,
+        "charset": BASE64URL,
         # Structure: prefix + 74 random + "T3BlbkFJ" marker + 74 random
         "segments": [
             ("random", 74),
@@ -31,7 +25,7 @@ PROVIDER_FORMATS: dict[str, dict] = {
         ],
     },
     "anthropic": {
-        "charset": _BASE64URL,
+        "charset": BASE64URL,
         # Structure: prefix + 93 random + "AA" suffix
         "segments": [
             ("random", 93),
@@ -39,14 +33,14 @@ PROVIDER_FORMATS: dict[str, dict] = {
         ],
     },
     "google": {
-        "charset": _BASE64URL,
+        "charset": BASE64URL,
         # Structure: prefix + 33 random
         "segments": [
             ("random", 33),
         ],
     },
     "xai": {
-        "charset": _ALPHANUMERIC,
+        "charset": ALPHANUMERIC,
         # Structure: prefix + 80 random
         "segments": [
             ("random", 80),
@@ -66,7 +60,7 @@ def make_decoy(provider: str, prefix: str) -> str:
     """
     fmt = PROVIDER_FORMATS.get(provider)
     if fmt is None:
-        body = "".join(secrets.choice(_ALPHANUMERIC) for _ in range(_FALLBACK_BODY_LEN))
+        body = "".join(secrets.choice(ALPHANUMERIC) for _ in range(_FALLBACK_BODY_LEN))
         return prefix + body
 
     charset = fmt["charset"]
