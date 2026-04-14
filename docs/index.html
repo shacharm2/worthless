@@ -727,7 +727,7 @@
       </div>
     </div>
 
-    <div class="hero-media">
+    <div class="hero-media" style="position: relative;">
       <div class="terminal-wrap">
         <div class="term-bar">
           <div class="td r"></div>
@@ -765,12 +765,9 @@
         </div>
       </div>
 
-      <!-- Github Popover -->
-      <div id="gh-popover"
-        style="position:fixed; top:50%; right:10%; width:260px; background:#fff; border:1px solid #e1e4e8; border-radius:6px; box-shadow:0 12px 30px rgba(0,0,0,0.15); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(10px) scale(0.95); transition:all 0.4s ease; pointer-events:none; z-index:100; color:#24292e;">
-        <div
-          style="background:#f6f8fa; padding:8px 12px; border-bottom:1px solid #e1e4e8; font-size:12px; font-weight:600;">
-          .env</div>
+      <!-- Github Popover (Anchored to Terminal) -->
+      <div id="gh-popover" style="position:absolute; top: -10px; right: -40px; width:260px; background:#fff; border:1px solid #e1e4e8; border-radius:6px; box-shadow:0 12px 30px rgba(0,0,0,0.15); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(10px) scale(0.95); transition:all 0.4s ease; pointer-events:none; z-index:100; color:#24292e;">
+        <div style="background:#f6f8fa; padding:8px 12px; border-bottom:1px solid #e1e4e8; font-size:12px; font-weight:600; border-radius: 6px 6px 0 0;">.env</div>
         <div style="padding:12px; font-family:var(--mono); font-size:11px; line-height:1.4;">
           <div style="color:#b31d28;">- OPENAI_API_KEY=sk-real...</div>
           <div style="color:#22863a;">+ OPENAI_API_KEY=sk-proj-wrthlss-share...</div>
