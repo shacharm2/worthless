@@ -211,7 +211,7 @@ class TestAppEntryPoint:
         assert result.exit_code == 0
         assert "worthless" in result.output.lower() or "api" in result.output.lower()
 
-    def test_no_args_shows_help(self):
+    def test_no_args_runs_default_command(self):
         from typer.testing import CliRunner
 
         from worthless.cli.app import app

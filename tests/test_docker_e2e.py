@@ -466,6 +466,127 @@ class TestLifecycle:
 
 
 # ===================================================================
+# Tier 4a: Wave 6 features (default command, --json, --version)
+# ===================================================================
+
+
+class TestWave6Features:
+    """Wave 6 features tested inside Docker — real container, no mocks."""
+
+    def test_version_is_0_2_0(self, container: tuple[str, int]) -> None:
+        """worthless --version reports 0.2.0 inside the container."""
+        name, _ = container
+        result = _docker_exec(name, ["worthless", "--version"])
+        assert result.returncode == 0, f"--version failed: {result.stderr}"
+        assert "0.2.0" in result.stdout
+
+    def test_json_mode_read_only(self, container: tuple[str, int]) -> None:
+        """worthless --json returns structured state, never writes.
+
+        The container proxy is running (entrypoint starts it), but no
+        keys are enrolled. --json must report this without modifying
+        any state.
+        """
+        name, _ = container
+        result = _docker_exec(name, ["worthless", "--json"])
+        assert result.returncode == 0, f"--json failed: {result.stderr}"
+        import json
+
+        data = json.loads(result.stdout)
+        assert "enrolled" in data
+        assert "proxy" in data
+
+    def test_json_mode_after_enroll(self, container: tuple[str, int]) -> None:
+        """worthless --json reflects enrollment state after enroll."""
+        name, _ = container
+        key = _fake_openai_key()
+
+        # Enroll a key
+        enroll = subprocess.run(
+            [
+                "docker",
+                "exec",
+                "-i",
+                name,
+                "worthless",
+                "enroll",
+                "--alias",
+                "json-test",
+                "--key-stdin",
+                "--provider",
+                "openai",
+            ],
+            input=key,
+            capture_output=True,
+            text=True,
+        )
+        assert enroll.returncode == 0, f"enroll failed: {enroll.stderr}"
+
+        # Now --json should show enrolled
+        result = _docker_exec(name, ["worthless", "--json"])
+        assert result.returncode == 0, f"--json failed: {result.stderr}"
+        import json
+
+        data = json.loads(result.stdout)
+        assert data["enrolled"] is True
+
+    def test_status_json_has_keys(self, container: tuple[str, int]) -> None:
+        """worthless status --json shows enrolled key details."""
+        name, _ = container
+        key = _fake_openai_key()
+
+        # Enroll
+        subprocess.run(
+            [
+                "docker",
+                "exec",
+                "-i",
+                name,
+                "worthless",
+                "enroll",
+                "--alias",
+                "status-test",
+                "--key-stdin",
+                "--provider",
+                "openai",
+            ],
+            input=key,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        result = _docker_exec(name, ["worthless", "--json", "status"])
+        assert result.returncode == 0, f"status --json failed: {result.stderr}"
+        assert "status-test" in result.stdout
+
+    def test_no_key_chars_in_default_output(self, container: tuple[str, int]) -> None:
+        """Default command output contains no key characters (SR-NEW-15).
+
+        Lock a key via the .env flow, then verify the default command
+        output never leaks key material.
+        """
+        name, _ = container
+        fake_key = _fake_openai_key()
+        env_content = f"OPENAI_API_KEY={fake_key}\n"
+
+        _write_env_to_container(name, env_content)
+
+        # Run default command with --yes
+        result = _docker_exec(name, ["sh", "-c", "cd /tmp && worthless --yes"])
+        combined = result.stdout + result.stderr
+
+        # Full key must never appear
+        assert fake_key not in combined, "Full API key leaked in default command output"
+
+        # 12-char body substrings must not appear
+        body = fake_key[8:]  # after "sk-proj-" prefix
+        for i in range(0, len(body) - 12):
+            chunk = body[i : i + 12]
+            assert chunk not in combined, f"Key material leaked in output: ...{chunk}..."
+
+
+# ===================================================================
 # Tier 4b: Lock + Wrap E2E flow (WOR-170)
 # ===================================================================
 

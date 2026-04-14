@@ -16,7 +16,7 @@ Worthless protects API keys in three scenarios:
 
 ### Package Info
 - **Package name**: `worthless`
-- **Version**: 0.1.0
+- **Version**: 0.2.0
 - **Entry point**: `worthless` (CLI command)
 - **Python**: 3.10+
 - **License**: AGPL-3.0
@@ -24,26 +24,31 @@ Worthless protects API keys in three scenarios:
 
 ### Quick Install
 ```bash
-pip install worthless
-# or for MCP server support:
-pip install worthless[mcp]
+pipx install worthless
+# or: pip install worthless (in a virtualenv)
+# or: curl -sSL worthless.sh | sh
 ```
 
-### First-Time Setup
+### First-Time Setup (the magic way)
 ```bash
-# Create or edit a .env file with your API key
-echo "OPENAI_API_KEY=sk-proj-..." > .env
+cd your-project
+worthless
+# → Detects API keys in .env, prompts to lock, starts proxy. Done.
+```
 
-# Lock (split) the key
-worthless lock
-# → Your .env now contains a decoy; real key is split into shards
+Running `worthless` with no arguments auto-detects `.env`/`.env.local`, shows detected keys (var name + provider only), prompts `[y/N]` to lock, starts the proxy daemon, and reports healthy. One command from zero to protected.
 
-# Start the proxy and run your code through it
-worthless wrap python your_app.py
-# → Proxy injects OPENAI_BASE_URL, intercepts calls, reconstructs key in memory
+### First-Time Setup (explicit commands)
+```bash
+worthless lock                       # Split keys in .env
+worthless up -d                      # Start proxy daemon
+worthless wrap python your_app.py    # Run code through proxy
+```
 
-# Clean up
-worthless revoke openai-XXXXX  # wipe the key completely
+### Non-interactive / CI
+```bash
+worthless --yes      # Auto-approve lock + proxy start
+worthless --json     # Read-only state report (never writes)
 ```
 
 ---

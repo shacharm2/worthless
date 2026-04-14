@@ -128,14 +128,13 @@ class TestHelpText:
         for cmd in ("lock", "unlock", "enroll", "scan", "status", "wrap", "up"):
             assert cmd in output, f"Command {cmd!r} missing from --help output"
 
-    def test_no_args_shows_help(self) -> None:
-        """worthless with no args should show help (no_args_is_help=True)."""
+    def test_no_args_runs_default_command(self) -> None:
+        """worthless with no args runs the default pipeline (not help)."""
         result = runner.invoke(app, [])
         assert result.exit_code == 0
-        output = result.stdout
-        # Should show the app description or command list
-        assert "lock" in output
-        assert "unlock" in output
+        output = result.stdout + result.stderr
+        # Default command runs — should NOT show help/command list
+        assert "Usage:" not in output
 
 
 # ===================================================================

@@ -48,6 +48,71 @@ def _resolve_port(port_arg: int | None) -> int:
     return 8787
 
 
+def start_daemon(
+    proxy_env: dict[str, str],
+    port: int,
+    pid_file: Path,
+    log_file: Path,
+    console,
+) -> int:
+    """Start proxy in daemon mode (setsid, write PID, detach).
+
+    Returns the daemon PID on success.  Importable by other modules
+    (e.g. the default command pipeline) that need to start the proxy
+    programmatically.
+    """
+    cmd = proxy_cmd(port)
+
+    log_fd: int = -1
+    try:
+        with fernet_transport(proxy_env) as (fernet_key, fernet_fd, fernet_fds):
+            full_env = prepare_proxy_env(proxy_env, fernet_fd)
+            platform_kwargs = popen_platform_kwargs(detach=True, pass_fds=tuple(fernet_fds))
+
+            log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+
+            proc = subprocess.Popen(
+                cmd,
+                env=full_env,
+                stdout=subprocess.DEVNULL,
+                stderr=log_fd,
+                stdin=subprocess.PIPE if fernet_key else None,
+                **platform_kwargs,
+            )
+
+            finalize_fernet_transport(proc, fernet_key, fernet_fd)
+    except Exception as exc:
+        if not isinstance(exc, typer.Exit):
+            console.print_error(
+                WorthlessError(
+                    ErrorCode.PROXY_UNREACHABLE,
+                    sanitize_exception(exc, generic="failed to start daemon"),
+                )
+            )
+        raise typer.Exit(code=1) from exc
+    finally:
+        if log_fd >= 0:
+            os.close(log_fd)
+
+    # Write PID file — kill daemon if this fails to prevent orphans
+    try:
+        write_pid(pid_file, proc.pid, port)
+    except OSError:
+        proc.kill()
+        raise
+
+    # Brief health check
+    healthy = poll_health(port, timeout=10.0)
+    if healthy:
+        console.print_success(f"Proxy running on 127.0.0.1:{port} (PID {proc.pid})")
+    else:
+        console.print_warning(
+            f"Proxy started (PID {proc.pid}) but health check timed out. Check logs."
+        )
+
+    return proc.pid
+
+
 def register_up_commands(app: typer.Typer) -> None:
     """Register the ``up`` command on the Typer app."""
 
@@ -96,66 +161,9 @@ def register_up_commands(app: typer.Typer) -> None:
 
         if daemon:
             log_file = home.base_dir / "proxy.log"
-            _start_daemon(proxy_env, actual_port, pid_file, log_file, console)
+            start_daemon(proxy_env, actual_port, pid_file, log_file, console)
         else:
             _start_foreground(proxy_env, actual_port, pid_file, console)
-
-    def _start_daemon(
-        proxy_env: dict[str, str],
-        port: int,
-        pid_file: Path,
-        log_file: Path,
-        console,
-    ) -> None:
-        """Start proxy in daemon mode (setsid, write PID, detach)."""
-        cmd = proxy_cmd(port)
-
-        log_fd: int = -1
-        try:
-            with fernet_transport(proxy_env) as (fernet_key, fernet_fd, fernet_fds):
-                full_env = prepare_proxy_env(proxy_env, fernet_fd)
-                platform_kwargs = popen_platform_kwargs(detach=True, pass_fds=tuple(fernet_fds))
-
-                log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-
-                proc = subprocess.Popen(
-                    cmd,
-                    env=full_env,
-                    stdout=subprocess.DEVNULL,
-                    stderr=log_fd,
-                    stdin=subprocess.PIPE if fernet_key else None,
-                    **platform_kwargs,
-                )
-
-                finalize_fernet_transport(proc, fernet_key, fernet_fd)
-        except Exception as exc:
-            if not isinstance(exc, typer.Exit):
-                console.print_error(
-                    WorthlessError(
-                        ErrorCode.PROXY_UNREACHABLE,
-                        sanitize_exception(exc, generic="failed to start daemon"),
-                    )
-                )
-            raise typer.Exit(code=1) from exc
-        finally:
-            if log_fd >= 0:
-                os.close(log_fd)
-
-        # Write PID file — kill daemon if this fails to prevent orphans
-        try:
-            write_pid(pid_file, proc.pid, port)
-        except OSError:
-            proc.kill()
-            raise
-
-        # Brief health check
-        healthy = poll_health(port, timeout=10.0)
-        if healthy:
-            console.print_success(f"Proxy running on 127.0.0.1:{port} (PID {proc.pid})")
-        else:
-            console.print_warning(
-                f"Proxy started (PID {proc.pid}) but health check timed out. Check logs."
-            )
 
     def _start_foreground(
         proxy_env: dict[str, str],
