@@ -781,34 +781,31 @@
         </div>
 
         <!-- Github Popover (Local .env) -->
-        <div id="gh-popover"
-          style="position:absolute; top: 10px; left: calc(100% + 15px); width:260px; background:#fff; border:1px solid #e1e4e8; border-radius:6px; box-shadow:0 12px 30px rgba(0,0,0,0.15); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(10px) scale(0.95); transition:all 0.4s ease; pointer-events:none; z-index:100; color:#24292e;">
-          <div
-            style="background:#f6f8fa; padding:8px 12px; border-bottom:1px solid #e1e4e8; font-size:12px; font-weight:600; border-radius: 6px 6px 0 0; display:flex; justify-content:space-between; align-items:center;">
+        <div id="gh-popover" style="position:absolute; top: 10px; left: calc(100% + 15px); width:260px; background:#fff; border:1px solid #d0e1f9; border-radius:8px; box-shadow:0 12px 30px rgba(0,20,60,0.08); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(10px) scale(0.95); transition:all 0.4s ease; pointer-events:none; z-index:100; color:#2c3e50;">
+          <div style="background:#f0f7ff; padding:8px 12px; border-bottom:1px solid #d0e1f9; font-size:12px; font-weight:600; border-radius: 8px 8px 0 0; display:flex; justify-content:space-between; align-items:center; color:#4a5f73;">
             <span>.env (LOCAL)</span>
-            <span style="font-size:10px; color:#6a737d;">Uncommitted</span>
+            <span style="font-size:10px; opacity:0.6;">Uncommitted</span>
           </div>
           <div style="padding:12px; font-family:var(--mono); font-size:11px; line-height:1.4;">
-            <div style="color:#b31d28;">- OPENAI_API_KEY=sk-real...</div>
-            <div style="color:#22863a;">+ OPENAI_API_KEY=sk-proj-wrthlss-share...</div>
+            <div style="color:#e06c75;">- OPENAI_API_KEY=sk-real...</div>
+            <div style="color:#2ea44f;">+ OPENAI_API_KEY=sk-proj-wrthlss-share...</div>
           </div>
         </div>
 
         <!-- GitHub Web Popover (Remote Repo) -->
-        <div id="github-repo-popover"
-          style="position:absolute; top: -140px; left: calc(100% + 100px); width:280px; background:#fff; border:1px solid #d1d5da; border-radius:6px; box-shadow:0 15px 40px rgba(0,0,0,0.12); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(20px); transition:all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); pointer-events:none; z-index:90; color:#24292e;">
-          <div
-            style="background:#f6f8fa; padding:10px 14px; border-bottom:1px solid #d1d5da; font-size:11px; font-weight:600; border-radius:6px 6px 0 0; display:flex; align-items:center; justify-content:space-between; gap:8px;">
-            <div style="display:flex; align-items:center; gap:8px;">
-              <svg height="16" viewBox="0 0 16 16" width="16">
-                <path
-                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z">
-                </path>
-              </svg>
+        <div id="github-repo-popover" style="position:absolute; top: -140px; left: calc(100% + 100px); width:280px; background:#fff; border:1px solid #d0e1f9; border-radius:10px; box-shadow:0 15px 40px rgba(0,20,60,0.1); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(20px); transition:all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); pointer-events:none; z-index:90; color:#2c3e50;">
+          <div style="background:#f0f7ff; padding:10px 14px; border-bottom:1px solid #d0e1f9; font-size:11px; font-weight:700; border-radius:10px 10px 0 0; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <div style="display:flex; align-items:center; gap:8px; color:#4a5f73;">
+              <svg height="16" viewBox="0 0 16 16" width="16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
               github.com/your/repo
             </div>
-            <span style="font-size:14px; filter: saturate(0.8);" title="Whoops!">🤦‍♂️</span>
+            <span style="font-size:14px; opacity:0.9;">🤦‍♂️</span>
           </div>
+          <div style="padding:16px; font-family:var(--mono); font-size:11px; line-height:1.6;">
+            <div style="color:#2c3e50;">OPENAI_API_KEY=<span style="background:#eef6ff; color:#005cc5; padding:2px 4px; border-radius:3px; font-weight:600;">sk-proj-wrthlss-share...</span></div>
+            <div style="color:#6a737d; font-size:10px; margin-top:10px;"># Publicly visible leaked key share</div>
+          </div>
+        </div>
           <div style="padding:12px; font-family:var(--mono); font-size:11px; line-height:1.4;">
             <div style="color:#24292e;">OPENAI_API_KEY=<span
                 style="background:#e6ffed; padding:1px 3px;">sk-proj-wrthlss-share...</span></div>
