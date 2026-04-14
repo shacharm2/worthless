@@ -34,6 +34,20 @@ These patterns must never appear in any log, anywhere:
 **SR-06: Sidecar/isolated execution.**
 The reconstruction service runs in an isolated process with its own memory space. The main application (proxy, CLI, MCP server) never has access to the reconstruction service's memory or environment variables. In the Python PoC, reconstruction is in-process but architecturally separated — the Rust hardening phase enforces true process isolation (distroless container).
 
+## Shard Separation
+
+**SR-09: Shard-A never at rest in proxy.**
+The proxy process must never have filesystem access, environment variable access, or configuration pointing to shard-A material. Shard-A arrives exclusively via the `Authorization` header per-request. No `WORTHLESS_SHARD_A_DIR`, no disk fallback, no shard-A directory scanning. Enforced by semgrep rule `sr09-no-shard-a-in-proxy`.
+
+**SR-10: No dual-shard co-location.**
+No single process may hold (or have access paths to) both shard-A and shard-B for the same key, except transiently during the reconstruct-call-zero sequence within a single request handler. Configuration that grants a process access to both shard storage locations is a security violation regardless of whether the process reads them.
+
+**SR-11: Client-transport-only for shard-A.**
+Shard-A lives in the developer's `.env` file. The SDK reads it as the API key and sends it as `Authorization: Bearer <shard-A>` to the proxy. The proxy extracts it from the header. No server-side shard-A storage of any kind — no files, no database columns containing shard-A values, no environment variables.
+
+**SR-12: Format-preserving split.**
+`split_key` must produce shard-A in the same prefix, charset, and length as the original API key. The split operates over the key's character alphabet using modular arithmetic (one-time pad over Z/N), not raw byte XOR. Shard-A must be indistinguishable from a real API key to any observer without shard-B.
+
 ## Cryptographic Operations
 
 **SR-07: Constant-time comparisons.**
@@ -54,6 +68,10 @@ All random byte generation uses `secrets.token_bytes()` (Python) or `OsRng` (Rus
 | SR-06 | Phase 3+ (full in Rust) | Architecture |
 | SR-07 | Phase 1+ | CRYP-02 |
 | SR-08 | Phase 1+ | CRYP-04 |
+| SR-09 | All phases | Architecture — shard separation |
+| SR-10 | All phases | Architecture — shard separation |
+| SR-11 | All phases | Architecture — client-transport |
+| SR-12 | Phase 1+ | CRYP-01 (format-preserving) |
 
 ## Platform Notes
 

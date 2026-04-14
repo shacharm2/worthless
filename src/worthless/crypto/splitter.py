@@ -1,8 +1,10 @@
-"""XOR key splitting with HMAC commitment and secure memory zeroing.
+"""Format-preserving key splitting with HMAC commitment and secure memory zeroing.
 
 This module implements the core cryptographic primitives for Worthless:
-- split_key: Splits an API key into two XOR shards with an HMAC commitment
-- reconstruct_key: Reconstructs the key from shards after HMAC verification
+- split_key_fp: Format-preserving split — shard-A keeps the key's prefix/charset/length
+- reconstruct_key_fp: Reconstructs from format-preserving shards after HMAC verification
+- split_key: Legacy byte-level XOR split (to be removed — no production users)
+- reconstruct_key: Legacy byte-level XOR reconstruct (to be removed — no production users)
 - secure_key: Context manager that zeros key material on exit
 """
 
@@ -14,8 +16,205 @@ import secrets
 from contextlib import contextmanager
 from collections.abc import Generator
 
-from worthless.crypto.types import SplitResult, zero_buf
+from worthless.crypto.charsets import ALPHANUMERIC, BASE64URL, PRINTABLE, PROVIDER_CHARSETS
+from worthless.crypto.types import FormatPreservingSplitResult, SplitResult, zero_buf
 from worthless.exceptions import ShardTamperedError
+
+# ---------------------------------------------------------------------------
+# Precomputed lookups for format-preserving split (SR-12)
+# ---------------------------------------------------------------------------
+
+_BASE64URL_SET = frozenset(BASE64URL)
+_ALPHANUMERIC_SET = frozenset(ALPHANUMERIC)
+_PRINTABLE_SET = frozenset(PRINTABLE)
+
+_CHAR_TO_IDX: dict[str, dict[str, int]] = {
+    cs: {c: i for i, c in enumerate(cs)} for cs in (ALPHANUMERIC, BASE64URL, PRINTABLE)
+}
+
+
+def _detect_charset(body: str, provider: str | None = None) -> str:
+    """Determine the minimal charset that covers all characters in *body*.
+
+    Tries provider-specific charset first, then falls back to broader
+    charsets.
+    """
+    if provider and provider in PROVIDER_CHARSETS:
+        cs = PROVIDER_CHARSETS[provider]
+        if all(c in _CHAR_TO_IDX[cs] for c in body):
+            return cs
+
+    for cs, cs_set in (
+        (ALPHANUMERIC, _ALPHANUMERIC_SET),
+        (BASE64URL, _BASE64URL_SET),
+        (PRINTABLE, _PRINTABLE_SET),
+    ):
+        if all(c in cs_set for c in body):
+            return cs
+
+    # SR-04: don't leak key characters in exceptions
+    raise ValueError(
+        f"Key body contains {sum(1 for c in body if c not in _PRINTABLE_SET)} "
+        "character(s) outside printable ASCII"
+    )
+
+
+# ---------------------------------------------------------------------------
+# HMAC commitment helpers (shared by FP and legacy paths)
+# ---------------------------------------------------------------------------
+
+
+def _make_commitment(key_data: bytes | bytearray) -> tuple[bytearray, bytearray]:
+    """Create an HMAC-SHA256 commitment over key data.
+
+    Returns (commitment, nonce).
+    """
+    # mutmut: skip — token_bytes(None) defaults to 32; equivalent mutant
+    nonce = bytearray(secrets.token_bytes(32))
+    commitment = bytearray(
+        hmac.new(nonce, key_data, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256
+    )
+    return commitment, nonce
+
+
+def _verify_commitment(
+    key_data: bytes | bytearray,
+    commitment: bytes | bytearray,
+    nonce: bytes | bytearray,
+) -> None:
+    """Verify HMAC-SHA256 commitment. Raises ShardTamperedError on mismatch."""
+    expected = bytearray(
+        hmac.new(nonce, key_data, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256
+    )
+    try:
+        if not hmac.compare_digest(expected, commitment):
+            raise ShardTamperedError("HMAC verification failed: shard data has been tampered with")
+    finally:
+        zero_buf(expected)
+
+
+# ---------------------------------------------------------------------------
+# Format-preserving split/reconstruct (SR-12)
+# ---------------------------------------------------------------------------
+
+
+def split_key_fp(
+    api_key: str, prefix: str, provider: str | None = None
+) -> FormatPreservingSplitResult:
+    """Split an API key using format-preserving modular arithmetic.
+
+    Shard-A preserves the key's prefix, charset, and length — it is
+    indistinguishable from a real API key (SR-12).  The split uses a
+    one-time pad over Z/N where N is the charset size.
+
+    Args:
+        api_key: The full API key string (e.g. "sk-proj-abc123...").
+        prefix: The prefix to preserve verbatim (e.g. "sk-proj-").
+        provider: Provider name for charset selection (optional).
+
+    Returns:
+        A FormatPreservingSplitResult with format-valid shard_a and shard_b.
+    """
+    if not api_key:
+        raise ValueError("Cannot split an empty key")
+    if not api_key.startswith(prefix):
+        raise ValueError(f"Key does not start with prefix {prefix!r}")
+
+    body = api_key[len(prefix) :]
+    if not body:
+        raise ValueError("Key body is empty after prefix removal")
+
+    charset = _detect_charset(body, provider)
+    n = len(charset)
+    char_to_idx = _CHAR_TO_IDX[charset]
+
+    shard_a_chars: list[str] = []
+    shard_b_chars: list[str] = []
+    for char in body:
+        original_idx = char_to_idx[char]
+        mask = secrets.randbelow(n)
+        shard_a_chars.append(charset[(original_idx - mask) % n])
+        shard_b_chars.append(charset[mask])
+
+    shard_a_str = prefix + "".join(shard_a_chars)
+    shard_b_str = "".join(shard_b_chars)
+
+    commitment, nonce = _make_commitment(api_key.encode("utf-8"))
+
+    return FormatPreservingSplitResult(
+        shard_a=bytearray(shard_a_str.encode("utf-8")),
+        shard_b=bytearray(shard_b_str.encode("utf-8")),
+        commitment=commitment,
+        nonce=nonce,
+        prefix=prefix,
+        charset=charset,
+    )
+
+
+def reconstruct_key_fp(
+    shard_a: bytes | bytearray,
+    shard_b: bytes | bytearray,
+    commitment: bytes | bytearray,
+    nonce: bytes | bytearray,
+    prefix: str,
+    charset: str,
+) -> bytearray:
+    """Reconstruct the original API key from format-preserving shards.
+
+    Verifies the HMAC commitment before returning.  If verification fails,
+    all intermediate material is zeroed and ShardTamperedError is raised.
+
+    Args:
+        shard_a: UTF-8 encoded shard-A (prefix + randomized body).
+        shard_b: UTF-8 encoded shard-B (body only).
+        commitment: HMAC commitment from split.
+        nonce: Nonce used for commitment.
+        prefix: The preserved prefix string.
+        charset: The charset used for the split.
+
+    Returns:
+        A mutable bytearray containing the reconstructed key (UTF-8).
+    """
+    # bytearray.decode() avoids an intermediate un-zeroable bytes copy
+    shard_a_str = (
+        shard_a.decode("utf-8")
+        if isinstance(shard_a, bytearray)
+        else bytes(shard_a).decode("utf-8")
+    )
+    shard_b_str = (
+        shard_b.decode("utf-8")
+        if isinstance(shard_b, bytearray)
+        else bytes(shard_b).decode("utf-8")
+    )
+
+    if not shard_a_str.startswith(prefix):
+        raise ValueError(f"Shard-A does not start with expected prefix {prefix!r}")
+
+    a_body = shard_a_str[len(prefix) :]
+    b_body = shard_b_str
+
+    if len(a_body) != len(b_body):
+        raise ValueError(f"Shard body length mismatch: a={len(a_body)}, b={len(b_body)}")
+
+    n = len(charset)
+    char_to_idx = _CHAR_TO_IDX[charset]
+
+    # Build key directly as bytearray to avoid un-zeroable intermediate str.
+    # All API key chars are ASCII so ord() gives the correct UTF-8 byte.
+    prefix_bytes = prefix.encode("utf-8")
+    key = bytearray(len(prefix_bytes) + len(a_body))
+    key[: len(prefix_bytes)] = prefix_bytes
+    for i, (a_char, b_char) in enumerate(zip(a_body, b_body, strict=True)):
+        original_idx = (char_to_idx[a_char] + char_to_idx[b_char]) % n
+        key[len(prefix_bytes) + i] = ord(charset[original_idx])
+
+    try:
+        _verify_commitment(key, commitment, nonce)
+    except Exception:
+        zero_buf(key)
+        raise
+
+    return key
 
 
 def split_key(api_key: bytes) -> SplitResult:
@@ -33,23 +232,14 @@ def split_key(api_key: bytes) -> SplitResult:
     if not api_key:
         raise ValueError("Cannot split an empty key")
 
-    # Generate a random mask (shard_b) using CSPRNG
     mask = bytearray(secrets.token_bytes(len(api_key)))
-
-    # XOR the key with the mask to produce shard_a
     shard_a = bytearray(a ^ b for a, b in zip(api_key, mask, strict=True))
-    shard_b = mask
 
-    # Create HMAC commitment over the original key
-    # mutmut: skip — token_bytes(None) defaults to 32; equivalent mutant
-    nonce = bytearray(secrets.token_bytes(32))
-    commitment = bytearray(
-        hmac.new(nonce, api_key, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256, not standalone
-    )
+    commitment, nonce = _make_commitment(api_key)
 
     return SplitResult(
         shard_a=shard_a,
-        shard_b=shard_b,
+        shard_b=mask,
         commitment=commitment,
         nonce=nonce,
     )
@@ -86,22 +276,13 @@ def reconstruct_key(
     if len(shard_a) != len(shard_b):
         raise ValueError(f"Shard length mismatch: shard_a={len(shard_a)}, shard_b={len(shard_b)}")
 
-    # Reconstruct the key via XOR
     key = bytearray(a ^ b for a, b in zip(shard_a, shard_b, strict=True))
-    expected = bytearray()
 
     try:
-        # Verify HMAC commitment
-        expected = bytearray(
-            hmac.new(nonce, key, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256, not standalone
-        )
-        if not hmac.compare_digest(expected, commitment):
-            raise ShardTamperedError("HMAC verification failed: shard data has been tampered with")
+        _verify_commitment(key, commitment, nonce)
     except Exception:
         zero_buf(key)
         raise
-    finally:
-        zero_buf(expected)
 
     return key
 
