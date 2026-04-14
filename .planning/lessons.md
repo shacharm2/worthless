@@ -12,6 +12,12 @@
 
 **Rule:** If a package is in `pyproject.toml` dependencies (not optional), import it directly. Use `_keyring_available()` (backend check) for graceful degradation, not import guards.
 
+## 2026-04-12: Check the full phase scope before starting work
+
+**What happened:** User asked to rewrite the README. I dove straight into copywriting without checking the roadmap. Phase 5.5 is "README + Service Install" — the service install is the other half of the same phase. User had to discover this themselves by asking about it repeatedly.
+
+**Rule:** Before starting work on any phase item, read the phase definition in ROADMAP.md and list ALL deliverables scoped for that phase. Flag anything missing or not yet built. Don't cherry-pick the fun task and ignore the rest.
+
 ## 2026-03-21: Don't contradict yourself across messages
 
 **What happened:** Said "there's no V1 in GSD" then two messages later explained what V1 means. V1 scope is clearly defined in CLAUDE.md.
