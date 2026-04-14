@@ -187,12 +187,20 @@
       background: #faf8f6;
       transition: all 0.2s ease;
       white-space: nowrap;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
     }
 
-    .nav-star:hover { border-color: #d8d4d0; box-shadow: 0 3px 10px rgba(0,0,0,0.05); transform: translateY(-0.5px); }
+    .nav-star:hover {
+      border-color: #d8d4d0;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.05);
+      transform: translateY(-0.5px);
+    }
 
-    .nav-star svg { flex-shrink: 0; color: #333333; margin-top: -1px; }
+    .nav-star svg {
+      flex-shrink: 0;
+      color: #333333;
+      margin-top: -1px;
+    }
 
     .star-badge {
       display: inline-flex;
@@ -688,8 +696,12 @@
       <a href="blog/index.html">Blog</a>
     </div>
     <div class="nav-actions">
-      <a href="https://github.com/shacharm2/worthless" class="nav-star" id="nav-star-btn" target="_blank" rel="noopener">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 4.41 2.87 8.15 6.84 9.47.6.11.82-.26.82-.58 0-.28-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C3.017 14.07 2.228 13.7 2.228 13.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C21.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12z"/></svg>
+      <a href="https://github.com/shacharm2/worthless" class="nav-star" id="nav-star-btn" target="_blank"
+        rel="noopener">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+          <path
+            d="M12 0C5.37 0 0 5.37 0 12c0 4.41 2.87 8.15 6.84 9.47.6.11.82-.26.82-.58 0-.28-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C3.017 14.07 2.228 13.7 2.228 13.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C21.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12z" />
+        </svg>
         GitHub
         <span class="star-badge"><span class="star-icon">★</span><span id="gh-stars">…</span></span>
       </a>
@@ -769,8 +781,10 @@
         </div>
 
         <!-- Github Popover (Local .env) -->
-        <div id="gh-popover" style="position:absolute; top: 10px; left: calc(100% + 15px); width:260px; background:#fff; border:1px solid #e1e4e8; border-radius:6px; box-shadow:0 12px 30px rgba(0,0,0,0.15); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(10px) scale(0.95); transition:all 0.4s ease; pointer-events:none; z-index:100; color:#24292e;">
-          <div style="background:#f6f8fa; padding:8px 12px; border-bottom:1px solid #e1e4e8; font-size:12px; font-weight:600; border-radius: 6px 6px 0 0; display:flex; justify-content:space-between; align-items:center;">
+        <div id="gh-popover"
+          style="position:absolute; top: 10px; left: calc(100% + 15px); width:260px; background:#fff; border:1px solid #e1e4e8; border-radius:6px; box-shadow:0 12px 30px rgba(0,0,0,0.15); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(10px) scale(0.95); transition:all 0.4s ease; pointer-events:none; z-index:100; color:#24292e;">
+          <div
+            style="background:#f6f8fa; padding:8px 12px; border-bottom:1px solid #e1e4e8; font-size:12px; font-weight:600; border-radius: 6px 6px 0 0; display:flex; justify-content:space-between; align-items:center;">
             <span>.env (LOCAL)</span>
             <span style="font-size:10px; color:#6a737d;">Uncommitted</span>
           </div>
@@ -781,58 +795,71 @@
         </div>
 
         <!-- GitHub Web Popover (Remote Repo) -->
-        <div id="github-repo-popover" style="position:absolute; top: -140px; left: calc(100% + 100px); width:280px; background:#fff; border:1px solid #d1d5da; border-radius:6px; box-shadow:0 15px 40px rgba(0,0,0,0.12); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(20px); transition:all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); pointer-events:none; z-index:90; color:#24292e;">
-          <div style="background:#f6f8fa; padding:10px 14px; border-bottom:1px solid #d1d5da; font-size:11px; font-weight:600; border-radius:6px 6px 0 0; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+        <div id="github-repo-popover"
+          style="position:absolute; top: -140px; left: calc(100% + 100px); width:280px; background:#fff; border:1px solid #d1d5da; border-radius:6px; box-shadow:0 15px 40px rgba(0,0,0,0.12); font-family:var(--sans); text-align:left; opacity:0; transform:translateY(20px); transition:all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); pointer-events:none; z-index:90; color:#24292e;">
+          <div
+            style="background:#f6f8fa; padding:10px 14px; border-bottom:1px solid #d1d5da; font-size:11px; font-weight:600; border-radius:6px 6px 0 0; display:flex; align-items:center; justify-content:space-between; gap:8px;">
             <div style="display:flex; align-items:center; gap:8px;">
-              <svg height="16" viewBox="0 0 16 16" width="16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+              <svg height="16" viewBox="0 0 16 16" width="16">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z">
+                </path>
+              </svg>
               github.com/your/repo
             </div>
             <span style="font-size:14px; filter: saturate(0.8);" title="Whoops!">🤦‍♂️</span>
           </div>
           <div style="padding:12px; font-family:var(--mono); font-size:11px; line-height:1.4;">
-            <div style="color:#24292e;">OPENAI_API_KEY=<span style="background:#e6ffed; padding:1px 3px;">sk-proj-wrthlss-share...</span></div>
+            <div style="color:#24292e;">OPENAI_API_KEY=<span
+                style="background:#e6ffed; padding:1px 3px;">sk-proj-wrthlss-share...</span></div>
             <div style="color:#6a737d; font-size:9px; margin-top:8px;"># Publicly visible leaked key share</div>
           </div>
         </div>
 
         <!-- Red Curved Arrow 1: Terminal to Local .env -->
-        <div id="hero-arrow" style="position:absolute; top: 110px; left: 100%; width: 100px; height: 60px; pointer-events:none; opacity:0; transition: opacity 0.4s ease; transform: rotate(-10deg);">
+        <div id="hero-arrow"
+          style="position:absolute; top: 110px; left: 100%; width: 100px; height: 60px; pointer-events:none; opacity:0; transition: opacity 0.4s ease; transform: rotate(-10deg);">
           <svg width="100" height="60" viewBox="0 0 100 60" fill="none">
             <path d="M5,50 Q40,45 80,10" stroke="#ff6b6b" stroke-width="2.5" stroke-linecap="round" />
-            <path d="M72,12 L82,8 L78,18" stroke="#ff6b6b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M72,12 L82,8 L78,18" stroke="#ff6b6b" stroke-width="2.5" stroke-linecap="round"
+              stroke-linejoin="round" />
           </svg>
         </div>
 
         <!-- Red Curved Arrow 2: .env to GitHub Repo (THE LEAK) -->
-        <div id="leak-arrow" style="position:absolute; top: -50px; left: calc(100% + 50px); width: 140px; height: 100px; pointer-events:none; opacity:0; transition: opacity 0.5s ease 0.2s;">
+        <div id="leak-arrow"
+          style="position:absolute; top: -50px; left: calc(100% + 50px); width: 140px; height: 100px; pointer-events:none; opacity:0; transition: opacity 0.5s ease 0.2s;">
           <svg width="140" height="100" viewBox="0 0 140 100" fill="none">
-            <path d="M10,80 Q70,40 130,20" stroke="#ff6b6b" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="4,4" />
-            <path d="M120,25 L132,18 L122,12" stroke="#ff6b6b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
-            <text x="0" y="95" fill="#ff6b6b" font-family="var(--mono)" font-size="10" font-weight="700">AI pushed it</text>
+            <path d="M10,80 Q70,40 130,20" stroke="#ff6b6b" stroke-width="2.5" stroke-linecap="round"
+              stroke-dasharray="4,4" />
+            <path d="M120,25 L132,18 L122,12" stroke="#ff6b6b" stroke-width="2.5" stroke-linecap="round"
+              stroke-linejoin="round" />
+            <text x="0" y="95" fill="#ff6b6b" font-family="var(--mono)" font-size="10" font-weight="700">AI pushed
+              it</text>
           </svg>
         </div>
       </div>
-      </div>
+    </div>
 
-      <div class="hero-stats">
-        <div class="stat">
-          <div class="stat-val">0</div>
-          <div class="stat-lbl">lines of code to change</div>
-        </div>
-        <div class="stat">
-          <div class="stat-val">2</div>
-          <div class="stat-lbl">commands to get started</div>
-        </div>
-        <div class="stat">
-          <div class="stat-val">∞</div>
-          <div class="stat-lbl">keys you can protect</div>
-        </div>
+    <div class="hero-stats">
+      <div class="stat">
+        <div class="stat-val">0</div>
+        <div class="stat-lbl">lines of code to change</div>
       </div>
+      <div class="stat">
+        <div class="stat-val">2</div>
+        <div class="stat-lbl">commands to get started</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val">∞</div>
+        <div class="stat-lbl">keys you can protect</div>
+      </div>
+    </div>
 
-      <div class="hero-chip">
-        <span class="chip-dot"></span>
-        Open source · AGPL-3.0
-      </div>
+    <div class="hero-chip">
+      <span class="chip-dot"></span>
+      Open source · AGPL-3.0
+    </div>
     </div>
   </section>
 
@@ -929,7 +956,7 @@
     const localToGithub = document.getElementById('leak-arrow');
     const titles = ['~ worthless', '~ developer', '~ attacker', '~ attacker'];
     let stage = 0;
-    
+
     setInterval(() => {
       stage = (stage + 1) % 4;
       slider.style.transform = `translateX(-${stage * 25}%)`;
@@ -949,8 +976,8 @@
       } else { // Attack stages - Slide GitHub repo down to .env's spot
         localEnv.style.opacity = '0'; localEnv.style.transform = 'translateY(10px) scale(0.95)';
         termToLocal.style.opacity = '0';
-        githubRepo.style.opacity = '1'; 
-        githubRepo.style.top = '10px'; 
+        githubRepo.style.opacity = '1';
+        githubRepo.style.top = '10px';
         githubRepo.style.left = 'calc(100% + 15px)';
         localToGithub.style.opacity = '0';
       }
