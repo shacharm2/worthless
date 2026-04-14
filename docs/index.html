@@ -568,8 +568,8 @@
     }
 
     .comp-col.pos {
-      background: var(--green-soft);
-      border-color: #c3e6cb;
+      background: #eaf4ff;
+      border-color: #c9e3ff;
     }
 
     .comp-head {
@@ -585,7 +585,7 @@
     }
 
     .comp-col.pos .comp-head {
-      color: var(--green-text);
+      color: #005cc5;
     }
 
     .comp-list {
@@ -838,7 +838,7 @@
       </div>
     </div>
 
-    <div class="hero-chip">
+    <div class="hero-chip" style="margin-bottom: 4rem;">
       <span class="chip-dot"></span>
       Open source · AGPL-3.0
     </div>
@@ -846,31 +846,25 @@
   </section>
 
   <!-- Why -->
-  <section class="on-white">
+  <section class="on-white" style="padding: 6rem 0;">
     <div class="container">
-      <div class="eyebrow">The gap</div>
-      <h2>Secrets tools protect keys at rest.</h2>
-      <p class="section-lead">Git commits, CI logs, rogue packages escape. Worthless is the safety net.</p>
-
       <div class="comp-grid">
         <div class="comp-col neg">
-          <div class="comp-head">Real key</div>
+          <div class="comp-head">WITHOUT WORTHLESS</div>
           <ul class="comp-list">
             <li>Leaked .env = working key</li>
             <li>Git history exposes credentials</li>
             <li>CI logs print keys in plaintext</li>
             <li>Rogue packages steal from env</li>
-            <li>No spend cap bills spike overnight</li>
           </ul>
         </div>
         <div class="comp-col pos">
-          <div class="comp-head">Worthless</div>
+          <div class="comp-head">WITH WORTHLESS</div>
           <ul class="comp-list">
-            <li>Defense in depth</li>
-            <li>Leaked .env = useless key share</li>
             <li>Git history has no real key</li>
-            <li>Logs contain random-looking strings</li>
-            <li>Hard budget cap spending stops</li>
+            <li>Leaked .env = useless share</li>
+            <li>Even if leaked... no real keys</li>
+            <li>Defense in depth by default</li>
           </ul>
         </div>
       </div>
