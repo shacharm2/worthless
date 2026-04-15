@@ -393,6 +393,91 @@ async def test_spend_log_index_exists_after_migrate(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# WOR-207: prefix/charset columns for format-preserving split
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_migrate_adds_prefix_charset_columns(tmp_path) -> None:
+    """Migration adds prefix and charset columns to shards table."""
+    db_path = str(tmp_path / "old_no_fp.db")
+
+    # Create DB with current schema (no prefix/charset)
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.commit()
+
+    await migrate_db(db_path)
+
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute("PRAGMA table_info(shards)")
+        columns = {row[1] for row in await cursor.fetchall()}
+
+    assert "prefix" in columns, "prefix column not added"
+    assert "charset" in columns, "charset column not added"
+
+
+@pytest.mark.asyncio
+async def test_store_enrolled_with_prefix_charset(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """store_enrolled persists prefix and charset fields."""
+    shard = stored_shard_from_split(sample_split_result)
+    await repo.store_enrolled(
+        "fp-alias",
+        shard,
+        var_name="OPENAI_API_KEY",
+        env_path="/tmp/.env",  # noqa: S108
+        prefix="sk-proj-",
+        charset="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-",
+    )
+
+    enc = await repo.fetch_encrypted("fp-alias")
+    assert enc is not None
+    assert enc.prefix == "sk-proj-"
+    assert enc.charset == "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+
+
+@pytest.mark.asyncio
+async def test_fetch_encrypted_returns_prefix_charset(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """fetch_encrypted includes prefix and charset in returned EncryptedShard."""
+    shard = stored_shard_from_split(sample_split_result)
+    await repo.store_enrolled(
+        "fp-fetch",
+        shard,
+        var_name="ANTHROPIC_API_KEY",
+        env_path="/tmp/.env",  # noqa: S108
+        prefix="sk-ant-api03-",
+        charset="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-",
+    )
+
+    enc = await repo.fetch_encrypted("fp-fetch")
+    assert enc is not None
+    assert enc.prefix == "sk-ant-api03-"
+    assert enc.charset is not None
+    assert len(enc.charset) == 64  # base64url
+
+
+@pytest.mark.asyncio
+async def test_store_without_prefix_charset_defaults_none(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """Existing store() without prefix/charset stores None (backward compat)."""
+    shard = stored_shard_from_split(sample_split_result)
+    await repo.store("legacy-alias", shard)
+
+    enc = await repo.fetch_encrypted("legacy-alias")
+    assert enc is not None
+    assert enc.prefix is None
+    assert enc.charset is None
+
+
+# ---------------------------------------------------------------------------
 # Legacy migration
 # ---------------------------------------------------------------------------
 
