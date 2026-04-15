@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS shards (
     commitment  BLOB NOT NULL,
     nonce       BLOB NOT NULL,
     provider    TEXT NOT NULL,
+    prefix      TEXT,
+    charset     TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -94,6 +96,18 @@ async def migrate_db(db_path: str) -> None:
             except Exception as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
+
+        # WOR-207: Add prefix/charset columns to shards for format-preserving split
+        cursor = await db.execute("PRAGMA table_info(shards)")
+        shard_columns = {row[1] for row in await cursor.fetchall()}
+        for col_name, col_type in [("prefix", "TEXT"), ("charset", "TEXT")]:
+            if col_name not in shard_columns:
+                try:
+                    await db.execute(f"ALTER TABLE shards ADD COLUMN {col_name} {col_type}")
+                except Exception as exc:
+                    if "duplicate column" not in str(exc).lower():
+                        raise
+        await db.commit()
 
         # WOR-183: Add rules engine columns to enrollment_config
         # Guard: table may not exist in very old DBs
