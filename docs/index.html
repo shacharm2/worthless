@@ -7,6 +7,31 @@
   <title>Worthless — Make Leaked API Keys Worthless</title>
   <meta name="description"
     content="Worthless splits your API keys so a leaked key is cryptographically useless. Zero code changes. Self-hosted. Open source." />
+  <link rel="canonical" href="https://worthless.cloud/" />
+  <meta name="theme-color" content="#4a6fa5" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Worthless — Make Leaked API Keys Worthless" />
+  <meta property="og:description" content="Worthless splits your API keys so a leaked key is cryptographically useless. Zero code changes. Self-hosted. Open source." />
+  <meta property="og:image" content="https://worthless.cloud/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:url" content="https://worthless.cloud/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Worthless" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Worthless — Make Leaked API Keys Worthless" />
+  <meta name="twitter:description" content="Worthless splits your API keys so a leaked key is cryptographically useless. Zero code changes. Self-hosted. Open source." />
+  <meta name="twitter:image" content="https://worthless.cloud/og-image.png" />
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="manifest" href="/site.webmanifest" />
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link
     href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
@@ -556,7 +581,7 @@
 
     .comp-col {
       border-radius: var(--radius-lg);
-      padding: 2rem;
+      padding: 2.5rem;
       border: 1px solid var(--border-soft);
     }
 
@@ -571,7 +596,7 @@
     }
 
     .comp-head {
-      font-size: 0.75rem;
+      font-size: 1.1rem;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.08em;
@@ -591,9 +616,9 @@
     }
 
     .comp-list li {
-      font-size: 1rem;
+      font-size: 1.1rem;
       color: var(--text);
-      padding: 0.6rem 0;
+      padding: 0.85rem 0;
       border-bottom: 1px solid rgba(0, 0, 0, 0.05);
       display: flex;
       gap: 0.8rem;
@@ -858,21 +883,21 @@
     <div class="container" style="text-align: left;">
       <div class="comp-grid">
         <div class="comp-col neg">
-          <div class="comp-head">leaked api key</div>
+          <div class="comp-head">leaked</div>
           <ul class="comp-list">
             <li>Leaked .env = working key</li>
-            <li>Git history exposes credentials</li>
-            <li>CI logs print keys in plaintext</li>
-            <li>Rogue packages steal from env</li>
+            <li>Git history = exposed credentials</li>
+            <li>CI logs = plaintext keys</li>
+            <li>Rogue packages = stolen secrets</li>
           </ul>
         </div>
         <div class="comp-col pos">
-          <div class="comp-head">worthless</div>
+          <div class="comp-head">useless</div>
           <ul class="comp-list">
-            <li>Git history has no real key</li>
             <li>Leaked .env = useless share</li>
-            <li>Even if leaked... no real keys</li>
-            <li>Defense in depth by default</li>
+            <li>Git history = nothing useful</li>
+            <li>CI logs = meaningless shard</li>
+            <li>Rogue packages = worthless data</li>
           </ul>
         </div>
       </div>
@@ -956,6 +981,41 @@
         localToGithub.style.opacity = '0';
       }
     }, 4500);
+  </script>
+  <!-- JSON-LD Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "name": "Worthless",
+        "url": "https://worthless.cloud/"
+      },
+      {
+        "@type": "Organization",
+        "name": "Worthless",
+        "url": "https://worthless.cloud/",
+        "logo": "https://worthless.cloud/apple-touch-icon.png",
+        "sameAs": [
+          "https://github.com/shacharm2/worthless"
+        ]
+      },
+      {
+        "@type": "SoftwareApplication",
+        "name": "Worthless",
+        "applicationCategory": "SecurityApplication",
+        "operatingSystem": "Linux, macOS, Windows",
+        "description": "Worthless splits your API keys so a leaked key is cryptographically useless. Zero code changes. Self-hosted. Open source.",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "license": "https://www.gnu.org/licenses/agpl-3.0.html"
+      }
+    ]
+  }
   </script>
 </body>
 
