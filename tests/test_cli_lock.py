@@ -110,10 +110,8 @@ class TestLockFormatPreserving:
         assert charset is not None
         assert len(charset) > 0
 
-    def test_lock_writes_shard_a_file_for_proxy(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
-        """After lock, shard_a file must exist for proxy alias inference."""
+    def test_lock_writes_no_shard_a_files(self, home_dir: WorthlessHome, env_file: Path) -> None:
+        """After lock, shard_a_dir should have ZERO files (SR-09: no file fallback)."""
         result = runner.invoke(
             app,
             ["lock", "--env", str(env_file)],
@@ -122,8 +120,7 @@ class TestLockFormatPreserving:
         assert result.exit_code == 0, result.output
 
         shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
-        assert len(shard_a_files) == 1
-        assert shard_a_files[0].stat().st_mode & 0o777 == 0o600
+        assert len(shard_a_files) == 0
 
     def test_relock_skips_enrolled_via_db(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """Second lock should skip keys that already have an enrollment in DB."""
@@ -251,9 +248,9 @@ class TestLockCommand:
         # Shard-A should still start with sk-proj-
         assert new_value.startswith("sk-proj-")
 
-        # shard_a file on disk for proxy
+        # No shard_a files on disk (SR-09)
         shard_a_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
-        assert len(shard_a_files) == 1
+        assert len(shard_a_files) == 0
 
         # shard_b should be in DB
         repo = _repo(home_dir)
@@ -369,10 +366,10 @@ class TestLockCommand:
 
 
 class TestLockDBAndFiles:
-    """Lock stores enrollment in SQLite + shard_a file for proxy."""
+    """Lock stores enrollment in SQLite (no shard_a files per SR-09)."""
 
-    def test_lock_creates_shard_a_file(self, home_dir: WorthlessHome, env_file: Path) -> None:
-        """After lock, shard_a_dir should contain one file per key (for proxy)."""
+    def test_lock_creates_no_shard_a_files(self, home_dir: WorthlessHome, env_file: Path) -> None:
+        """After lock, shard_a_dir should have ZERO files (SR-09)."""
         result = runner.invoke(
             app,
             ["lock", "--env", str(env_file)],
@@ -381,12 +378,12 @@ class TestLockDBAndFiles:
         assert result.exit_code == 0, result.output
 
         all_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
-        assert len(all_files) == 1
+        assert len(all_files) == 0
 
-    def test_lock_multiple_keys_creates_files(
+    def test_lock_multiple_keys_no_shard_a_files(
         self, home_dir: WorthlessHome, multi_env_file: Path
     ) -> None:
-        """After locking multiple keys, one shard_a file per key."""
+        """After locking multiple keys, still zero shard_a files (SR-09)."""
         result = runner.invoke(
             app,
             ["lock", "--env", str(multi_env_file)],
@@ -395,7 +392,7 @@ class TestLockDBAndFiles:
         assert result.exit_code == 0, result.output
 
         all_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
-        assert len(all_files) == 2
+        assert len(all_files) == 0
 
     def test_lock_stores_enrollment_in_db(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """Lock should store var_name and env_path in enrollments table."""
@@ -522,6 +519,62 @@ class TestLockErrorBranches:
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 1
+
+
+class TestProxyBaseUrl:
+    """Unit tests for _proxy_base_url helper."""
+
+    def test_proxy_base_url_format(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from worthless.cli.commands.lock import _proxy_base_url
+
+        monkeypatch.delenv("WORTHLESS_PORT", raising=False)
+        url = _proxy_base_url("my-alias")
+        assert url == "http://127.0.0.1:8787/my-alias/v1"
+
+    def test_proxy_base_url_custom_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from worthless.cli.commands.lock import _proxy_base_url
+
+        monkeypatch.setenv("WORTHLESS_PORT", "9999")
+        url = _proxy_base_url("test-key")
+        assert url == "http://127.0.0.1:9999/test-key/v1"
+
+
+class TestLockChmodEnvFile:
+    """Lock tightens .env permissions after writing shard-A."""
+
+    def test_lock_restricts_env_permissions(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """After lock, .env should have no group/other perms."""
+        import stat
+
+        env = tmp_path / ".env"
+        env.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
+        env.chmod(0o644)  # world-readable initially
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        mode = env.stat().st_mode
+        assert not (mode & stat.S_IRWXG), "Group permissions should be removed"
+        assert not (mode & stat.S_IRWXO), "Other permissions should be removed"
+
+    def test_lock_keeps_perms_if_already_strict(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """If .env is already 0o600, lock should not error."""
+        env = tmp_path / ".env"
+        env.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
+        env.chmod(0o600)
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
 
 
 class TestLockNextStepHint:

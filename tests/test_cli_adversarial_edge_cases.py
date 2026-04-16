@@ -837,9 +837,9 @@ class TestDuplicateKeyValueSameEnv:
         enrollments = asyncio.run(repo.list_enrollments())
         assert len(enrollments) == 2
 
-        # One shard_a file (same key = same alias, for proxy)
+        # Zero shard_a files on disk (SR-09: shard-A goes to .env, not disk)
         shard_files = [f for f in home_dir.shard_a_dir.iterdir() if f.is_file()]
-        assert len(shard_files) == 1
+        assert len(shard_files) == 0
 
 
 # ---- Q2: Same key in two .env files ----------------------------------------
@@ -1049,8 +1049,8 @@ class TestWrapUsesDbProvider:
     """wrap should get providers from DB, not by parsing alias names."""
 
     def test_wrap_provider_from_db_not_alias(self, home_dir: WorthlessHome) -> None:
-        """Enroll with non-standard alias; _list_enrolled_providers should still find provider."""
-        from worthless.cli.commands.wrap import _list_enrolled_providers
+        """Enroll with non-standard alias; _list_enrolled_aliases should still find provider."""
+        from worthless.cli.commands.wrap import _list_enrolled_aliases
 
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
@@ -1070,5 +1070,6 @@ class TestWrapUsesDbProvider:
         )
         assert r.exit_code == 0, r.output
 
-        providers = _list_enrolled_providers(home_dir)
-        assert "openai" in providers, f"Expected 'openai' from DB lookup, got {providers}"
+        aliases = _list_enrolled_aliases(home_dir)
+        providers = [p for _, p in aliases]
+        assert "openai" in providers, f"Expected 'openai' from DB lookup, got {aliases}"

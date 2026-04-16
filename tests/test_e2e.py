@@ -72,10 +72,10 @@ class TestLockStatusUnlockCycle:
         assert original_key not in shard_a_value
         assert shard_a_value.startswith("sk-proj-")
 
-        # shard_a file on disk for proxy
+        # No shard_a files on disk (SR-09: proxy gets shard-A from header, not files)
         home = WorthlessHome(base_dir=worthless_home)
         shard_a_files = [f for f in home.shard_a_dir.iterdir() if f.is_file()]
-        assert len(shard_a_files) == 1
+        assert len(shard_a_files) == 0, f"Expected ZERO shard_a files, got: {shard_a_files}"
 
         # DB has enrollment
         repo = ShardRepository(str(home.db_path), home.fernet_key)

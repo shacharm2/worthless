@@ -149,7 +149,6 @@ class TestSpawnProxyIntegration:
         env = {
             "WORTHLESS_DB_PATH": str(home.db_path),
             "WORTHLESS_FERNET_KEY": home.fernet_key.decode(),
-            "WORTHLESS_SHARD_A_DIR": str(home.shard_a_dir),
             "WORTHLESS_ALLOW_INSECURE": "true",
         }
 

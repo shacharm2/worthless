@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 import re
 import stat
 import sys
@@ -128,8 +127,6 @@ def _lock_keys(
 
             sr = split_key_fp(value, prefix, provider)
             db_written = False
-            shard_a_path = home.shard_a_dir / alias
-            shard_a_written = False
             try:
                 stored = StoredShard(
                     shard_b=sr.shard_b,
@@ -149,17 +146,6 @@ def _lock_keys(
                 )
                 db_written = True
 
-                # shard_a file for proxy (alias inference + per-request read)
-                if not shard_a_path.exists():
-                    fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                    try:
-                        os.write(
-                            fd, bytes(sr.shard_a)
-                        )  # nosemgrep: sr01-key-material-not-bytearray
-                    finally:
-                        os.close(fd)
-                    shard_a_written = True
-
                 # Rewrite .env: API_KEY = shard-A (format-preserving)
                 shard_a_str = sr.shard_a.decode("utf-8")
                 rewrite_env_key(env_path, var_name, shard_a_str)
@@ -173,9 +159,6 @@ def _lock_keys(
 
                 count += 1
             except Exception as exc:
-                # Compensate: clean up partial state
-                if shard_a_written:
-                    shard_a_path.unlink(missing_ok=True)
                 if db_written:
                     await repo.delete_enrollment(alias, env_str)
                     remaining = await repo.list_enrollments(alias)

@@ -11,14 +11,11 @@ Architecture invariants enforced:
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import json
 import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import aiosqlite
 import httpx
@@ -28,7 +25,7 @@ from starlette.background import BackgroundTask
 
 from starlette.middleware.cors import CORSMiddleware
 
-from worthless.adapters.registry import get_adapter, get_provider_for_path
+from worthless.adapters.registry import get_adapter
 from worthless.adapters.types import INTERNAL_HEADER_PREFIX
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp, secure_key
 from worthless.proxy.config import ProxySettings
@@ -74,36 +71,19 @@ def _uniform_401() -> Response:
     )
 
 
-def _infer_alias_from_path(clean_path: str, settings: ProxySettings) -> str | None:
-    """Infer alias from request path when x-worthless-key header is absent.
+def _extract_alias_and_path(raw_path: str) -> tuple[str, str] | None:
+    """Extract alias prefix and API path from ``/<alias>/v1/chat/completions``.
 
-    Maps the path to a provider via the adapter registry, then scans
-    shard_a_dir for a unique matching alias (format: ``provider-hash8``).
-    Returns None if no match or ambiguous (multiple aliases for same provider).
+    Returns ``(alias, api_path)`` or ``None`` if the first segment is not
+    a valid alias (SR-09: alias comes from URL path, not disk scanning).
     """
-    provider = get_provider_for_path(clean_path)
-    if not provider:
+    parts = raw_path.strip("/").split("/", 1)
+    if len(parts) < 2:
         return None
-
-    shard_a_dir = Path(settings.shard_a_dir)
-    if not shard_a_dir.exists():
+    alias_candidate = parts[0]
+    if not _ALIAS_RE.fullmatch(alias_candidate):
         return None
-
-    matches = [
-        f.name for f in shard_a_dir.iterdir() if f.is_file() and f.name.startswith(f"{provider}-")
-    ]
-    if len(matches) == 1:
-        return matches[0]
-
-    # Zero or multiple matches — cannot infer unambiguously
-    if len(matches) > 1:
-        logger.warning(
-            "Ambiguous alias inference: %d aliases for provider %r. "
-            "Use x-worthless-key header or enroll only one key per provider.",
-            len(matches),
-            provider,
-        )
-    return None
+    return alias_candidate, "/" + parts[1]
 
 
 def _strip_worthless_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -241,17 +221,13 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         rules_engine: RulesEngine = request.app.state.rules_engine
         httpx_client: httpx.AsyncClient = request.app.state.httpx_client
 
-        clean_path = "/" + path.split("?")[0].lstrip("/")
+        raw_path = "/" + path.split("?")[0].lstrip("/")
 
-        # Validate alias header present, or infer from path
-        alias = request.headers.get("x-worthless-key")
-        if not alias and settings.allow_alias_inference:
-            alias = _infer_alias_from_path(clean_path, settings)
-        if not alias:
+        # Extract alias from URL path: /<alias>/v1/chat/completions
+        parsed = _extract_alias_and_path(raw_path)
+        if parsed is None:
             return _uniform_401()
-
-        if not _ALIAS_RE.fullmatch(alias):
-            return _uniform_401()
+        alias, clean_path = parsed
 
         if not settings.allow_insecure:
             proto = request.scope.get("scheme", "http")
@@ -268,22 +244,13 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         if encrypted is None:
             return _uniform_401()
 
-        # Load shard_a from header or file fallback
-        shard_a_header = request.headers.get("x-worthless-shard-a")
+        # SR-09: shard-A from Authorization header only
+        auth_header = request.headers.get("authorization")
         shard_a: bytearray | None = None
-        if shard_a_header:
-            try:
-                shard_a = bytearray(base64.b64decode(shard_a_header))
-            except Exception:
-                return _uniform_401()
-        else:
-            shard_a_path = Path(settings.shard_a_dir) / alias
-            try:
-                raw = await asyncio.to_thread(shard_a_path.read_bytes)
-                shard_a = bytearray(raw)
-                del raw
-            except FileNotFoundError:
-                pass
+        if auth_header and auth_header.lower().startswith("bearer "):
+            token = auth_header[7:]
+            if token:
+                shard_a = bytearray(token, "utf-8")
 
         if shard_a is None:
             return _uniform_401()

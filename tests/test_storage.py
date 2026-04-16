@@ -389,6 +389,50 @@ async def test_store_without_prefix_charset_defaults_none(
 
 
 # ---------------------------------------------------------------------------
+# list_aliases_with_provider (WOR-207)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_aliases_with_provider_empty(repo: ShardRepository) -> None:
+    """list_aliases_with_provider returns empty list when no shards exist."""
+    result = await repo.list_aliases_with_provider()
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_list_aliases_with_provider_returns_pairs(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """list_aliases_with_provider returns (alias, provider) tuples."""
+    shard_a = stored_shard_from_split(sample_split_result, provider="openai")
+    shard_b = stored_shard_from_split(sample_split_result, provider="anthropic")
+    await repo.store("key-oai", shard_a)
+    await repo.store("key-anth", shard_b)
+
+    result = await repo.list_aliases_with_provider()
+    result_dict = dict(result)
+    assert result_dict["key-oai"] == "openai"
+    assert result_dict["key-anth"] == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_list_aliases_with_provider_after_delete(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """Deleted alias should not appear in list_aliases_with_provider."""
+    shard = stored_shard_from_split(sample_split_result, provider="openai")
+    await repo.store("delete-me", shard)
+    await repo.delete("delete-me")
+
+    result = await repo.list_aliases_with_provider()
+    aliases = [a for a, _ in result]
+    assert "delete-me" not in aliases
+
+
+# ---------------------------------------------------------------------------
 # Legacy migration
 # ---------------------------------------------------------------------------
 
