@@ -1,0 +1,25 @@
+# Worthless
+
+> Split-key proxy that makes API keys worthless to steal. Zero code changes. Self-hosted. Open source.
+
+## What is Worthless?
+
+Worthless splits your API keys into two cryptographic shares using XOR secret sharing. Neither share reveals the original key alone. Every request goes through the Worthless proxy, which enforces a hard spend cap before the key ever reconstructs. Budget blown = key never forms = request never reaches the provider.
+
+## Pages
+
+- [Home](https://worthless.cloud/): Product overview and value proposition
+- [Features](https://worthless.cloud/features.html): Feature list, comparison, and capabilities
+- [How It Works](https://worthless.cloud/how-it-works.html): Architecture, security model, and step-by-step walkthrough
+- [Blog](https://worthless.cloud/blog/): Articles on API key security, attack scenarios, and best practices
+
+## Install
+
+```
+pip install worthless
+```
+
+## Links
+
+- [GitHub](https://github.com/shacharm2/worthless)
+- [PyPI](https://pypi.org/project/worthless/)
