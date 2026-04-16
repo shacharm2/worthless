@@ -32,12 +32,15 @@ class EncryptedShard(NamedTuple):
     commitment: bytes
     nonce: bytes
     provider: str
+    prefix: str | None = None
+    charset: str | None = None
 
     def __repr__(self) -> str:
         return (
             f"EncryptedShard(shard_b_enc=<{len(self.shard_b_enc)} bytes>, "
             f"commitment=<{len(self.commitment)} bytes>, "
-            f"nonce=<{len(self.nonce)} bytes>, provider={self.provider!r})"
+            f"nonce=<{len(self.nonce)} bytes>, provider={self.provider!r}, "
+            f"prefix={self.prefix!r})"
         )
 
 
@@ -129,6 +132,8 @@ class ShardRepository:
         self,
         alias: str,
         shard: StoredShard,
+        prefix: str | None = None,
+        charset: str | None = None,
     ) -> None:
         """Encrypt *shard.shard_b* with Fernet and INSERT into the shards table.
 
@@ -140,9 +145,18 @@ class ShardRepository:
         )  # nosemgrep: sr01-key-material-not-bytearray
         async with self._connect() as db:
             await db.execute(
-                "INSERT INTO shards (key_alias, shard_b_enc, commitment, nonce, provider) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (alias, shard_b_enc, bytes(shard.commitment), bytes(shard.nonce), shard.provider),
+                "INSERT INTO shards "
+                "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    alias,
+                    shard_b_enc,
+                    bytes(shard.commitment),
+                    bytes(shard.nonce),
+                    shard.provider,
+                    prefix,
+                    charset,
+                ),
             )
             await db.commit()
 
@@ -155,7 +169,8 @@ class ShardRepository:
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT shard_b_enc, commitment, nonce, provider FROM shards WHERE key_alias = ?",
+                "SELECT shard_b_enc, commitment, nonce, provider, prefix, charset "
+                "FROM shards WHERE key_alias = ?",
                 (alias,),
             )
             row = await cursor.fetchone()
@@ -166,6 +181,8 @@ class ShardRepository:
                 commitment=bytes(row["commitment"]),  # nosemgrep: sr01-key-material-not-bytearray
                 nonce=bytes(row["nonce"]),  # nosemgrep: sr01-key-material-not-bytearray
                 provider=row["provider"],
+                prefix=row["prefix"],
+                charset=row["charset"],
             )
 
     def decrypt_shard(self, encrypted: EncryptedShard) -> StoredShard:
@@ -241,6 +258,8 @@ class ShardRepository:
         env_path: str | None = None,
         spend_cap: int | None | _Sentinel = _USE_DEFAULT,
         token_budget_daily: int | None = None,
+        prefix: str | None = None,
+        charset: str | None = None,
     ) -> None:
         """Atomically store a shard, enrollment record, and enrollment config.
 
@@ -268,14 +287,16 @@ class ShardRepository:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
                 "INSERT OR IGNORE INTO shards "
-                "(key_alias, shard_b_enc, commitment, nonce, provider) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     alias,
                     shard_b_enc,
                     bytes(shard.commitment),  # nosemgrep
                     bytes(shard.nonce),  # nosemgrep
                     shard.provider,
+                    prefix,
+                    charset,
                 ),
             )
             await db.execute(
