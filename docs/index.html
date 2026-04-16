@@ -49,7 +49,7 @@
 
     body {
       font-family: 'Inter', system-ui, sans-serif;
-      background: linear-gradient(to bottom, #eef6ff 0%, #ffffff 40%, #ffffff 60%, #eef6ff 100%);
+      background: linear-gradient(to bottom, #daeeff 0%, #eef6ff 20%, #ffffff 45%, #ffffff 55%, #eef6ff 75%, #daeeff 100%);
       color: var(--text);
       line-height: 1.6;
       min-height: 100vh;
@@ -63,15 +63,22 @@
     .container {
       max-width: 560px;
       width: 100%;
-      text-align: center;
+      text-align: left;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
     }
 
     .logo {
-      width: 96px;
-      height: 96px;
-      border-radius: 20px;
-      margin: 0 auto 2rem;
+      width: 64px;
+      height: 64px;
+      border-radius: 14px;
       overflow: hidden;
+      flex-shrink: 0;
     }
 
     .logo img {
@@ -209,11 +216,12 @@
 </head>
 <body>
   <div class="container">
-    <div class="logo">
-      <img src="logo-transparent.png" alt="Worthless logo" />
+    <div class="brand">
+      <div class="logo">
+        <img src="logo-transparent.png" alt="Worthless logo" />
+      </div>
+      <h1>Worthless</h1>
     </div>
-
-    <h1>Worthless</h1>
     <p class="tagline">Your API key gets leaked. Or stolen. Doesn't matter. It won't work. It's Worthless.</p>
 
     <form id="waitlist-form" class="waitlist-form" onsubmit="return handleWaitlist(event)">
@@ -224,9 +232,11 @@
       You're on the list. <a href="https://github.com/shacharm2/worthless">Star us on GitHub</a>
     </p>
 
-    <p class="coming-soon">Leaking soon</p>
+    <a href="memes.html" class="coming-soon" style="text-decoration: none; display: block;">Leaking soon</a>
 
   </div>
+
+
 
   <script>
     function handleWaitlist(e) {
