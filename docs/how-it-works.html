@@ -218,7 +218,7 @@
 <div class="page">
   <div class="eyebrow">How it works</div>
   <h1>Three commands.<br />Zero code changes.</h1>
-  <p class="intro">Worthless wraps your existing app with a transparent proxy. Your code never sees the full key — and neither does an attacker who gets hold of your <code>.env</code> or git history.</p>
+  <p class="intro">Worthless splits your API key into two shares using XOR. One stays on your machine, the other goes to your server. When you make an API call, the server combines both shares for a split second, calls the provider, then destroys the key. A leaked share is useless on its own.</p>
 
   <div class="step">
     <div class="step-rail"><div class="step-num">01</div><div class="step-line"></div></div>
@@ -336,5 +336,62 @@
     <span class="footer-copy">Open source · AGPL-3.0</span>
     <a href="https://ko-fi.com/shacharme" target="_blank" rel="noopener" class="footer-copy" style="text-decoration: none; border-left: 1px solid var(--border-soft); padding-left: 1.5rem;">Buy me a Ko-fi ☕</a>
   </footer>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "How does Worthless split API keys?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "XOR secret sharing. Your key is split into two shares. Neither share reveals the original key. Recombining them reconstructs it."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Where are the key shares stored?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Share A stays on your machine in .env. Share B is encrypted on the Worthless server. The full key never exists at rest."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Worthless see my full API key?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Only for a split second during a request, inside server memory. The key is destroyed immediately after the API call completes."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What if the Worthless server is compromised?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The attacker gets Share B, which is useless without Share A from your machine. Neither share works alone."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Worthless add latency?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Minimal. Key reconstruction takes microseconds. The proxy adds single-digit milliseconds to each request."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I self-host Worthless?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Docker Compose, Railway, or Render. Full control over your key shares."
+      }
+    }
+  ]
+}
+</script>
 </body>
 </html>

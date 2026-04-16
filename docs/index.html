@@ -1126,6 +1126,55 @@
     ]
   }
   </script>
+  <!-- FAQ Schema -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is Worthless?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Worthless is an open-source tool that splits your API keys so a leaked key is useless to an attacker."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What happens if my API key leaks?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Nothing. The leaked key is only one half of a split. Without the other half, it can't be used."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Do I need to change my code?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "No. Worthless works as a proxy. Your existing code talks to Worthless instead of the API provider directly."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is Worthless free?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Worthless is open source under AGPL-3.0. Self-host it for free."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What providers does Worthless support?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "OpenAI and Anthropic. Gemini support is planned."
+        }
+      }
+    ]
+  }
+  </script>
 </body>
 
 </html>
