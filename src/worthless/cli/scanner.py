@@ -1,9 +1,8 @@
-"""Key pattern detection with entropy and decoy awareness."""
+"""Key pattern detection with entropy and enrollment awareness."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,13 +26,15 @@ class ScanFinding:
 
 def scan_files(
     paths: list[Path],
-    is_decoy: Callable[[str], bool] | None = None,
+    *,
+    enrolled_locations: set[tuple[str, str]] | None = None,
 ) -> list[ScanFinding]:
     """Scan files for API key patterns.
 
     Each file is read line-by-line. Matches with entropy below the
-    threshold are skipped (likely placeholders). If *is_decoy* is
-    provided, matching values are marked ``is_protected=True``.
+    threshold are skipped (likely placeholders). If *enrolled_locations*
+    is provided, matching (var_name, file_path) tuples are marked
+    ``is_protected=True``.
     """
     findings: list[ScanFinding] = []
 
@@ -42,6 +43,7 @@ def scan_files(
             text = path.read_text(errors="replace")
         except OSError:
             continue
+        file_str = str(path.resolve())
         for line_no, line in enumerate(text.splitlines(), start=1):
             for match in KEY_PATTERN.finditer(line):
                 value = match.group(0)
@@ -54,7 +56,9 @@ def scan_files(
                 # Try to extract var_name from KEY=VALUE or KEY = "VALUE"
                 var_name = _extract_var_name(line, match.start())
 
-                is_protected = bool(is_decoy and is_decoy(value))
+                is_protected = bool(
+                    enrolled_locations and var_name and (var_name, file_str) in enrolled_locations
+                )
 
                 findings.append(
                     ScanFinding(

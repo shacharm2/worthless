@@ -23,7 +23,7 @@ from worthless.cli.commands.lock import _lock_keys
 from worthless.storage.repository import ShardRepository
 from worthless.cli.commands.up import start_daemon, _resolve_port
 from worthless.cli.console import get_console
-from worthless.cli.dotenv_rewriter import scan_env_keys
+from worthless.cli.dotenv_rewriter import build_enrolled_locations, scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.process import (
     build_proxy_env,
@@ -176,23 +176,20 @@ def run_default(
             )
             return
 
-        # Scan for keys (with decoy awareness)
-        async def _scan_with_decoys():
+        # Scan for keys (with enrollment awareness)
+        async def _scan_with_enrollments():
             if not home.db_path.exists():
                 return scan_env_keys(env_path)
             try:
                 repo = ShardRepository(str(home.db_path), home.fernet_key)
                 await repo.initialize()
-                decoy_hashes = await repo.all_decoy_hashes()
-
-                def _is_decoy(value: str) -> bool:
-                    return repo._compute_decoy_hash(value) in decoy_hashes
-
-                return scan_env_keys(env_path, is_decoy=_is_decoy)
+                enrollments = await repo.list_enrollments()
+                enrolled_locations = build_enrolled_locations(enrollments)
+                return scan_env_keys(env_path, enrolled_locations=enrolled_locations)
             except Exception:
                 return scan_env_keys(env_path)
 
-        keys = asyncio.run(_scan_with_decoys())
+        keys = asyncio.run(_scan_with_enrollments())
 
         if not keys:
             console.print_warning("No API keys found in .env.")

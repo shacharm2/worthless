@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 from worthless.cli.app import app
+from tests.conftest import make_repo as _repo
 from worthless.cli.commands.wrap import (
     _build_child_env,
     _cleanup_proxy,
@@ -607,7 +609,9 @@ class TestWrapAfterUnlockExitsWithError:
         result = runner.invoke(app, ["lock", "--env", str(env_file)], env=home_env)
         assert result.exit_code == 0, result.output
 
-        alias = next(f.name for f in home_dir.shard_a_dir.iterdir() if f.is_file())
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        alias = aliases[0]
         result = runner.invoke(
             app, ["unlock", "--alias", alias, "--env", str(env_file)], env=home_env
         )

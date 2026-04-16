@@ -30,7 +30,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from worthless.adapters.registry import get_adapter, get_provider_for_path
 from worthless.adapters.types import INTERNAL_HEADER_PREFIX
-from worthless.crypto.splitter import reconstruct_key, secure_key
+from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp, secure_key
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
 from worthless.proxy.metering import (
@@ -317,7 +317,17 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         req_headers = {k: v for k, v in request.headers.items()}
 
         try:
-            key_buf = reconstruct_key(shard_a, stored.shard_b, stored.commitment, stored.nonce)
+            if encrypted.prefix is not None and encrypted.charset is not None:
+                key_buf = reconstruct_key_fp(
+                    shard_a,
+                    stored.shard_b,
+                    stored.commitment,
+                    stored.nonce,
+                    encrypted.prefix,
+                    encrypted.charset,
+                )
+            else:
+                key_buf = reconstruct_key(shard_a, stored.shard_b, stored.commitment, stored.nonce)
         except Exception:
             shard_a[:] = b"\x00" * len(shard_a)
             stored.zero()
