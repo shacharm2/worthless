@@ -25,9 +25,9 @@
   <meta name="twitter:image" content="https://worthless.cloud/og-image.png" />
 
   <!-- Favicon -->
-  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="manifest" href="/site.webmanifest" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="manifest" href="site.webmanifest" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -68,11 +68,15 @@
     body{font-family:'Inter',system-ui,sans-serif;background:linear-gradient(to bottom, #eef6ff 0%, #ffffff 25%, #ffffff 75%, #eef6ff 100%);color:var(--text);line-height:1.6}
     nav{position:sticky;top:0;z-index:100;height:60px;display:flex;align-items:center;padding:0 2.5rem;background:rgba(248,250,253,.92);backdrop-filter:blur(14px);border-bottom:1px solid var(--border-soft)}
     .nav-logo{font-size:.95rem;font-weight:700;color:#005f73;text-decoration:none;display:flex;align-items:center;gap:.55rem}
-    .nav-icon{width:26px;height:26px;background:#0a9396;border-radius:7px;display:grid;place-items:center;color:white;font-size:12px;font-weight:700}
+    .nav-icon{width:26px;height:26px;border-radius:7px;flex-shrink:0;overflow:hidden}
+    .nav-icon img{width:100%;height:100%;object-fit:cover}
     .nav-links{display:flex;gap:.1rem;margin-left:1.5rem}
     .nav-links a{font-size:.855rem;font-weight:500;color:#0a9396;text-decoration:none;padding:.4rem .8rem;border-radius:7px;transition:color .2s,background .2s}
     .nav-links a:hover,.nav-links a.active{color:var(--text);background:var(--bg2)}
-    .nav-gh{margin-left:auto;font-size:.82rem;font-weight:500;color:var(--text2);text-decoration:none;padding:.4rem .85rem;border:1px solid var(--border);border-radius:7px;background:var(--white);transition:color .2s}
+    .nav-actions{margin-left:auto;display:flex;align-items:center;gap:.6rem}
+    .nav-kofi{display:inline-flex;align-items:center;gap:0.4rem;font-size:0.8rem;font-weight:600;color:white;text-decoration:none;padding:0.38rem 0.85rem;border-radius:7px;background:#ffb3b0;transition:background 0.2s;white-space:nowrap}
+    .nav-kofi:hover{background:#ff9c98}
+    .nav-gh{font-size:.82rem;font-weight:500;color:var(--text2);text-decoration:none;padding:.4rem .85rem;border:1px solid var(--border);border-radius:7px;background:var(--white);transition:color .2s}
     .nav-gh:hover{color:var(--text)}
 
     .page{max-width:900px;margin:0 auto;padding:4rem 2rem 6rem}
@@ -135,13 +139,16 @@
 </head>
 <body>
 <nav>
-  <a href="index.html" class="nav-logo"><div class="nav-icon">W</div>worthless</a>
+  <a href="index.html" class="nav-logo"><div class="nav-icon"><img src="apple-touch-icon.png" alt="Worthless logo" /></div>worthless</a>
   <div class="nav-links">
     <a href="how-it-works.html">How it works</a>
     <a href="features.html" class="active">Features</a>
     <a href="blog/index.html">Blog</a>
   </div>
-  <a href="https://github.com/shacharm2/worthless" class="nav-gh" target="_blank" rel="noopener">GitHub</a>
+  <div class="nav-actions">
+    <a href="https://ko-fi.com/shacharme" class="nav-kofi" target="_blank" rel="noopener">&#9749; Ko-fi</a>
+    <a href="https://github.com/shacharm2/worthless" class="nav-gh" target="_blank" rel="noopener">GitHub</a>
+  </div>
 </nav>
 
 <div class="page">
@@ -151,7 +158,7 @@
 
   <div class="feat-section">
     <div class="feat-header">
-      <h2>✂️ Split-key cryptography</h2>
+      <h2>&#9986;&#65039; Split-key cryptography</h2>
       <span class="badge b-sec">Security</span>
     </div>
     <p>Keys are split using XOR-based secret sharing (a one-time pad variant). This is information-theoretically secure — a stolen share reveals nothing about the original key, even with unlimited compute.</p>
@@ -167,7 +174,7 @@
 
   <div class="feat-section">
     <div class="feat-header">
-      <h2>💸 Budget enforcement</h2>
+      <h2>&#128184; Budget enforcement</h2>
       <span class="badge b-cost">Cost control</span>
     </div>
     <p>Set a spending cap per key. When the counter reaches your limit, the proxy refuses to reconstruct the key — even if both shares are available. Hard stop at the infrastructure layer.</p>
@@ -181,7 +188,7 @@
 
   <div class="feat-section">
     <div class="feat-header">
-      <h2>🔍 Pre-commit scanning</h2>
+      <h2>&#128269; Pre-commit scanning</h2>
       <span class="badge b-sec">Prevention</span>
     </div>
     <p>Built-in <code>pre-commit</code> hook scans staged files for raw API keys before any commit lands in git history. First line of defense; the split-key proxy is the second.</p>
@@ -195,7 +202,7 @@
 
   <div class="feat-section">
     <div class="feat-header">
-      <h2>🧩 Zero code changes</h2>
+      <h2>&#129513; Zero code changes</h2>
       <span class="badge b-ux">Drop-in</span>
     </div>
     <p>Prefix any command with <code>worthless wrap</code>. Your application reads environment variables exactly as before. No SDK changes, no import changes.</p>
@@ -208,7 +215,7 @@
 
   <div class="feat-section">
     <div class="feat-header">
-      <h2>🔄 Fully reversible</h2>
+      <h2>&#128260; Fully reversible</h2>
       <span class="badge b-ux">Portability</span>
     </div>
     <p><code>worthless unlock</code> restores your original <code>.env</code> exactly as before. Proxy stops. Shares deleted. No dependency on Worthless remaining installed.</p>
@@ -221,7 +228,7 @@
 
   <div class="feat-section">
     <div class="feat-header">
-      <h2>🏠 Self-hosted &amp; open source</h2>
+      <h2>&#127968; Self-hosted &amp; open source</h2>
       <span class="badge b-prv">Privacy</span>
     </div>
     <p>No cloud. No account. No keys touching anyone else's server. AGPL-3.0 licensed. Zero telemetry.</p>
@@ -241,13 +248,13 @@
       <tr><td>Capability</td><td>worthless</td><td>Vault / Secrets Mgr</td><td>detect-secrets</td><td>.gitignore</td></tr>
     </thead>
     <tbody>
-      <tr><td>Prevents commits with raw keys</td><td class="ty">✓</td><td class="tn">✗</td><td class="ty">✓</td><td class="tp">Partial</td></tr>
-      <tr><td>Post-leak protection</td><td class="ty">✓</td><td class="tn">✗</td><td class="tn">✗</td><td class="tn">✗</td></tr>
-      <tr><td>Leaked key is cryptographically useless</td><td class="ty">✓</td><td class="tn">✗</td><td class="tn">✗</td><td class="tn">✗</td></tr>
-      <tr><td>Budget / hard spending cap</td><td class="ty">✓</td><td class="tn">✗</td><td class="tn">✗</td><td class="tn">✗</td></tr>
-      <tr><td>Zero code changes</td><td class="ty">✓</td><td class="tn">✗</td><td class="ty">✓</td><td class="ty">✓</td></tr>
-      <tr><td>Fully self-hosted</td><td class="ty">✓</td><td class="tp">Optional</td><td class="ty">✓</td><td class="ty">✓</td></tr>
-      <tr><td>Open source</td><td class="ty">✓</td><td class="ty">✓</td><td class="ty">✓</td><td>—</td></tr>
+      <tr><td>Prevents commits with raw keys</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="ty">&#10003;</td><td class="tp">Partial</td></tr>
+      <tr><td>Post-leak protection</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
+      <tr><td>Leaked key is cryptographically useless</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
+      <tr><td>Budget / hard spending cap</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
+      <tr><td>Zero code changes</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td></tr>
+      <tr><td>Fully self-hosted</td><td class="ty">&#10003;</td><td class="tp">Optional</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td></tr>
+      <tr><td>Open source</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td><td>—</td></tr>
     </tbody>
   </table>
 
@@ -255,15 +262,15 @@
     <h2>Ready to make your keys worthless?</h2>
     <p>Install in one command. Protect your first key in under a minute.</p>
     <div class="cta-row">
-      <a href="https://pypi.org/project/worthless" class="btn-calm" target="_blank" rel="noopener">pip install worthless ↗</a>
-      <a href="how-it-works.html" class="btn-ghost">How it works →</a>
+      <a href="https://pypi.org/project/worthless" class="btn-calm" target="_blank" rel="noopener">pip install worthless &#8599;</a>
+      <a href="how-it-works.html" class="btn-ghost">How it works &#8594;</a>
     </div>
   </div>
 </div>
 
   <footer style="justify-content: flex-start; gap: 1.5rem;">
-    <span class="footer-copy">Open source · AGPL-3.0</span>
-    <a href="https://ko-fi.com/shacharme" target="_blank" rel="noopener" class="footer-copy" style="text-decoration: none; border-left: 1px solid var(--border-soft); padding-left: 1.5rem;">Buy me a Ko-fi ☕</a>
+    <span class="footer-copy">Open source &middot; AGPL-3.0</span>
+    <a href="https://ko-fi.com/shacharme" target="_blank" rel="noopener" class="footer-copy" style="text-decoration: none; border-left: 1px solid var(--border-soft); padding-left: 1.5rem;">Buy me a Ko-fi &#9749;</a>
   </footer>
 </body>
 </html>

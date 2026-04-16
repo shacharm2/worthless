@@ -25,9 +25,9 @@
   <meta name="twitter:image" content="https://worthless.cloud/og-image.png" />
 
   <!-- Favicon -->
-  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-  <link rel="manifest" href="/site.webmanifest" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="manifest" href="site.webmanifest" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -74,10 +74,40 @@
       border-bottom: 1px solid var(--border-soft);
     }
     .nav-logo { font-size: 0.95rem; font-weight: 700; color: #005f73; text-decoration: none; display: flex; align-items: center; gap: 0.55rem; }
-    .nav-icon { width: 26px; height: 26px; background: #0a9396; border-radius: 7px; display: grid; place-items: center; color: white; font-size: 12px; font-weight: 700; }
+    .nav-icon {
+      width: 26px;
+      height: 26px;
+      border-radius: 7px;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .nav-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
     .nav-links { display: flex; gap: 0.1rem; margin-left: 1.5rem; }
     .nav-links a { font-size: 0.855rem; font-weight: 500; color: #0a9396; text-decoration: none; padding: 0.4rem 0.8rem; border-radius: 7px; transition: color 0.2s, background 0.2s; }
     .nav-links a:hover, .nav-links a.active { color: var(--text); background: var(--bg2); }
+    .nav-kofi {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: white;
+      text-decoration: none;
+      padding: 0.38rem 0.85rem;
+      border-radius: 7px;
+      background: #ffb3b0;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+
+    .nav-kofi:hover {
+      background: #ff9c98;
+    }
     .nav-gh { margin-left: auto; font-size: 0.82rem; font-weight: 500; color: var(--text2); text-decoration: none; padding: 0.4rem 0.85rem; border: 1px solid var(--border); border-radius: 7px; background: var(--white); transition: color 0.2s; }
     .nav-gh:hover { color: var(--text); }
 
@@ -173,7 +203,7 @@
 <body>
 <nav>
   <a href="index.html" class="nav-logo">
-    <div class="nav-icon">W</div>
+    <div class="nav-icon"><img src="apple-touch-icon.png" alt="Worthless logo" /></div>
     worthless
   </a>
   <div class="nav-links">
@@ -181,6 +211,7 @@
     <a href="features.html">Features</a>
     <a href="blog/index.html">Blog</a>
   </div>
+  <a href="https://ko-fi.com/shacharme" class="nav-kofi" target="_blank" rel="noopener">☕ Ko-fi</a>
   <a href="https://github.com/shacharm2/worthless" class="nav-gh" target="_blank" rel="noopener">GitHub</a>
 </nav>
 
