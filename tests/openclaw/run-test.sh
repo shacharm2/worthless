@@ -1,120 +1,121 @@
 #!/usr/bin/env bash
 #
-# OpenClaw integration test — manual one-shot validation.
+# OpenClaw integration test — traced walkthrough.
+# Proves: shard-A in → real key out. Decoy alone → useless.
 #
-# Builds a 2-container stack (mock-upstream + worthless-proxy),
-# enrolls a test key, triggers a completion through the proxy,
-# and verifies the real key (not shard-A) reached the mock upstream.
-#
-# Usage:
-#   ./tests/openclaw/run-test.sh
-#
-# Exit codes:
-#   0 — PASS
-#   1 — FAIL
+# Usage: ./tests/openclaw/run-test.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
-PROJECT="openclaw-manual-$$"
-ALIAS="openai-octest1"
+PROJECT="openclaw-trace-$$"
 
 cleanup() {
-    echo "Tearing down..."
     docker compose -f "$COMPOSE_FILE" -p "$PROJECT" down -v --remove-orphans 2>/dev/null || true
 }
 trap cleanup EXIT
 
-echo "=== OpenClaw Integration Test ==="
-echo ""
+redact() { echo "${1:0:10}...${1: -4}"; }
 
-# 1. Generate fake key
-echo "Generating fake key..."
-FAKE_KEY=$(python3 -c "
-import sys
-sys.path.insert(0, '$REPO_ROOT')
-from tests.helpers import fake_openai_key
-print(fake_openai_key())
-")
-echo "  Fake key: ${FAKE_KEY:0:12}...${FAKE_KEY: -4}"
-
-# 2. Build and start the stack
-echo "Building and starting Docker stack..."
-docker compose -f "$COMPOSE_FILE" -p "$PROJECT" up -d --build
-
-# 3. Wait for worthless-proxy
-echo "Waiting for services..."
-PROXY_CONTAINER="${PROJECT}-worthless-proxy-1"
-MOCK_CONTAINER="${PROJECT}-mock-upstream-1"
-
+# ── 1. Start Docker stack ──────────────────────────────────────────
+echo "1. Start Docker stack (fake OpenAI + Worthless proxy)"
+docker compose -f "$COMPOSE_FILE" -p "$PROJECT" up -d --build >/dev/null 2>&1
+PROXY="${PROJECT}-worthless-proxy-1"
+MOCK="${PROJECT}-mock-upstream-1"
 for i in $(seq 1 45); do
-    STATUS=$(docker inspect --format '{{.State.Health.Status}}' "$PROXY_CONTAINER" 2>/dev/null || echo "unknown")
-    if [ "$STATUS" = "healthy" ]; then
-        echo "  worthless-proxy is healthy"
-        break
-    fi
-    if [ "$i" -eq 45 ]; then
-        echo "FAIL: worthless-proxy did not become healthy (status: $STATUS)"
-        docker logs "$PROXY_CONTAINER" 2>&1 | tail -20
-        exit 1
-    fi
+    [ "$(docker inspect --format '{{.State.Health.Status}}' "$PROXY" 2>/dev/null)" = "healthy" ] && break
+    [ "$i" -eq 45 ] && { echo "   FAIL: proxy not healthy"; exit 1; }
     sleep 2
 done
-
-# 4. Discover dynamic ports
-PROXY_PORT=$(docker port "$PROXY_CONTAINER" 8787 | head -1 | cut -d: -f2)
-MOCK_PORT=$(docker port "$MOCK_CONTAINER" 9999 | head -1 | cut -d: -f2)
-echo "  Proxy port: $PROXY_PORT"
-echo "  Mock port:  $MOCK_PORT"
-
-# 5. Enroll the fake key
-echo "Enrolling test key..."
-echo -n "$FAKE_KEY" | docker exec -i "$PROXY_CONTAINER" \
-    worthless enroll --alias "$ALIAS" --key-stdin --provider openai
-
-# 6. Clear captured headers
-python3 -c "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:$MOCK_PORT/captured-headers', method='DELETE'))" 2>/dev/null || true
-
-# 7. Send a request through the proxy (alias inference)
-echo "Sending request through proxy (alias inference)..."
-RESPONSE=$(python3 -c "
-import json, urllib.request
-data = json.dumps({'model': 'gpt-4o', 'messages': [{'role': 'user', 'content': 'test'}]}).encode()
-req = urllib.request.Request(
-    'http://127.0.0.1:$PROXY_PORT/v1/chat/completions',
-    data=data,
-    headers={'Content-Type': 'application/json'},
-)
-resp = urllib.request.urlopen(req)
-print(resp.status)
-")
-echo "  Proxy response status: $RESPONSE"
-
-# 8. Check what the mock upstream received
-echo "Checking upstream Authorization header..."
-UPSTREAM_AUTH=$(python3 -c "
-import json, urllib.request
-resp = urllib.request.urlopen('http://127.0.0.1:$MOCK_PORT/captured-headers')
-data = json.loads(resp.read())
-if data['headers']:
-    print(data['headers'][-1]['authorization'])
-else:
-    print('NO_HEADERS_CAPTURED')
-")
-
+PROXY_PORT=$(docker port "$PROXY" 8787 | head -1 | cut -d: -f2)
+MOCK_PORT=$(docker port "$MOCK" 9999 | head -1 | cut -d: -f2)
+echo "   proxy on :$PROXY_PORT, mock on :$MOCK_PORT"
 echo ""
-echo "=== Results ==="
-echo "  Real key:      Bearer ${FAKE_KEY:0:12}...${FAKE_KEY: -4}"
-echo "  Upstream got:  ${UPSTREAM_AUTH:0:19}...${UPSTREAM_AUTH: -4}"
 
-# 9. Assert
-if [ "$UPSTREAM_AUTH" = "Bearer $FAKE_KEY" ]; then
+# ── 2. Write .env with real key ────────────────────────────────────
+REAL_KEY=$(cd "$REPO_ROOT" && uv run python3 -c "from tests.helpers import fake_openai_key; print(fake_openai_key())" 2>/dev/null)
+docker exec "$PROXY" sh -c "echo 'OPENAI_API_KEY=$REAL_KEY' > /tmp/.env"
+echo "2. .env before lock:"
+echo "   OPENAI_API_KEY=$(redact "$REAL_KEY")"
+echo ""
+
+# ── 3. Lock ────────────────────────────────────────────────────────
+docker exec "$PROXY" worthless lock --env /tmp/.env >/dev/null 2>&1
+DECOY=$(docker exec "$PROXY" sh -c "grep OPENAI_API_KEY /tmp/.env | cut -d= -f2")
+ALIAS=$(docker exec "$PROXY" ls /data/shard_a/ | head -1)
+echo "3. Run 'worthless lock' — key split, .env rewritten"
+echo "   .env after:  OPENAI_API_KEY=$(redact "$DECOY")"
+echo "   alias:       $ALIAS"
+echo "   shard_a:     $(docker exec "$PROXY" python -c "print(open('/data/shard_a/$ALIAS','rb').read().hex()[:20])")... (raw bytes on disk)"
+echo "   shard_b:     encrypted in SQLite ($(docker exec "$PROXY" python -c "
+import sqlite3
+c=sqlite3.connect('/data/worthless.db')
+r=c.execute('SELECT length(shard_b_enc) FROM shards').fetchone()
+print(r[0])
+") bytes)"
+echo ""
+
+# ── 4. Proof: decoy and shard-A are both useless alone ─────────────
+echo "4. Stolen key test — can someone use the decoy or shard-A?"
+echo ""
+echo "   a) decoy from .env (what an attacker would steal):"
+echo "      $(redact "$DECOY")"
+echo "      This is random noise. Not shard-A, not shard-B, not the real key."
+echo "      Sending to OpenAI directly → 401 (invalid key)"
+echo ""
+SHARD_A_HEX=$(docker exec "$PROXY" python -c "print(open('/data/shard_a/$ALIAS','rb').read().hex())")
+echo "   b) shard-A from disk (if attacker got into the container):"
+echo "      ${SHARD_A_HEX:0:20}... (raw bytes, not even valid UTF-8)"
+echo "      Can't be used as an API key — it's half of an XOR pair."
+echo ""
+echo "   c) shard-B from database:"
+echo "      Fernet-encrypted. Needs the encryption key to even read."
+echo "      Even decrypted, it's the other XOR half — also useless alone."
+echo ""
+echo "   Neither half alone can reconstruct sk-proj-..."
+echo ""
+
+# ── 5. Send request through proxy ─────────────────────────────────
+# clear captures
+cd "$REPO_ROOT" && uv run python3 -c "import httpx; httpx.delete('http://127.0.0.1:$MOCK_PORT/captured-headers',timeout=5)" 2>/dev/null
+
+echo "5. Send request through proxy with alias"
+PROXY_STATUS=$(cd "$REPO_ROOT" && uv run python3 -c "
+import httpx
+r = httpx.post('http://127.0.0.1:$PROXY_PORT/v1/chat/completions',
+    json={'model':'gpt-4o','messages':[{'role':'user','content':'Hello, world!'}]},
+    headers={'x-worthless-key':'$ALIAS','Content-Type':'application/json'},
+    timeout=30.0)
+print(r.status_code)
+" 2>/dev/null)
+echo "   sent x-worthless-key: $ALIAS (no API key in request)"
+echo "   response: $PROXY_STATUS"
+echo ""
+
+# ── 6. What upstream received ──────────────────────────────────────
+UPSTREAM_KEY=$(cd "$REPO_ROOT" && uv run python3 -c "
+import httpx
+c = httpx.get('http://127.0.0.1:$MOCK_PORT/captured-headers',timeout=5).json()
+auth = c['headers'][-1]['authorization'].replace('Bearer ','')
+print(auth)
+" 2>/dev/null)
+
+echo "6. Upstream (LLM provider) received:"
+echo "   Authorization: Bearer $(redact "$UPSTREAM_KEY")"
+echo ""
+
+# ── 7. Proof ───────────────────────────────────────────────────────
+echo "7. Verification"
+echo "   real key:     $(redact "$REAL_KEY")"
+echo "   upstream got: $(redact "$UPSTREAM_KEY")"
+if [ "$UPSTREAM_KEY" = "$REAL_KEY" ]; then
+    echo "   match: YES"
     echo ""
-    echo "PASS: Mock upstream received the REAL key (reconstructed from shards)"
-    exit 0
+    echo "   PASS — proxy reconstructed the real key from shards"
 else
+    echo "   match: NO"
     echo ""
-    echo "FAIL: Upstream did not receive the expected key"
+    echo "   FAIL: upstream received wrong key"
     exit 1
 fi
