@@ -16,7 +16,7 @@ This will:
 
 1. Scan your `.env` for API keys
 2. Split each key into two shards (one local, one encrypted in the proxy DB)
-3. Replace the `.env` value with a format-correct decoy
+3. Replace the `.env` value with shard-A (format-preserving, looks like a real key)
 4. Start a local proxy on `localhost:8787`
 5. Inject `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` so your SDK routes through the proxy
 

@@ -25,7 +25,7 @@ Check:
 
 - Reach the proxy origin directly.
 - Send a provider path without explicit alias.
-- Omit `x-worthless-shard-a`.
+- Omit `Authorization` / `x-api-key` header (no shard-A).
 - Set `X-Forwarded-Proto: https`.
 
 Secure result:
@@ -132,7 +132,7 @@ Goal: test the real boundary on developer machines.
 Check:
 
 - Run untrusted code as the same user who runs Worthless.
-- Attempt to read `~/.worthless/fernet.key`, the DB, and `shard_a`.
+- Attempt to read `~/.worthless/fernet.key`, the DB, and `.env` (which contains shard-A).
 
 Secure result:
 

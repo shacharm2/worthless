@@ -66,14 +66,13 @@ All commands are available via `worthless <command> [OPTIONS]`.
 ### Core Commands
 
 #### `worthless lock [OPTIONS]`
-**Scan `.env`, split API keys, store shards, rewrite `.env` with cryptographic decoys.**
+**Scan `.env`, split API keys, store shard-B, rewrite `.env` with shard-A.**
 
 Scans the current `.env` and `.env.local` files for high-entropy values that match known API key patterns (OpenAI, Anthropic, etc.). For each detected key:
-1. Splits the key into two information-theoretic shards using XOR secret sharing
-2. Stores Shard A unencrypted in `~/.worthless/shards_a/<alias>`
-3. Stores Shard B encrypted in the SQLite database at `~/.worthless/worthless.db`
-4. Replaces the original key in `.env` with a format-correct but cryptographically useless decoy
-5. Records the location (file, line, variable name) for later recovery
+1. Splits the key into two information-theoretic shards using format-preserving XOR secret sharing
+2. Stores Shard B encrypted in the SQLite database at `~/.worthless/worthless.db`
+3. Replaces the original key in `.env` with shard-A (format-preserving — same prefix, charset, and length as the original key)
+4. Records the location (file, line, variable name) for later recovery
 
 **Options:**
 - `--env, -e PATH`: Path to .env file (default: `.env`)
@@ -89,7 +88,7 @@ Scans the current `.env` and `.env.local` files for high-entropy values that mat
 #### `worthless unlock [OPTIONS]`
 **Reconstruct original API keys from shards and restore `.env`.**
 
-Reverses the `lock` operation. Locates Shard A files, fetches encrypted Shard B from the database, XOR-merges them to recover the original key, and restores it to `.env`.
+Reverses the `lock` operation. Reads shard-A from `.env`, fetches encrypted Shard B from the database, XOR-merges them to recover the original key, and restores the original key to `.env`.
 
 **Options:**
 - (None — unlocks all enrolled keys)
@@ -102,9 +101,9 @@ Reverses the `lock` operation. Locates Shard A files, fetches encrypted Shard B 
 **Use case:** Temporary switch between `wrap`-mode and native SDK mode, or complete teardown.
 
 #### `worthless scan [OPTIONS] [PATHS]`
-**Detect exposed API keys with decoy awareness.**
+**Detect exposed API keys with shard-A awareness.**
 
-Scans files for high-entropy strings that match known API key patterns. Ignores decoys that were created by Worthless (checks Shannon entropy + format coherence).
+Scans files for high-entropy strings that match known API key patterns. Ignores shard-A values that were created by Worthless (checks Shannon entropy + format coherence).
 
 **Options:**
 - `--deep`: Scan beyond `.env`/`.env.local` — includes `*.yml`, `*.yaml`, `*.toml`, `*.json` in project root, plus env var dump
@@ -198,7 +197,7 @@ Reads the PID file (`~/.worthless/proxy.pid`), sends SIGTERM to the process grou
 #### `worthless revoke [OPTIONS] ALIAS`
 **Wipe an enrolled key (delete shards and all DB records).**
 
-Permanently deletes Shard A from disk (with zero-fill to resist recovery), deletes Shard B and all associated records (enrollments, spend logs, time windows) from the database in a single atomic transaction.
+Deletes Shard B and all associated records (enrollments, spend logs, time windows) from the database in a single atomic transaction. Removes shard-A from `.env` if still present.
 
 **Options:**
 - (None — takes alias as argument)
@@ -208,7 +207,6 @@ Permanently deletes Shard A from disk (with zero-fill to resist recovery), delet
 - Example: `openai-69ccc444`, `anthropic-a1b2c3d4`
 
 **Behavior:**
-- Zeroes Shard A contents before unlink (best-effort on CoW filesystems; full-disk encryption is the real protection)
 - Atomic DB cleanup: all related records removed in one transaction
 - Idempotent: succeeds even if alias doesn't exist
 
@@ -355,7 +353,6 @@ All tables are ACID-transactional. Key deletion via `revoke` is atomic: all reco
 
 - `~/.worthless/`: Home directory for Worthless state
   - `worthless.db`: SQLite database (shards, enrollments, spend logs, rules)
-  - `shards_a/`: Unencrypted Shard A files (one per enrolled key)
   - `proxy.pid`: PID and port of running proxy (when `up -d` is active)
   - `proxy.log`: Proxy logs (when `up -d` is active)
 
@@ -394,7 +391,7 @@ worthless unlock
 # Your .env now has the real key
 # Use it directly (not through proxy)
 worthless lock
-# Split again, back to decoy
+# Split again, back to shard-A
 ```
 
 ### Pre-commit hook (scan before every commit)
@@ -440,7 +437,7 @@ Agents should:
 
 ## Security Notes
 
-- **Shard A** is stored unencrypted on your machine in `~/.worthless/shards_a/`. Full-disk encryption is required for protection at rest.
+- **Shard A** lives in your `.env` file as a format-preserving value (same prefix, charset, and length as the original key). It is sent to the proxy per-request via standard auth headers.
 - **Shard B** is encrypted in the database, but only an encryption boundary — not a trust boundary. The proxy should run on trusted infrastructure.
 - **Key Reconstruction** happens only in proxy memory during a single API call. Key is zero-filled immediately after use.
 - **Spend Cap** is best-effort pre-check, not a hard enforcement boundary (production fix pending).

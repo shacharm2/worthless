@@ -5,12 +5,14 @@
 
 ## Headers
 
-| Header | Direction | Purpose |
-|--------|-----------|---------|
-| `x-worthless-key` | Client -> Proxy | Identifies which enrolled key to use for reconstruction |
-| `x-worthless-shard-a` | Client -> Proxy | Client's shard (Base64-encoded) for key reconstruction |
+Shard A is delivered to the proxy using standard provider authentication headers:
 
-When only one key is enrolled per provider, the proxy infers the alias from the request path. The `x-worthless-key` header is only required when multiple keys share a provider.
+| Provider | Header | Purpose |
+|----------|--------|---------|
+| OpenAI | `Authorization: Bearer <shard-A>` | Shard A for key reconstruction |
+| Anthropic | `x-api-key: <shard-A>` | Shard A for key reconstruction |
+
+The alias is derived from the URL path (e.g., `/v1/chat/completions` routes to OpenAI). No custom Worthless-specific headers are required.
 
 ## Endpoints
 
@@ -29,7 +31,7 @@ The proxy returns provider-compatible JSON error bodies so SDKs handle them nati
 
 | Status | Meaning | When |
 |--------|---------|------|
-| 401 | Authentication required | Missing/invalid alias, missing shard, commitment mismatch |
+| 401 | Authentication required | Missing/invalid alias, missing shard-A in auth header, commitment mismatch |
 | 402 | Spend cap exceeded | Cumulative spend exceeds configured cap |
 | 429 | Rate limit exceeded | Requests per second exceeded (includes `Retry-After` header) |
 | 502 | Gateway error | Upstream provider unreachable |
@@ -58,18 +60,17 @@ All `401` responses return an identical body regardless of failure reason (anti-
 |----------|---------|-------------|
 | `WORTHLESS_PORT` | `8787` | Proxy listen port |
 | `WORTHLESS_DB_PATH` | `~/.worthless/worthless.db` | SQLite database path |
-| `WORTHLESS_SHARD_A_DIR` | `~/.worthless/shard_a` | Directory for Shard A files |
 | `WORTHLESS_FERNET_KEY` | *(auto-generated)* | Fernet key for encrypting Shard B at rest |
 | `WORTHLESS_RATE_LIMIT_RPS` | `100.0` | Default rate limit (requests/second per IP) |
 | `WORTHLESS_UPSTREAM_TIMEOUT` | `120.0` | Non-streaming upstream timeout (seconds) |
 | `WORTHLESS_STREAMING_TIMEOUT` | `300.0` | Streaming upstream timeout (seconds) |
-| `WORTHLESS_ALLOW_INSECURE` | `false` | Allow shard headers over non-TLS (dev only) |
+| `WORTHLESS_ALLOW_INSECURE` | `false` | Allow shard-A auth over non-TLS (dev only) |
 
 ## Security Model
 
 ### Shard custody
 
-- **Shard A** stays on the client machine (filesystem). In local mode, the proxy reads it directly from the `shard_a` directory — no network transmission. In remote mode (planned), the client sends Shard A via the `x-worthless-shard-a` header over TLS. A future MPC upgrade will eliminate Shard A transmission entirely, keeping it on the client at all times.
+- **Shard A** stays on the client machine in `.env`. It is format-preserving (same prefix, charset, and length as the original key), so the SDK sends it as `Authorization: Bearer <shard-A>` (OpenAI) or `x-api-key: <shard-A>` (Anthropic) on every request. The proxy extracts it from the standard auth header. No server-side shard-A storage exists.
 - **Shard B** is encrypted at rest in SQLite using Fernet (AES-128-CBC + HMAC-SHA256). It is decrypted only in memory during key reconstruction.
 
 ### Gate before reconstruct
