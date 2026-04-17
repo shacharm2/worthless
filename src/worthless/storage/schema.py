@@ -100,12 +100,13 @@ async def migrate_db(db_path: str) -> None:
         # WOR-207: Add prefix/charset columns to shards for format-preserving split
         cursor = await db.execute("PRAGMA table_info(shards)")
         shard_columns = {row[1] for row in await cursor.fetchall()}
-        _SHARD_MIGRATIONS = {"prefix": "TEXT", "charset": "TEXT"}
-        for col_name, col_type in _SHARD_MIGRATIONS.items():
+        # Hardcoded migration statements — not dynamic SQL
+        _SHARD_MIGRATIONS = {
+            "prefix": "ALTER TABLE shards ADD COLUMN prefix TEXT",
+            "charset": "ALTER TABLE shards ADD COLUMN charset TEXT",
+        }
+        for col_name, stmt in _SHARD_MIGRATIONS.items():
             if col_name not in shard_columns:
-                assert col_name in _SHARD_MIGRATIONS, f"unexpected column {col_name}"  # noqa: S101
-                # Safe: col_name is from a hardcoded allowlist, not user input
-                stmt = f"ALTER TABLE shards ADD COLUMN {col_name} {col_type}"  # noqa: S608
                 try:
                     await db.execute(stmt)
                 except Exception as exc:

@@ -151,8 +151,8 @@ class ShardRepository:
                 (
                     alias,
                     shard_b_enc,
-                    bytes(shard.commitment),
-                    bytes(shard.nonce),
+                    memoryview(shard.commitment).tobytes(),
+                    memoryview(shard.nonce).tobytes(),
                     shard.provider,
                     prefix,
                     charset,
