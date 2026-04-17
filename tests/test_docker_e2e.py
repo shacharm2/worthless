@@ -235,15 +235,24 @@ def persistent_container(docker_image: str) -> tuple[str, int, str]:
 
 @pytest.fixture()
 def compose_stack(docker_image: str) -> tuple[str, str]:
-    """Run via docker-compose for volume separation tests."""
+    """Run via docker-compose for volume separation tests.
+
+    Uses a temporary override file to bind a dynamic host port instead
+    of the hardcoded 8787 in deploy/docker-compose.yml, avoiding
+    conflicts with other processes on the host.
+    """
     project = f"worthless-e2e-{uuid.uuid4().hex[:8]}"
     compose_file = REPO_ROOT / "deploy" / "docker-compose.yml"
     env_file = REPO_ROOT / "deploy" / "docker-compose.env"
+    override_file = REPO_ROOT / "deploy" / "docker-compose.override.yml"
 
     created_env = False
     if not env_file.exists():
         env_file.write_text("WORTHLESS_ALLOW_INSECURE=true\n")
         created_env = True
+
+    # Override port to dynamic to avoid bind conflicts
+    override_file.write_text('services:\n  proxy:\n    ports:\n      - "127.0.0.1::8787"\n')
 
     try:
         _run(
@@ -252,6 +261,8 @@ def compose_stack(docker_image: str) -> tuple[str, str]:
                 "compose",
                 "-f",
                 str(compose_file),
+                "-f",
+                str(override_file),
                 "-p",
                 project,
                 "up",
@@ -273,6 +284,8 @@ def compose_stack(docker_image: str) -> tuple[str, str]:
                 "compose",
                 "-f",
                 str(compose_file),
+                "-f",
+                str(override_file),
                 "-p",
                 project,
                 "down",
@@ -282,6 +295,7 @@ def compose_stack(docker_image: str) -> tuple[str, str]:
             capture_output=True,
             cwd=str(REPO_ROOT),
         )
+        override_file.unlink(missing_ok=True)
         if created_env:
             env_file.unlink(missing_ok=True)
 
