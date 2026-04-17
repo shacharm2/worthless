@@ -22,7 +22,7 @@ All authentication failures — missing alias, unknown alias, missing shard, inv
 
 ## TLS Enforcement
 
-By default, the proxy rejects requests carrying shard headers over non-TLS connections. For local development, set `WORTHLESS_ALLOW_INSECURE=true`. This flag must never be used in production.
+By default, the proxy rejects requests carrying shard-A credentials over non-TLS connections. For local development, set `WORTHLESS_ALLOW_INSECURE=true`. This flag must never be used in production.
 
 ## Known Limitations (Python PoC)
 

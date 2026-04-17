@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -76,13 +75,7 @@ def home_with_multi_env_key(home_dir: WorthlessHome) -> WorthlessHome:
     sr = split_key(_OPENAI_KEY.encode())
     try:
         alias = "openai-a1b2c3d4"
-        shard_a_path = home_dir.shard_a_dir / alias
-        fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(fd, bytes(sr.shard_a))
-        finally:
-            os.close(fd)
-
+        # SR-09: no shard_a file on disk -- shard-A lives in .env only
         repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
         asyncio.run(repo.initialize())
         stored = StoredShard(
@@ -189,31 +182,49 @@ class TestLockUx:
 class TestUnlockUx:
     """User-facing messages from the unlock command."""
 
-    def test_unlock_single_alias_message(
-        self, home_with_key: WorthlessHome, tmp_path: Path
-    ) -> None:
+    def test_unlock_single_alias_message(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """After unlocking a specific alias, user sees 'Unlocked {alias}.'"""
         env = tmp_path / ".env"
-        env.write_text("OPENAI_API_KEY=decoy-value\n")
+        env.write_text(f"OPENAI_API_KEY={_OPENAI_KEY}\n")
+        home_env = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+
+        # Lock first (creates format-preserving enrollment)
+        lock_result = runner.invoke(app, ["lock", "--env", str(env)], env=home_env)
+        assert lock_result.exit_code == 0, (
+            f"lock failed: {lock_result.stdout}\n{lock_result.stderr}"
+        )
+
+        from tests.conftest import make_repo as _repo
+
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        alias = aliases[0]
 
         result = runner.invoke(
             app,
-            ["unlock", "--alias", "openai-a1b2c3d4", "--env", str(env)],
-            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+            ["unlock", "--alias", alias, "--env", str(env)],
+            env=home_env,
         )
         assert result.exit_code == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
         combined = result.stdout + result.stderr
-        assert "Unlocked openai-a1b2c3d4" in combined
+        assert f"Unlocked {alias}" in combined
 
-    def test_unlock_all_keys_message(self, home_with_key: WorthlessHome, tmp_path: Path) -> None:
+    def test_unlock_all_keys_message(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """After unlocking all keys, user sees 'N key(s) restored.'"""
         env = tmp_path / ".env"
-        env.write_text("OPENAI_API_KEY=decoy-value\n")
+        env.write_text(f"OPENAI_API_KEY={_OPENAI_KEY}\n")
+        home_env = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+
+        # Lock first (creates format-preserving enrollment)
+        lock_result = runner.invoke(app, ["lock", "--env", str(env)], env=home_env)
+        assert lock_result.exit_code == 0, (
+            f"lock failed: {lock_result.stdout}\n{lock_result.stderr}"
+        )
 
         result = runner.invoke(
             app,
             ["unlock", "--env", str(env)],
-            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+            env=home_env,
         )
         assert result.exit_code == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
         combined = result.stdout + result.stderr

@@ -11,14 +11,11 @@ Architecture invariants enforced:
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import json
 import logging
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import aiosqlite
 import httpx
@@ -28,9 +25,9 @@ from starlette.background import BackgroundTask
 
 from starlette.middleware.cors import CORSMiddleware
 
-from worthless.adapters.registry import get_adapter, get_provider_for_path
+from worthless.adapters.registry import get_adapter
 from worthless.adapters.types import INTERNAL_HEADER_PREFIX
-from worthless.crypto.splitter import reconstruct_key, secure_key
+from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp, secure_key
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
 from worthless.proxy.metering import (
@@ -74,36 +71,38 @@ def _uniform_401() -> Response:
     )
 
 
-def _infer_alias_from_path(clean_path: str, settings: ProxySettings) -> str | None:
-    """Infer alias from request path when x-worthless-key header is absent.
+def _extract_shard_a(request: Request) -> bytearray | None:
+    """Extract shard-A from the request's auth header.
 
-    Maps the path to a provider via the adapter registry, then scans
-    shard_a_dir for a unique matching alias (format: ``provider-hash8``).
-    Returns None if no match or ambiguous (multiple aliases for same provider).
+    Supports both OpenAI (``Authorization: Bearer``) and Anthropic
+    (``x-api-key``) conventions.  Returns ``None`` if neither is present.
     """
-    provider = get_provider_for_path(clean_path)
-    if not provider:
-        return None
+    auth = request.headers.get("authorization")
+    if auth and auth.lower().startswith("bearer "):
+        token = auth[7:]
+        if token:
+            return bytearray(token, "utf-8")
 
-    shard_a_dir = Path(settings.shard_a_dir)
-    if not shard_a_dir.exists():
-        return None
+    api_key = request.headers.get("x-api-key")
+    if api_key:
+        return bytearray(api_key, "utf-8")
 
-    matches = [
-        f.name for f in shard_a_dir.iterdir() if f.is_file() and f.name.startswith(f"{provider}-")
-    ]
-    if len(matches) == 1:
-        return matches[0]
-
-    # Zero or multiple matches — cannot infer unambiguously
-    if len(matches) > 1:
-        logger.warning(
-            "Ambiguous alias inference: %d aliases for provider %r. "
-            "Use x-worthless-key header or enroll only one key per provider.",
-            len(matches),
-            provider,
-        )
     return None
+
+
+def _extract_alias_and_path(raw_path: str) -> tuple[str, str] | None:
+    """Extract alias prefix and API path from ``/<alias>/v1/chat/completions``.
+
+    Returns ``(alias, api_path)`` or ``None`` if the first segment is not
+    a valid alias (SR-09: alias comes from URL path, not disk scanning).
+    """
+    parts = raw_path.strip("/").split("/", 1)
+    if len(parts) < 2:
+        return None
+    alias_candidate = parts[0]
+    if not _ALIAS_RE.fullmatch(alias_candidate):
+        return None
+    return alias_candidate, "/" + parts[1]
 
 
 def _strip_worthless_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -241,17 +240,13 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         rules_engine: RulesEngine = request.app.state.rules_engine
         httpx_client: httpx.AsyncClient = request.app.state.httpx_client
 
-        clean_path = "/" + path.split("?")[0].lstrip("/")
+        raw_path = "/" + path.split("?")[0].lstrip("/")
 
-        # Validate alias header present, or infer from path
-        alias = request.headers.get("x-worthless-key")
-        if not alias and settings.allow_alias_inference:
-            alias = _infer_alias_from_path(clean_path, settings)
-        if not alias:
+        # Extract alias from URL path: /<alias>/v1/chat/completions
+        parsed = _extract_alias_and_path(raw_path)
+        if parsed is None:
             return _uniform_401()
-
-        if not _ALIAS_RE.fullmatch(alias):
-            return _uniform_401()
+        alias, clean_path = parsed
 
         if not settings.allow_insecure:
             proto = request.scope.get("scheme", "http")
@@ -268,23 +263,10 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         if encrypted is None:
             return _uniform_401()
 
-        # Load shard_a from header or file fallback
-        shard_a_header = request.headers.get("x-worthless-shard-a")
-        shard_a: bytearray | None = None
-        if shard_a_header:
-            try:
-                shard_a = bytearray(base64.b64decode(shard_a_header))
-            except Exception:
-                return _uniform_401()
-        else:
-            shard_a_path = Path(settings.shard_a_dir) / alias
-            try:
-                raw = await asyncio.to_thread(shard_a_path.read_bytes)
-                shard_a = bytearray(raw)
-                del raw
-            except FileNotFoundError:
-                pass
-
+        # SR-09: shard-A from request header only (no disk, no files)
+        # OpenAI: Authorization: Bearer <shard-A>
+        # Anthropic: x-api-key: <shard-A>
+        shard_a = _extract_shard_a(request)
         if shard_a is None:
             return _uniform_401()
 
@@ -317,7 +299,17 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         req_headers = {k: v for k, v in request.headers.items()}
 
         try:
-            key_buf = reconstruct_key(shard_a, stored.shard_b, stored.commitment, stored.nonce)
+            if encrypted.prefix is not None and encrypted.charset is not None:
+                key_buf = reconstruct_key_fp(
+                    shard_a,
+                    stored.shard_b,
+                    stored.commitment,
+                    stored.nonce,
+                    encrypted.prefix,
+                    encrypted.charset,
+                )
+            else:
+                key_buf = reconstruct_key(shard_a, stored.shard_b, stored.commitment, stored.nonce)
         except Exception:
             shard_a[:] = b"\x00" * len(shard_a)
             stored.zero()

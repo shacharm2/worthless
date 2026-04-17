@@ -120,8 +120,8 @@ class TestBuildProxyEnvKeyring:
             env = build_proxy_env(home)
         assert "WORTHLESS_FERNET_KEY" not in env
         assert env["WORTHLESS_DB_PATH"] == str(home.db_path)
-        assert env["WORTHLESS_SHARD_A_DIR"] == str(home.shard_a_dir)
-        assert env["WORTHLESS_ALLOW_ALIAS_INFERENCE"] == "true"
+        assert "WORTHLESS_SHARD_A_DIR" not in env
+        assert "WORTHLESS_ALLOW_ALIAS_INFERENCE" not in env
 
     def test_keyring_unavailable_includes_fernet_key(self) -> None:
         home = FakeHome()
@@ -133,9 +133,10 @@ class TestBuildProxyEnvKeyring:
         home = FakeHome()
         with patch("worthless.cli.process.keyring_available", return_value=True):
             env = build_proxy_env(home)
-        expected = {"WORTHLESS_DB_PATH", "WORTHLESS_SHARD_A_DIR", "WORTHLESS_ALLOW_ALIAS_INFERENCE"}
-        assert expected.issubset(set(env.keys()))
+        assert "WORTHLESS_DB_PATH" in env
         assert "WORTHLESS_FERNET_KEY" not in env
+        assert "WORTHLESS_SHARD_A_DIR" not in env
+        assert "WORTHLESS_ALLOW_ALIAS_INFERENCE" not in env
 
 
 # ===========================================================================

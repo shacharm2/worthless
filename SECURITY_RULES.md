@@ -37,7 +37,7 @@ The reconstruction service runs in an isolated process with its own memory space
 ## Shard Separation
 
 **SR-09: Shard-A never at rest in proxy.**
-The proxy process must never have filesystem access, environment variable access, or configuration pointing to shard-A material. Shard-A arrives exclusively via the `Authorization` header per-request. No `WORTHLESS_SHARD_A_DIR`, no disk fallback, no shard-A directory scanning. Enforced by semgrep rule `sr09-no-shard-a-in-proxy`.
+The proxy process must never have filesystem access, environment variable access, or configuration pointing to shard-A material. Shard-A arrives exclusively via the `Authorization: Bearer` header (OpenAI) or `x-api-key` header (Anthropic) per-request. No `WORTHLESS_SHARD_A_DIR`, no disk fallback, no shard-A directory scanning. Enforced by semgrep rule `sr09-no-shard-a-in-proxy`.
 
 **SR-10: No dual-shard co-location.**
 No single process may hold (or have access paths to) both shard-A and shard-B for the same key, except transiently during the reconstruct-call-zero sequence within a single request handler. Configuration that grants a process access to both shard storage locations is a security violation regardless of whether the process reads them.

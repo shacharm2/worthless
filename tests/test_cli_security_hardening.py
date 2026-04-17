@@ -26,10 +26,8 @@ from cryptography.fernet import Fernet
 
 from worthless.cli.bootstrap import ensure_home
 from worthless.cli.commands.lock import _enroll_single, _lock_keys
-from worthless.cli.decoy import make_decoy
-from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys, shannon_entropy
+from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys
 from worthless.cli.errors import WorthlessError
-from worthless.cli.key_patterns import ENTROPY_THRESHOLD
 from worthless.cli.process import disable_core_dumps, spawn_proxy
 from worthless.cli.scanner import scan_files
 from worthless.crypto.splitter import split_key
@@ -64,9 +62,16 @@ class TestPathTraversal:
 
     def test_enroll_accepts_valid_alias(self, tmp_path: Path) -> None:
         """A clean alphanumeric alias with dashes/underscores must succeed."""
+        import asyncio
+        from worthless.storage.repository import ShardRepository
+
         home = ensure_home(tmp_path / ".worthless")
         _enroll_single("valid-alias_01", "sk-test-key-abcdef1234567890", "openai", home)
-        assert (home.shard_a_dir / "valid-alias_01").exists()
+        # Verify enrollment in DB (no shard_a files on disk)
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        asyncio.run(repo.initialize())
+        stored = asyncio.run(repo.retrieve("valid-alias_01"))
+        assert stored is not None
 
 
 # =====================================================================
@@ -77,13 +82,21 @@ class TestPathTraversal:
 class TestFilePermissions:
     """All secret files must be created with restrictive permissions."""
 
-    def test_shard_a_file_permissions(self, tmp_path: Path) -> None:
-        """shard_a files must be created with 0600."""
+    def test_shard_b_stored_encrypted_in_db(self, tmp_path: Path) -> None:
+        """shard_b must be stored encrypted in DB (no disk files)."""
+        import asyncio
+        from worthless.storage.repository import ShardRepository
+
         home = ensure_home(tmp_path / ".worthless")
         _enroll_single("perm-test", "sk-test-key-abcdef1234567890", "openai", home)
-        shard_path = home.shard_a_dir / "perm-test"
-        mode = stat.S_IMODE(shard_path.stat().st_mode)
-        assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
+        # No shard_a file on disk
+        shard_files = [f for f in home.shard_a_dir.iterdir() if f.is_file()]
+        assert shard_files == [], "No shard_a files should be on disk"
+        # But shard_b should be in DB
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        asyncio.run(repo.initialize())
+        stored = asyncio.run(repo.retrieve("perm-test"))
+        assert stored is not None
 
     def test_db_file_permissions(self, tmp_path: Path) -> None:
         """DB file must be created with 0600."""
@@ -302,40 +315,39 @@ class TestProviderGating:
 
 
 class TestEntropyFiltering:
-    """High-entropy decoys must be filtered by the hash registry, not entropy."""
+    """Enrollment-based filtering: enrolled keys are skipped by scan."""
 
-    def test_decoy_has_high_entropy(self) -> None:
-        """Decoys produced by make_decoy must have entropy ABOVE threshold (WOR-31)."""
-        decoy = make_decoy("openai", "sk-proj-")
-        entropy = shannon_entropy(decoy)
-        assert entropy > ENTROPY_THRESHOLD, (
-            f"Decoy entropy {entropy:.2f} should be above threshold {ENTROPY_THRESHOLD}"
-        )
+    def test_enrolled_key_skipped_by_scan_env_keys(self, tmp_path: Path) -> None:
+        """scan_env_keys must skip values whose (var_name, env_path) is enrolled."""
+        from tests.helpers import fake_openai_key
 
-    def test_decoy_not_detected_by_scan_env_keys_with_predicate(self, tmp_path: Path) -> None:
-        """scan_env_keys must skip decoy values when is_decoy predicate is provided."""
-        decoy = make_decoy("openai", "sk-proj-")
-
+        key = fake_openai_key()
         env_file = tmp_path / ".env"
-        env_file.write_text(f"OPENAI_API_KEY={decoy}\n")
+        env_file.write_text(f"OPENAI_API_KEY={key}\n")
+        env_str = str(env_file.resolve())
 
-        # Without predicate, decoy IS detected (it's high entropy now)
-        results_no_pred = scan_env_keys(env_file)
-        assert len(results_no_pred) == 1, "High-entropy decoy should be detected without predicate"
+        # Without enrollment set, key IS detected
+        results_no_enroll = scan_env_keys(env_file)
+        assert len(results_no_enroll) == 1, "Key should be detected without enrollment set"
 
-        # With predicate, decoy is filtered
-        results_with_pred = scan_env_keys(env_file, is_decoy=lambda v: v == decoy)
-        assert len(results_with_pred) == 0, "Decoy should be filtered by is_decoy predicate"
+        # With enrollment set, key is filtered
+        enrolled = {("OPENAI_API_KEY", env_str)}
+        results_enrolled = scan_env_keys(env_file, enrolled_locations=enrolled)
+        assert len(results_enrolled) == 0, "Enrolled key should be filtered"
 
-    def test_decoy_detected_by_scanner_without_registry(self, tmp_path: Path) -> None:
-        """scan_files flags decoy values (they're high-entropy now — registry needed to filter)."""
-        decoy = make_decoy("openai", "sk-proj-")
+    def test_enrolled_key_marked_protected_by_scanner(self, tmp_path: Path) -> None:
+        """scan_files marks enrolled keys as is_protected=True."""
+        from tests.helpers import fake_openai_key
 
+        key = fake_openai_key()
         env_file = tmp_path / ".env"
-        env_file.write_text(f"OPENAI_API_KEY={decoy}\n")
+        env_file.write_text(f"OPENAI_API_KEY={key}\n")
+        env_str = str(env_file.resolve())
 
-        findings = scan_files([env_file])
-        assert len(findings) == 1, "High-entropy decoy should be detected by scanner"
+        enrolled = {("OPENAI_API_KEY", env_str)}
+        findings = scan_files([env_file], enrolled_locations=enrolled)
+        assert len(findings) == 1, "Key should be found by scanner"
+        assert findings[0].is_protected is True, "Enrolled key should be marked protected"
 
     def test_real_key_detected_by_scanner(self, tmp_path: Path) -> None:
         """Real high-entropy keys must be detected (control test)."""
@@ -388,9 +400,16 @@ class TestAliasValidation:
         ],
     )
     def test_accepts_valid_aliases(self, good_alias: str, tmp_path: Path) -> None:
+        import asyncio
+        from worthless.storage.repository import ShardRepository
+
         home = ensure_home(tmp_path / ".worthless")
         _enroll_single(good_alias, "sk-test-key-abcdef1234567890", "openai", home)
-        assert (home.shard_a_dir / good_alias).exists()
+        # Verify enrollment in DB
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        asyncio.run(repo.initialize())
+        stored = asyncio.run(repo.retrieve(good_alias))
+        assert stored is not None
 
 
 # =====================================================================

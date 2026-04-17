@@ -9,8 +9,6 @@ Tests for Phase 3.1:
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -24,8 +22,8 @@ import aiosqlite
 
 from worthless.adapters import registry
 from worthless.adapters.types import AdapterRequest, AdapterResponse
-from worthless.crypto import split_key
-from worthless.proxy.app import create_app
+from worthless.crypto.splitter import split_key_fp
+from worthless.proxy.app import _ALIAS_RE, _BAD_HEADER_CHARS, _extract_alias_and_path, create_app
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import ErrorResponse, gateway_error_response
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
@@ -39,7 +37,6 @@ from worthless.storage.repository import EncryptedShard, StoredShard
 
 @pytest.fixture()
 def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettings:
-    shard_a_dir = str(tmp_path / "shard_a")
     return ProxySettings(
         db_path=tmp_db_path,
         fernet_key=bytearray(fernet_key),
@@ -47,16 +44,15 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettin
         upstream_timeout=10.0,
         streaming_timeout=30.0,
         allow_insecure=True,
-        shard_a_dir=shard_a_dir,
-        allow_alias_inference=True,
     )
 
 
 @pytest.fixture()
-async def enrolled_alias(repo, proxy_settings: ProxySettings, sample_api_key_bytes: bytes):
-    """Enroll a test key and return (alias, shard_a_b64, raw_api_key)."""
+async def enrolled_alias(repo, proxy_settings: ProxySettings):
+    """Enroll a test key and return (alias, shard_a_utf8, raw_api_key)."""
     alias = "test-key"
-    sr = split_key(sample_api_key_bytes)
+    api_key = "sk-test-key-1234567890abcdef"
+    sr = split_key_fp(api_key, prefix="sk-", provider="openai")
 
     shard = StoredShard(
         shard_b=bytearray(sr.shard_b),
@@ -64,16 +60,10 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings, sample_api_key_byt
         nonce=bytearray(sr.nonce),
         provider="openai",
     )
-    await repo.store(alias, shard)
+    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
 
-    shard_a_dir = Path(proxy_settings.shard_a_dir)
-    shard_a_dir.mkdir(parents=True, exist_ok=True)
-    shard_a_path = shard_a_dir / alias
-    with shard_a_path.open("wb") as f:
-        f.write(bytes(sr.shard_a))
-
-    shard_a_b64 = base64.b64encode(bytes(sr.shard_a)).decode()
-    return alias, shard_a_b64, sample_api_key_bytes
+    shard_a_utf8 = sr.shard_a.decode("utf-8")
+    return alias, shard_a_utf8, api_key.encode()
 
 
 @pytest.fixture()
@@ -256,7 +246,7 @@ class TestSSEStreaming:
     @respx.mock
     async def test_stream_true_passed_to_httpx_send(self, proxy_app, enrolled_alias):
         """Verify httpx.send() is called with stream=True for all requests."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         send_kwargs: dict = {}
 
         async def capturing_send(req, **kwargs):
@@ -275,10 +265,9 @@ class TestSSEStreaming:
         transport = httpx.ASGITransport(app=proxy_app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await client.post(
-                "/v1/chat/completions",
+                f"/{alias}/v1/chat/completions",
                 headers={
-                    "x-worthless-key": alias,
-                    "x-worthless-shard-a": shard_a_b64,
+                    "authorization": f"Bearer {shard_a_utf8}",
                     "content-type": "application/json",
                 },
                 content=b'{"model": "gpt-4", "messages": []}',
@@ -289,7 +278,7 @@ class TestSSEStreaming:
     @respx.mock
     async def test_streaming_response_uses_streaming_path(self, proxy_app, enrolled_alias):
         """When adapter returns is_streaming=True, proxy uses StreamingResponse."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         sse_body = b'data: {"id":"1","choices":[{"delta":{"content":"Hello"}}]}\n\ndata: [DONE]\n\n'
 
         async def sse_stream():
@@ -323,10 +312,9 @@ class TestSSEStreaming:
             transport = httpx.ASGITransport(app=proxy_app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.post(
-                    "/v1/chat/completions",
+                    f"/{alias}/v1/chat/completions",
                     headers={
-                        "x-worthless-key": alias,
-                        "x-worthless-shard-a": shard_a_b64,
+                        "authorization": f"Bearer {shard_a_utf8}",
                         "content-type": "application/json",
                     },
                     content=b'{"model": "gpt-4", "messages": [], "stream": true}',
@@ -342,7 +330,7 @@ class TestSSEStreaming:
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
         """Non-streaming responses are read and returned normally."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
@@ -352,10 +340,9 @@ class TestSSEStreaming:
         )
 
         resp = await proxy_client.post(
-            "/v1/chat/completions",
+            f"/{alias}/v1/chat/completions",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
                 "content-type": "application/json",
             },
             content=b'{"model": "gpt-4", "messages": []}',
@@ -373,7 +360,7 @@ class TestGateBeforeDecrypt:
     @respx.mock
     async def test_fetch_encrypted_before_rules_decrypt_after(self, proxy_app, enrolled_alias):
         """fetch_encrypted called BEFORE rules_engine.evaluate, decrypt_shard AFTER."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         call_order: list[str] = []
 
         orig_fetch = proxy_app.state.repo.fetch_encrypted
@@ -405,10 +392,9 @@ class TestGateBeforeDecrypt:
         transport = httpx.ASGITransport(app=proxy_app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await client.post(
-                "/v1/chat/completions",
+                f"/{alias}/v1/chat/completions",
                 headers={
-                    "x-worthless-key": alias,
-                    "x-worthless-shard-a": shard_a_b64,
+                    "authorization": f"Bearer {shard_a_utf8}",
                     "content-type": "application/json",
                 },
                 content=b'{"model": "gpt-4", "messages": []}',
@@ -419,7 +405,7 @@ class TestGateBeforeDecrypt:
     @respx.mock
     async def test_denial_skips_decrypt(self, proxy_app, enrolled_alias):
         """When rules engine denies, decrypt_shard is never called."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         decrypt_called = False
 
         orig_decrypt = proxy_app.state.repo.decrypt_shard
@@ -447,10 +433,9 @@ class TestGateBeforeDecrypt:
         transport = httpx.ASGITransport(app=proxy_app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
-                "/v1/chat/completions",
+                f"/{alias}/v1/chat/completions",
                 headers={
-                    "x-worthless-key": alias,
-                    "x-worthless-shard-a": shard_a_b64,
+                    "authorization": f"Bearer {shard_a_utf8}",
                 },
                 content=b'{"model": "gpt-4", "messages": []}',
             )
@@ -467,7 +452,7 @@ class TestByteArrayZeroing:
     @respx.mock
     async def test_shard_material_zeroed_after_request(self, proxy_app, enrolled_alias):
         """shard_a and stored shard fields are zeroed after request completes."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         captured_stored: dict = {}
 
         orig_decrypt = proxy_app.state.repo.decrypt_shard
@@ -489,10 +474,9 @@ class TestByteArrayZeroing:
         transport = httpx.ASGITransport(app=proxy_app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await client.post(
-                "/v1/chat/completions",
+                f"/{alias}/v1/chat/completions",
                 headers={
-                    "x-worthless-key": alias,
-                    "x-worthless-shard-a": shard_a_b64,
+                    "authorization": f"Bearer {shard_a_utf8}",
                     "content-type": "application/json",
                 },
                 content=b'{"model": "gpt-4", "messages": []}',
@@ -513,7 +497,7 @@ class TestReconstructFailureZeroing:
     @respx.mock
     async def test_shard_material_zeroed_on_reconstruct_failure(self, proxy_app, enrolled_alias):
         """When reconstruct_key raises, all shard material is zeroed and 401 returned."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         captured_stored: dict = {}
 
         orig_decrypt = proxy_app.state.repo.decrypt_shard
@@ -526,16 +510,15 @@ class TestReconstructFailureZeroing:
         proxy_app.state.repo.decrypt_shard = capturing_decrypt
 
         with patch(
-            "worthless.proxy.app.reconstruct_key",
+            "worthless.proxy.app.reconstruct_key_fp",
             side_effect=Exception("tampered shard"),
         ):
             transport = httpx.ASGITransport(app=proxy_app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 resp = await client.post(
-                    "/v1/chat/completions",
+                    f"/{alias}/v1/chat/completions",
                     headers={
-                        "x-worthless-key": alias,
-                        "x-worthless-shard-a": shard_a_b64,
+                        "authorization": f"Bearer {shard_a_utf8}",
                         "content-type": "application/json",
                     },
                     content=b'{"model": "gpt-4", "messages": []}',
@@ -549,51 +532,6 @@ class TestReconstructFailureZeroing:
 
 
 # ------------------------------------------------------------------
-# B-4: Async file I/O
-# ------------------------------------------------------------------
-
-
-class TestAsyncFileIO:
-    @respx.mock
-    async def test_file_shard_a_uses_to_thread(self, proxy_app, enrolled_alias):
-        """File-based shard_a loading uses asyncio.to_thread."""
-        alias, _, _ = enrolled_alias
-        to_thread_called = False
-
-        orig_to_thread = asyncio.to_thread
-
-        async def mock_to_thread(func, *args, **kwargs):
-            nonlocal to_thread_called
-            to_thread_called = True
-            return await orig_to_thread(func, *args, **kwargs)
-
-        respx.post("https://api.openai.com/v1/chat/completions").mock(
-            return_value=httpx.Response(
-                200,
-                json={"choices": [], "usage": {"total_tokens": 5}},
-            )
-        )
-
-        with patch("worthless.proxy.app.asyncio") as mock_asyncio_mod:
-            mock_asyncio_mod.to_thread = mock_to_thread
-            # Keep create_task working
-            mock_asyncio_mod.create_task = asyncio.create_task
-
-            transport = httpx.ASGITransport(app=proxy_app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.post(
-                    "/v1/chat/completions",
-                    headers={
-                        "x-worthless-key": alias,
-                        "content-type": "application/json",
-                    },
-                    content=b'{"model": "gpt-4", "messages": []}',
-                )
-            assert resp.status_code == 200
-            assert to_thread_called
-
-
-# ------------------------------------------------------------------
 # H-1: Error handling (502/504)
 # ------------------------------------------------------------------
 
@@ -602,17 +540,16 @@ class TestErrorHandling:
     @respx.mock
     async def test_timeout_returns_504(self, proxy_client: httpx.AsyncClient, enrolled_alias):
         """httpx.TimeoutException returns 504."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=httpx.ReadTimeout("timed out")
         )
 
         resp = await proxy_client.post(
-            "/v1/chat/completions",
+            f"/{alias}/v1/chat/completions",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
                 "content-type": "application/json",
             },
             content=b'{"model": "gpt-4", "messages": []}',
@@ -622,17 +559,16 @@ class TestErrorHandling:
     @respx.mock
     async def test_connect_error_returns_502(self, proxy_client: httpx.AsyncClient, enrolled_alias):
         """httpx.ConnectError returns 502."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=httpx.ConnectError("connection refused")
         )
 
         resp = await proxy_client.post(
-            "/v1/chat/completions",
+            f"/{alias}/v1/chat/completions",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
                 "content-type": "application/json",
             },
             content=b'{"model": "gpt-4", "messages": []}',
@@ -644,17 +580,16 @@ class TestErrorHandling:
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
         """Generic httpx.HTTPError (not Timeout/Connect) returns 502."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=httpx.HTTPError("some http error")
         )
 
         resp = await proxy_client.post(
-            "/v1/chat/completions",
+            f"/{alias}/v1/chat/completions",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
                 "content-type": "application/json",
             },
             content=b'{"model": "gpt-4", "messages": []}',
@@ -663,22 +598,21 @@ class TestErrorHandling:
 
 
 # ------------------------------------------------------------------
-# Invalid shard_a header
+# Invalid Bearer token
 # ------------------------------------------------------------------
 
 
-class TestInvalidShardA:
-    async def test_invalid_base64_shard_a_returns_401(
+class TestInvalidBearerToken:
+    async def test_invalid_bearer_token_returns_401(
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
-        """Invalid base64 in x-worthless-shard-a header returns uniform 401."""
+        """Invalid Bearer token returns uniform 401."""
         alias, _, _ = enrolled_alias
 
         resp = await proxy_client.post(
-            "/v1/chat/completions",
+            f"/{alias}/v1/chat/completions",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": "!!!not-valid-base64!!!",
+                "authorization": "Bearer !!!not-valid-shard!!!",
                 "content-type": "application/json",
             },
             content=b'{"model": "gpt-4", "messages": []}',
@@ -697,7 +631,7 @@ class TestUpstreamSanitization:
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
         """Upstream 4xx/5xx error bodies are sanitized."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
@@ -712,10 +646,9 @@ class TestUpstreamSanitization:
         )
 
         resp = await proxy_client.post(
-            "/v1/chat/completions",
+            f"/{alias}/v1/chat/completions",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
                 "content-type": "application/json",
             },
             content=b'{"model": "gpt-4", "messages": []}',
@@ -728,7 +661,7 @@ class TestUpstreamSanitization:
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
         """Malformed upstream error body falls back to generic error."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
@@ -739,10 +672,9 @@ class TestUpstreamSanitization:
         )
 
         resp = await proxy_client.post(
-            "/v1/chat/completions",
+            f"/{alias}/v1/chat/completions",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
                 "content-type": "application/json",
             },
             content=b'{"model": "gpt-4", "messages": []}',
@@ -754,21 +686,20 @@ class TestUpstreamSanitization:
 
 class TestUpstreamSanitizationAnthropic:
     @respx.mock
-    async def test_anthropic_error_body_sanitized(
-        self, proxy_app, tmp_path, fernet_key, sample_api_key_bytes
-    ):
+    async def test_anthropic_error_body_sanitized(self, proxy_app, tmp_path, fernet_key):
         """Upstream Anthropic error bodies are sanitized to Anthropic format."""
         # Enroll an Anthropic key
         alias = "anthropic-key"
-        sr = split_key(sample_api_key_bytes)
+        api_key = "sk-ant-test-key-12345678901234"
+        sr = split_key_fp(api_key, prefix="sk-ant-", provider="anthropic")
         shard = StoredShard(
             shard_b=bytearray(sr.shard_b),
             commitment=bytearray(sr.commitment),
             nonce=bytearray(sr.nonce),
             provider="anthropic",
         )
-        await proxy_app.state.repo.store(alias, shard)
-        shard_a_b64 = base64.b64encode(bytes(sr.shard_a)).decode()
+        await proxy_app.state.repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+        shard_a_utf8 = sr.shard_a.decode("utf-8")
 
         respx.post("https://api.anthropic.com/v1/messages").mock(
             return_value=httpx.Response(
@@ -786,10 +717,9 @@ class TestUpstreamSanitizationAnthropic:
         transport = httpx.ASGITransport(app=proxy_app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
-                "/v1/messages",
+                f"/{alias}/v1/messages",
                 headers={
-                    "x-worthless-key": alias,
-                    "x-worthless-shard-a": shard_a_b64,
+                    "authorization": f"Bearer {shard_a_utf8}",
                     "content-type": "application/json",
                 },
                 content=b'{"model": "claude-3-5-sonnet-20241022",'
@@ -821,8 +751,8 @@ class TestPathNormalization:
     async def test_path_with_query_params_stripped(
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
-        """Query params are stripped — /v1/chat/completions?foo=bar routes correctly."""
-        alias, shard_a_b64, _ = enrolled_alias
+        """Query params are stripped — /<alias>/v1/chat/completions?foo=bar routes correctly."""
+        alias, shard_a_utf8, _ = enrolled_alias
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
                 200,
@@ -830,10 +760,9 @@ class TestPathNormalization:
             )
         )
         resp = await proxy_client.post(
-            "/v1/chat/completions?foo=bar",
+            f"/{alias}/v1/chat/completions?foo=bar",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
                 "content-type": "application/json",
             },
             content=b'{"model": "gpt-4", "messages": []}',
@@ -845,7 +774,7 @@ class TestPathNormalization:
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
         """Multiple ? in path — only first segment used."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
                 200,
@@ -853,10 +782,9 @@ class TestPathNormalization:
             )
         )
         resp = await proxy_client.post(
-            "/v1/chat/completions?a=1?b=2",
+            f"/{alias}/v1/chat/completions?a=1?b=2",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
                 "content-type": "application/json",
             },
             content=b'{"model": "gpt-4", "messages": []}',
@@ -865,12 +793,11 @@ class TestPathNormalization:
 
     async def test_unknown_path_returns_401(self, proxy_client: httpx.AsyncClient, enrolled_alias):
         """Unrecognized path returns uniform 401 (not 404)."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         resp = await proxy_client.post(
-            "/v2/something/else",
+            f"/{alias}/v2/something/else",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
             },
             content=b"{}",
         )
@@ -878,12 +805,11 @@ class TestPathNormalization:
 
     async def test_empty_path_returns_401(self, proxy_client: httpx.AsyncClient, enrolled_alias):
         """Root path / returns uniform 401 (no adapter matches)."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         resp = await proxy_client.post(
             "/",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
             },
             content=b"{}",
         )
@@ -895,12 +821,11 @@ class TestAntiEnumeration:
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
         """Unknown endpoint returns 401 format, not 404."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         resp = await proxy_client.post(
-            "/v1/unknown",
+            f"/{alias}/v1/unknown",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
             },
             content=b"{}",
         )
@@ -910,13 +835,12 @@ class TestAntiEnumeration:
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
         """404 (unknown endpoint) and 401 (no alias) return same body."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         r1 = await proxy_client.post("/v1/chat/completions", content=b"{}")
         r2 = await proxy_client.post(
-            "/v1/unknown",
+            f"/{alias}/v1/unknown",
             headers={
-                "x-worthless-key": alias,
-                "x-worthless-shard-a": shard_a_b64,
+                "authorization": f"Bearer {shard_a_utf8}",
             },
             content=b"{}",
         )
@@ -931,77 +855,61 @@ class TestAntiEnumeration:
     ):
         """All _uniform_401() code paths return byte-identical responses.
 
-        Exercises 8 of 9 failure modes. The 9th (malformed header keys with
-        null/CR/LF bytes) cannot be triggered through httpx — it validates
+        Exercises 7 failure modes. The 8th (malformed header keys with
+        null/CR/LF bytes) cannot be triggered through httpx -- it validates
         header names client-side. That path requires raw ASGI scope injection.
         """
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
         responses: list[tuple[str, httpx.Response]] = []
 
-        # 1. Missing alias (no header, no inferable alias)
+        # 1. Missing alias (bare path, no alias prefix)
         r = await proxy_client.post("/v1/chat/completions", content=b"{}")
         responses.append(("missing_alias", r))
 
         # 2. Path traversal alias
         r = await proxy_client.post(
-            "/v1/chat/completions",
-            headers={"x-worthless-key": "../../etc/passwd"},
+            "/..%2F..%2Fetc%2Fpasswd/v1/chat/completions",
+            headers={"authorization": "Bearer fake"},
             content=b"{}",
         )
         responses.append(("path_traversal", r))
 
         # 3. Unknown alias (not in DB)
         r = await proxy_client.post(
-            "/v1/chat/completions",
-            headers={"x-worthless-key": "nonexistent-alias"},
+            "/nonexistent-alias/v1/chat/completions",
+            headers={"authorization": "Bearer fake-shard-a"},
             content=b"{}",
         )
         responses.append(("unknown_alias", r))
 
-        # 4. Invalid base64 in shard_a header
+        # 4. Invalid Bearer token
         r = await proxy_client.post(
-            "/v1/chat/completions",
-            headers={"x-worthless-key": alias, "x-worthless-shard-a": "!!!not-base64!!!"},
+            f"/{alias}/v1/chat/completions",
+            headers={"authorization": "Bearer !!!not-valid-shard!!!"},
             content=b"{}",
         )
-        responses.append(("invalid_base64_shard", r))
+        responses.append(("invalid_bearer_token", r))
 
-        # 5. Missing shard_a (no header, no file on disk)
-        # Safe with pytest-xdist: tmp_path is per-test, so shard_a_dir is isolated
-        shard_a_file = Path(proxy_settings.shard_a_dir) / alias
-        shard_a_backup = shard_a_file.read_bytes()
-        shard_a_file.unlink()
-        try:
-            r = await proxy_client.post(
-                "/v1/chat/completions",
-                headers={"x-worthless-key": alias},
-                content=b"{}",
-            )
-            responses.append(("missing_shard_a", r))
-        finally:
-            shard_a_file.write_bytes(shard_a_backup)
+        # 5. Missing Bearer header
+        r = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            content=b"{}",
+        )
+        responses.append(("missing_bearer", r))
 
         # 6. Unknown endpoint (no adapter match)
         r = await proxy_client.post(
-            "/v1/totally-unknown-endpoint",
-            headers={"x-worthless-key": alias, "x-worthless-shard-a": shard_a_b64},
+            f"/{alias}/v1/totally-unknown-endpoint",
+            headers={"authorization": f"Bearer {shard_a_utf8}"},
             content=b"{}",
         )
         responses.append(("unknown_endpoint", r))
 
-        # 7. POST to root path (no adapter match for /)
-        r = await proxy_client.post(
-            "/",
-            headers={"x-worthless-key": alias, "x-worthless-shard-a": shard_a_b64},
-            content=b"{}",
-        )
-        responses.append(("post_root", r))
-
-        # 8. Reconstruction failure (mock reconstruct_key to raise)
-        with patch("worthless.proxy.app.reconstruct_key", side_effect=ValueError("tampered")):
+        # 7. Reconstruction failure (mock reconstruct_key_fp to raise)
+        with patch("worthless.proxy.app.reconstruct_key_fp", side_effect=ValueError("tampered")):
             r = await proxy_client.post(
-                "/v1/chat/completions",
-                headers={"x-worthless-key": alias, "x-worthless-shard-a": shard_a_b64},
+                f"/{alias}/v1/chat/completions",
+                headers={"authorization": f"Bearer {shard_a_utf8}"},
                 content=b"{}",
             )
         responses.append(("reconstruct_failure", r))
@@ -1027,18 +935,13 @@ class TestAntiEnumeration:
 
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                alias, shard_a_b64, _ = enrolled_alias
+                alias, shard_a_utf8, _ = enrolled_alias
 
-                # TLS failure: x-forwarded-proto: http with allow_insecure=False
-                # NOTE: if TLS check switches to request.scope["scheme"] (XFP trust fix),
-                # this test still passes (ASGI transport defaults scheme to "http") but
-                # the x-forwarded-proto header becomes irrelevant. Update trigger accordingly.
+                # TLS failure: ASGI transport defaults scheme to "http"
                 r_tls = await client.post(
-                    "/v1/chat/completions",
+                    f"/{alias}/v1/chat/completions",
                     headers={
-                        "x-worthless-key": alias,
-                        "x-worthless-shard-a": shard_a_b64,
-                        "x-forwarded-proto": "http",
+                        "authorization": f"Bearer {shard_a_utf8}",
                     },
                     content=b"{}",
                 )
@@ -1063,7 +966,7 @@ class TestMeteringResilience:
         self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
         """record_spend failure logs warning but does not break response."""
-        alias, shard_a_b64, _ = enrolled_alias
+        alias, shard_a_utf8, _ = enrolled_alias
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
@@ -1074,10 +977,9 @@ class TestMeteringResilience:
 
         with patch("worthless.proxy.app.record_spend", side_effect=Exception("db error")):
             resp = await proxy_client.post(
-                "/v1/chat/completions",
+                f"/{alias}/v1/chat/completions",
                 headers={
-                    "x-worthless-key": alias,
-                    "x-worthless-shard-a": shard_a_b64,
+                    "authorization": f"Bearer {shard_a_utf8}",
                     "content-type": "application/json",
                 },
                 content=b'{"model": "gpt-4", "messages": []}',
@@ -1158,7 +1060,7 @@ class TestCORSDenial:
 
 
 # ==================================================================
-# Auth collapse: alias inference, shard fallback, TLS header trust
+# Auth collapse: TLS header trust
 # ==================================================================
 
 
@@ -1167,22 +1069,20 @@ async def attack_scenario(
     tmp_db_path: str,
     fernet_key: bytes,
     tmp_path,
-    sample_api_key_bytes: bytes,
 ):
-    """Enrolled key with shard_a on disk, secure defaults (inference off, TLS required)."""
-    from worthless.crypto import split_key
+    """Enrolled key in DB, secure defaults (TLS required)."""
+    from worthless.crypto.splitter import split_key_fp
     from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
     from worthless.storage.repository import ShardRepository, StoredShard
 
     alias = "openai-abcd1234"
-    sr = split_key(sample_api_key_bytes)
+    api_key = "sk-test-key-1234567890abcdef"
+    sr = split_key_fp(api_key, prefix="sk-", provider="openai")
 
-    shard_a_dir = str(tmp_path / "shard_a")
     settings = ProxySettings(
         db_path=tmp_db_path,
         fernet_key=bytearray(fernet_key),
         allow_insecure=False,
-        shard_a_dir=shard_a_dir,
     )
 
     repo = ShardRepository(tmp_db_path, fernet_key)
@@ -1194,11 +1094,7 @@ async def attack_scenario(
         nonce=bytearray(sr.nonce),
         provider="openai",
     )
-    await repo.store(alias, shard)
-
-    Path(shard_a_dir).mkdir(parents=True, exist_ok=True)
-    with (Path(shard_a_dir) / alias).open("wb") as f:
-        f.write(bytes(sr.shard_a))
+    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
 
     app = create_app(settings)
     db = await aiosqlite.connect(tmp_db_path)
@@ -1212,21 +1108,21 @@ async def attack_scenario(
         ]
     )
 
-    shard_a_b64 = base64.b64encode(bytes(sr.shard_a)).decode()
-    yield app, alias, shard_a_b64, settings
+    shard_a_utf8 = sr.shard_a.decode("utf-8")
+    yield app, alias, shard_a_utf8, settings
     await app.state.httpx_client.aclose()
     await db.close()
 
 
 class TestAuthCollapse:
-    """Verify that alias inference, shard_a file fallback, and TLS header trust
-    cannot be chained to reconstruct API keys without credentials."""
+    """Verify that TLS header trust cannot be exploited to reconstruct
+    API keys without credentials."""
 
     @pytest.mark.asyncio
     @respx.mock
     async def test_unauthenticated_request_cannot_reconstruct_key(self, attack_scenario):
-        """Bare request with spoofed XFP and no auth headers must not reach upstream."""
-        app, alias, shard_a_b64, settings = attack_scenario
+        """Bare request with no auth must not reach upstream."""
+        app, alias, shard_a_utf8, settings = attack_scenario
 
         upstream = respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(200, json={"choices": [{"message": {"content": "pwned"}}]})
@@ -1235,31 +1131,27 @@ class TestAuthCollapse:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
-                "/v1/chat/completions",
-                headers={
-                    "x-forwarded-proto": "https",
-                },
+                f"/{alias}/v1/chat/completions",
                 json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
             )
 
         assert resp.status_code == 401, (
-            f"Attack succeeded! Got {resp.status_code} — "
+            f"Attack succeeded! Got {resp.status_code} -- "
             "unauthenticated request reconstructed an API key."
         )
-        assert not upstream.called, "Upstream was called — key was reconstructed without auth"
+        assert not upstream.called, "Upstream was called -- key was reconstructed without auth"
 
     @pytest.mark.asyncio
     async def test_spoofed_xfp_does_not_bypass_tls(self, attack_scenario):
         """X-Forwarded-Proto: https over plain HTTP must be rejected."""
-        app, alias, shard_a_b64, settings = attack_scenario
+        app, alias, shard_a_utf8, settings = attack_scenario
 
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
-                "/v1/chat/completions",
+                f"/{alias}/v1/chat/completions",
                 headers={
-                    "x-worthless-key": alias,
-                    "x-worthless-shard-a": shard_a_b64,
+                    "authorization": f"Bearer {shard_a_utf8}",
                     "x-forwarded-proto": "https",
                 },
                 json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
@@ -1273,7 +1165,7 @@ class TestAuthCollapse:
     @respx.mock
     async def test_real_tls_connection_accepted(self, attack_scenario):
         """Request over real HTTPS (scope scheme=https) passes TLS check."""
-        app, alias, shard_a_b64, settings = attack_scenario
+        app, alias, shard_a_utf8, settings = attack_scenario
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(200, json={"choices": []})
@@ -1282,10 +1174,9 @@ class TestAuthCollapse:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
             resp = await client.post(
-                "/v1/chat/completions",
+                f"/{alias}/v1/chat/completions",
                 headers={
-                    "x-worthless-key": alias,
-                    "x-worthless-shard-a": shard_a_b64,
+                    "authorization": f"Bearer {shard_a_utf8}",
                 },
                 json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
             )
@@ -1293,92 +1184,760 @@ class TestAuthCollapse:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_alias_inference_blocked_by_default(self, attack_scenario):
-        """With allow_alias_inference=False (default), missing header → 401."""
-        app, alias, shard_a_b64, settings = attack_scenario
+    async def test_no_auth_headers_rejected(self, attack_scenario):
+        """Bare request with no Authorization header is rejected."""
+        app, alias, shard_a_utf8, settings = attack_scenario
 
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
             resp = await client.post(
-                "/v1/chat/completions",
-                headers={"x-worthless-shard-a": shard_a_b64},
+                f"/{alias}/v1/chat/completions",
                 json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
             )
 
         assert resp.status_code == 401
 
-    @pytest.mark.asyncio
-    @respx.mock
-    async def test_alias_inference_works_when_opted_in(
-        self, tmp_db_path, fernet_key, tmp_path, sample_api_key_bytes
+
+# ==================================================================
+# SR-09 enforcement: _extract_alias_and_path unit tests
+# ==================================================================
+
+
+class TestExtractAliasAndPath:
+    """Direct unit tests for _extract_alias_and_path — SR-09 alias extraction."""
+
+    def test_standard_path(self) -> None:
+        result = _extract_alias_and_path("/myalias/v1/chat/completions")
+        assert result == ("myalias", "/v1/chat/completions")
+
+    def test_root_path_returns_none(self) -> None:
+        assert _extract_alias_and_path("/") is None
+
+    def test_alias_only_no_subpath_returns_none(self) -> None:
+        assert _extract_alias_and_path("/myalias") is None
+
+    def test_double_slash_strips_to_valid(self) -> None:
+        # strip("/") collapses leading slashes, so //v1/... becomes v1/...
+        # which parses as alias="v1", path="/chat/completions"
+        result = _extract_alias_and_path("//v1/chat/completions")
+        assert result == ("v1", "/chat/completions")
+
+    def test_alias_with_hyphens_underscores_digits(self) -> None:
+        result = _extract_alias_and_path("/my-alias_01/v1/messages")
+        assert result == ("my-alias_01", "/v1/messages")
+
+    def test_path_traversal_returns_none(self) -> None:
+        assert _extract_alias_and_path("/../../etc/passwd") is None
+
+    def test_alias_with_spaces_returns_none(self) -> None:
+        assert _extract_alias_and_path("/alias with spaces/v1/") is None
+
+    def test_alias_with_trailing_slash_only_returns_none(self) -> None:
+        # /valid-alias/ strip("/") -> "valid-alias" -> split gives 1 part -> None
+        assert _extract_alias_and_path("/valid-alias/") is None
+
+
+# ==================================================================
+# SR-09 enforcement: Bearer token edge cases
+# ==================================================================
+
+
+class TestBearerTokenEdgeCases:
+    """Edge cases for Authorization header parsing."""
+
+    async def test_empty_bearer_token_returns_401(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
     ):
-        """With allow_alias_inference=True, missing header infers alias from path."""
-        from worthless.crypto import split_key
-        from worthless.proxy.rules import RulesEngine
-        from worthless.storage.repository import ShardRepository, StoredShard
+        """Authorization: Bearer (empty token after space) returns 401."""
+        alias, _, _ = enrolled_alias
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "authorization": "Bearer ",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 401
 
-        alias = "openai-abcd1234"
-        sr = split_key(sample_api_key_bytes)
+    async def test_non_bearer_scheme_returns_401(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Authorization: Token xyz (non-Bearer scheme) returns 401."""
+        alias, _, _ = enrolled_alias
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "authorization": "Token xyz",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 401
 
-        shard_a_dir = str(tmp_path / "shard_a")
-        settings = ProxySettings(
-            db_path=tmp_db_path,
-            fernet_key=bytearray(fernet_key),
-            allow_insecure=True,
-            shard_a_dir=shard_a_dir,
-            allow_alias_inference=True,
+    @respx.mock
+    async def test_lowercase_bearer_accepted(self, proxy_client: httpx.AsyncClient, enrolled_alias):
+        """Authorization: bearer <token> (lowercase) should work."""
+        alias, shard_a_utf8, _ = enrolled_alias
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                json={"choices": [], "usage": {"total_tokens": 1}},
+            )
         )
 
-        repo = ShardRepository(tmp_db_path, fernet_key)
-        await repo.initialize()
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "authorization": f"bearer {shard_a_utf8}",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 200
 
-        shard = StoredShard(
-            shard_b=bytearray(sr.shard_b),
-            commitment=bytearray(sr.commitment),
-            nonce=bytearray(sr.nonce),
+    async def test_no_authorization_header_returns_401(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """No Authorization header at all returns 401."""
+        alias, _, _ = enrolled_alias
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 401
+
+    async def test_no_scheme_returns_401(self, proxy_client: httpx.AsyncClient, enrolled_alias):
+        """Authorization: <token> (no scheme prefix) returns 401."""
+        alias, shard_a_utf8, _ = enrolled_alias
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "authorization": shard_a_utf8,
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 401
+
+    @respx.mock
+    async def test_x_api_key_header_accepted(self, proxy_client: httpx.AsyncClient, enrolled_alias):
+        """Anthropic x-api-key header should be accepted as shard-A source."""
+        alias, shard_a_utf8, _ = enrolled_alias
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": [], "usage": {"total_tokens": 1}}),
+        )
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "x-api-key": shard_a_utf8,
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 200, f"x-api-key should be accepted, got {resp.status_code}"
+
+    @respx.mock
+    async def test_bearer_takes_precedence_over_x_api_key(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """When both Authorization: Bearer and x-api-key are present, Bearer wins."""
+        alias, shard_a_utf8, _ = enrolled_alias
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": [], "usage": {"total_tokens": 1}}),
+        )
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "authorization": f"Bearer {shard_a_utf8}",
+                "x-api-key": "wrong-shard-a-value",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 200, f"Bearer should take precedence, got {resp.status_code}"
+
+
+# ==================================================================
+# SR-09 enforcement: ProxySettings structural guard
+# ==================================================================
+
+
+class TestProxySettingsStructuralGuard:
+    """ProxySettings must not reference shard-A material."""
+
+    def test_proxy_settings_has_no_shard_a_fields(self):
+        """SR-09: ProxySettings must not reference shard-A files."""
+        assert not hasattr(ProxySettings, "shard_a_dir")
+        assert not hasattr(ProxySettings, "allow_alias_inference")
+
+
+# ==================================================================
+# Adversarial security tests — WOR-196 release hardening
+# ==================================================================
+
+
+# ------------------------------------------------------------------
+# ATK-1: Shard-A extraction attacks via Authorization header
+# ------------------------------------------------------------------
+
+
+class TestShardAExtractionAttacks:
+    """Adversarial tests targeting shard-A extraction from Authorization header."""
+
+    async def test_header_injection_crlf_in_bearer_token(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Bearer token with CRLF injection attempt must be rejected.
+
+        Attack: Authorization: Bearer <shard-A>\\r\\nX-Injected: evil
+        Goal: Inject additional headers via the bearer token value.
+        httpx ASGITransport does NOT reject CR/LF in header values, so they
+        reach our _BAD_HEADER_CHARS check which must return 401.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+        poisoned_token = f"{shard_a_utf8}\r\nX-Injected: evil"
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "authorization": f"Bearer {poisoned_token}",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 401, (
+            f"CRLF injection in bearer token was not rejected! Got {resp.status_code}"
+        )
+
+    async def test_header_injection_null_byte_in_bearer_token(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Bearer token containing null bytes must be rejected.
+
+        Attack: Authorization: Bearer <shard-A>\\x00<garbage>
+        Goal: Truncation or confusion in downstream processing.
+        httpx ASGITransport does NOT reject null bytes in headers, so they
+        reach our _BAD_HEADER_CHARS check which must return 401.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+        poisoned_token = f"{shard_a_utf8}\x00garbage-after-null"
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "authorization": f"Bearer {poisoned_token}",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 401, (
+            f"Null byte injection in bearer token was not rejected! Got {resp.status_code}"
+        )
+
+    async def test_crlf_in_bearer_rejected_at_app_level(self, proxy_app, enrolled_alias):
+        """Direct ASGI scope injection: null/CR/LF in header value triggers 401.
+
+        Bypasses httpx header validation by constructing raw ASGI scope.
+        This exercises the _BAD_HEADER_CHARS check in the proxy handler.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+        poisoned_token = f"Bearer {shard_a_utf8}\r\nX-Injected: evil"
+
+        # Build a raw ASGI scope with the poisoned header
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": f"/{alias}/v1/chat/completions",
+            "query_string": b"",
+            "headers": [
+                (b"authorization", poisoned_token.encode("utf-8", errors="surrogateescape")),
+                (b"content-type", b"application/json"),
+            ],
+            "scheme": "http",
+            "root_path": "",
+            "asgi": {"version": "3.0"},
+            "server": ("test", 80),
+        }
+
+        response_started = {}
+        response_body = bytearray()
+
+        async def receive():
+            return {"type": "http.request", "body": b'{"model": "gpt-4", "messages": []}'}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                response_started["status"] = message["status"]
+                response_started["headers"] = message.get("headers", [])
+            elif message["type"] == "http.response.body":
+                response_body.extend(message.get("body", b""))
+
+        await proxy_app(scope, receive, send)
+        assert response_started["status"] == 401, (
+            f"CRLF injection in bearer token was not rejected! Got {response_started['status']}"
+        )
+
+    async def test_null_byte_in_bearer_rejected_at_app_level(self, proxy_app, enrolled_alias):
+        """Direct ASGI scope injection: null byte in Authorization header triggers 401."""
+        alias, shard_a_utf8, _ = enrolled_alias
+        poisoned_token = f"Bearer {shard_a_utf8}\x00garbage"
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": f"/{alias}/v1/chat/completions",
+            "query_string": b"",
+            "headers": [
+                (b"authorization", poisoned_token.encode("utf-8", errors="surrogateescape")),
+                (b"content-type", b"application/json"),
+            ],
+            "scheme": "http",
+            "root_path": "",
+            "asgi": {"version": "3.0"},
+            "server": ("test", 80),
+        }
+
+        response_started = {}
+
+        async def receive():
+            return {"type": "http.request", "body": b'{"model": "gpt-4", "messages": []}'}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                response_started["status"] = message["status"]
+
+        await proxy_app(scope, receive, send)
+        assert response_started["status"] == 401, (
+            f"Null byte injection not rejected! Got {response_started['status']}"
+        )
+
+    async def test_oversized_bearer_token_rejected(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Bearer token of 256KB+ must not cause memory exhaustion or crash.
+
+        Attack: Authorization: Bearer <256KB of data>
+        Goal: OOM or slow processing via oversized header.
+        """
+        alias, _, _ = enrolled_alias
+        huge_token = "A" * (256 * 1024)  # 256KB
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "authorization": f"Bearer {huge_token}",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        # Must reject — either 401 (reconstruct fails) or 431 (headers too large)
+        assert resp.status_code in (401, 431), (
+            f"Oversized bearer token not rejected! Got {resp.status_code}"
+        )
+
+    async def test_wrong_alias_shard_a_rejected(self, proxy_app, repo, enrolled_alias):
+        """Shard-A for alias-X used against alias-Y must fail reconstruction.
+
+        Attack: Steal shard-A from one alias, use it to reconstruct another alias's key.
+        """
+        alias_a, shard_a_for_alias_a, _ = enrolled_alias
+
+        # Enroll a second alias with a different key
+        alias_b = "other-key"
+        api_key_b = "sk-other-key-9876543210fedcba"
+        sr_b = split_key_fp(api_key_b, prefix="sk-", provider="openai")
+        shard_b = StoredShard(
+            shard_b=bytearray(sr_b.shard_b),
+            commitment=bytearray(sr_b.commitment),
+            nonce=bytearray(sr_b.nonce),
             provider="openai",
         )
-        await repo.store(alias, shard)
+        await repo.store(alias_b, shard_b, prefix=sr_b.prefix, charset=sr_b.charset)
 
-        Path(shard_a_dir).mkdir(parents=True, exist_ok=True)
-        with (Path(shard_a_dir) / alias).open("wb") as f:
-            f.write(bytes(sr.shard_a))
-
-        app = create_app(settings)
-        db = await aiosqlite.connect(tmp_db_path)
-        app.state.db = db
-        app.state.repo = repo
-        app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
-        app.state.rules_engine = RulesEngine(rules=[])
-
-        respx.post("https://api.openai.com/v1/chat/completions").mock(
-            return_value=httpx.Response(200, json={"choices": []})
-        )
-
-        transport = httpx.ASGITransport(app=app)
+        # Use shard-A from alias_a against alias_b
+        transport = httpx.ASGITransport(app=proxy_app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
-                "/v1/chat/completions",
+                f"/{alias_b}/v1/chat/completions",
                 headers={
-                    "x-worthless-shard-a": base64.b64encode(bytes(sr.shard_a)).decode(),
+                    "authorization": f"Bearer {shard_a_for_alias_a}",
+                    "content-type": "application/json",
                 },
-                json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+                content=b'{"model": "gpt-4", "messages": []}',
             )
 
-        assert resp.status_code == 200
-        await app.state.httpx_client.aclose()
-        await db.close()
+        assert resp.status_code == 401, (
+            f"Cross-alias shard-A attack succeeded! Got {resp.status_code}"
+        )
 
-    @pytest.mark.asyncio
-    async def test_no_auth_headers_rejected_before_shard_load(self, attack_scenario):
-        """With inference disabled, bare request is rejected before shard_a fallback."""
-        app, alias, shard_a_b64, settings = attack_scenario
 
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="https://test") as client:
-            resp = await client.post(
-                "/v1/chat/completions",
-                json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
-            )
+# ------------------------------------------------------------------
+# ATK-2: Alias extraction attacks via URL path
+# ------------------------------------------------------------------
 
+
+class TestAliasExtractionAttacks:
+    """Adversarial tests targeting alias extraction from URL path."""
+
+    async def test_path_traversal_cross_alias(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Path traversal: /<alias>/../<other>/v1/chat/completions.
+
+        Attack: Use .. segments to escape the alias prefix and steal another alias.
+        Result: alias is extracted as first segment, but the api_path contains ../
+                which won't match any adapter -> 401.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+        resp = await proxy_client.post(
+            f"/{alias}/../other-alias/v1/chat/completions",
+            headers={
+                "authorization": f"Bearer {shard_a_utf8}",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 401, (
+            f"Path traversal to other alias was not rejected! Got {resp.status_code}"
+        )
+
+    async def test_filesystem_traversal(self, proxy_client: httpx.AsyncClient, enrolled_alias):
+        """Path traversal: /<alias>/../../etc/passwd.
+
+        Attack: Attempt filesystem traversal through the proxy path.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+        resp = await proxy_client.post(
+            f"/{alias}/../../etc/passwd",
+            headers={
+                "authorization": f"Bearer {shard_a_utf8}",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
         assert resp.status_code == 401
+        assert b"passwd" not in resp.content
+
+    async def test_url_encoded_traversal(self, proxy_client: httpx.AsyncClient, enrolled_alias):
+        """URL-encoded traversal: /%2e%2e/admin/v1/chat/completions.
+
+        Attack: Use percent-encoded dots to bypass regex alias validation.
+        _ALIAS_RE rejects '%' so this fails at alias validation.
+        """
+        resp = await proxy_client.post(
+            "/%2e%2e/admin/v1/chat/completions",
+            headers={
+                "authorization": "Bearer fake-token",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 401
+
+    async def test_double_encoded_traversal(self, proxy_client: httpx.AsyncClient, enrolled_alias):
+        """Double-encoded traversal: /%252e%252e/v1/chat/completions.
+
+        Attack: Double percent-encoding to bypass single-decode filters.
+        """
+        resp = await proxy_client.post(
+            "/%252e%252e/v1/chat/completions",
+            headers={
+                "authorization": "Bearer fake-token",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 401
+
+    async def test_null_byte_in_alias(self, proxy_client: httpx.AsyncClient, enrolled_alias):
+        """Null byte in alias: /<alias>%00evil/v1/chat/completions.
+
+        Attack: Null byte truncation to mutate the alias lookup.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+        resp = await proxy_client.post(
+            f"/{alias}%00evil/v1/chat/completions",
+            headers={
+                "authorization": f"Bearer {shard_a_utf8}",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code == 401
+
+    def test_alias_regex_rejects_special_chars(self):
+        """The alias regex must reject dots, slashes, percent, null, and unicode."""
+        attack_aliases = [
+            "..",
+            "../",
+            "..%2f",
+            "alias%00",
+            "alias\x00",
+            "alias/sub",
+            "alias.evil",
+            "alias;drop",
+            "alias&cmd",
+            "alias<script>",
+            "alias\uff0e\uff0e",  # fullwidth dots
+        ]
+        for attack in attack_aliases:
+            result = _extract_alias_and_path(f"/{attack}/v1/chat/completions")
+            if result is not None:
+                extracted_alias, _ = result
+                # If we got a result, the alias must NOT be the full attack string
+                # (it should have been truncated or rejected by regex)
+                assert extracted_alias != attack or _ALIAS_RE.fullmatch(attack), (
+                    f"Dangerous alias accepted: {attack!r}"
+                )
+
+    async def test_traversal_responses_identical_to_normal_401(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Path traversal 401s must be byte-identical to normal 401s (anti-enumeration)."""
+        # Reference: normal unknown alias
+        ref = await proxy_client.post(
+            "/nonexistent/v1/chat/completions",
+            headers={"authorization": "Bearer fake"},
+            content=b"{}",
+        )
+
+        traversal_paths = [
+            "/%2e%2e/admin/v1/chat/completions",
+            "/..%2f..%2fetc%2fpasswd",
+            "/valid/../other/v1/chat/completions",
+        ]
+        for path in traversal_paths:
+            resp = await proxy_client.post(
+                path,
+                headers={"authorization": "Bearer fake"},
+                content=b"{}",
+            )
+            assert resp.status_code == 401
+            assert resp.content == ref.content, (
+                f"Traversal path {path} produces different 401 body (information leak)"
+            )
+
+
+# ------------------------------------------------------------------
+# ATK-3: Timing attacks — constant-time rejection
+# ------------------------------------------------------------------
+
+
+class TestTimingAttacks:
+    """Timing side-channel tests for authentication rejection paths.
+
+    These verify that all rejection paths return the same pre-computed response
+    object, making timing differences negligible. We do not measure wall-clock
+    time (too flaky in CI) — instead we verify the structural property that
+    guarantees constant-time behavior: all paths use _uniform_401().
+    """
+
+    async def test_valid_alias_wrong_shard_vs_invalid_alias_same_body(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Valid alias + wrong shard-A vs invalid alias: same response body.
+
+        If they differ, an attacker can enumerate valid aliases.
+        """
+        alias, _, _ = enrolled_alias
+
+        # Valid alias, wrong shard
+        r1 = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={"authorization": "Bearer wrong-shard-aaaa"},
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+
+        # Invalid alias
+        r2 = await proxy_client.post(
+            "/nonexistent-alias-xyz/v1/chat/completions",
+            headers={"authorization": "Bearer wrong-shard-aaaa"},
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+
+        assert r1.status_code == r2.status_code == 401
+        assert r1.content == r2.content, (
+            "Valid alias + wrong shard produces different 401 than invalid alias — "
+            "enables alias enumeration via response body"
+        )
+
+    async def test_valid_alias_wrong_shard_vs_no_auth_same_body(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """Valid alias + wrong shard vs no auth header at all: same response."""
+        alias, _, _ = enrolled_alias
+
+        r1 = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={"authorization": "Bearer wrong-shard"},
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+
+        r2 = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+
+        assert r1.status_code == r2.status_code == 401
+        assert r1.content == r2.content
+
+    @respx.mock
+    async def test_rules_denial_vs_auth_failure_different_status(self, proxy_app, enrolled_alias):
+        """Rules denial (402/429) uses a DIFFERENT status code than auth failure (401).
+
+        This is intentional — budget exceeded is a legitimate business response,
+        not an enumeration vector. But the 401 bodies must all be identical.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+
+        # Set up rules engine to deny
+        proxy_app.state.rules_engine = type(
+            "MockEngine",
+            (),
+            {
+                "evaluate": AsyncMock(
+                    return_value=ErrorResponse(
+                        status_code=402,
+                        body=b'{"error": "spend cap exceeded"}',
+                        headers={"content-type": "application/json"},
+                    )
+                )
+            },
+        )()
+
+        transport = httpx.ASGITransport(app=proxy_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/{alias}/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {shard_a_utf8}",
+                    "content-type": "application/json",
+                },
+                content=b'{"model": "gpt-4", "messages": []}',
+            )
+
+        # 402 is correct — rules denial is a different status code
+        assert resp.status_code == 402
+        # Verify this is NOT a 401 body (different error category)
+        body = json.loads(resp.content)
+        assert "spend cap" in body["error"]
+
+
+# ------------------------------------------------------------------
+# ATK-4: SR-09 deep enforcement — no shard-A at rest
+# ------------------------------------------------------------------
+
+
+class TestSR09DeepEnforcement:
+    """Verify the proxy has absolutely no path to shard-A material on disk, env, or config."""
+
+    def test_proxy_settings_no_filesystem_path_for_shards(self):
+        """ProxySettings must not contain any path-like attribute for shard material."""
+        forbidden_attrs = [
+            "shard_a_dir",
+            "shard_a_path",
+            "shard_a_file",
+            "shard_dir",
+            "shard_path",
+            "shards_dir",
+            "key_dir",
+            "key_path",
+            "key_file",
+            "allow_alias_inference",
+            "scan_dir",
+            "shard_a_env",
+            "shard_a_var",
+        ]
+        for attr in forbidden_attrs:
+            assert not hasattr(ProxySettings, attr), (
+                f"SR-09 violation: ProxySettings has forbidden attribute '{attr}'"
+            )
+
+    def test_proxy_settings_fields_are_safe(self):
+        """All ProxySettings fields are safe — none reference shard-A material."""
+        import dataclasses
+
+        fields = {f.name for f in dataclasses.fields(ProxySettings)}
+        dangerous_keywords = {"shard_a", "key_dir", "key_path", "shard_dir"}
+        for field_name in fields:
+            for keyword in dangerous_keywords:
+                assert keyword not in field_name.lower(), (
+                    f"SR-09 violation: ProxySettings field '{field_name}' "
+                    f"contains dangerous keyword '{keyword}'"
+                )
+
+    def test_proxy_app_module_no_shard_a_disk_access(self):
+        """The proxy app module must not import os.scandir, glob, or pathlib for shard scanning."""
+        import inspect
+
+        from worthless.proxy import app as proxy_module
+
+        source = inspect.getsource(proxy_module)
+        forbidden_patterns = [
+            "WORTHLESS_SHARD_A_DIR",
+            "shard_a_dir",
+            "scandir",
+            "shard_a_path",
+            "read_shard_a",
+            "load_shard_a",
+        ]
+        for pattern in forbidden_patterns:
+            assert pattern not in source, f"SR-09 violation: proxy app module contains '{pattern}'"
+
+    def test_proxy_config_module_no_shard_a_references(self):
+        """The proxy config module must not reference shard-A storage."""
+        import inspect
+
+        from worthless.proxy import config as config_module
+
+        source = inspect.getsource(config_module)
+        forbidden_patterns = [
+            "WORTHLESS_SHARD_A",
+            "shard_a_dir",
+            "shard_a_path",
+        ]
+        for pattern in forbidden_patterns:
+            assert pattern not in source, (
+                f"SR-09 violation: proxy config module contains '{pattern}'"
+            )
+
+    def test_extract_alias_from_path_not_disk(self):
+        """Alias extraction uses URL path parsing, not filesystem enumeration."""
+        # The function must work without any filesystem access
+        result = _extract_alias_and_path("/my-alias/v1/chat/completions")
+        assert result == ("my-alias", "/v1/chat/completions")
+        # It must NOT access the filesystem — verify by checking it works
+        # even with a nonexistent alias (no disk lookup)
+        result = _extract_alias_and_path("/totally-fake-alias/v1/messages")
+        assert result == ("totally-fake-alias", "/v1/messages")
+
+
+# ------------------------------------------------------------------
+# ATK-5: _BAD_HEADER_CHARS completeness
+# ------------------------------------------------------------------
+
+
+class TestBadHeaderCharsCompleteness:
+    """Verify _BAD_HEADER_CHARS covers all dangerous control characters."""
+
+    def test_bad_header_chars_includes_null(self):
+        assert "\x00" in _BAD_HEADER_CHARS
+
+    def test_bad_header_chars_includes_cr(self):
+        assert "\r" in _BAD_HEADER_CHARS
+
+    def test_bad_header_chars_includes_lf(self):
+        assert "\n" in _BAD_HEADER_CHARS
+
+    def test_alias_regex_is_strict_allowlist(self):
+        """_ALIAS_RE must use fullmatch and reject anything outside [a-zA-Z0-9_-]."""
+
+        # Verify the pattern is a strict character class
+        assert _ALIAS_RE.pattern == "[a-zA-Z0-9_-]+"
+        # Verify it rejects dangerous characters
+        for char in "/.%\x00\r\n;&#<>|$(){}[]!'\"\\@^~`":
+            assert not _ALIAS_RE.fullmatch(f"alias{char}evil"), (
+                f"_ALIAS_RE accepts dangerous character: {char!r}"
+            )

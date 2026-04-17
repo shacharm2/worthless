@@ -42,8 +42,7 @@ Three architectural invariants protect this claim. All three are **Enforced** (C
 
 | Term | Definition |
 |------|-----------|
-| **Shard A** | Client-held half of the split key (original key XOR'd with a CSPRNG mask). High-entropy output — never sent to the server. Stored locally in the OS keychain or an encrypted file. |
-| **Decoy** | Low-entropy placeholder value written to `.env` after enrollment, replacing the original API key so that tools expecting an `*_API_KEY` variable do not complain. The decoy is not a shard and has no cryptographic relationship to the real key. |
+| **Shard A** | Client-held half of the split key. Written to `.env` after enrollment, replacing the original API key. Format-preserving (SR-12): same prefix, charset, and length as the original, so tools expecting `*_API_KEY` continue to work. Cryptographically bound to the original key but reveals nothing without Shard B. Sent to the proxy per-request via `Authorization: Bearer` (OpenAI) or `x-api-key` (Anthropic). Never stored server-side. |
 | **Shard B** | Server-held half of the split key (the random XOR mask). Encrypted at rest with Fernet. Combined with Shard A only during reconstruction. |
 | **Commitment** | HMAC-SHA256 digest binding the original key to both shards. Used to detect tampering during reconstruction. |
 | **Nonce** | Random 32-byte value used as the HMAC key for the commitment. Generated via `secrets.token_bytes` (CSPRNG). |
@@ -87,7 +86,7 @@ Three architectural invariants protect this claim. All three are **Enforced** (C
 │                  NETWORK BOUNDARY             │                  │
 │                                              │                  │
 │  Enrollment: Shard B + commitment + nonce ───┘                  │
-│  Request:    x-worthless-key header (Shard A, base64)           │
+│  Request:    Authorization / x-api-key header (Shard A)         │
 │                                                                 │
 │  *** Full API key NEVER crosses this boundary ***               │
 │  *** Reconstructed key NEVER crosses this boundary ***          │

@@ -62,24 +62,26 @@ class TestLockStatusUnlockCycle:
         )
         assert result.exit_code == 0, f"lock failed: {result.output}"
 
-        # .env rewritten — original key gone, decoy preserves prefix
+        # .env rewritten — original key gone, shard-A preserves prefix
+        from dotenv import dotenv_values
+
         locked_content = env_file.read_text()
         assert locked_content != original_content
-        assert original_key not in locked_content
-        decoy_value = locked_content.strip().split("=", 1)[1]
-        assert decoy_value.startswith("sk-proj-")
+        parsed = dotenv_values(env_file)
+        shard_a_value = parsed["OPENAI_API_KEY"]
+        assert original_key not in shard_a_value
+        assert shard_a_value.startswith("sk-proj-")
 
-        # shard_a file exists with correct permissions
+        # No shard_a files on disk (SR-09: proxy gets shard-A from header, not files)
         home = WorthlessHome(base_dir=worthless_home)
-        shard_a_files = list(home.shard_a_dir.iterdir())
-        assert len(shard_a_files) == 1
-        alias = shard_a_files[0].name
-        assert shard_a_files[0].stat().st_mode & 0o777 == 0o600
+        shard_a_files = [f for f in home.shard_a_dir.iterdir() if f.is_file()]
+        assert len(shard_a_files) == 0, f"Expected ZERO shard_a files, got: {shard_a_files}"
 
         # DB has enrollment
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         aliases = asyncio.run(repo.list_keys())
-        assert aliases == [alias]
+        assert len(aliases) == 1
+        alias = aliases[0]
 
         enrollments = asyncio.run(repo.list_enrollments(alias))
         assert len(enrollments) == 1

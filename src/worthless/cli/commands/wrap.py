@@ -7,8 +7,9 @@ the child, and cleans up when the child exits.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -26,6 +27,9 @@ from worthless.cli.process import (
     poll_health,
     spawn_proxy,
 )
+from worthless.storage.repository import ShardRepository
+
+logger = logging.getLogger(__name__)
 
 # Provider -> env var mapping for BASE_URL injection
 _PROVIDER_ENV_MAP: dict[str, str] = {
@@ -34,40 +38,51 @@ _PROVIDER_ENV_MAP: dict[str, str] = {
 }
 
 
-def _list_enrolled_providers(home: WorthlessHome) -> list[str]:
-    """List providers from the DB shards table.
+def _list_enrolled_aliases(home: WorthlessHome) -> list[tuple[str, str]]:
+    """List (alias, provider) pairs via ShardRepository.
 
-    Returns an empty list when the database does not exist, the shards
-    table is missing (pre-migration DB), or the table is empty.
+    Returns an empty list when the database does not exist or is empty.
     """
     if not home.db_path.exists():
         return []
 
-    conn = sqlite3.connect(str(home.db_path))
+    async def _query():
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        await repo.initialize()
+        return await repo.list_aliases_with_provider()
+
     try:
-        rows = conn.execute("SELECT DISTINCT provider FROM shards").fetchall()
-        return sorted(r[0] for r in rows if r[0] is not None)
-    except sqlite3.OperationalError:
-        # Table may not exist in a pre-migration database
+        return asyncio.run(_query())
+    except Exception:
         return []
-    finally:
-        conn.close()
 
 
 def _build_child_env(
     port: int,
-    providers: list[str],
+    aliases: list[tuple[str, str]],
 ) -> dict[str, str]:
     """Build environment for the child process.
 
     Inherits the current env and adds {PROVIDER}_BASE_URL for each
-    enrolled provider so SDK calls route through the proxy.
+    enrolled provider so SDK calls route through the proxy via alias-in-URL.
     """
     env = dict(os.environ)
-    for provider in providers:
+    seen_providers: dict[str, str] = {}
+    for alias, provider in aliases:
         env_var = _PROVIDER_ENV_MAP.get(provider)
-        if env_var:
-            env[env_var] = f"http://127.0.0.1:{port}"
+        if not env_var:
+            continue
+        if provider in seen_providers:
+            logger.warning(
+                "Multiple aliases for provider %r (%s, %s). Only %s will be used via %s.",
+                provider,
+                seen_providers[provider],
+                alias,
+                alias,
+                env_var,
+            )
+        seen_providers[provider] = alias
+        env[env_var] = f"http://127.0.0.1:{port}/{alias}/v1"
     return env
 
 
@@ -122,8 +137,8 @@ def register_wrap_commands(app: typer.Typer) -> None:
 
         # Load home, verify keys enrolled
         home = get_home()
-        providers = _list_enrolled_providers(home)
-        if not providers:
+        aliases = _list_enrolled_aliases(home)
+        if not aliases:
             raise WorthlessError(
                 ErrorCode.KEY_NOT_FOUND,
                 "No keys enrolled. Run 'worthless lock' first.",
@@ -164,7 +179,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
 
         # Build child env with BASE_URL injection
         full_command = list(command) + ctx.args
-        child_env = _build_child_env(port, providers)
+        child_env = _build_child_env(port, aliases)
 
         # Spawn child
         try:
