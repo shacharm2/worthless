@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -15,10 +16,11 @@ import pytest
 from typer.testing import CliRunner
 
 from worthless.cli.app import app
+from tests.conftest import make_repo as _repo
 from worthless.cli.commands.wrap import (
     _build_child_env,
     _cleanup_proxy,
-    _list_enrolled_providers,
+    _list_enrolled_aliases,
     _run_child_and_wait,
 )
 from worthless.cli.process import create_liveness_pipe
@@ -31,24 +33,76 @@ class TestWrapEnvInjection:
 
     def test_child_env_has_base_url(self):
         """wrap should inject OPENAI_BASE_URL into child environment."""
-        child_env = _build_child_env(port=9999, providers=["openai"])
-        assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:9999"
+        child_env = _build_child_env(port=9999, aliases=[("my-alias", "openai")])
+        assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:9999/my-alias/v1"
 
     def test_child_env_anthropic(self):
         """wrap should inject ANTHROPIC_BASE_URL for anthropic provider."""
-        child_env = _build_child_env(port=8888, providers=["anthropic"])
-        assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888"
+        child_env = _build_child_env(port=8888, aliases=[("anth-alias", "anthropic")])
+        assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888/anth-alias/v1"
 
     def test_child_env_multiple_providers(self):
         """wrap injects env vars for all enrolled providers."""
-        child_env = _build_child_env(port=7777, providers=["openai", "anthropic"])
-        assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:7777"
-        assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:7777"
+        child_env = _build_child_env(
+            port=7777,
+            aliases=[("oai-alias", "openai"), ("anth-alias", "anthropic")],
+        )
+        assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:7777/oai-alias/v1"
+        assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:7777/anth-alias/v1"
 
     def test_child_env_no_session_token(self):
         """Session token should not be in child env (dead code removed)."""
-        child_env = _build_child_env(port=9999, providers=["openai"])
+        child_env = _build_child_env(port=9999, aliases=[("my-alias", "openai")])
         assert "WORTHLESS_SESSION_TOKEN" not in child_env
+
+
+class TestBuildChildEnvEdgeCases:
+    """Edge cases for _build_child_env."""
+
+    def test_unknown_provider_skipped(self):
+        """Unknown provider should not inject any env var."""
+        child_env = _build_child_env(port=9999, aliases=[("gem-alias", "gemini")])
+        assert "OPENAI_BASE_URL" not in child_env
+        assert "ANTHROPIC_BASE_URL" not in child_env
+
+    def test_multi_alias_same_provider_last_wins(self):
+        """When multiple aliases map to the same provider, the last one wins."""
+        child_env = _build_child_env(
+            port=9999,
+            aliases=[("first-oai", "openai"), ("second-oai", "openai")],
+        )
+        assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:9999/second-oai/v1"
+
+    def test_multi_alias_same_provider_warns(self, caplog):
+        """Multiple aliases for the same provider should log a warning."""
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            _build_child_env(
+                port=9999,
+                aliases=[("first-oai", "openai"), ("second-oai", "openai")],
+            )
+        assert any("Multiple aliases" in r.message for r in caplog.records)
+
+    def test_empty_aliases(self):
+        """Empty aliases list produces env without any BASE_URL vars."""
+        child_env = _build_child_env(port=9999, aliases=[])
+        assert "OPENAI_BASE_URL" not in child_env
+        assert "ANTHROPIC_BASE_URL" not in child_env
+
+    def test_inherits_current_env(self):
+        """Child env should include current process env vars."""
+        child_env = _build_child_env(port=9999, aliases=[("a", "openai")])
+        assert "PATH" in child_env
+
+
+class TestListEnrolledAliasesWithDB:
+    """_list_enrolled_aliases returns aliases when DB has data."""
+
+    def test_returns_aliases_from_db(self, home_with_key) -> None:
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert len(aliases) >= 1
+        assert all(isinstance(a, str) and isinstance(p, str) for a, p in aliases)
 
 
 class TestWrapExitCode:
@@ -84,8 +138,8 @@ class TestWrapNoKeys:
         from worthless.cli.bootstrap import ensure_home
 
         home = ensure_home(tmp_path / ".worthless")
-        providers = _list_enrolled_providers(home)
-        assert providers == []
+        aliases = _list_enrolled_aliases(home)
+        assert aliases == []
 
 
 class TestWrapLivenessPipe:
@@ -418,15 +472,15 @@ class TestCleanupProxyWithWriteFd:
         os.close(r_fd)
 
 
-class TestListEnrolledProvidersNoDB:
-    """_list_enrolled_providers returns [] when DB doesn't exist."""
+class TestListEnrolledAliasesNoDB:
+    """_list_enrolled_aliases returns [] when DB doesn't exist."""
 
     def test_no_db_returns_empty(self, tmp_path: Path) -> None:
         from worthless.cli.bootstrap import WorthlessHome
 
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
-        providers = _list_enrolled_providers(home)
-        assert providers == []
+        aliases = _list_enrolled_aliases(home)
+        assert aliases == []
 
 
 class TestWrapExceptionHandlers:
@@ -588,7 +642,7 @@ class TestWrapAfterUnlockExitsWithError:
 
         result = runner.invoke(app, ["unlock", "--env", str(env_file)], env=home_env)
         assert result.exit_code == 0, result.output
-        assert _list_enrolled_providers(home_dir) == []
+        assert _list_enrolled_aliases(home_dir) == []
 
         result = runner.invoke(app, ["wrap", "--", "echo", "hi"], env=home_env)
         assert result.exit_code == 1
@@ -607,12 +661,14 @@ class TestWrapAfterUnlockExitsWithError:
         result = runner.invoke(app, ["lock", "--env", str(env_file)], env=home_env)
         assert result.exit_code == 0, result.output
 
-        alias = next(f.name for f in home_dir.shard_a_dir.iterdir() if f.is_file())
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        alias = aliases[0]
         result = runner.invoke(
             app, ["unlock", "--alias", alias, "--env", str(env_file)], env=home_env
         )
         assert result.exit_code == 0, result.output
-        assert len(_list_enrolled_providers(home_dir)) == 1
+        assert len(_list_enrolled_aliases(home_dir)) == 1
 
 
 # ------------------------------------------------------------------

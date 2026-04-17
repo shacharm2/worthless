@@ -72,7 +72,6 @@ def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
     sr = split_key(key.encode())
     try:
         alias = "openai-a1b2c3d4"
-        write_shard_a(home_dir, alias, bytes(sr.shard_a))
 
         repo = make_repo(home_dir)
         asyncio.run(repo.initialize())

@@ -54,9 +54,10 @@ class TestRevokeExistingKey:
         result = _invoke_revoke("openai-a1b2c3d4", home_with_key)
         assert result.exit_code == 0, result.output
 
-    def test_shard_a_file_deleted(self, home_with_key: WorthlessHome) -> None:
+    def test_no_shard_a_file_still_succeeds(self, home_with_key: WorthlessHome) -> None:
+        """Revoke succeeds even when no shard_a file exists on disk (SR-09)."""
         shard_a = home_with_key.shard_a_dir / "openai-a1b2c3d4"
-        assert shard_a.exists(), "precondition: shard_a must exist"
+        assert not shard_a.exists(), "SR-09: shard_a files should not exist"
         _invoke_revoke("openai-a1b2c3d4", home_with_key)
         assert not shard_a.exists()
 
@@ -88,10 +89,13 @@ class TestRevokeNonExistent:
 
 
 class TestShardAZeroedBeforeDeletion:
-    """Shard-A file should be overwritten with zeros before unlink."""
+    """Shard-A file zeroing when a legacy file exists on disk."""
 
-    def test_file_zeroed_before_delete(self, home_with_key: WorthlessHome) -> None:
+    def test_legacy_file_zeroed_before_delete(self, home_with_key: WorthlessHome) -> None:
+        """If a legacy shard_a file exists, revoke should zero and delete it."""
         shard_a = home_with_key.shard_a_dir / "openai-a1b2c3d4"
+        # Simulate a legacy shard_a file left from pre-SR-09
+        shard_a.write_bytes(b"legacy-shard-data-here")
         original_size = shard_a.stat().st_size
         assert original_size > 0
 
@@ -115,6 +119,14 @@ class TestShardAZeroedBeforeDeletion:
         assert any(all(b == 0 for b in data) and len(data) > 0 for data in written_data), (
             f"Expected a zero-fill write, got: {[d.hex()[:20] for d in written_data]}"
         )
+        assert not shard_a.exists()
+
+    def test_no_file_no_zeroing(self, home_with_key: WorthlessHome) -> None:
+        """When no shard_a file exists (SR-09 default), revoke skips zeroing."""
+        shard_a = home_with_key.shard_a_dir / "openai-a1b2c3d4"
+        assert not shard_a.exists()
+        result = _invoke_revoke("openai-a1b2c3d4", home_with_key)
+        assert result.exit_code == 0
 
 
 class TestRevokeCleanupSpendLog:

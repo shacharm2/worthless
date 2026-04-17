@@ -1,4 +1,4 @@
-"""Scan command — detect exposed API keys with decoy awareness."""
+"""Scan command — detect exposed API keys with enrollment awareness."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import typer
 from worthless.cli.bootstrap import get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
+from worthless.cli.key_patterns import KEY_PATTERN
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
 from worthless.storage.repository import ShardRepository
 
@@ -89,9 +90,6 @@ def _format_human(
     unprotected_count = 0
     protected_count = 0
     file_cache: dict[str, str] = {}
-
-    if show_suffix:
-        from worthless.cli.key_patterns import KEY_PATTERN
 
     for f in findings:
         status = "PROTECTED" if f.is_protected else "UNPROTECTED"
@@ -175,8 +173,8 @@ def _install_hook() -> None:
     hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-async def _build_decoy_checker_async():
-    """Build an is_decoy predicate from the worthless DB.
+async def _build_enrollment_checker_async():
+    """Build a set of enrolled (var_name, env_path) from the worthless DB.
 
     Returns None if the DB is unavailable (CI/offline mode).
     Exceptions are intentionally swallowed — graceful degradation
@@ -193,27 +191,23 @@ async def _build_decoy_checker_async():
     try:
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         await repo.initialize()
-        decoy_hashes = await repo.all_decoy_hashes()
+        enrollments = await repo.list_enrollments()
     except Exception:
         return None
 
-    if not decoy_hashes:
+    if not enrollments:
         return None
 
-    # Capture only the hash function, not the full repo instance.
-    compute_hash = repo._compute_decoy_hash
+    from worthless.cli.dotenv_rewriter import build_enrolled_locations
 
-    def _is_decoy(value: str) -> bool:
-        return compute_hash(value) in decoy_hashes
-
-    return _is_decoy
+    return build_enrolled_locations(enrollments)
 
 
-def _build_decoy_checker():
-    """Sync wrapper around _build_decoy_checker_async for CLI (typer) context."""
+def _build_enrollment_checker():
+    """Sync wrapper for CLI (typer) context."""
 
     try:
-        return asyncio.run(_build_decoy_checker_async())
+        return asyncio.run(_build_enrollment_checker_async())
     except Exception:
         return None
 
@@ -292,11 +286,11 @@ def register_scan_commands(app: typer.Typer) -> None:
             else:
                 scan_paths = _collect_fast_paths(explicit)
 
-            # Build decoy checker from DB if available
-            is_decoy = _build_decoy_checker()
+            # Build enrollment checker from DB if available
+            enrolled = _build_enrollment_checker()
 
             # Run scan
-            findings = scan_files(scan_paths, is_decoy=is_decoy)
+            findings = scan_files(scan_paths, enrolled_locations=enrolled)
 
             # Count unprotected
             unprotected = [f for f in findings if not f.is_protected]

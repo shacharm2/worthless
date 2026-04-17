@@ -1,13 +1,12 @@
-"""Lock command -- scan .env, split keys, store shards, rewrite with decoys."""
+"""Lock command -- scan .env, split keys (format-preserving), store shards."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import logging
-import os
 import re
-import sqlite3
+import stat
 import sys
 from pathlib import Path
 
@@ -15,12 +14,17 @@ import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
-from worthless.cli.decoy import make_decoy
-from worthless.cli.dotenv_rewriter import rewrite_env_key, scan_env_keys, shannon_entropy
+from worthless.cli.dotenv_rewriter import (
+    add_or_rewrite_env_key,
+    build_enrolled_locations,
+    rewrite_env_key,
+    scan_env_keys,
+)
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
-from worthless.cli.key_patterns import ENTROPY_THRESHOLD, detect_prefix
+from worthless.cli.key_patterns import detect_prefix
+from worthless.cli.commands.up import _resolve_port
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
-from worthless.crypto.splitter import split_key
+from worthless.crypto.splitter import split_key_fp
 from worthless.storage.repository import ShardRepository, StoredShard
 
 logger = logging.getLogger(__name__)
@@ -29,88 +33,15 @@ _SUPPORTED_PROVIDERS = frozenset(_PROVIDER_ENV_MAP.keys())
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
-# Pattern matching the literal "WRTLS" marker in old-format decoys.
-_OLD_DECOY_MARKER = "WRTLS"
-
-
 def _make_alias(provider: str, api_key: str) -> str:
     """Deterministic alias: provider + first 8 hex chars of sha256(key)."""
     digest = hashlib.sha256(api_key.encode()).hexdigest()[:8]  # nosec B303 -- non-cryptographic fingerprint
     return f"{provider}-{digest}"
 
 
-async def _migrate_old_decoys(
-    env_path: Path,
-    repo: ShardRepository,
-) -> int:
-    """Upgrade old WRTLS-marker decoys to high-entropy CSPRNG format.
-
-    Old ``_make_decoy()`` generated values like
-    ``sk-proj-a1b2c3d4WRTLSWRTLSWRTLS...`` — low entropy, contains
-    the literal ``WRTLS`` substring.  These are invisible to
-    ``scan_env_keys()`` because their Shannon entropy falls below
-    ``ENTROPY_THRESHOLD``.
-
-    This function reads the ``.env`` file directly, identifies old
-    decoys by the ``WRTLS`` marker + low entropy, looks up the
-    matching enrollment, and replaces them with new format-correct
-    decoys.
-
-    Returns the number of decoys migrated.
-    """
-    console = get_console()
-    text = env_path.read_text()
-    env_str = str(env_path.resolve())
-    migrated = 0
-
-    for line in text.splitlines():
-        line_stripped = line.strip()
-        if not line_stripped or line_stripped.startswith("#"):
-            continue
-        if "=" not in line_stripped:
-            continue
-
-        var_name, _, raw_value = line_stripped.partition("=")
-        var_name = var_name.strip()
-        value = raw_value.strip().strip("\"'")
-
-        # Detect old decoys: must contain "WRTLS" AND have low entropy
-        if _OLD_DECOY_MARKER not in value:
-            continue
-        if shannon_entropy(value) >= ENTROPY_THRESHOLD:
-            continue
-
-        # Look up enrollment for this var_name + env_path
-        enrollment = await repo.find_enrollment_by_location(var_name, env_str)
-        if enrollment is None:
-            continue
-
-        # Only migrate if decoy_hash is not yet set (old decoys were
-        # created before the hash registry existed)
-        if enrollment.decoy_hash is not None:
-            continue
-
-        # Determine provider from the shard record
-        shard = await repo.fetch_encrypted(enrollment.key_alias)
-        if shard is None:
-            continue
-
-        provider = shard.provider
-        try:
-            prefix = detect_prefix(value, provider)
-        except ValueError:
-            prefix = ""
-
-        new_decoy = make_decoy(provider, prefix)
-        # DB first: if crash after DB write but before file write, the old
-        # WRTLS decoy stays in .env (low entropy -> still filtered by scan)
-        # and migration retries are harmless (decoy_hash set -> skipped).
-        await repo.set_decoy_hash(enrollment.key_alias, env_str, new_decoy)
-        rewrite_env_key(env_path, var_name, new_decoy)
-        migrated += 1
-        console.print_success(f"Migrated old decoy for {var_name}")
-
-    return migrated
+def _proxy_base_url(alias: str) -> str:
+    """Build the proxy BASE_URL for a given alias."""
+    return f"http://127.0.0.1:{_resolve_port(None)}/{alias}/v1"
 
 
 def _lock_keys(
@@ -119,12 +50,16 @@ def _lock_keys(
     provider_override: str | None = None,
     token_budget_daily: int | None = None,
     quiet: bool = False,
+    keys_only: bool = False,
 ) -> int:
     """Core lock logic. Returns count of keys protected.
 
     When *quiet* is True, suppress progress and summary output.
     The caller (e.g. the default command pipeline) controls its own
     output instead.
+
+    When *keys_only* is True, only rewrite API key values in .env
+    (skip BASE_URL injection).
     """
     console = get_console()
 
@@ -144,16 +79,11 @@ def _lock_keys(
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         await repo.initialize()
 
-        # Migrate old WRTLS-marker decoys before scanning
-        await _migrate_old_decoys(env_path, repo)
+        env_str = str(env_path.resolve())
+        all_enrollments = await repo.list_enrollments()
+        enrolled_locations = build_enrolled_locations(all_enrollments)
 
-        # Pre-fetch decoy hashes for sync predicate injection
-        decoy_hashes = await repo.all_decoy_hashes()
-
-        def _is_decoy(value: str) -> bool:
-            return repo._compute_decoy_hash(value) in decoy_hashes
-
-        keys = scan_env_keys(env_path, is_decoy=_is_decoy)
+        keys = scan_env_keys(env_path, enrolled_locations=enrolled_locations)
         if not keys:
             console.print_warning("No unprotected API keys found.")
             return 0
@@ -176,50 +106,32 @@ def _lock_keys(
 
             alias = _make_alias(provider, value)
 
-            shard_a_path = home.shard_a_dir / alias
-            if shard_a_path.exists():
-                # Shard file already exists.  Check if the DB row exists too
-                # (orphan shard_a = file without DB row -- warn and skip).
-                db_shard = await repo.fetch_encrypted(alias)
-                if db_shard is None:
-                    console.print_warning(
-                        f"Skipping {var_name} (orphan shard_a for {alias}, no DB record)"
-                    )
-                    continue
-
-                # Shard fully enrolled -- still need to:
-                # 1. Create enrollment for THIS var_name/env_path
-                # 2. Rewrite THIS .env line with a decoy
-                shard_a_path.stat()  # validate file exists and is accessible
+            # Re-lock guard: alias already in DB (same key from another var/env).
+            # Add enrollment for this location but don't re-split — the original
+            # shard-B is tied to the first split's commitment. A fresh split would
+            # produce a shard-A that can't reconstruct with the stored shard-B.
+            db_shard = await repo.fetch_encrypted(alias)
+            if db_shard is not None:
                 await repo.add_enrollment(
                     alias,
                     var_name=var_name,
-                    env_path=str(env_path.resolve()),
+                    env_path=env_str,
                 )
-                try:
-                    prefix = detect_prefix(value, provider)
-                except ValueError:
-                    prefix = ""
-                decoy = make_decoy(provider, prefix)
-                rewrite_env_key(env_path, var_name, decoy)
-                env_str = str(env_path.resolve())
-                await repo.set_decoy_hash(alias, env_str, decoy)
                 count += 1
                 continue
 
-            sr = split_key(value.encode())
-            shard_a_written = False
+            try:
+                prefix = detect_prefix(value, provider)
+            except ValueError:
+                prefix = ""
+
+            sr = split_key_fp(value, prefix, provider)
             db_written = False
             try:
-                try:
-                    prefix = detect_prefix(value, provider)
-                except ValueError:
-                    prefix = ""
-
                 stored = StoredShard(
-                    shard_b=bytearray(sr.shard_b),
-                    commitment=bytearray(sr.commitment),
-                    nonce=bytearray(sr.nonce),
+                    shard_b=sr.shard_b,
+                    commitment=sr.commitment,
+                    nonce=sr.nonce,
                     provider=provider,
                 )
                 # DB first -- atomic commit point
@@ -227,37 +139,30 @@ def _lock_keys(
                     alias,
                     stored,
                     var_name=var_name,
-                    env_path=str(env_path.resolve()),
+                    env_path=env_str,
                     token_budget_daily=token_budget_daily,
+                    prefix=sr.prefix,
+                    charset=sr.charset,
                 )
                 db_written = True
 
-                # shard_a file second
-                fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                try:
-                    os.write(fd, bytes(sr.shard_a))  # nosemgrep: sr01-key-material-not-bytearray
-                finally:
-                    os.close(fd)
-                shard_a_written = True
+                # Rewrite .env: API_KEY = shard-A (format-preserving)
+                shard_a_str = sr.shard_a.decode("utf-8")
+                rewrite_env_key(env_path, var_name, shard_a_str)
 
-                # .env rewrite last
-                decoy = make_decoy(provider, prefix)
-                rewrite_env_key(env_path, var_name, decoy)
-                await repo.set_decoy_hash(alias, str(env_path.resolve()), decoy)
+                # Write BASE_URL unless --keys-only
+                if not keys_only:
+                    base_url_var = _PROVIDER_ENV_MAP.get(provider)
+                    if base_url_var:
+                        url = _proxy_base_url(alias)
+                        add_or_rewrite_env_key(env_path, base_url_var, url)
 
                 count += 1
             except Exception as exc:
-                # Compensate: clean up partial state
-                if shard_a_written:
-                    shard_a_path.unlink(missing_ok=True)
                 if db_written:
-                    # Only delete THIS specific enrollment -- not the shard
-                    # or other enrollments (CASCADE would destroy them all).
-                    env_str = str(env_path.resolve())
                     await repo.delete_enrollment(alias, env_str)
                     remaining = await repo.list_enrollments(alias)
                     if not remaining:
-                        # No other enrollments -- safe to remove shard too
                         await repo.delete_enrolled(alias)
                 if isinstance(exc, WorthlessError):
                     raise
@@ -271,6 +176,12 @@ def _lock_keys(
         return count
 
     count = asyncio.run(_lock_async())
+
+    # Tighten .env permissions — shard-A is secret material
+    if count and env_path.exists():
+        current = env_path.stat().st_mode
+        if current & (stat.S_IRWXG | stat.S_IRWXO):
+            env_path.chmod(current & ~(stat.S_IRWXG | stat.S_IRWXO))
 
     if not quiet:
         if count:
@@ -292,94 +203,52 @@ def _enroll_single(
 ) -> None:
     """Enroll a single key (no .env scanning).
 
-    Write order: DB first, file second — matching _lock_keys pattern.
-    Compensation on failure: clean up whichever artifact was written.
+    Write order: DB first — matching _lock_keys pattern.
+    Compensation on failure: clean up the DB row.
     """
     if not _ALIAS_RE.match(alias):
         raise WorthlessError(ErrorCode.SCAN_ERROR, f"Invalid alias: {alias!r}")
 
-    sr = split_key(key.encode())
-    db_written = False
-    shard_a_written = False
-    shard_a_path = home.shard_a_dir / alias
+    try:
+        prefix = detect_prefix(key, provider)
+    except ValueError:
+        prefix = ""
+
+    sr = split_key_fp(key, prefix, provider)
 
     async def _enroll_async():
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         await repo.initialize()
+
+        existing = await repo.fetch_encrypted(alias)
+        if existing is not None:
+            raise WorthlessError(
+                ErrorCode.SCAN_ERROR,
+                f"Alias {alias!r} is already enrolled",
+            )
+
         stored = StoredShard(
-            shard_b=bytearray(sr.shard_b),
-            commitment=bytearray(sr.commitment),
-            nonce=bytearray(sr.nonce),
+            shard_b=sr.shard_b,
+            commitment=sr.commitment,
+            nonce=sr.nonce,
             provider=provider,
         )
+        # store_enrolled is atomic (BEGIN IMMEDIATE + commit) — no
+        # partial state to compensate on failure.
         await repo.store_enrolled(
             alias,
             stored,
             var_name=alias,
             env_path=None,
+            prefix=sr.prefix,
+            charset=sr.charset,
         )
 
     try:
-        # Check for existing enrollment or orphan shard_a from a prior failed one
-        if shard_a_path.exists():
-            conn = sqlite3.connect(str(home.db_path))
-            try:
-                row = conn.execute("SELECT 1 FROM shards WHERE key_alias = ?", (alias,)).fetchone()
-            finally:
-                conn.close()
-            if row is None:
-                # Orphan file from a prior failed enrollment — safe to clean up
-                shard_a_path.unlink()
-            else:
-                # Fully enrolled key — refuse to overwrite
-                raise WorthlessError(
-                    ErrorCode.SCAN_ERROR,
-                    f"Alias {alias!r} is already enrolled",
-                )
-
-        # DB first — atomic commit point
         asyncio.run(_enroll_async())
-        db_written = True
-
-        # shard_a file second
-        fd = os.open(str(shard_a_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(fd, bytes(sr.shard_a))  # nosemgrep: sr01-key-material-not-bytearray
-        finally:
-            os.close(fd)
-        shard_a_written = True
+    except WorthlessError:
+        raise
     except Exception as exc:
-        # Compensate: clean up partial state
-        if shard_a_written:
-            shard_a_path.unlink(missing_ok=True)
-        if db_written:
-            # Sync compensation — avoids nested asyncio.run() issues.
-            # Only delete THIS enrollment, not all enrollments for the alias
-            # (another env_path may have a pre-existing enrollment).
-
-            try:
-                conn = sqlite3.connect(str(home.db_path))
-                try:
-                    conn.execute("PRAGMA foreign_keys = ON")
-                    conn.execute(
-                        "DELETE FROM enrollments"
-                        " WHERE key_alias = ? AND var_name = ? AND env_path IS NULL",
-                        (alias, alias),
-                    )
-                    # If no other enrollments remain, remove the shard too
-                    remaining = conn.execute(
-                        "SELECT COUNT(*) FROM enrollments WHERE key_alias = ?",
-                        (alias,),
-                    ).fetchone()[0]
-                    if remaining == 0:
-                        conn.execute("DELETE FROM shards WHERE key_alias = ?", (alias,))
-                    conn.commit()
-                finally:
-                    conn.close()
-            except Exception:
-                logger.debug("Compensation cleanup failed for %s", alias, exc_info=True)
-        if isinstance(exc, WorthlessError):
-            raise
         raise WorthlessError(
             ErrorCode.SHARD_STORAGE_FAILED,
             sanitize_exception(exc, generic="failed to enroll key"),
@@ -404,11 +273,20 @@ def register_lock_commands(app: typer.Typer) -> None:
         token_budget_daily: int | None = typer.Option(
             None, "--token-budget-daily", help="Daily token budget limit"
         ),
+        keys_only: bool = typer.Option(
+            False, "--keys-only", help="Only rewrite API keys (skip BASE_URL)"
+        ),
     ) -> None:
         """Protect API keys in a .env file."""
         home = get_home()
         with acquire_lock(home):
-            _lock_keys(env, home, provider_override=provider, token_budget_daily=token_budget_daily)
+            _lock_keys(
+                env,
+                home,
+                provider_override=provider,
+                token_budget_daily=token_budget_daily,
+                keys_only=keys_only,
+            )
 
     @app.command()
     @error_boundary

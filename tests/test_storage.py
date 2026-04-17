@@ -215,95 +215,6 @@ async def test_spend_log_index_exists(tmp_db_path: str) -> None:
         assert "idx_spend_log_alias" in index_names
 
 
-# ------------------------------------------------------------------
-# Decoy hash registry (WOR-31)
-# ------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_is_known_decoy_returns_false_for_unknown(
-    repo: ShardRepository,
-) -> None:
-    """Unknown values are not decoys."""
-    assert await repo.is_known_decoy("sk-proj-not-a-decoy") is False
-
-
-@pytest.mark.asyncio
-async def test_set_and_check_decoy_hash(
-    repo: ShardRepository,
-    sample_split_result,
-) -> None:
-    """After set_decoy_hash, is_known_decoy returns True."""
-    shard = stored_shard_from_split(sample_split_result)
-    await repo.store_enrolled(
-        "test-alias",
-        shard,
-        var_name="API_KEY",
-        env_path="/tmp/.env",  # noqa: S108
-    )
-    decoy_value = "sk-proj-fake-decoy-value-1234567890"
-    await repo.set_decoy_hash("test-alias", "/tmp/.env", decoy_value)  # noqa: S108
-
-    assert await repo.is_known_decoy(decoy_value) is True
-    assert await repo.is_known_decoy("different-value") is False
-
-
-@pytest.mark.asyncio
-async def test_decoy_hash_is_hmac_not_plain_sha256(
-    tmp_db_path: str,
-    sample_split_result,
-) -> None:
-    """Two repos with different Fernet keys produce different hashes for the same value."""
-    from cryptography.fernet import Fernet as F
-
-    key1 = F.generate_key()
-    key2 = F.generate_key()
-
-    repo1 = ShardRepository(tmp_db_path, key1)
-    await repo1.initialize()
-
-    # Store a shard + enrollment in repo1
-    shard = stored_shard_from_split(sample_split_result)
-    await repo1.store_enrolled("a1", shard, var_name="KEY", env_path="/e")
-    await repo1.set_decoy_hash("a1", "/e", "test-value")
-
-    # Compute hashes from both repos
-    h1 = repo1._compute_decoy_hash("test-value")
-    repo2 = ShardRepository(tmp_db_path, key2)
-    h2 = repo2._compute_decoy_hash("test-value")
-
-    assert h1 != h2, "HMAC should differ with different keys"
-
-
-@pytest.mark.asyncio
-async def test_all_decoy_hashes(
-    repo: ShardRepository,
-    sample_split_result,
-) -> None:
-    """all_decoy_hashes returns the set of stored hashes."""
-    shard = stored_shard_from_split(sample_split_result)
-    await repo.store_enrolled("a1", shard, var_name="K1", env_path="/e1")
-    await repo.set_decoy_hash("a1", "/e1", "decoy-1")
-
-    hashes = await repo.all_decoy_hashes()
-    assert len(hashes) == 1
-    assert repo._compute_decoy_hash("decoy-1") in hashes
-
-
-@pytest.mark.asyncio
-async def test_decoy_hash_index_exists(tmp_db_path: str) -> None:
-    """idx_enrollments_decoy_hash index must exist after init."""
-    from worthless.storage.schema import init_db
-
-    await init_db(tmp_db_path)
-
-    async with aiosqlite.connect(tmp_db_path) as db:
-        cursor = await db.execute("PRAGMA index_list(enrollments)")
-        indexes = await cursor.fetchall()
-        index_names = [row[1] for row in indexes]
-        assert "idx_enrollments_decoy_hash" in index_names
-
-
 # ---------------------------------------------------------------------------
 # WOR-183: Schema migration for rules engine columns
 # ---------------------------------------------------------------------------
@@ -475,6 +386,50 @@ async def test_store_without_prefix_charset_defaults_none(
     assert enc is not None
     assert enc.prefix is None
     assert enc.charset is None
+
+
+# ---------------------------------------------------------------------------
+# list_aliases_with_provider (WOR-207)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_aliases_with_provider_empty(repo: ShardRepository) -> None:
+    """list_aliases_with_provider returns empty list when no shards exist."""
+    result = await repo.list_aliases_with_provider()
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_list_aliases_with_provider_returns_pairs(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """list_aliases_with_provider returns (alias, provider) tuples."""
+    shard_a = stored_shard_from_split(sample_split_result, provider="openai")
+    shard_b = stored_shard_from_split(sample_split_result, provider="anthropic")
+    await repo.store("key-oai", shard_a)
+    await repo.store("key-anth", shard_b)
+
+    result = await repo.list_aliases_with_provider()
+    result_dict = dict(result)
+    assert result_dict["key-oai"] == "openai"
+    assert result_dict["key-anth"] == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_list_aliases_with_provider_after_delete(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """Deleted alias should not appear in list_aliases_with_provider."""
+    shard = stored_shard_from_split(sample_split_result, provider="openai")
+    await repo.store("delete-me", shard)
+    await repo.delete("delete-me")
+
+    result = await repo.list_aliases_with_provider()
+    aliases = [a for a, _ in result]
+    assert "delete-me" not in aliases
 
 
 # ---------------------------------------------------------------------------

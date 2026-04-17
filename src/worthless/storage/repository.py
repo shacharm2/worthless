@@ -222,6 +222,13 @@ class ShardRepository:
             rows = await cursor.fetchall()
             return [r[0] for r in rows]
 
+    async def list_aliases_with_provider(self) -> list[tuple[str, str]]:
+        """Return ``(alias, provider)`` pairs for all enrolled keys."""
+        async with self._connect() as db:
+            cursor = await db.execute("SELECT key_alias, provider FROM shards")
+            rows = await cursor.fetchall()
+            return [(r[0], r[1]) for r in rows if r[0] and r[1]]
+
     # ------------------------------------------------------------------
     # Metadata
     # ------------------------------------------------------------------

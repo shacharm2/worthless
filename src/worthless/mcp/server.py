@@ -116,7 +116,7 @@ async def worthless_scan(
               and live environment variables.
     """
     from worthless.cli.commands.scan import (
-        _build_decoy_checker_async,
+        _build_enrollment_checker_async,
         _collect_deep_paths,
         _collect_fast_paths,
     )
@@ -131,9 +131,9 @@ async def worthless_scan(
         else:
             scan_paths = _collect_fast_paths(explicit)
 
-        is_decoy = await _build_decoy_checker_async()
-        decoy_checker_available = is_decoy is not None
-        findings = scan_files(scan_paths, is_decoy=is_decoy)
+        enrolled = await _build_enrollment_checker_async()
+        enrollment_checker_available = enrolled is not None
+        findings = scan_files(scan_paths, enrolled_locations=enrolled)
 
         items = [
             {
@@ -158,7 +158,7 @@ async def worthless_scan(
                     "protected": protected,
                     "unprotected": unprotected,
                 },
-                "decoy_checker_available": decoy_checker_available,
+                "enrollment_checker_available": enrollment_checker_available,
             }
         )
     finally:
@@ -171,7 +171,7 @@ async def worthless_lock(env_path: str = ".env") -> str:
     """Protect API keys in a .env file.
 
     Splits detected keys into shards, stores them encrypted, and replaces
-    the originals with format-preserving decoys. This is a protective
+    the originals with format-preserving shard-A values. This is a protective
     mutation — it makes your keys MORE secure.
 
     Args:

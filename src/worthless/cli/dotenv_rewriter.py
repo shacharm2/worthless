@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from dotenv import dotenv_values, set_key
+from dotenv import dotenv_values, set_key, unset_key
 
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
+
+if TYPE_CHECKING:
+    from worthless.storage.repository import EnrollmentRecord
 
 
 def shannon_entropy(s: str) -> float:
@@ -21,31 +25,42 @@ def shannon_entropy(s: str) -> float:
     return -sum((count / length) * math.log2(count / length) for count in counts.values())
 
 
+def build_enrolled_locations(
+    enrollments: Iterable[EnrollmentRecord],
+) -> set[tuple[str, str]]:
+    """Build a set of ``(var_name, env_path)`` from enrollment records.
+
+    Entries with ``env_path=None`` (direct enrollments) are excluded.
+    """
+    return {(e.var_name, e.env_path) for e in enrollments if e.env_path}
+
+
 def scan_env_keys(
     env_path: Path,
-    is_decoy: Callable[[str], bool] | None = None,
+    *,
+    enrolled_locations: set[tuple[str, str]] | None = None,
 ) -> list[tuple[str, str, str]]:
     """Find API keys in a ``.env`` file.
 
     Returns a list of ``(var_name, value, provider)`` tuples for lines
-    whose value matches a known provider prefix and is not a known decoy
-    or low-entropy placeholder.
+    whose value matches a known provider prefix and is not a low-entropy
+    placeholder.
 
     Parameters
     ----------
-    is_decoy:
-        Optional predicate that returns True for values that are known
-        decoys (checked via hash registry).  When provided, matching
-        values are skipped before the entropy check.
+    enrolled_locations:
+        Optional set of ``(var_name, env_path)`` tuples that are already
+        enrolled.  Matching entries are skipped.
     """
     results: list[tuple[str, str, str]] = []
     parsed = dotenv_values(env_path)
+    env_str = str(env_path.resolve())
     for var_name, value in parsed.items():
         if value is None:
             continue
         if not KEY_PATTERN.search(value):
             continue
-        if is_decoy and is_decoy(value):
+        if enrolled_locations and (var_name, env_str) in enrolled_locations:
             continue
         if shannon_entropy(value) < ENTROPY_THRESHOLD:
             continue
@@ -53,6 +68,25 @@ def scan_env_keys(
         if provider:
             results.append((var_name, value, provider))
     return results
+
+
+def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
+    """Set *var_name* to *value* in *env_path*, creating or updating.
+
+    If *var_name* already exists, its value is replaced in place.
+    If it does not exist, a new line is appended.
+    """
+    set_key(str(env_path), var_name, value, quote_mode="never")
+
+
+def remove_env_key(env_path: Path, var_name: str) -> None:
+    """Remove *var_name* from *env_path* if it exists.
+
+    Uses python-dotenv's ``unset_key`` which handles quoted values,
+    export prefixes, and multiline entries correctly.
+    Silently no-ops if the variable is not present.
+    """
+    unset_key(str(env_path), var_name)
 
 
 def rewrite_env_key(env_path: Path, var_name: str, new_value: str) -> None:

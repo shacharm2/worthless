@@ -1,4 +1,4 @@
-"""Shared charset definitions for key splitting and decoy generation."""
+"""Shared charset definitions for format-preserving key splitting."""
 
 import string
 

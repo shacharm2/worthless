@@ -61,10 +61,6 @@ class TestDefaults:
         s = ProxySettings()
         assert s.allow_insecure is False
 
-    def test_default_shard_a_dir(self) -> None:
-        s = ProxySettings()
-        assert s.shard_a_dir == str(Path.home() / ".worthless" / "shard_a")
-
 
 # ---------------------------------------------------------------------------
 # Tests: custom values from env
@@ -93,11 +89,6 @@ class TestCustomValues:
         monkeypatch.setenv("WORTHLESS_STREAMING_TIMEOUT", "600.0")
         s = ProxySettings()
         assert s.streaming_timeout == 600.0
-
-    def test_custom_shard_a_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("WORTHLESS_SHARD_A_DIR", "/tmp/shards")  # noqa: S108
-        s = ProxySettings()
-        assert s.shard_a_dir == "/tmp/shards"  # noqa: S108
 
 
 # ---------------------------------------------------------------------------
