@@ -1,12 +1,9 @@
 """OpenClaw integration test — prove shard-A works end-to-end through Docker Compose.
 
-Two-container stack: mock-upstream + worthless-proxy. The proxy reads
-shard-A from disk (written by enroll), reconstructs the real key via XOR,
-and forwards to mock-upstream. Tests verify the real key arrives upstream.
-
-This proves any HTTP client (OpenClaw, Cursor, etc.) that sends requests
-to the proxy will have its key reconstructed correctly — without ever
-needing the real key configured.
+Two-container stack: mock-upstream + worthless-proxy. The client sends
+format-preserving shard-A as a Bearer token to /<alias>/v1/chat/completions.
+The proxy reconstructs the real key and forwards to mock-upstream.
+Tests verify the real key arrives upstream and shard-A never leaks.
 
 Requires Docker daemon running. Skipped when Docker is unavailable.
 
@@ -16,6 +13,7 @@ Run with:
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 import time
@@ -40,7 +38,6 @@ pytestmark = [
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_FILE = REPO_ROOT / "tests" / "openclaw" / "docker-compose.yml"
-ALIAS = "openai-octest1"
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +106,40 @@ def _get_host_port(container: str, internal_port: int) -> int:
     return int(out.rsplit(":", 1)[-1])
 
 
+def _make_alias(provider: str, api_key: str) -> str:
+    """Deterministic alias: provider + first 8 hex chars of sha256(key)."""
+    digest = hashlib.sha256(api_key.encode()).hexdigest()[:8]
+    return f"{provider}-{digest}"
+
+
+def _write_env_to_container(
+    container: str, env_content: str, dest: str = "/tmp/.env"
+) -> subprocess.CompletedProcess[str]:
+    """Write a .env file into a running container."""
+    return subprocess.run(
+        [
+            "docker",
+            "exec",
+            container,
+            "sh",
+            "-c",
+            f"cat > {dest} << 'ENVEOF'\n{env_content}\nENVEOF",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def _read_env_value(container: str, var_name: str, path: str = "/tmp/.env") -> str:
+    """Read a variable value from a .env file inside a container."""
+    result = _docker_exec(
+        container,
+        ["sh", "-c", f"grep '^{var_name}=' {path} | cut -d= -f2-"],
+    )
+    assert result.returncode == 0, f"Failed to read {var_name}: {result.stderr}"
+    return result.stdout.strip()
+
+
 # ---------------------------------------------------------------------------
 # Session-scoped fixture: 2-container stack
 # ---------------------------------------------------------------------------
@@ -118,10 +149,10 @@ def _get_host_port(container: str, internal_port: int) -> int:
 def openclaw_stack():
     """Build and start the mock-upstream + worthless-proxy stack.
 
-    Uses dynamic ports to avoid conflicts. The proxy has alias inference
-    enabled so clients don't need x-worthless-key headers.
+    Uses `lock` to split the key (matching production flow):
+    shard-A ends up in .env, shard-B in the DB.
 
-    Yields (proxy_port, mock_port, fake_key) for test assertions.
+    Yields (proxy_port, mock_port, fake_key, shard_a, alias).
     """
     result = subprocess.run(["docker", "info"], capture_output=True)
     if result.returncode != 0:
@@ -129,6 +160,7 @@ def openclaw_stack():
 
     project = f"openclaw-e2e-{uuid.uuid4().hex[:8]}"
     fake_key = fake_openai_key()
+    alias = _make_alias("openai", fake_key)
 
     try:
         # 1. Build and start the stack
@@ -163,34 +195,24 @@ def openclaw_stack():
         mock_container = f"{project}-mock-upstream-1"
         mock_port = _get_host_port(mock_container, 9999)
 
-        # 4. Enroll the fake key — writes shard-A to disk + shard-B to DB
-        enroll = subprocess.run(
-            [
-                "docker",
-                "exec",
-                "-i",
-                proxy_container,
-                "worthless",
-                "enroll",
-                "--alias",
-                ALIAS,
-                "--key-stdin",
-                "--provider",
-                "openai",
-            ],
-            input=fake_key,
-            capture_output=True,
-            text=True,
-        )
-        assert enroll.returncode == 0, f"Enrollment failed: {enroll.stderr}"
+        # 4. Lock the key — writes shard-A to .env, shard-B to DB
+        env_content = f"OPENAI_API_KEY={fake_key}"
+        _write_env_to_container(proxy_container, env_content)
+        lock = _docker_exec(proxy_container, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock.returncode == 0, f"Lock failed: {lock.stderr}"
 
-        # 5. Clear any captured headers from startup health checks
+        # 5. Read shard-A from .env (lock replaced the real key)
+        shard_a = _read_env_value(proxy_container, "OPENAI_API_KEY")
+        assert shard_a != fake_key, "Lock did not replace the key in .env"
+        assert shard_a.startswith("sk-"), f"Shard-A not format-preserving: {shard_a[:20]}"
+
+        # 6. Clear any captured headers from startup
         httpx.delete(
             f"http://127.0.0.1:{mock_port}/captured-headers",
             timeout=5.0,
         )
 
-        yield proxy_port, mock_port, fake_key
+        yield proxy_port, mock_port, fake_key, shard_a, alias
 
     finally:
         subprocess.run(
@@ -218,14 +240,14 @@ def openclaw_stack():
 class TestOpenClawShardA:
     """Prove the proxy reconstructs the real key and forwards it upstream.
 
-    The proxy reads shard-A from disk (written by enroll), shard-B from
-    the DB, XORs them to reconstruct the original API key, and replaces
-    the Authorization header before sending to mock-upstream.
+    Client sends format-preserving shard-A as Bearer token to
+    /<alias>/v1/chat/completions. Proxy reconstructs via modular
+    arithmetic and forwards the real key to mock-upstream.
     """
 
     def test_shard_a_reconstructs(self, openclaw_stack):
         """POST to proxy, verify mock-upstream receives the REAL key."""
-        proxy_port, mock_port, fake_key = openclaw_stack
+        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
 
         httpx.delete(
             f"http://127.0.0.1:{mock_port}/captured-headers",
@@ -233,15 +255,12 @@ class TestOpenClawShardA:
         )
 
         resp = httpx.post(
-            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
             json={
                 "model": "gpt-4o",
                 "messages": [{"role": "user", "content": "test"}],
             },
-            headers={
-                "x-worthless-key": ALIAS,
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {shard_a}"},
             timeout=30.0,
         )
         assert resp.status_code == 200, f"Proxy returned {resp.status_code}: {resp.text}"
@@ -259,7 +278,7 @@ class TestOpenClawShardA:
 
     def test_streaming(self, openclaw_stack):
         """Streaming request reconstructs the real key too."""
-        proxy_port, mock_port, fake_key = openclaw_stack
+        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
 
         httpx.delete(
             f"http://127.0.0.1:{mock_port}/captured-headers",
@@ -267,16 +286,13 @@ class TestOpenClawShardA:
         )
 
         resp = httpx.post(
-            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
             json={
                 "model": "gpt-4o",
                 "messages": [{"role": "user", "content": "test"}],
                 "stream": True,
             },
-            headers={
-                "x-worthless-key": ALIAS,
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {shard_a}"},
             timeout=30.0,
         )
         assert resp.status_code == 200, f"Proxy returned {resp.status_code}: {resp.text}"
@@ -291,8 +307,8 @@ class TestOpenClawShardA:
         assert f"Bearer {fake_key}" == upstream_auth
 
     def test_shard_a_not_leaked_to_upstream(self, openclaw_stack):
-        """Raw shard-A bytes never appear in upstream Authorization."""
-        proxy_port, mock_port, fake_key = openclaw_stack
+        """Shard-A (format-preserving) never appears in upstream headers."""
+        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
 
         httpx.delete(
             f"http://127.0.0.1:{mock_port}/captured-headers",
@@ -300,15 +316,12 @@ class TestOpenClawShardA:
         )
 
         httpx.post(
-            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
             json={
                 "model": "gpt-4o",
                 "messages": [{"role": "user", "content": "test"}],
             },
-            headers={
-                "x-worthless-key": ALIAS,
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {shard_a}"},
             timeout=30.0,
         )
 
@@ -317,42 +330,7 @@ class TestOpenClawShardA:
             timeout=5.0,
         ).json()
         for entry in captured["headers"]:
-            # The real key must be present, not partial/corrupted
+            assert shard_a not in entry["authorization"], "Shard-A leaked to upstream!"
             assert entry["authorization"] == f"Bearer {fake_key}", (
                 "Unexpected authorization value at upstream"
             )
-
-    def test_alias_inference(self, openclaw_stack):
-        """Proxy reconstructs key via alias inference (no x-worthless-key).
-
-        This simulates what OpenClaw actually does — sends a standard
-        request with no Worthless-specific headers.
-        """
-        proxy_port, mock_port, fake_key = openclaw_stack
-
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
-
-        # No x-worthless-key header — pure alias inference
-        resp = httpx.post(
-            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
-            json={
-                "model": "gpt-4o",
-                "messages": [{"role": "user", "content": "test"}],
-            },
-            headers={"Content-Type": "application/json"},
-            timeout=30.0,
-        )
-        assert resp.status_code == 200, f"Alias inference failed: {resp.status_code}: {resp.text}"
-
-        captured = httpx.get(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        ).json()
-        assert len(captured["headers"]) > 0
-        upstream_auth = captured["headers"][-1]["authorization"]
-        assert f"Bearer {fake_key}" == upstream_auth, (
-            "Alias inference did not produce the correct key"
-        )

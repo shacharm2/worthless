@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # OpenClaw integration test — traced walkthrough.
-# Proves: shard-A in → real key out. Decoy alone → useless.
+# Proves: format-preserving shard-A in → real key out.
 #
 # Usage: ./tests/openclaw/run-test.sh
 set -euo pipefail
@@ -42,54 +42,46 @@ echo ""
 
 # ── 3. Lock ────────────────────────────────────────────────────────
 docker exec "$PROXY" worthless lock --env /tmp/.env >/dev/null 2>&1
-DECOY=$(docker exec "$PROXY" sh -c "grep OPENAI_API_KEY /tmp/.env | cut -d= -f2")
-ALIAS=$(docker exec "$PROXY" ls /data/shard_a/ | head -1)
-echo "3. Run 'worthless lock' — key split, .env rewritten"
-echo "   .env after:  OPENAI_API_KEY=$(redact "$DECOY")"
+SHARD_A=$(docker exec "$PROXY" sh -c "grep '^OPENAI_API_KEY=' /tmp/.env | cut -d= -f2-")
+# Deterministic alias: openai-{sha256(key)[:8]}
+ALIAS=$(cd "$REPO_ROOT" && uv run python3 -c "
+import hashlib
+print(f'openai-{hashlib.sha256(\"$REAL_KEY\".encode()).hexdigest()[:8]}')
+" 2>/dev/null)
+echo "3. Run 'worthless lock' — format-preserving split"
+echo "   .env after:  OPENAI_API_KEY=$(redact "$SHARD_A")"
 echo "   alias:       $ALIAS"
-echo "   shard_a:     $(docker exec "$PROXY" python -c "print(open('/data/shard_a/$ALIAS','rb').read().hex()[:20])")... (raw bytes on disk)"
-echo "   shard_b:     encrypted in SQLite ($(docker exec "$PROXY" python -c "
-import sqlite3
-c=sqlite3.connect('/data/worthless.db')
-r=c.execute('SELECT length(shard_b_enc) FROM shards').fetchone()
-print(r[0])
-") bytes)"
+echo "   shard-A looks like a real key but is cryptographically useless alone"
 echo ""
 
-# ── 4. Proof: decoy and shard-A are both useless alone ─────────────
-echo "4. Stolen key test — can someone use the decoy or shard-A?"
+# ── 4. Proof: shard-A is useless alone ─────────────────────────────
+echo "4. Stolen key test"
 echo ""
-echo "   a) decoy from .env (what an attacker would steal):"
-echo "      $(redact "$DECOY")"
-echo "      This is random noise. Not shard-A, not shard-B, not the real key."
+echo "   a) shard-A from .env (what an attacker would steal):"
+echo "      $(redact "$SHARD_A")"
+echo "      Looks like sk-proj-... but is NOT the real key."
 echo "      Sending to OpenAI directly → 401 (invalid key)"
 echo ""
-SHARD_A_HEX=$(docker exec "$PROXY" python -c "print(open('/data/shard_a/$ALIAS','rb').read().hex())")
-echo "   b) shard-A from disk (if attacker got into the container):"
-echo "      ${SHARD_A_HEX:0:20}... (raw bytes, not even valid UTF-8)"
-echo "      Can't be used as an API key — it's half of an XOR pair."
+echo "   b) shard-B in database:"
+echo "      Fernet-encrypted. Even decrypted, useless without shard-A."
 echo ""
-echo "   c) shard-B from database:"
-echo "      Fernet-encrypted. Needs the encryption key to even read."
-echo "      Even decrypted, it's the other XOR half — also useless alone."
-echo ""
-echo "   Neither half alone can reconstruct sk-proj-..."
+echo "   Neither half alone can reconstruct the real key."
 echo ""
 
 # ── 5. Send request through proxy ─────────────────────────────────
-# clear captures
 cd "$REPO_ROOT" && uv run python3 -c "import httpx; httpx.delete('http://127.0.0.1:$MOCK_PORT/captured-headers',timeout=5)" 2>/dev/null
 
-echo "5. Send request through proxy with alias"
+echo "5. Send request through proxy with shard-A as Bearer token"
 PROXY_STATUS=$(cd "$REPO_ROOT" && uv run python3 -c "
 import httpx
-r = httpx.post('http://127.0.0.1:$PROXY_PORT/v1/chat/completions',
+r = httpx.post('http://127.0.0.1:$PROXY_PORT/$ALIAS/v1/chat/completions',
     json={'model':'gpt-4o','messages':[{'role':'user','content':'Hello, world!'}]},
-    headers={'x-worthless-key':'$ALIAS','Content-Type':'application/json'},
+    headers={'Authorization':'Bearer $SHARD_A'},
     timeout=30.0)
 print(r.status_code)
 " 2>/dev/null)
-echo "   sent x-worthless-key: $ALIAS (no API key in request)"
+echo "   POST /$ALIAS/v1/chat/completions"
+echo "   Authorization: Bearer $(redact "$SHARD_A")"
 echo "   response: $PROXY_STATUS"
 echo ""
 
@@ -105,14 +97,14 @@ echo "6. Upstream (LLM provider) received:"
 echo "   Authorization: Bearer $(redact "$UPSTREAM_KEY")"
 echo ""
 
-# ── 7. Proof ───────────────────────────────────────────────────────
+# ── 7. Verification ───────────────────────────────────────────────
 echo "7. Verification"
 echo "   real key:     $(redact "$REAL_KEY")"
 echo "   upstream got: $(redact "$UPSTREAM_KEY")"
 if [ "$UPSTREAM_KEY" = "$REAL_KEY" ]; then
     echo "   match: YES"
     echo ""
-    echo "   PASS — proxy reconstructed the real key from shards"
+    echo "   PASS — proxy reconstructed the real key from format-preserving shards"
 else
     echo "   match: NO"
     echo ""

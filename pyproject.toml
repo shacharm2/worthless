@@ -178,7 +178,7 @@ ignore = [
 # Docker e2e tests shell out to `docker` CLI extensively — partial path and /tmp are intentional
 "tests/test_docker_e2e.py" = ["S607", "S108"]
 # OpenClaw integration tests shell out to docker CLI
-"tests/test_openclaw_e2e.py" = ["S607"]
+"tests/test_openclaw_e2e.py" = ["S607", "S108"]
 # Deploy static tests use bash -n for entrypoint syntax validation
 "tests/test_deploy_static.py" = ["S607"]
 # Eval scripts shell out to claude CLI

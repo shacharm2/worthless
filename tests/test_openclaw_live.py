@@ -1,7 +1,7 @@
 """Live integration test — prove split/reconstruct works against real OpenAI.
 
-No Docker, no mocks. Splits a real API key, proves the halves are useless
-alone, reconstructs, and gets a real completion from OpenAI.
+No Docker, no mocks. Splits a real API key using format-preserving split,
+proves shard-A is useless alone, reconstructs, and gets a real completion.
 
 Requires OPENAI_API_KEY in environment. Costs ~$0.001 per run.
 
@@ -11,13 +11,13 @@ Run with:
 
 from __future__ import annotations
 
-import base64
 import os
 
 import httpx
 import pytest
 
-from worthless.crypto.splitter import reconstruct_key, split_key
+from worthless.cli.key_patterns import detect_prefix
+from worthless.crypto.splitter import reconstruct_key_fp, split_key_fp
 
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY", "")
 
@@ -52,33 +52,33 @@ def _post(url: str, key: str) -> httpx.Response:
 
 
 class TestLiveReconstruction:
-    """Prove split/reconstruct against real OpenAI API."""
+    """Prove format-preserving split/reconstruct against real OpenAI API."""
 
     def test_live_full_flow(self):
-        """The money test: split → halves fail → reconstruct → success."""
+        """The money test: split → shard-A fails → reconstruct → success."""
         print()
 
-        # 1. Split
-        sr = split_key(OPENAI_KEY.encode())
-        shard_a_b64 = base64.b64encode(bytes(sr.shard_a)).decode()
+        # 1. Format-preserving split
+        prefix = detect_prefix(OPENAI_KEY, "openai")
+        sr = split_key_fp(OPENAI_KEY, prefix, "openai")
+        shard_a = sr.shard_a.decode("utf-8")
         print(f"1. Real key: {_redact(OPENAI_KEY)}")
-        print("   Split into shard_a + shard_b")
-        print(f"   shard_a: {sr.shard_a.hex()[:20]}... (random bytes)")
-        print(f"   shard_b: {sr.shard_b.hex()[:20]}... (random bytes)")
+        print("   Format-preserving split into shard_a + shard_b")
+        print(f"   shard_a: {_redact(shard_a)} (looks like a real key!)")
+        print(f"   shard_b: {sr.shard_b[:20]}... (charset body)")
         print()
 
-        # 2. Try shard-A as bearer token → 401
+        # 2. Try shard-A against OpenAI → 401
         print("2. Try shard-A as API key against OpenAI:")
-        print(f"   Authorization: Bearer {shard_a_b64[:16]}...")
-        resp_shard = _post(OPENAI_URL, shard_a_b64)
+        print(f"   Authorization: Bearer {_redact(shard_a)}")
+        resp_shard = _post(OPENAI_URL, shard_a)
         print(f"   Response: {resp_shard.status_code}")
         assert resp_shard.status_code == 401, f"Expected 401, got {resp_shard.status_code}"
-        print("   shard-A alone is useless")
+        print("   shard-A alone is useless (despite looking real)")
         print()
 
         # 3. Try a random decoy → 401
-        decoy = base64.b64encode(os.urandom(32)).decode()
-        fake_decoy = f"sk-proj-{decoy[:48]}"
+        fake_decoy = f"sk-proj-{'x' * 40}"
         print("3. Try decoy key against OpenAI:")
         print(f"   Authorization: Bearer {_redact(fake_decoy)}")
         resp_decoy = _post(OPENAI_URL, fake_decoy)
@@ -88,14 +88,16 @@ class TestLiveReconstruction:
         print()
 
         # 4. Reconstruct and call OpenAI → 200
-        key_buf = reconstruct_key(
+        key_buf = reconstruct_key_fp(
             sr.shard_a,
             sr.shard_b,
             sr.commitment,
             sr.nonce,
+            sr.prefix,
+            sr.charset,
         )
         reconstructed = key_buf.decode()
-        print("4. Reconstruct: shard_a XOR shard_b")
+        print("4. Reconstruct: shard_a + shard_b (modular arithmetic)")
         print(f"   Reconstructed: {_redact(reconstructed)}")
         assert reconstructed == OPENAI_KEY, "Reconstruction mismatch"
 
@@ -119,8 +121,8 @@ class TestLiveReconstruction:
 
         print("5. Key material zeroed from memory")
         print()
-        print("   shard-A alone?  401")
+        print("   shard-A alone?  401 (format-preserving but not the real key)")
         print("   decoy alone?    401")
-        print(f'   reconstructed?  200 — "{content.strip()}"')
+        print(f'   reconstructed?  {resp_real.status_code} — "{content.strip()}"')
         print()
         print("   PASS")
