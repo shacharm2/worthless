@@ -188,8 +188,10 @@ class TestScan:
         self, cli_env: dict[str, str], env_file: Path
     ) -> None:
         """Scan after lock+unlock exits 1 again (key restored, unprotected)."""
-        runner.invoke(app, ["lock", "--env", str(env_file)], env=cli_env)
-        runner.invoke(app, ["unlock", "--env", str(env_file)], env=cli_env)
+        r = runner.invoke(app, ["lock", "--env", str(env_file)], env=cli_env)
+        assert r.exit_code == 0, f"setup lock failed: {r.output}"
+        r = runner.invoke(app, ["unlock", "--env", str(env_file)], env=cli_env)
+        assert r.exit_code == 0, f"setup unlock failed: {r.output}"
 
         result = runner.invoke(
             app,
@@ -215,7 +217,8 @@ class TestStatus:
         self, cli_env: dict[str, str], env_file: Path
     ) -> None:
         """After lock, status --json lists the enrolled key."""
-        runner.invoke(app, ["lock", "--env", str(env_file)], env=cli_env)
+        r = runner.invoke(app, ["lock", "--env", str(env_file)], env=cli_env)
+        assert r.exit_code == 0, f"setup lock failed: {r.output}"
 
         result = runner.invoke(app, ["--json", "status"], env=cli_env)
         assert result.exit_code == 0
@@ -234,8 +237,10 @@ class TestStatus:
 
     def test_status_json_empty_after_unlock(self, cli_env: dict[str, str], env_file: Path) -> None:
         """After lock+unlock, status --json shows no enrolled keys."""
-        runner.invoke(app, ["lock", "--env", str(env_file)], env=cli_env)
-        runner.invoke(app, ["unlock", "--env", str(env_file)], env=cli_env)
+        r = runner.invoke(app, ["lock", "--env", str(env_file)], env=cli_env)
+        assert r.exit_code == 0, f"setup lock failed: {r.output}"
+        r = runner.invoke(app, ["unlock", "--env", str(env_file)], env=cli_env)
+        assert r.exit_code == 0, f"setup unlock failed: {r.output}"
 
         result = runner.invoke(app, ["--json", "status"], env=cli_env)
         assert result.exit_code == 0
