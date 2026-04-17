@@ -830,13 +830,8 @@
       </p>
 
       <!-- Waitlist -->
-      <form id="waitlist-form" class="waitlist-form" onsubmit="return handleWaitlist(event)">
-        <input type="email" id="waitlist-email" placeholder="you@company.com" required autocomplete="email" />
-        <button type="submit">Get early access</button>
-      </form>
-      <p id="waitlist-success" class="waitlist-success" style="display:none;">
-        You're on the list. <a href="https://github.com/shacharm2/worthless">Star us on GitHub</a>
-      </p>
+      <iframe data-tally-src="https://tally.so/embed/WOpNVL?alignLeft=1&hideTitle=1&transparentBackground=1&dynamicHeight=1" loading="lazy" width="100%" height="150" frameborder="0" marginheight="0" marginwidth="0" title="Get early access to Worthless"></iframe>
+      <script>var d=document,w="https://tally.so/widgets/embed.js",v=function(){"undefined"!=typeof Tally?Tally.loadEmbeds():d.querySelectorAll("iframe[data-tally-src]:not([src])").forEach((function(e){e.src=e.dataset.tallySrc}))};if("undefined"!=typeof Tally)v();else if(d.querySelector('script[src="'+w+'"]')==null){var s=d.createElement("script");s.src=w,s.onload=v,s.onerror=v,d.body.appendChild(s)}</script>
 
       <div class="hero-install">
         <button class="install-cmd"
@@ -1080,16 +1075,6 @@
       }
     }, 4500);
 
-    // Waitlist
-    function handleWaitlist(e) {
-      e.preventDefault();
-      var email = document.getElementById('waitlist-email').value;
-      // TODO: POST to https://worthless.sh/waitlist (WOR-210)
-      // For now, just show success
-      document.getElementById('waitlist-form').style.display = 'none';
-      document.getElementById('waitlist-success').style.display = 'block';
-      return false;
-    }
   </script>
   <!-- JSON-LD Structured Data -->
   <script type="application/ld+json">
