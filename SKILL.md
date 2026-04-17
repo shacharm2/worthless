@@ -453,10 +453,10 @@ The proxy forwards requests and responses transparently. It does NOT log, store,
 - An attacker with access to both your machine AND the server (they get both shards)
 - An attacker who can read your `.env` AND intercept the proxy's database (same as above)
 - Provider-side breaches (worthless protects the key in transit, not at the provider)
-- Keys used outside of worthless (if you also paste the key into a script, that copy is not protected)
+- Keys used outside worthless (if you also paste the key into a script, that copy is not protected)
 
 **What about `.env` file permissions?**
-`worthless lock` automatically tightens `.env` permissions to `0600` (owner read/write only) after writing shard-A. If your `.env` was world-readable before, lock fixes that.
+`worthless lock` removes group and other permissions from `.env` after writing shard-A (owner-only access). If your `.env` was world-readable before, lock fixes that.
 
 ## Security Notes
 
