@@ -108,7 +108,7 @@ uv run pytest
 
 ## Learn more
 
-- [How it works](docs/ARCHITECTURE.md) -- technical deep dive
+- [Security model](docs/security-model.md) -- how the split-key proxy works
 - [Security rules](SECURITY_RULES.md) -- invariants all contributions must preserve
 - [SKILL.md](SKILL.md) -- agent discovery file
 
