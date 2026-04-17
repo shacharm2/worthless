@@ -12,16 +12,16 @@ Shard A is delivered to the proxy using standard provider authentication headers
 | OpenAI | `Authorization: Bearer <shard-A>` | Shard A for key reconstruction |
 | Anthropic | `x-api-key: <shard-A>` | Shard A for key reconstruction |
 
-The alias is derived from the URL path (e.g., `/v1/chat/completions` routes to OpenAI). No custom Worthless-specific headers are required.
+The alias is embedded in the URL path: `/<alias>/v1/chat/completions`. The proxy extracts the alias from the first path segment and uses it to look up the corresponding shard-B. No custom Worthless-specific headers are required.
 
 ## Endpoints
 
 | Path | Method | Provider | Status |
 |------|--------|----------|--------|
-| `/v1/chat/completions` | POST | OpenAI | Streaming + non-streaming |
-| `/v1/messages` | POST | Anthropic | Streaming + non-streaming |
+| `/<alias>/v1/chat/completions` | POST | OpenAI | Streaming + non-streaming |
+| `/<alias>/v1/messages` | POST | Anthropic | Streaming + non-streaming |
 | `/healthz` | GET | -- | Liveness probe |
-| `/readyz` | GET | -- | Readiness probe (DB connected, keys enrolled) |
+| `/readyz` | GET | -- | DB connectivity check |
 
 All other paths return `401` (anti-enumeration: unknown endpoints do not return `404`).
 

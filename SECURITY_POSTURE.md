@@ -322,9 +322,9 @@ Worthless does **not** protect against:
 
 **Rust mitigation:** Reconstruction runs in a separate distroless container with its own memory space. Communication via Unix domain socket or gRPC. `seccomp` restricts the reconstruction process to network + memory syscalls only. The proxy process never has access to the reconstruction service's memory.
 
-### Key Lifecycle: No Bulk Rotation
+### Key Lifecycle: Per-Key Revocation
 
-**What it means:** There is no `worthless revoke` command and no bulk rotation mechanism in V1. If a breach is detected, each affected key must be manually re-enrolled via `worthless enroll`.
+**What it means:** `worthless revoke --alias <alias>` deletes a single key's shards and enrollment. There is no bulk rotation mechanism in V1 — each affected key must be revoked and re-enrolled individually.
 
 **Attacker prerequisites:** N/A — this is an operational limitation, not an exploitable vulnerability.
 

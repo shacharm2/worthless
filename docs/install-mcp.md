@@ -3,9 +3,10 @@
 Run the Worthless proxy locally, then point your editor's SDK at it.
 
 > [!NOTE]
-> Worthless is an HTTP proxy, not an MCP server. Your editor talks to AI
-> providers through it via `BASE_URL` — no MCP registration needed.
-> MCP server integration is planned for a future release.
+> Worthless includes both an HTTP proxy and an MCP server. Your editor
+> talks to AI providers through the proxy via `BASE_URL`. The MCP server
+> (`worthless mcp`) exposes lock, scan, status, and spend tools for
+> agent-driven workflows (Claude Code, Cursor, Windsurf).
 
 ## Prerequisites
 
