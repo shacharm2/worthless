@@ -1324,6 +1324,43 @@ class TestBearerTokenEdgeCases:
         )
         assert resp.status_code == 401
 
+    @respx.mock
+    async def test_x_api_key_header_accepted(self, proxy_client: httpx.AsyncClient, enrolled_alias):
+        """Anthropic x-api-key header should be accepted as shard-A source."""
+        alias, shard_a_utf8, _ = enrolled_alias
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": [], "usage": {"total_tokens": 1}}),
+        )
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "x-api-key": shard_a_utf8,
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code != 401
+
+    @respx.mock
+    async def test_bearer_takes_precedence_over_x_api_key(
+        self, proxy_client: httpx.AsyncClient, enrolled_alias
+    ):
+        """When both Authorization: Bearer and x-api-key are present, Bearer wins."""
+        alias, shard_a_utf8, _ = enrolled_alias
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={"choices": [], "usage": {"total_tokens": 1}}),
+        )
+        resp = await proxy_client.post(
+            f"/{alias}/v1/chat/completions",
+            headers={
+                "authorization": f"Bearer {shard_a_utf8}",
+                "x-api-key": "wrong-shard-a-value",
+                "content-type": "application/json",
+            },
+            content=b'{"model": "gpt-4", "messages": []}',
+        )
+        assert resp.status_code != 401
+
 
 # ==================================================================
 # SR-09 enforcement: ProxySettings structural guard

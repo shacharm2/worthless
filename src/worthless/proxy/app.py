@@ -71,6 +71,25 @@ def _uniform_401() -> Response:
     )
 
 
+def _extract_shard_a(request: Request) -> bytearray | None:
+    """Extract shard-A from the request's auth header.
+
+    Supports both OpenAI (``Authorization: Bearer``) and Anthropic
+    (``x-api-key``) conventions.  Returns ``None`` if neither is present.
+    """
+    auth = request.headers.get("authorization")
+    if auth and auth.lower().startswith("bearer "):
+        token = auth[7:]
+        if token:
+            return bytearray(token, "utf-8")
+
+    api_key = request.headers.get("x-api-key")
+    if api_key:
+        return bytearray(api_key, "utf-8")
+
+    return None
+
+
 def _extract_alias_and_path(raw_path: str) -> tuple[str, str] | None:
     """Extract alias prefix and API path from ``/<alias>/v1/chat/completions``.
 
@@ -244,14 +263,10 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         if encrypted is None:
             return _uniform_401()
 
-        # SR-09: shard-A from Authorization header only
-        auth_header = request.headers.get("authorization")
-        shard_a: bytearray | None = None
-        if auth_header and auth_header.lower().startswith("bearer "):
-            token = auth_header[7:]
-            if token:
-                shard_a = bytearray(token, "utf-8")
-
+        # SR-09: shard-A from request header only (no disk, no files)
+        # OpenAI: Authorization: Bearer <shard-A>
+        # Anthropic: x-api-key: <shard-A>
+        shard_a = _extract_shard_a(request)
         if shard_a is None:
             return _uniform_401()
 

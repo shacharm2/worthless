@@ -207,7 +207,6 @@ class TestOpenAILive:
 
 @pytest.mark.live
 @pytest.mark.timeout(120)
-@pytest.mark.skip(reason="Anthropic uses x-api-key, not Authorization: Bearer")
 class TestAnthropicLive:
     """Lock a real Anthropic key, send a request through the proxy, verify response."""
 
