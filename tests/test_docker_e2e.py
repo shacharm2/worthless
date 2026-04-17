@@ -657,6 +657,7 @@ class TestLockWrapE2E:
         if ls_result.returncode == 0:
             shard_files = ls_result.stdout.strip()
             assert not shard_files, f"Unexpected shard_a files after lock: {shard_files}"
+        # If dir doesn't exist at all, that's also correct (SR-09)
 
         # Assert: DB has enrollment record
         db_check = _docker_exec(

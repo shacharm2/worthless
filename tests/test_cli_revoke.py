@@ -7,6 +7,7 @@ import os
 from unittest.mock import patch
 
 import aiosqlite
+import pytest
 from click.testing import Result
 from typer.testing import CliRunner
 
@@ -121,12 +122,29 @@ class TestShardAZeroedBeforeDeletion:
         )
         assert not shard_a.exists()
 
-    def test_no_file_no_zeroing(self, home_with_key: WorthlessHome) -> None:
-        """When no shard_a file exists (SR-09 default), revoke skips zeroing."""
+    def test_no_file_no_zeroing(
+        self, home_with_key: WorthlessHome, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When no shard_a file exists (SR-09 default), revoke succeeds without zeroing."""
+        import os as _os
+
         shard_a = home_with_key.shard_a_dir / "openai-a1b2c3d4"
         assert not shard_a.exists()
+
+        writes: list[bytes] = []
+        _real_write = _os.write
+
+        def _spy_write(fd, data):
+            writes.append(bytes(data))
+            return _real_write(fd, data)
+
+        monkeypatch.setattr(_os, "write", _spy_write)
+
         result = _invoke_revoke("openai-a1b2c3d4", home_with_key)
         assert result.exit_code == 0
+        # No zero-fill writes should have occurred (no file to zero)
+        zero_writes = [d for d in writes if all(b == 0 for b in d) and len(d) > 0]
+        assert zero_writes == [], "Zeroing should not occur when no shard_a file exists"
 
 
 class TestRevokeCleanupSpendLog:

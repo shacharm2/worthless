@@ -1339,7 +1339,7 @@ class TestBearerTokenEdgeCases:
             },
             content=b'{"model": "gpt-4", "messages": []}',
         )
-        assert resp.status_code != 401
+        assert resp.status_code == 200, f"x-api-key should be accepted, got {resp.status_code}"
 
     @respx.mock
     async def test_bearer_takes_precedence_over_x_api_key(
@@ -1359,7 +1359,7 @@ class TestBearerTokenEdgeCases:
             },
             content=b'{"model": "gpt-4", "messages": []}',
         )
-        assert resp.status_code != 401
+        assert resp.status_code == 200, f"Bearer should take precedence, got {resp.status_code}"
 
 
 # ==================================================================
