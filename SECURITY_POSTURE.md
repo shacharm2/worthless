@@ -42,8 +42,7 @@ Three architectural invariants protect this claim. All three are **Enforced** (C
 
 | Term | Definition |
 |------|-----------|
-| **Shard A** | Client-held half of the split key. Format-preserving: same prefix, charset, and length as the original key (SR-12). Lives in the developer's `.env` file. Sent to the proxy per-request via `Authorization: Bearer` (OpenAI) or `x-api-key` (Anthropic). Never stored server-side. |
-| **Shard A (in .env)** | Format-preserving split output written to `.env` after enrollment, replacing the original API key. Shard A preserves the prefix, charset, and length of the original key (SR-12), so tools expecting an `*_API_KEY` variable continue to work. Shard A is one half of the XOR split — it is cryptographically bound to the original key but reveals nothing without Shard B. The SDK sends it as `Authorization: Bearer <shard-A>` (OpenAI) or `x-api-key: <shard-A>` (Anthropic) to the proxy. |
+| **Shard A** | Client-held half of the split key. Written to `.env` after enrollment, replacing the original API key. Format-preserving (SR-12): same prefix, charset, and length as the original, so tools expecting `*_API_KEY` continue to work. Cryptographically bound to the original key but reveals nothing without Shard B. Sent to the proxy per-request via `Authorization: Bearer` (OpenAI) or `x-api-key` (Anthropic). Never stored server-side. |
 | **Shard B** | Server-held half of the split key (the random XOR mask). Encrypted at rest with Fernet. Combined with Shard A only during reconstruction. |
 | **Commitment** | HMAC-SHA256 digest binding the original key to both shards. Used to detect tampering during reconstruction. |
 | **Nonce** | Random 32-byte value used as the HMAC key for the commitment. Generated via `secrets.token_bytes` (CSPRNG). |

@@ -96,12 +96,12 @@ Reverses the `lock` operation. Reads shard-A from `.env`, fetches encrypted Shar
 **Behavior:**
 - If multiple `.env` files have the same key enrolled, prompts for disambiguation
 - Zeros key material from memory after restoration
-- Removes shard files and DB records
+- Removes DB records and enrollment data
 
 **Use case:** Temporary switch between `wrap`-mode and native SDK mode, or complete teardown.
 
 #### `worthless scan [OPTIONS] [PATHS]`
-**Detect exposed API keys with shard-A awareness.**
+**Detect exposed API keys in files and environment.**
 
 Scans files for high-entropy strings that match known API key patterns. Ignores shard-A values that were created by Worthless (checks Shannon entropy + format coherence).
 
