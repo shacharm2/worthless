@@ -521,6 +521,51 @@ class TestLockErrorBranches:
         assert result.exit_code == 1
 
 
+class TestLockBaseUrlFailureRestoresEnv:
+    """CR-1: If BASE_URL write fails after key rewrite, original key must be restored."""
+
+    def test_base_url_failure_restores_original_key(
+        self, home_dir: WorthlessHome, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OSError on add_or_rewrite_env_key -> .env restored to original key."""
+        original_content = env_file.read_text()
+        original_key = original_content.strip().split("=", 1)[1]
+
+        _call_count = 0
+
+        def _boom_on_base_url(*args, **kwargs):
+            nonlocal _call_count
+            _call_count += 1
+            # Let rewrite_env_key succeed (key replacement), but fail on
+            # add_or_rewrite_env_key (BASE_URL write)
+            raise OSError("disk full on BASE_URL write")
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.lock.add_or_rewrite_env_key",
+            _boom_on_base_url,
+        )
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 1
+
+        # The original key MUST be restored — not left as shard-A with no DB
+        from dotenv import dotenv_values
+
+        parsed = dotenv_values(env_file)
+        assert parsed["OPENAI_API_KEY"] == original_key, (
+            "Original key not restored after BASE_URL write failure"
+        )
+
+        # DB should be clean
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert aliases == [], "DB shard not cleaned up after failure"
+
+
 class TestProxyBaseUrl:
     """Unit tests for _proxy_base_url helper."""
 

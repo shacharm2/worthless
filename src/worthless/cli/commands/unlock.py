@@ -200,8 +200,10 @@ def register_unlock_commands(app: typer.Typer) -> None:
                 await _unlock_alias(alias, home, repo, env)
                 console.print_success(f"Unlocked {alias}.")
             else:
-                # List aliases from DB, not disk
-                aliases = await repo.list_keys()
+                # Scope to aliases enrolled in this specific .env
+                env_str = str(env.resolve())
+                all_enrollments = await repo.list_enrollments()
+                aliases = sorted({e.key_alias for e in all_enrollments if e.env_path == env_str})
                 if not aliases:
                     console.print_warning("No enrolled keys found.")
                     return
