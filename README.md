@@ -52,7 +52,7 @@ pip install worthless        # in a virtualenv
 
 1. `worthless lock` splits each API key into two shards using XOR
 2. Shard A stays on your machine (encrypted). Shard B goes to the proxy database.
-3. Your `.env` is rewritten with a decoy key that looks real but isn't
+3. Your `.env` is rewritten with shard-A (format-preserving — looks like a real key but is cryptographically useless alone)
 4. The proxy reconstructs the key only when the rules engine approves the request
 5. Spend cap blown? The key never forms. The request never reaches the provider.
 

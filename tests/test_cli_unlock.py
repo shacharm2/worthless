@@ -115,14 +115,12 @@ class TestUnlockCommand:
         )
         assert result.exit_code == 1
 
-    def test_unlock_no_env_prints_error(
+    def test_unlock_missing_env_reports_no_keys(
         self, home_dir: WorthlessHome, env_file: Path, tmp_path: Path
     ) -> None:
-        """Unlock when .env is missing should report error (shard-A is in .env)."""
+        """Unlock with missing .env finds no enrolled keys for that path."""
         _lock(env_file, home_dir)
 
-        # Delete the .env to simulate recovery scenario
-        env_file.unlink()
         missing_env = tmp_path / "does-not-exist.env"
 
         result = runner.invoke(
@@ -130,9 +128,9 @@ class TestUnlockCommand:
             ["unlock", "--env", str(missing_env)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
-        # With format-preserving split, shard-A is in .env,
-        # so missing .env means we can't reconstruct
-        assert result.exit_code == 1
+        # No enrollments match the missing .env path → "no enrolled keys"
+        assert result.exit_code == 0
+        assert "no enrolled" in result.output.lower()
 
     def test_shards_cleaned_up_after_unlock(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """After unlock, DB entries should be removed."""
@@ -385,6 +383,44 @@ class TestUnlockNoAliases:
         )
         assert result.exit_code == 0
         assert "no enrolled" in result.output.lower()
+
+
+class TestUnlockScopedToEnv:
+    """CR-2: unlock without --alias should only unlock keys enrolled in the target .env."""
+
+    def test_unlock_only_restores_keys_in_target_env(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Lock keys in two different .env files. Unlock one. Other stays locked."""
+        env_a = tmp_path / "a.env"
+        env_b = tmp_path / "b.env"
+        env_a.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+        env_b.write_text(f"ANTHROPIC_API_KEY={_TEST_KEY_2}\n")
+
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+
+        # Lock both
+        r1 = runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars)
+        assert r1.exit_code == 0
+        r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
+        assert r2.exit_code == 0
+
+        # Unlock only env_a (no --alias, should scope to env_a)
+        r3 = runner.invoke(app, ["unlock", "--env", str(env_a)], env=env_vars)
+        assert r3.exit_code == 0
+
+        # env_a should have original key restored
+        assert _TEST_KEY in env_a.read_text()
+
+        # env_b should still be locked (NOT restored)
+        assert _TEST_KEY_2 not in env_b.read_text(), (
+            "unlock --env a.env should NOT have touched b.env"
+        )
+
+        # DB should still have the anthropic key enrolled
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert len(aliases) == 1, f"Expected 1 remaining key, got {aliases}"
 
 
 # ------------------------------------------------------------------

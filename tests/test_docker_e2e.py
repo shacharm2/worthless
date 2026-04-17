@@ -619,17 +619,17 @@ class TestLockWrapE2E:
     """
 
     def test_lock_enrolls_key_in_container(self, container: tuple[str, int]) -> None:
-        """Lock rewrites .env, creates shard_a, and stores enrollment in DB.
+        """Lock rewrites .env with shard-A and stores enrollment in DB.
 
         What it tests: The ``worthless lock`` command inside the container
-        successfully splits an API key, stores both shards, and replaces
-        the original key in .env with a decoy.
+        successfully splits an API key, stores shard-B in DB, and replaces
+        the original key in .env with format-preserving shard-A.
 
         Why it matters: This is the first step of the user journey. If lock
         fails inside Docker, the entire product is broken.
 
-        Failure looks like: .env still contains the original key, or shard_a
-        directory is empty, or DB has no enrollment record.
+        Failure looks like: .env still contains the original key, or DB has
+        no enrollment record.
         """
         name, _port = container
         fake_key = _fake_openai_key()
@@ -652,11 +652,12 @@ class TestLockWrapE2E:
             "Original API key still present in .env after lock -- decoy replacement failed"
         )
 
-        # Assert: shard_a file(s) created
+        # Assert: no shard_a files on disk (SR-09: shard-A goes to .env only)
         ls_result = _docker_exec(name, ["ls", "/data/shard_a/"])
-        assert ls_result.returncode == 0, f"shard_a dir missing: {ls_result.stderr}"
-        shard_files = ls_result.stdout.strip()
-        assert shard_files, "No shard_a files created after lock"
+        if ls_result.returncode == 0:
+            shard_files = ls_result.stdout.strip()
+            assert not shard_files, f"Unexpected shard_a files after lock: {shard_files}"
+        # If dir doesn't exist at all, that's also correct (SR-09)
 
         # Assert: DB has enrollment record
         db_check = _docker_exec(
@@ -745,12 +746,11 @@ class TestLockWrapE2E:
                 "sh",
                 "-c",
                 (
-                    # Extract port from OPENAI_BASE_URL using Python (grep -oP
-                    # requires PCRE which is not in slim images)
+                    # Extract port from OPENAI_BASE_URL (http://host:PORT/alias/v1)
                     'PORT=$(python -c "'
-                    "import os; "
+                    "from urllib.parse import urlparse; import os; "
                     "url = os.environ.get('OPENAI_BASE_URL', ''); "
-                    "print(url.rsplit(':', 1)[-1].strip('/'))"
+                    "print(urlparse(url).port or 8787)"
                     '"); '
                     # Retry healthz a few times (proxy may still be settling)
                     "for i in 1 2 3 4 5; do "
@@ -803,11 +803,12 @@ class TestLockWrapE2E:
                 (
                     "import os, urllib.request, urllib.error, json\n"
                     "base = os.environ['OPENAI_BASE_URL']\n"
-                    "url = f'{base}/v1/chat/completions'\n"
+                    "key = os.environ.get('OPENAI_API_KEY', 'fake')\n"
+                    "url = f'{base}/chat/completions'\n"
                     "msg = [{'role': 'user', 'content': 'hi'}]\n"
                     "data = json.dumps({'model': 'gpt-4', 'messages': msg}).encode()\n"
                     "hdrs = {'Content-Type': 'application/json', "
-                    "'Authorization': 'Bearer fake'}\n"
+                    "'Authorization': f'Bearer {key}'}\n"
                     "req = urllib.request.Request(url, data=data, headers=hdrs)\n"
                     "try:\n"
                     "    urllib.request.urlopen(req)\n"

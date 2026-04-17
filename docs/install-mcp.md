@@ -64,7 +64,7 @@ OPENAI_BASE_URL=http://localhost:8787
 
 ## How it works
 
-1. `worthless lock` splits your API key and replaces `.env` with a decoy
+1. `worthless lock` splits your API key and replaces `.env` with shard-A (format-preserving, looks like a real key)
 2. `worthless up` (or `wrap`) starts a local HTTP proxy on port 8787
 3. Your editor's SDK calls hit `localhost:8787` instead of the provider directly
 4. The proxy reconstructs the real key in memory, makes the upstream call, and zeros the key

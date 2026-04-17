@@ -127,6 +127,7 @@ def _lock_keys(
 
             sr = split_key_fp(value, prefix, provider)
             db_written = False
+            env_rewritten = False
             try:
                 stored = StoredShard(
                     shard_b=sr.shard_b,
@@ -149,6 +150,7 @@ def _lock_keys(
                 # Rewrite .env: API_KEY = shard-A (format-preserving)
                 shard_a_str = sr.shard_a.decode("utf-8")
                 rewrite_env_key(env_path, var_name, shard_a_str)
+                env_rewritten = True
 
                 # Write BASE_URL unless --keys-only
                 if not keys_only:
@@ -159,6 +161,12 @@ def _lock_keys(
 
                 count += 1
             except Exception as exc:
+                # Restore .env to original value if we rewrote it
+                if env_rewritten:
+                    try:
+                        rewrite_env_key(env_path, var_name, value)
+                    except Exception:
+                        logger.debug("Failed to restore .env for %s", var_name, exc_info=True)
                 if db_written:
                     await repo.delete_enrollment(alias, env_str)
                     remaining = await repo.list_enrollments(alias)
