@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Worthless — Make Leaked API Keys Worthless</title>
+  <meta name="description" content="Worthless splits your API keys so a leaked key is cryptographically useless. Zero code changes. Self-hosted. Open source." />
+  <link rel="canonical" href="https://worthless.cloud/" />
+  <meta name="theme-color" content="#4a6fa5" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Worthless — Make Leaked API Keys Worthless" />
+  <meta property="og:description" content="Worthless splits your API keys so a leaked key is cryptographically useless. Zero code changes. Self-hosted. Open source." />
+  <meta property="og:image" content="https://worthless.cloud/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:url" content="https://worthless.cloud/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Worthless" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Worthless — Make Leaked API Keys Worthless" />
+  <meta name="twitter:description" content="Worthless splits your API keys so a leaked key is cryptographically useless. Zero code changes. Self-hosted. Open source." />
+  <meta name="twitter:image" content="https://worthless.cloud/og-image.png" />
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="manifest" href="site.webmanifest" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #eef6ff;
+      --surface: #ffffff;
+      --border: #dde5f0;
+      --text: #2c3a4a;
+      --text2: #6c7e95;
+      --slate: #4a6fa5;
+      --slate-dim: #3a5a8a;
+      --teal: #0a9396;
+      --radius: 10px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: linear-gradient(to bottom, #daeeff 0%, #eef6ff 20%, #ffffff 45%, #ffffff 55%, #eef6ff 75%, #daeeff 100%);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    .container {
+      max-width: 560px;
+      width: 100%;
+      text-align: left;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .logo {
+      width: 64px;
+      height: 64px;
+      border-radius: 14px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+
+    .logo img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 5vw, 3rem);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1.1;
+      margin-bottom: 0.5rem;
+    }
+
+    .tagline {
+      font-size: 1.1rem;
+      color: var(--teal);
+      margin-bottom: 2.5rem;
+    }
+
+    .what {
+      text-align: left;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.75rem 2rem;
+      margin-bottom: 2.5rem;
+    }
+
+    .what-label {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--teal);
+      margin-bottom: 0.75rem;
+    }
+
+    .what p {
+      font-size: 1rem;
+      color: var(--text2);
+      line-height: 1.8;
+    }
+
+    .waitlist-form {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .waitlist-form input {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-family: 'Inter', sans-serif;
+      font-size: 0.95rem;
+      color: var(--text);
+      background: var(--surface);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .waitlist-form input:focus {
+      border-color: var(--slate);
+    }
+
+    .waitlist-form input::placeholder {
+      color: var(--text2);
+    }
+
+    .waitlist-form button {
+      padding: 0.75rem 1.5rem;
+      border: none;
+      border-radius: var(--radius);
+      background: var(--slate);
+      color: white;
+      font-family: 'Inter', sans-serif;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+
+    .waitlist-form button:hover {
+      background: var(--slate-dim);
+    }
+
+    .waitlist-success {
+      font-size: 0.95rem;
+      color: var(--teal);
+      margin-bottom: 1rem;
+    }
+
+    .waitlist-success a {
+      color: var(--slate);
+      font-weight: 600;
+    }
+
+    .coming-soon {
+      font-size: 0.8rem;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-weight: 600;
+      margin-bottom: 2rem;
+    }
+
+    .links {
+      display: flex;
+      gap: 1.5rem;
+      justify-content: center;
+      font-size: 0.85rem;
+    }
+
+    .links a {
+      color: var(--text2);
+      text-decoration: none;
+      transition: color 0.2s;
+    }
+
+    .links a:hover {
+      color: var(--text);
+    }
+
+    @media (max-width: 520px) {
+      .waitlist-form {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="brand">
+      <div class="logo">
+        <img src="logo-transparent.png" alt="Worthless logo" />
+      </div>
+      <h1>Worthless</h1>
+    </div>
+    <p class="tagline">Your API key gets leaked. Or stolen. Doesn't matter. It won't work. It's Worthless.</p>
+
+    <form id="waitlist-form" class="waitlist-form" onsubmit="return handleWaitlist(event)">
+      <input type="email" id="waitlist-email" placeholder="you@company.com" required autocomplete="email" />
+      <button type="submit">Get early access</button>
+    </form>
+    <p id="waitlist-success" class="waitlist-success" style="display:none;">
+      You're on the list. <a href="https://github.com/shacharm2/worthless">Star us on GitHub</a>
+    </p>
+
+    <a href="memes.html" class="coming-soon" style="text-decoration: none; display: block;">Leaking soon</a>
+
+  </div>
+
+
+
+  <script>
+    function handleWaitlist(e) {
+      e.preventDefault();
+      var email = document.getElementById('waitlist-email').value;
+      // TODO: POST to https://worthless.sh/waitlist (WOR-210)
+      document.getElementById('waitlist-form').style.display = 'none';
+      document.getElementById('waitlist-success').style.display = 'block';
+      return false;
+    }
+  </script>
+
+  <!-- JSON-LD -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "name": "Worthless",
+        "url": "https://worthless.cloud/"
+      },
+      {
+        "@type": "Organization",
+        "name": "Worthless",
+        "url": "https://worthless.cloud/",
+        "logo": "https://worthless.cloud/apple-touch-icon.png",
+        "sameAs": ["https://github.com/shacharm2/worthless"]
+      },
+      {
+        "@type": "SoftwareApplication",
+        "name": "Worthless",
+        "applicationCategory": "SecurityApplication",
+        "operatingSystem": "Linux, macOS, Windows",
+        "description": "Worthless splits your API keys so a leaked key is cryptographically useless. Zero code changes. Self-hosted. Open source.",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "license": "https://www.gnu.org/licenses/agpl-3.0.html"
+      }
+    ]
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is Worthless?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Worthless is an open-source tool that splits your API keys so a leaked key is useless to an attacker." }
+      },
+      {
+        "@type": "Question",
+        "name": "What happens if my API key leaks?",
+        "acceptedAnswer": { "@type": "Answer", "text": "Nothing. The leaked key is only one half of a split. Without the other half, it can't be used." }
+      },
+      {
+        "@type": "Question",
+        "name": "Do I need to change my code?",
+        "acceptedAnswer": { "@type": "Answer", "text": "No. Worthless works as a proxy. Your existing code talks to Worthless instead of the API provider directly." }
+      },
+      {
+        "@type": "Question",
+        "name": "What providers does Worthless support?",
+        "acceptedAnswer": { "@type": "Answer", "text": "OpenAI and Anthropic. Gemini support is planned." }
+      }
+    ]
+  }
+  </script>
+</body>
+</html>
