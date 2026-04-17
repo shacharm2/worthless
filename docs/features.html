@@ -155,90 +155,37 @@
 
 <div class="page">
   <div class="eyebrow">Features</div>
-  <h1>Everything included.<br />Nothing to configure.</h1>
-  <p class="intro">Worthless splits your API keys, enforces spend caps, and scans for leaked secrets before they hit git. No cloud account needed. Self-hosted. Open source.</p>
+  <h1>Leaked key? $0 damage.</h1>
+  <p class="intro">AI agents run <code>git add -A</code> and push your .env to GitHub. Vaults protect the key at rest, but it's still one piece, still in memory, still leaks. And your code has to change to use them. Worthless splits the key. Leaked half is useless. No code changes. Two commands.</p>
 
   <div class="feat-section">
-    <div class="feat-header">
-      <h2>&#9986;&#65039; Split-key cryptography</h2>
-      <span class="badge b-sec">Security</span>
-    </div>
-    <p>Keys are split using XOR-based secret sharing (a one-time pad variant). This is information-theoretically secure — a stolen share reveals nothing about the original key, even with unlimited compute.</p>
-    <table class="dtable">
-      <tr><td>Algorithm</td><td>XOR / one-time pad secret sharing (2-of-2)</td></tr>
-      <tr><td>Security model</td><td>Information-theoretic — cannot be broken by brute force</td></tr>
-      <tr><td>Share A</td><td>Local filesystem, encrypted at rest</td></tr>
-      <tr><td>Share B</td><td>Proxy process memory only — never written to disk</td></tr>
-      <tr><td>Key in memory</td><td>Reconstructed ephemerally, zeroed immediately after use</td></tr>
-      <tr><td>Cloud dependency</td><td>None — everything runs locally</td></tr>
-    </table>
+    <h2>The key in your .env doesn't work</h2>
+    <p>Your .env has one half of an XOR split. The other half lives in the proxy. Neither works alone. Someone steals your .env? They get random bytes. Mathematically useless, even with unlimited compute.</p>
   </div>
 
   <div class="feat-section">
-    <div class="feat-header">
-      <h2>&#128184; Budget enforcement</h2>
-      <span class="badge b-cost">Cost control</span>
-    </div>
-    <p>Set a spending cap per key. When the counter reaches your limit, the proxy refuses to reconstruct the key — even if both shares are available. Hard stop at the infrastructure layer.</p>
-    <table class="dtable">
-      <tr><td>Enforcement layer</td><td>Proxy — happens before key reconstruction</td></tr>
-      <tr><td>Bypass possible?</td><td>No — the app cannot override the proxy</td></tr>
-      <tr><td>Scope</td><td>Per-key spending counter</td></tr>
-      <tr><td>Reset</td><td>Manual (<code>worthless reset-budget</code>)</td></tr>
-    </table>
+    <h2>Hard spending cap</h2>
+    <p>Set a dollar limit per key. Hit the cap, the proxy refuses to reconstruct. Not a soft warning. A hard stop. Your app can't override it. Even if both halves are somehow available, the budget gate fires first.</p>
   </div>
 
   <div class="feat-section">
-    <div class="feat-header">
-      <h2>&#128269; Pre-commit scanning</h2>
-      <span class="badge b-sec">Prevention</span>
-    </div>
-    <p>Built-in <code>pre-commit</code> hook scans staged files for raw API keys before any commit lands in git history. First line of defense; the split-key proxy is the second.</p>
-    <table class="dtable">
-      <tr><td>Integration</td><td>pre-commit framework (.pre-commit-config.yaml)</td></tr>
-      <tr><td>Detects</td><td>OpenAI, Anthropic, AWS, Stripe, and common patterns</td></tr>
-      <tr><td>Action</td><td>Commit is blocked — not just warned</td></tr>
-      <tr><td>CI support</td><td>Works in GitHub Actions via pre-commit.ci</td></tr>
-    </table>
+    <h2>Zero code changes</h2>
+    <p><code>worthless wrap python app.py</code> — that's it. Your code reads environment variables exactly as before. No SDK. No imports. No config files.</p>
   </div>
 
   <div class="feat-section">
-    <div class="feat-header">
-      <h2>&#129513; Zero code changes</h2>
-      <span class="badge b-ux">Drop-in</span>
-    </div>
-    <p>Prefix any command with <code>worthless wrap</code>. Your application reads environment variables exactly as before. No SDK changes, no import changes.</p>
-    <table class="dtable">
-      <tr><td>Before</td><td><code>python app.py</code></td></tr>
-      <tr><td>After</td><td><code>worthless wrap python app.py</code></td></tr>
-      <tr><td>Works with</td><td>Python, Node.js, Ruby, Docker, any shell command</td></tr>
-    </table>
+    <h2>Pre-commit scanning</h2>
+    <p>Built-in hook catches raw API keys before they hit git. Blocks the commit, not just warns. First line of defense. The split is the second.</p>
   </div>
 
   <div class="feat-section">
-    <div class="feat-header">
-      <h2>&#128260; Fully reversible</h2>
-      <span class="badge b-ux">Portability</span>
-    </div>
-    <p><code>worthless unlock</code> restores your original <code>.env</code> exactly as before. Proxy stops. Shares deleted. No dependency on Worthless remaining installed.</p>
-    <table class="dtable">
-      <tr><td>Command</td><td><code>worthless unlock</code></td></tr>
-      <tr><td>Result</td><td>Original .env restored, proxy stopped, shares deleted</td></tr>
-      <tr><td>Lock-in</td><td>None</td></tr>
-    </table>
+    <h2>Fully reversible</h2>
+    <p><code>worthless unlock</code> — original .env restored, proxy stopped, shares deleted. Don't like it? One command and it's gone. Zero lock-in.</p>
   </div>
 
   <div class="feat-section">
-    <div class="feat-header">
-      <h2>&#127968; Self-hosted &amp; open source</h2>
-      <span class="badge b-prv">Privacy</span>
-    </div>
-    <p>No cloud. No account. No keys touching anyone else's server. AGPL-3.0 licensed. Zero telemetry.</p>
-    <table class="dtable">
-      <tr><td>License</td><td>AGPL-3.0</td></tr>
-      <tr><td>Cloud services</td><td>None required</td></tr>
-      <tr><td>Telemetry</td><td>Zero</td></tr>
-    </table>
+    <h2>Self-hosted. Open source. No cloud.</h2>
+    <p>Your keys never touch anyone else's server. AGPL-3.0. Zero telemetry. No account needed.</p>
   </div>
 
   <!-- Comparison -->
