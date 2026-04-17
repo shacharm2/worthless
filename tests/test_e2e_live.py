@@ -280,7 +280,7 @@ class TestAnthropicLive:
 
 @pytest.mark.live
 @pytest.mark.timeout(120)
-@pytest.mark.skip(reason="500 from proxy — needs investigation, wrap tests cover the same flow")
+@pytest.mark.skip(reason="500 from proxy — see #59")
 class TestSpawnProxyDirect:
     """Lock a real key, spawn_proxy() directly, send HTTP with shard-A header."""
 
