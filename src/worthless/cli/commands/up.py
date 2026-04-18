@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess
+import subprocess  # nosec B404 — required for daemon process management
 import time
 from pathlib import Path
 
@@ -71,7 +71,7 @@ def start_daemon(
 
             log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
 
-            proc = subprocess.Popen(
+            proc = subprocess.Popen(  # nosec B603 — cmd is internally constructed, not user input
                 cmd,
                 env=full_env,
                 stdout=subprocess.DEVNULL,

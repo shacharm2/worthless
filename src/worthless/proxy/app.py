@@ -216,7 +216,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 row = await cursor.fetchone()
                 if row:
                     count = row[0]
-        except Exception:  # noqa: S110 — spend_log may not exist yet
+        except Exception:  # noqa: S110 — spend_log may not exist yet  # nosec B110
             pass
         return {"status": "ok", "requests_proxied": count}
 
@@ -293,7 +293,11 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             return _uniform_401()
 
         # Decrypt now that the gate has passed
-        stored = repo.decrypt_shard(encrypted)
+        try:
+            stored = repo.decrypt_shard(encrypted)
+        except Exception:
+            shard_a[:] = b"\x00" * len(shard_a)
+            return _uniform_401()
 
         # Reconstruct key inside secure_key context (body already read above)
         req_headers = {k: v for k, v in request.headers.items()}
@@ -354,7 +358,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 tokens = usage.total_tokens if usage else 0
                 model = usage.model if usage else None
                 if usage is None:
-                    logger.warning(  # nosemgrep: python-logger-credential-disclosure
+                    logger.warning(  # nosemgrep: python-logger-credential-disclosure  # noqa: G200
                         "Token extraction failed for alias=%s provider=%s",
                         alias,
                         provider,

@@ -79,7 +79,7 @@ async def migrate_db(db_path: str) -> None:
         try:
             await db.execute("DELETE FROM spend_log WHERE created_at < datetime('now', '-90 days')")
             await db.commit()
-        except Exception:  # noqa: S110 — spend_log may not exist in pre-schema DBs
+        except Exception:  # noqa: S110 — spend_log may not exist in pre-schema DBs  # nosec B110
             pass
 
         # WOR-31: Add decoy_hash column to enrollments
@@ -123,18 +123,18 @@ async def migrate_db(db_path: str) -> None:
             return
         cursor = await db.execute("PRAGMA table_info(enrollment_config)")
         config_columns = {row[1] for row in await cursor.fetchall()}
-        new_columns = [
-            ("token_budget_daily", "INTEGER"),
-            ("token_budget_weekly", "INTEGER"),
-            ("token_budget_monthly", "INTEGER"),
-            ("time_window", "TEXT"),
-        ]
-        for col_name, col_type in new_columns:
+        # Hardcoded migration statements — not dynamic SQL
+        _ALTER = "ALTER TABLE enrollment_config ADD COLUMN"
+        _CONFIG_MIGRATIONS = {
+            "token_budget_daily": _ALTER + " token_budget_daily INTEGER",
+            "token_budget_weekly": _ALTER + " token_budget_weekly INTEGER",
+            "token_budget_monthly": _ALTER + " token_budget_monthly INTEGER",
+            "time_window": _ALTER + " time_window TEXT",
+        }
+        for col_name, stmt in _CONFIG_MIGRATIONS.items():
             if col_name not in config_columns:
                 try:
-                    await db.execute(
-                        f"ALTER TABLE enrollment_config ADD COLUMN {col_name} {col_type}"
-                    )
+                    await db.execute(stmt)
                 except Exception as exc:
                     if "duplicate column" not in str(exc).lower():
                         raise

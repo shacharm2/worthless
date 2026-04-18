@@ -69,7 +69,7 @@ def _check_proxy_health(port: int) -> dict[str, Any]:
                 "mode": data.get("mode", "up"),
                 "requests_proxied": data.get("requests_proxied", 0),
             }
-    except Exception:  # noqa: S110 — proxy may not be running; absence is the expected default state
+    except Exception:  # noqa: S110 — proxy may not be running; absence is the expected default state  # nosec B110
         pass
 
     return {"healthy": False, "port": port, "mode": None, "requests_proxied": 0}

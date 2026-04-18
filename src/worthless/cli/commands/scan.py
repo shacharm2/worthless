@@ -71,7 +71,7 @@ def _collect_deep_paths(explicit_paths: list[Path]) -> tuple[list[Path], Path | 
         except Exception:
             try:
                 os.close(fd)
-            except Exception:  # noqa: S110 — fd cleanup on error path; can't recover usefully
+            except Exception:  # noqa: S110 — fd cleanup on error path; can't recover usefully  # nosec B110
                 pass
 
     return paths, tmp_path
@@ -105,7 +105,7 @@ def _format_human(
                         if preview.startswith(value[:4]):
                             preview = f.value_preview + "..." + value[-4:]
                             break
-            except Exception:  # noqa: S110 — best-effort preview; display failure is non-critical
+            except Exception:  # noqa: S110 — best-effort preview; display failure is non-critical  # nosec B110
                 pass
 
         var_part = f" ({f.var_name})" if f.var_name else ""

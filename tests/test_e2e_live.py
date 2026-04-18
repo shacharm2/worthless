@@ -78,7 +78,7 @@ _ANTHROPIC_CHILD = textwrap.dedent("""\
     r = client.post(
         f"{base}/messages",
         json={
-            "model": "claude-3-haiku-20240307",
+            "model": "claude-haiku-4-5-20251001",
             "max_tokens": 1,
             "messages": [{"role": "user", "content": "say hi"}],
         },
@@ -280,7 +280,6 @@ class TestAnthropicLive:
 
 @pytest.mark.live
 @pytest.mark.timeout(120)
-@pytest.mark.skip(reason="500 from proxy — see #59")
 class TestSpawnProxyDirect:
     """Lock a real key, spawn_proxy() directly, send HTTP with shard-A header."""
 
@@ -330,7 +329,7 @@ class TestSpawnProxyDirect:
                     headers={"Authorization": f"Bearer {shard_a}"},
                 )
 
-            # 200 = success, 429 = rate limit — both prove reconstruction worked
+            # 200 = success, 429 = quota — both prove reconstruction worked
             assert resp.status_code != 401, f"Got 401 — reconstruction failed. Body: {resp.text}"
             assert resp.status_code in {200, 429}, (
                 f"Unexpected status {resp.status_code}: {resp.text}"

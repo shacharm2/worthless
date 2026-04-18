@@ -64,27 +64,27 @@ def _detect_charset(body: str, provider: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _make_commitment(key_data: bytes | bytearray) -> tuple[bytearray, bytearray]:
-    """Create an HMAC-SHA256 commitment over key data.
+def _make_commitment(payload: bytes | bytearray) -> tuple[bytearray, bytearray]:
+    """Create an HMAC-SHA256 commitment over the given payload.
 
     Returns (commitment, nonce).
     """
     # mutmut: skip — token_bytes(None) defaults to 32; equivalent mutant
     nonce = bytearray(secrets.token_bytes(32))
     commitment = bytearray(
-        hmac.new(nonce, key_data, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256
+        hmac.new(nonce, payload, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256
     )
     return commitment, nonce
 
 
 def _verify_commitment(
-    key_data: bytes | bytearray,
+    payload: bytes | bytearray,
     commitment: bytes | bytearray,
     nonce: bytes | bytearray,
 ) -> None:
     """Verify HMAC-SHA256 commitment. Raises ShardTamperedError on mismatch."""
     expected = bytearray(
-        hmac.new(nonce, key_data, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256
+        hmac.new(nonce, payload, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256
     )
     try:
         if not hmac.compare_digest(expected, commitment):
@@ -139,7 +139,7 @@ def split_key_fp(
     shard_a_str = prefix + "".join(shard_a_chars)
     shard_b_str = "".join(shard_b_chars)
 
-    commitment, nonce = _make_commitment(api_key.encode("utf-8"))
+    commitment, nonce = _make_commitment(bytearray(api_key.encode("utf-8")))
 
     return FormatPreservingSplitResult(
         shard_a=bytearray(shard_a_str.encode("utf-8")),
@@ -175,17 +175,22 @@ def reconstruct_key_fp(
     Returns:
         A mutable bytearray containing the reconstructed key (UTF-8).
     """
-    # bytearray.decode() avoids an intermediate un-zeroable bytes copy
-    shard_a_str = (
-        shard_a.decode("utf-8")
-        if isinstance(shard_a, bytearray)
-        else bytes(shard_a).decode("utf-8")
-    )
-    shard_b_str = (
-        shard_b.decode("utf-8")
-        if isinstance(shard_b, bytearray)
-        else bytes(shard_b).decode("utf-8")
-    )
+    # bytearray.decode() avoids an intermediate un-zeroable bytes copy.
+    # When input is already bytearray, decode directly. Otherwise copy
+    # into a temporary bytearray, decode, then zero the copy.
+    if isinstance(shard_a, bytearray):
+        shard_a_str = shard_a.decode("utf-8")
+    else:
+        tmp = bytearray(shard_a)
+        shard_a_str = tmp.decode("utf-8")
+        tmp[:] = b"\x00" * len(tmp)
+
+    if isinstance(shard_b, bytearray):
+        shard_b_str = shard_b.decode("utf-8")
+    else:
+        tmp = bytearray(shard_b)
+        shard_b_str = tmp.decode("utf-8")
+        tmp[:] = b"\x00" * len(tmp)
 
     if not shard_a_str.startswith(prefix):
         raise ValueError(f"Shard-A does not start with expected prefix {prefix!r}")
@@ -235,7 +240,7 @@ def split_key(api_key: bytes) -> SplitResult:
     mask = bytearray(secrets.token_bytes(len(api_key)))
     shard_a = bytearray(a ^ b for a, b in zip(api_key, mask, strict=True))
 
-    commitment, nonce = _make_commitment(api_key)
+    commitment, nonce = _make_commitment(bytearray(api_key))
 
     return SplitResult(
         shard_a=shard_a,

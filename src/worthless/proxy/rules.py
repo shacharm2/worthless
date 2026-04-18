@@ -110,7 +110,7 @@ class SpendCapRule:
                 # Ensure lock is released on inner error
                 try:
                     await self.db.execute("ROLLBACK")
-                except Exception:  # noqa: S110 — ROLLBACK on error path; if it fails, re-raise original anyway
+                except Exception:  # noqa: S110 — ROLLBACK on error path; if it fails, re-raise original anyway  # nosec B110
                     pass
                 raise
         except Exception:
@@ -207,7 +207,7 @@ class TokenBudgetRule:
             except Exception:
                 try:
                     await self.db.execute("ROLLBACK")
-                except Exception:  # noqa: S110
+                except Exception:  # noqa: S110  # nosec B110
                     pass
                 raise
         except Exception:

@@ -49,7 +49,7 @@ def extract_usage_openai(data: bytes) -> UsageInfo | None:
                     return UsageInfo(total_tokens=total, model=chunk.get("model"))
             except (json.JSONDecodeError, ValueError):
                 continue
-    except Exception:  # noqa: S110 — best-effort SSE decode; malformed response must not raise
+    except Exception:  # noqa: S110 — best-effort SSE decode; malformed response must not raise  # nosec B110
         pass
 
     return None

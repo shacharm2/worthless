@@ -13,7 +13,6 @@ Run with:
 
 from __future__ import annotations
 
-import hashlib
 import shutil
 import subprocess
 import time
@@ -24,6 +23,7 @@ import httpx
 import pytest
 
 from tests.helpers import fake_openai_key
+from worthless.cli.commands.lock import _make_alias
 
 # ---------------------------------------------------------------------------
 # Module-level skip + markers
@@ -104,12 +104,6 @@ def _get_host_port(container: str, internal_port: int) -> int:
     """Discover the dynamic host port mapped to a container port."""
     out = _run_ok(["docker", "port", container, str(internal_port)])
     return int(out.rsplit(":", 1)[-1])
-
-
-def _make_alias(provider: str, api_key: str) -> str:
-    """Deterministic alias: provider + first 8 hex chars of sha256(key)."""
-    digest = hashlib.sha256(api_key.encode()).hexdigest()[:8]
-    return f"{provider}-{digest}"
 
 
 def _write_env_to_container(
@@ -229,6 +223,7 @@ def openclaw_stack():
             ],
             capture_output=True,
             cwd=str(REPO_ROOT),
+            timeout=60,
         )
 
 
