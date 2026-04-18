@@ -46,6 +46,7 @@ def build_proxy_env(home: WorthlessHome) -> dict[str, str]:
     """
     env: dict[str, str] = {
         "WORTHLESS_DB_PATH": str(home.db_path),
+        "WORTHLESS_HOME": str(home.base_dir),
     }
     if not keyring_available():
         env["WORTHLESS_FERNET_KEY"] = home.fernet_key.decode()

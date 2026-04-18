@@ -293,7 +293,11 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             return _uniform_401()
 
         # Decrypt now that the gate has passed
-        stored = repo.decrypt_shard(encrypted)
+        try:
+            stored = repo.decrypt_shard(encrypted)
+        except Exception:
+            shard_a[:] = b"\x00" * len(shard_a)
+            return _uniform_401()
 
         # Reconstruct key inside secure_key context (body already read above)
         req_headers = {k: v for k, v in request.headers.items()}

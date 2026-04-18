@@ -280,7 +280,6 @@ class TestAnthropicLive:
 
 @pytest.mark.live
 @pytest.mark.timeout(120)
-@pytest.mark.skip(reason="500 from proxy — needs investigation, wrap tests cover the same flow")
 class TestSpawnProxyDirect:
     """Lock a real key, spawn_proxy() directly, send HTTP with shard-A header."""
 
@@ -330,7 +329,7 @@ class TestSpawnProxyDirect:
                     headers={"Authorization": f"Bearer {shard_a}"},
                 )
 
-            # 200 = success, 429 = rate limit — both prove reconstruction worked
+            # 200 = success, 429 = quota — both prove reconstruction worked
             assert resp.status_code != 401, f"Got 401 — reconstruction failed. Body: {resp.text}"
             assert resp.status_code in {200, 429}, (
                 f"Unexpected status {resp.status_code}: {resp.text}"
