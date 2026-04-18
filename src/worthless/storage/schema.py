@@ -100,10 +100,15 @@ async def migrate_db(db_path: str) -> None:
         # WOR-207: Add prefix/charset columns to shards for format-preserving split
         cursor = await db.execute("PRAGMA table_info(shards)")
         shard_columns = {row[1] for row in await cursor.fetchall()}
-        for col_name, col_type in [("prefix", "TEXT"), ("charset", "TEXT")]:
+        # Hardcoded migration statements — not dynamic SQL
+        _SHARD_MIGRATIONS = {
+            "prefix": "ALTER TABLE shards ADD COLUMN prefix TEXT",
+            "charset": "ALTER TABLE shards ADD COLUMN charset TEXT",
+        }
+        for col_name, stmt in _SHARD_MIGRATIONS.items():
             if col_name not in shard_columns:
                 try:
-                    await db.execute(f"ALTER TABLE shards ADD COLUMN {col_name} {col_type}")
+                    await db.execute(stmt)
                 except Exception as exc:
                     if "duplicate column" not in str(exc).lower():
                         raise

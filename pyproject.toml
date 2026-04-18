@@ -34,6 +34,11 @@ dependencies = [
 
 [project.scripts]
 worthless = "worthless.cli.app:app"
+test-unit = "worthless.testing.runners:unit"
+test-docker = "worthless.testing.runners:docker"
+test-live = "worthless.testing.runners:live"
+test-openclaw = "worthless.testing.runners:openclaw"
+test-all = "worthless.testing.runners:all_tests"
 
 [project.urls]
 Homepage = "https://github.com/shacharm2/worthless"
@@ -132,6 +137,7 @@ markers = [
     "adversarial: security-focused tests — race conditions, PID reuse, injection, fuzz",
     "docker: Docker container end-to-end tests (requires running Docker daemon)",
     "e2e: end-to-end smoke tests — full lifecycle (lock, proxy, healthz)",
+    "openclaw: OpenClaw integration tests (requires Docker + network pull)",
 ]
 
 [tool.coverage.run]
@@ -176,6 +182,8 @@ ignore = [
 "tests/**" = ["S101", "S110", "B"]
 # Docker e2e tests shell out to `docker` CLI extensively — partial path and /tmp are intentional
 "tests/test_docker_e2e.py" = ["S607", "S108"]
+# OpenClaw integration tests shell out to docker CLI
+"tests/test_openclaw_e2e.py" = ["S607", "S108"]
 # Deploy static tests use bash -n for entrypoint syntax validation
 "tests/test_deploy_static.py" = ["S607"]
 # Eval scripts shell out to claude CLI
@@ -194,6 +202,8 @@ DEP002 = ["uvicorn", "python-dotenv"]
 # starlette: transitive dep of fastapi, but we import ASGI types directly
 # rich: transitive dep of typer[all], but we import directly for console output
 DEP003 = ["starlette", "rich"]
+# pytest: imported in testing/runners.py for test-* CLI entrypoints
+DEP004 = ["pytest"]
 
 [tool.bandit]
 targets = ["src"]

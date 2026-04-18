@@ -128,8 +128,12 @@ class TestFormatPreservation:
 class TestHMACTamperDetection:
     def test_tampered_shard_a_detected(self) -> None:
         sr = split_key_fp(_OPENAI_KEY, prefix="sk-proj-", provider="openai")
-        # Flip one byte in shard_a
-        sr.shard_a[10] = (sr.shard_a[10] + 1) % 256
+        # Replace one charset char with a different valid charset char
+        prefix_len = len("sk-proj-")
+        body_idx = prefix_len + 2  # pick a body char
+        original_char = chr(sr.shard_a[body_idx])
+        replacement = next(c for c in sr.charset if c != original_char)
+        sr.shard_a[body_idx] = ord(replacement)
         with pytest.raises(ShardTamperedError):
             reconstruct_key_fp(
                 sr.shard_a,
@@ -142,7 +146,10 @@ class TestHMACTamperDetection:
 
     def test_tampered_shard_b_detected(self) -> None:
         sr = split_key_fp(_OPENAI_KEY, prefix="sk-proj-", provider="openai")
-        sr.shard_b[5] = (sr.shard_b[5] + 1) % 256
+        # Replace one charset char with a different valid charset char
+        original_char = chr(sr.shard_b[3])
+        replacement = next(c for c in sr.charset if c != original_char)
+        sr.shard_b[3] = ord(replacement)
         with pytest.raises(ShardTamperedError):
             reconstruct_key_fp(
                 sr.shard_a,

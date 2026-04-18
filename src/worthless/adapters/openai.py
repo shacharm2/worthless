@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import httpx
 
 from worthless.adapters.types import (
@@ -11,7 +13,10 @@ from worthless.adapters.types import (
     strip_internal_headers,
 )
 
-UPSTREAM_URL = "https://api.openai.com/v1/chat/completions"
+UPSTREAM_URL = os.environ.get(
+    "WORTHLESS_UPSTREAM_OPENAI_URL",
+    "https://api.openai.com/v1/chat/completions",
+)
 
 
 class OpenAIAdapter:

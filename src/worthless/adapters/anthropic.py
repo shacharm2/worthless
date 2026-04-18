@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import httpx
 
 from worthless.adapters.types import (
@@ -11,7 +13,10 @@ from worthless.adapters.types import (
     strip_internal_headers,
 )
 
-UPSTREAM_URL = "https://api.anthropic.com/v1/messages"
+UPSTREAM_URL = os.environ.get(
+    "WORTHLESS_UPSTREAM_ANTHROPIC_URL",
+    "https://api.anthropic.com/v1/messages",
+)
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 
 
