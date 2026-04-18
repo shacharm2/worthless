@@ -487,12 +487,14 @@ class TestLifecycle:
 class TestWave6Features:
     """Wave 6 features tested inside Docker — real container, no mocks."""
 
-    def test_version_is_0_2_0(self, container: tuple[str, int]) -> None:
-        """worthless --version reports 0.2.0 inside the container."""
+    def test_version_matches_package_metadata(self, container: tuple[str, int]) -> None:
+        """worthless --version reports the installed package version inside the container."""
+        from importlib.metadata import version as pkg_version
+
         name, _ = container
         result = _docker_exec(name, ["worthless", "--version"])
         assert result.returncode == 0, f"--version failed: {result.stderr}"
-        assert "0.2.0" in result.stdout
+        assert pkg_version("worthless") in result.stdout
 
     def test_json_mode_read_only(self, container: tuple[str, int]) -> None:
         """worthless --json returns structured state, never writes.

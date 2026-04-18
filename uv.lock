@@ -3733,7 +3733,7 @@ wheels = [
 
 [[package]]
 name = "worthless"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -3868,7 +3868,7 @@ requires-dist = [
     { name = "semgrep", marker = "extra == 'qa'", specifier = ">=1.155.0" },
     { name = "syrupy", marker = "extra == 'test'", specifier = ">=4.8" },
     { name = "tomli", marker = "python_full_version < '3.11' and extra == 'test'", specifier = ">=2.0" },
-    { name = "typer", extras = ["all"], specifier = ">=0.15" },
+    { name = "typer", specifier = ">=0.15" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
 provides-extras = ["mcp", "dev", "test", "qa", "fuzz"]

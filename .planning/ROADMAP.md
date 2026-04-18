@@ -28,7 +28,7 @@ Full details: [milestones/v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 
 **Milestone Goal:** Open-source launch of light mode (XOR + Fernet). Rules engine, agent discovery, deployment verification, and PyPI release.
 
-**Version:** 0.2.0 (saving 1.0 for Rust-hardened v2.0)
+**Version:** 0.3.0 (first PyPI release; saving 1.0 for Rust-hardened v2.0)
 
 **Linear Project:** [Worthless v1.1 Release](https://linear.app/plumbusai/project/worthless-v11-release-d6d757f021d1)
 
@@ -39,7 +39,7 @@ Full details: [milestones/v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 - [x] **Phase 5.3: Rules Engine** - TokenBudgetRule, TimeWindowRule, CLI rules config, schema migration (WOR-182,183,160,159,161,184)
 - [x] **Phase 5.4: SKILL.md + Deploy Verification** - Agent discovery file, MCP server validation, deploy smoke tests (WOR-163,170)
 - [ ] **Phase 5.5: README + Service Install** - Open-source README, systemd/launchd service install, desktop notifications (WOR-165,174,175)
-- [ ] **Phase 5.6: Version Bump + PyPI + Smoke Test** - 0.2.0 version, PyPI publish, end-to-end smoke test (WOR-166,167,180)
+- [ ] **Phase 5.6: Version Bump + PyPI + Smoke Test** - 0.3.0 version, PyPI publish, end-to-end smoke test (WOR-166,167,180)
 
 ### v2.0 Harden
 
@@ -94,7 +94,7 @@ Full details: [milestones/v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 **Plans**: TBD
 
 ### Phase 5.6: Version Bump + PyPI + Smoke Test
-**Goal**: Tag 0.2.0, publish to PyPI, run end-to-end smoke test proving `pip install worthless && worthless lock` works from a clean env
+**Goal**: Tag 0.3.0, publish to PyPI, run end-to-end smoke test proving `pip install worthless && worthless lock` works from a clean env
 **Depends on**: Phase 5.5
 **Linear**: WOR-166, WOR-167, WOR-180
 **Status**: Backlog

@@ -294,11 +294,13 @@ class TestDefaultCommandE2E:
         env_content = (project_with_keys / ".env").read_text()
         assert fake_openai_key() in env_content
 
-    def test_version_is_0_2_0(self, e2e_home: Path, tmp_path: Path) -> None:
-        """worthless --version reports 0.2.0."""
+    def test_version_matches_package_metadata(self, e2e_home: Path, tmp_path: Path) -> None:
+        """worthless --version reports the installed package version."""
+        from importlib.metadata import version as pkg_version
+
         project = tmp_path / "vtest"
         project.mkdir()
 
         result = _run_worthless(["--version"], e2e_home, project)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "0.2.0" in result.stdout
+        assert pkg_version("worthless") in result.stdout

@@ -3,7 +3,15 @@ name: Pre-release
 on:
   push:
     tags:
-      - "v*"
+      # Pre-release qualifiers only: v1.2.3rc1, v1.2.3a1, v1.2.3b2, v1.2.3-rc1, v1.2.3-beta1.
+      # Final release tags (v1.2.3) are excluded so pre-release CI doesn't produce
+      # spurious red checks on every published release.
+      - "v*rc*"
+      - "v*a*"
+      - "v*b*"
+      - "v*-rc*"
+      - "v*-alpha*"
+      - "v*-beta*"
   workflow_dispatch:
 
 permissions:
