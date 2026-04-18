@@ -44,14 +44,6 @@ ANTHROPIC_BODY = {
 }
 
 
-def _redact(key: str | bytes) -> str:
-    """Show first 10 and last 4 chars, redact the rest."""
-    s = key.decode("utf-8") if isinstance(key, bytes | bytearray) else key
-    if len(s) <= 14:
-        return s[:4] + "..."
-    return f"{s[:10]}...{s[-4:]}"
-
-
 def _post_openai(key: str) -> httpx.Response:
     """POST to OpenAI chat completions with the given key."""
     return httpx.post(
@@ -108,30 +100,22 @@ class TestLiveReconstruction:
         prefix = detect_prefix(OPENAI_KEY, "openai")
         sr = split_key_fp(OPENAI_KEY, prefix, "openai")
         shard_a = sr.shard_a.decode("utf-8")
-        print(f"1. Real key: {_redact(OPENAI_KEY)}")
-        print("   Format-preserving split into shard_a + shard_b")
-        print(f"   shard_a: {_redact(shard_a)} (looks like a real key!)")
-        print(f"   shard_b: {sr.shard_b[:20]}... (charset body)")
+        print(
+            f"1. Split: key ({len(OPENAI_KEY)} chars)"
+            f" -> shard_a ({len(shard_a)} chars) + shard_b ({len(sr.shard_b)} bytes)"
+        )
         print()
 
         # 2. Try shard-A against OpenAI -> 401
-        print("2. Try shard-A as API key against OpenAI:")
-        print(f"   Authorization: Bearer {_redact(shard_a)}")
         resp_shard = _post_openai(shard_a)
-        print(f"   Response: {resp_shard.status_code}")
+        print(f"2. shard-A alone -> OpenAI: {resp_shard.status_code}")
         assert resp_shard.status_code == 401, f"Expected 401, got {resp_shard.status_code}"
-        print("   shard-A alone is useless (despite looking real)")
-        print()
 
         # 3. Try a random decoy -> 401
         fake_decoy = f"sk-proj-{'x' * 40}"
-        print("3. Try decoy key against OpenAI:")
-        print(f"   Authorization: Bearer {_redact(fake_decoy)}")
         resp_decoy = _post_openai(fake_decoy)
-        print(f"   Response: {resp_decoy.status_code}")
+        print(f"3. decoy -> OpenAI: {resp_decoy.status_code}")
         assert resp_decoy.status_code == 401, f"Expected 401, got {resp_decoy.status_code}"
-        print("   Decoy is useless")
-        print()
 
         # 4. Reconstruct and call OpenAI -> 200
         key_buf = reconstruct_key_fp(
@@ -143,33 +127,24 @@ class TestLiveReconstruction:
             sr.charset,
         )
         reconstructed = key_buf.decode()
-        print("4. Reconstruct: shard_a + shard_b (modular arithmetic)")
-        print(f"   Reconstructed: {_redact(reconstructed)}")
         assert reconstructed == OPENAI_KEY, "Reconstruction mismatch"
 
         resp_real = _post_openai(reconstructed)
-        print(f"   Response: {resp_real.status_code}")
-        # 200 = success, 429 = key recognized but quota exhausted (still proves auth)
+        print(f"4. reconstructed -> OpenAI: {resp_real.status_code}")
+        # 200 = success, 429 = key recognized but quota exhausted
         assert resp_real.status_code in (200, 429), (
             f"Expected 200/429, got {resp_real.status_code}: {resp_real.text}"
         )
-        if resp_real.status_code == 200:
-            content = resp_real.json()["choices"][0]["message"]["content"]
-            print(f'   Completion: "{content.strip()}"')
-        else:
-            content = "(quota exhausted -- but key was recognized)"
-            print(f"   {content}")
-        print()
 
         # 5. Zero key material
         key_buf[:] = b"\x00" * len(key_buf)
         sr.zero()
 
-        print("5. Key material zeroed from memory")
+        print("5. key material zeroed")
         print()
-        print("   shard-A alone?  401 (format-preserving but not the real key)")
-        print("   decoy alone?    401")
-        print(f'   reconstructed?  {resp_real.status_code} -- "{content.strip()}"')
+        print(f"   shard-A alone:  {resp_shard.status_code}")
+        print(f"   decoy:          {resp_decoy.status_code}")
+        print(f"   reconstructed:  {resp_real.status_code}")
         print()
         print("   PASS")
 
@@ -204,14 +179,10 @@ class TestLiveAttacks:
         sr = _split_openai()
         shard_a = sr.shard_a.decode("utf-8")
 
-        print("\n  ATTACK: shard-A alone -> OpenAI")
-        print(f"  shard-A: {_redact(shard_a)}")
-
         resp = _post_openai(shard_a)
 
-        print(f"  Response: {resp.status_code}")
+        print(f"\n  shard-A alone -> OpenAI: {resp.status_code}")
         assert resp.status_code == 401, f"shard-A should be rejected, got {resp.status_code}"
-        print("  RESULT: rejected (401) -- shard-A is worthless")
 
         sr.zero()
 
@@ -227,14 +198,10 @@ class TestLiveAttacks:
         sr = _split_anthropic()
         shard_a = sr.shard_a.decode("utf-8")
 
-        print("\n  ATTACK: shard-A alone -> Anthropic")
-        print(f"  shard-A: {_redact(shard_a)}")
-
         resp = _post_anthropic(shard_a)
 
-        print(f"  Response: {resp.status_code}")
+        print(f"\n  shard-A alone -> Anthropic: {resp.status_code}")
         assert resp.status_code == 401, f"shard-A should be rejected, got {resp.status_code}"
-        print("  RESULT: rejected (401) -- shard-A is worthless")
 
         sr.zero()
 
@@ -250,15 +217,10 @@ class TestLiveAttacks:
         sr = _split_openai()
         shard_b = sr.shard_b.decode("utf-8")
 
-        # Try shard-B raw (no prefix) -- will get 401 since it lacks Bearer format
-        print("\n  ATTACK: shard-B alone -> OpenAI")
-        print(f"  shard-B: {_redact(shard_b)} (no prefix, raw charset body)")
-
         resp = _post_openai(shard_b)
 
-        print(f"  Response: {resp.status_code}")
+        print(f"\n  shard-B alone -> OpenAI: {resp.status_code}")
         assert resp.status_code == 401, f"shard-B should be rejected, got {resp.status_code}"
-        print("  RESULT: rejected (401) -- shard-B is worthless")
 
         sr.zero()
 
@@ -274,14 +236,10 @@ class TestLiveAttacks:
         sr = _split_anthropic()
         shard_b = sr.shard_b.decode("utf-8")
 
-        print("\n  ATTACK: shard-B alone -> Anthropic")
-        print(f"  shard-B: {_redact(shard_b)} (no prefix, raw charset body)")
-
         resp = _post_anthropic(shard_b)
 
-        print(f"  Response: {resp.status_code}")
+        print(f"\n  shard-B alone -> Anthropic: {resp.status_code}")
         assert resp.status_code == 401, f"shard-B should be rejected, got {resp.status_code}"
-        print("  RESULT: rejected (401) -- shard-B is worthless")
 
         sr.zero()
 
@@ -308,18 +266,12 @@ class TestLiveAttacks:
         body[flip_idx] = "A" if original_char != "A" else "B"
         tampered = "".join(body)
 
-        print("\n  ATTACK: shard-A with char flip -> OpenAI")
-        print(f"  Original shard-A: {_redact(shard_a)}")
-        print(f"  Tampered shard-A: {_redact(tampered)}")
-        print(f"  Flipped char at index {flip_idx}: '{original_char}' -> '{body[flip_idx]}'")
-
         resp = _post_openai(tampered)
 
-        print(f"  Response: {resp.status_code}")
+        print(f"\n  shard-A bitflip (idx {flip_idx}) -> OpenAI: {resp.status_code}")
         assert resp.status_code == 401, (
             f"Tampered shard-A should be rejected, got {resp.status_code}"
         )
-        print("  RESULT: rejected (401) -- bit-flipped shard is worthless")
 
         sr.zero()
 
@@ -338,18 +290,15 @@ class TestLiveAttacks:
         # Truncate to 70% of original length
         truncated = shard_a[: int(len(shard_a) * 0.7)]
 
-        print("\n  ATTACK: truncated shard-A -> OpenAI")
-        print(f"  Full shard-A length: {len(shard_a)}")
-        print(f"  Truncated length:    {len(truncated)}")
-        print(f"  Truncated: {_redact(truncated)}")
-
         resp = _post_openai(truncated)
 
-        print(f"  Response: {resp.status_code}")
+        print(
+            f"\n  shard-A truncated ({len(shard_a)} -> {len(truncated)} chars)"
+            f" -> OpenAI: {resp.status_code}"
+        )
         assert resp.status_code == 401, (
             f"Truncated shard-A should be rejected, got {resp.status_code}"
         )
-        print("  RESULT: rejected (401) -- truncated shard is worthless")
 
         sr.zero()
 
@@ -372,9 +321,7 @@ class TestLiveAttacks:
         sr1 = _split_openai()
         sr2 = _split_openai()
 
-        print("\n  ATTACK: cross-contamination (shard-A from split-1 + shard-B from split-2)")
-        print(f"  split-1 shard-A: {_redact(sr1.shard_a)}")
-        print(f"  split-2 shard-B: {_redact(sr2.shard_b)}")
+        print("\n  cross-contamination (split-1 shard-A + split-2 shard-B):")
 
         # Attempt reconstruction with mismatched shards
         try:
@@ -389,21 +336,17 @@ class TestLiveAttacks:
             # If reconstruction did not raise (commitment check passed by luck),
             # the result is still garbage -- verify it fails auth
             garbage_key = key_buf.decode("utf-8", errors="replace")
-            print(f"  Reconstructed garbage: {_redact(garbage_key)}")
-
             resp = _post_openai(garbage_key)
 
-            print(f"  Response: {resp.status_code}")
+            print(f"  reconstructed garbage -> OpenAI: {resp.status_code}")
             assert resp.status_code == 401, (
                 f"Cross-contaminated key should be rejected, got {resp.status_code}"
             )
-            print("  RESULT: rejected (401) -- cross-contaminated shards produce garbage")
 
             key_buf[:] = b"\x00" * len(key_buf)
 
         except ShardTamperedError:
-            print("  RESULT: ShardTamperedError raised -- commitment check caught the mismatch")
-            print("  Cross-contaminated shards are useless (tamper detection works)")
+            print("  ShardTamperedError raised (commitment check caught mismatch)")
 
         sr1.zero()
         sr2.zero()
@@ -429,23 +372,14 @@ class TestLiveAttacks:
         )
         reconstructed = key_buf.decode("utf-8")
 
-        print("\n  CONTROL: correct reconstruction -> OpenAI")
-        print(f"  Reconstructed: {_redact(reconstructed)}")
-
         assert reconstructed == OPENAI_KEY, "Reconstruction mismatch -- crypto bug"
 
         resp = _post_openai(reconstructed)
 
-        print(f"  Response: {resp.status_code}")
+        print(f"\n  reconstructed -> OpenAI: {resp.status_code}")
         assert resp.status_code in (200, 429), (
             f"Reconstructed key should be accepted, got {resp.status_code}: {resp.text}"
         )
-        if resp.status_code == 200:
-            content = resp.json()["choices"][0]["message"]["content"]
-            print(f'  Completion: "{content.strip()}"')
-        else:
-            print("  Key recognized (429 quota exhausted)")
-        print("  RESULT: accepted -- reconstruction works")
 
         key_buf[:] = b"\x00" * len(key_buf)
         sr.zero()
@@ -471,14 +405,11 @@ class TestLiveAttacks:
         )
         reconstructed = key_buf.decode("utf-8")
 
-        print("\n  CONTROL: correct reconstruction -> Anthropic")
-        print(f"  Reconstructed: {_redact(reconstructed)}")
-
         assert reconstructed == ANTHROPIC_KEY, "Reconstruction mismatch -- crypto bug"
 
         resp = _post_anthropic(reconstructed)
 
-        print(f"  Response: {resp.status_code}")
+        print(f"\n  reconstructed -> Anthropic: {resp.status_code}")
         assert resp.status_code in (200, 429), (
             f"Reconstructed key should be accepted, got {resp.status_code}: {resp.text}"
         )

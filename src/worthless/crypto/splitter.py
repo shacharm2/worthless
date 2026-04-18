@@ -175,17 +175,22 @@ def reconstruct_key_fp(
     Returns:
         A mutable bytearray containing the reconstructed key (UTF-8).
     """
-    # bytearray.decode() avoids an intermediate un-zeroable bytes copy
-    shard_a_str = (
-        shard_a.decode("utf-8")
-        if isinstance(shard_a, bytearray)
-        else bytearray(shard_a).decode("utf-8")
-    )
-    shard_b_str = (
-        shard_b.decode("utf-8")
-        if isinstance(shard_b, bytearray)
-        else bytearray(shard_b).decode("utf-8")
-    )
+    # bytearray.decode() avoids an intermediate un-zeroable bytes copy.
+    # When input is already bytearray, decode directly. Otherwise copy
+    # into a temporary bytearray, decode, then zero the copy.
+    if isinstance(shard_a, bytearray):
+        shard_a_str = shard_a.decode("utf-8")
+    else:
+        tmp = bytearray(shard_a)
+        shard_a_str = tmp.decode("utf-8")
+        tmp[:] = b"\x00" * len(tmp)
+
+    if isinstance(shard_b, bytearray):
+        shard_b_str = shard_b.decode("utf-8")
+    else:
+        tmp = bytearray(shard_b)
+        shard_b_str = tmp.decode("utf-8")
+        tmp[:] = b"\x00" * len(tmp)
 
     if not shard_a_str.startswith(prefix):
         raise ValueError(f"Shard-A does not start with expected prefix {prefix!r}")
