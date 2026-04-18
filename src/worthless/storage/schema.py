@@ -79,7 +79,7 @@ async def migrate_db(db_path: str) -> None:
         try:
             await db.execute("DELETE FROM spend_log WHERE created_at < datetime('now', '-90 days')")
             await db.commit()
-        except Exception:  # noqa: S110 — spend_log may not exist in pre-schema DBs
+        except Exception:  # noqa: S110 — spend_log may not exist in pre-schema DBs  # nosec B110
             pass
 
         # WOR-31: Add decoy_hash column to enrollments

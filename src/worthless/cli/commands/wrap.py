@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import subprocess
+import subprocess  # nosec B404
 import sys
 import threading
 
@@ -183,7 +183,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
 
         # Spawn child
         try:
-            child = subprocess.Popen(
+            child = subprocess.Popen(  # nosec B603
                 full_command,
                 env=child_env,
                 **popen_platform_kwargs(detach=True),
@@ -224,7 +224,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
             if count:
                 sys.stderr.write(f"worthless: proxied {count} requests\n")
                 sys.stderr.flush()
-        except Exception:  # noqa: S110 — best-effort summary
+        except Exception:  # noqa: S110 — best-effort summary  # nosec B110
             pass
 
         # Clean up proxy

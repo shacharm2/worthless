@@ -216,7 +216,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 row = await cursor.fetchone()
                 if row:
                     count = row[0]
-        except Exception:  # noqa: S110 — spend_log may not exist yet
+        except Exception:  # noqa: S110 — spend_log may not exist yet  # nosec B110
             pass
         return {"status": "ok", "requests_proxied": count}
 
@@ -354,7 +354,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 tokens = usage.total_tokens if usage else 0
                 model = usage.model if usage else None
                 if usage is None:
-                    logger.warning(  # nosemgrep: python-logger-credential-disclosure
+                    logger.warning(  # nosemgrep: python-logger-credential-disclosure  # noqa: G200
                         "Token extraction failed for alias=%s provider=%s",
                         alias,
                         provider,

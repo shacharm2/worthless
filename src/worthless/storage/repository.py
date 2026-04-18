@@ -177,9 +177,15 @@ class ShardRepository:
             if row is None:
                 return None
             return EncryptedShard(
-                shard_b_enc=bytes(row["shard_b_enc"]),  # nosemgrep: sr01-key-material-not-bytearray
-                commitment=bytes(row["commitment"]),  # nosemgrep: sr01-key-material-not-bytearray
-                nonce=bytes(row["nonce"]),  # nosemgrep: sr01-key-material-not-bytearray
+                shard_b_enc=memoryview(  # nosemgrep: sr01-key-material-not-bytearray
+                    row["shard_b_enc"]
+                ).tobytes(),
+                commitment=memoryview(  # nosemgrep: sr01-key-material-not-bytearray
+                    row["commitment"]
+                ).tobytes(),
+                nonce=memoryview(  # nosemgrep: sr01-key-material-not-bytearray
+                    row["nonce"]
+                ).tobytes(),
                 provider=row["provider"],
                 prefix=row["prefix"],
                 charset=row["charset"],

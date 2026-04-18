@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 import os
 import re
 import signal
-import subprocess
+import subprocess  # nosec B404
 import sys
 import threading
 import time
@@ -213,7 +213,7 @@ def spawn_proxy(
 
         platform_kwargs = popen_platform_kwargs(detach=True, pass_fds=tuple(pass_fds))
 
-        proc = subprocess.Popen(
+        proc = subprocess.Popen(  # nosec B603
             cmd,
             env=full_env,
             stdout=subprocess.PIPE,
@@ -235,13 +235,13 @@ def spawn_proxy(
 
 def _parse_uvicorn_port(proc: subprocess.Popen, timeout: float = 15.0) -> int:
     """Read uvicorn stdout until we find the port announcement."""
-    assert proc.stdout is not None
+    assert proc.stdout is not None  # nosec B101
 
     # Read output in a thread so we can impose a deadline
     lines: list[str] = []
 
     def _reader():
-        assert proc.stdout is not None
+        assert proc.stdout is not None  # nosec B101
         for raw in proc.stdout:
             line = raw.decode("utf-8", errors="replace").strip()
             lines.append(line)
