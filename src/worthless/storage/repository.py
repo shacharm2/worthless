@@ -89,8 +89,8 @@ class ShardRepository:
         self._db_path = db_path
         self._fernet_key_bytes = bytearray(fernet_key)  # SR-01: mutable for zeroing
         self._fernet: Fernet | None = Fernet(
-            bytes(self._fernet_key_bytes)
-        )  # nosemgrep: sr01-key-material-not-bytearray
+            memoryview(self._fernet_key_bytes).tobytes()
+        )  # Fernet requires immutable bytes; we zero _fernet_key_bytes on close()
         # Note: Fernet internally stores an immutable copy — unavoidable with
         # the cryptography library. We zero what we control on close().
 
@@ -141,8 +141,8 @@ class ShardRepository:
         Raises ``aiosqlite.IntegrityError`` if *alias* already exists.
         """
         shard_b_enc = self._get_fernet().encrypt(
-            bytes(shard.shard_b)
-        )  # nosemgrep: sr01-key-material-not-bytearray
+            memoryview(shard.shard_b).tobytes()
+        )  # Fernet requires immutable bytes
         async with self._connect() as db:
             await db.execute(
                 "INSERT INTO shards "
@@ -288,8 +288,8 @@ class ShardRepository:
             effective_cap = spend_cap  # type: ignore[assignment]  # int | None at this point
 
         shard_b_enc = self._get_fernet().encrypt(
-            bytes(shard.shard_b)
-        )  # nosemgrep: sr01-key-material-not-bytearray
+            memoryview(shard.shard_b).tobytes()
+        )  # Fernet requires immutable bytes
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(

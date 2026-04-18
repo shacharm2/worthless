@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess
+import subprocess  # nosec B404 — required for daemon process management
 import time
 from pathlib import Path
 
