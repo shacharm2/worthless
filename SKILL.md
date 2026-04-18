@@ -435,6 +435,29 @@ Agents should:
 
 ---
 
+## Security FAQ
+
+**What if my `.env` file leaks?**
+The attacker gets shard-A — a string that looks like a real API key but is cryptographically useless on its own. Without shard-B (encrypted in the proxy's database), they cannot reconstruct the original key. They cannot call any provider with it.
+
+**What if the server (proxy) is compromised?**
+The attacker gets shard-B (encrypted with Fernet) and potentially the Fernet key. They can decrypt shard-B, but shard-B alone is worthless — they still need shard-A from the client's `.env`. Compromising both the client machine AND the server is required to reconstruct a key.
+
+**What if someone intercepts the request between my app and the proxy?**
+The proxy runs on localhost (`127.0.0.1`). Traffic never leaves your machine. An attacker would need local access to your machine — at which point they could read `.env` directly anyway.
+
+**Does the proxy see my prompts or responses?**
+The proxy forwards requests and responses transparently. It does NOT log, store, or inspect prompt content or response content. It only extracts token counts from responses for spend metering.
+
+**What does worthless NOT protect against?**
+- An attacker with access to both your machine AND the server (they get both shards)
+- An attacker who can read your `.env` AND intercept the proxy's database (same as above)
+- Provider-side breaches (worthless protects the key in transit, not at the provider)
+- Keys used outside worthless (if you also paste the key into a script, that copy is not protected)
+
+**What about `.env` file permissions?**
+`worthless lock` removes group and other permissions from `.env` after writing shard-A (owner-only access). If your `.env` was world-readable before, lock fixes that.
+
 ## Security Notes
 
 - **Shard A** lives in your `.env` file as a format-preserving value (same prefix, charset, and length as the original key). It is sent to the proxy per-request via standard auth headers.

@@ -322,9 +322,9 @@ Worthless does **not** protect against:
 
 **Rust mitigation:** Reconstruction runs in a separate distroless container with its own memory space. Communication via Unix domain socket or gRPC. `seccomp` restricts the reconstruction process to network + memory syscalls only. The proxy process never has access to the reconstruction service's memory.
 
-### Key Lifecycle: No Bulk Rotation
+### Key Lifecycle: Per-Key Revocation
 
-**What it means:** There is no `worthless revoke` command and no bulk rotation mechanism in V1. If a breach is detected, each affected key must be manually re-enrolled via `worthless enroll`.
+**What it means:** `worthless revoke --alias <alias>` deletes a single key's shards and enrollment. There is no bulk rotation mechanism in V1 — each affected key must be revoked and re-enrolled individually.
 
 **Attacker prerequisites:** N/A — this is an operational limitation, not an exploitable vulnerability.
 
@@ -421,7 +421,7 @@ Worthless is licensed under the GNU Affero General Public License v3 (AGPLv3). F
 | `api_key.decode()` creates immutable str copy | Medium | [Memory Safety: `api_key.decode()` Creates Immutable str Copy](#memory-safety-api_keydecode-creates-immutable-str-copy) | Gap — Python `str` cannot be zeroed; Rust eliminates string conversion |
 | Key pages swappable to disk | Low | [Memory Safety: No mlock](#memory-safety-no-mlock) | Planned (Rust `mlock`) |
 | In-process reconstruction shares memory | Medium | [Process Isolation: In-Process Reconstruction](#process-isolation-in-process-reconstruction) | Planned (Rust distroless container) |
-| No bulk key rotation | Medium | [Key Lifecycle: No Bulk Rotation](#key-lifecycle-no-bulk-rotation) | Planned (V2) |
+| No bulk key rotation | Medium | [Key Lifecycle: Per-Key Revocation](#key-lifecycle-per-key-revocation) | Planned (V2) |
 | No protocol versioning for shard schema | Low | [Cryptographic Agility: No Protocol Versioning](#cryptographic-agility-no-protocol-versioning) | Gap — requires schema migration |
 | Fernet key on proxy host | Medium | [Shard B Data-at-Rest](#shard-b-data-at-rest-fernet-encryption) | Accepted (non-goal: compromised proxy) |
 | No gate denial audit log | Medium | [Forensic Logging](#forensic-logging) | Gap — logging not implemented |
