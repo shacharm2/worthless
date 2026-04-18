@@ -16,7 +16,7 @@ Worthless protects API keys in three scenarios:
 
 ### Package Info
 - **Package name**: `worthless`
-- **Version**: 0.2.0
+- **Version**: 0.3.0
 - **Entry point**: `worthless` (CLI command)
 - **Python**: 3.10+
 - **License**: AGPL-3.0
