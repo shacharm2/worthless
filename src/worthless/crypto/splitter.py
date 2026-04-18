@@ -64,27 +64,27 @@ def _detect_charset(body: str, provider: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _make_commitment(key_data: bytes | bytearray) -> tuple[bytearray, bytearray]:
-    """Create an HMAC-SHA256 commitment over key data.
+def _make_commitment(payload: bytes | bytearray) -> tuple[bytearray, bytearray]:
+    """Create an HMAC-SHA256 commitment over the given payload.
 
     Returns (commitment, nonce).
     """
     # mutmut: skip — token_bytes(None) defaults to 32; equivalent mutant
     nonce = bytearray(secrets.token_bytes(32))
     commitment = bytearray(
-        hmac.new(nonce, key_data, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256
+        hmac.new(nonce, payload, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256
     )
     return commitment, nonce
 
 
 def _verify_commitment(
-    key_data: bytes | bytearray,
+    payload: bytes | bytearray,
     commitment: bytes | bytearray,
     nonce: bytes | bytearray,
 ) -> None:
     """Verify HMAC-SHA256 commitment. Raises ShardTamperedError on mismatch."""
     expected = bytearray(
-        hmac.new(nonce, key_data, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256
+        hmac.new(nonce, payload, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256
     )
     try:
         if not hmac.compare_digest(expected, commitment):
