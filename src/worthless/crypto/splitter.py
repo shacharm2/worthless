@@ -179,12 +179,12 @@ def reconstruct_key_fp(
     shard_a_str = (
         shard_a.decode("utf-8")
         if isinstance(shard_a, bytearray)
-        else bytes(shard_a).decode("utf-8")
+        else bytearray(shard_a).decode("utf-8")
     )
     shard_b_str = (
         shard_b.decode("utf-8")
         if isinstance(shard_b, bytearray)
-        else bytes(shard_b).decode("utf-8")
+        else bytearray(shard_b).decode("utf-8")
     )
 
     if not shard_a_str.startswith(prefix):
