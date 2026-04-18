@@ -35,7 +35,7 @@ _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 def _make_alias(provider: str, api_key: str) -> str:
     """Deterministic alias: provider + first 8 hex chars of sha256(key)."""
-    digest = hashlib.sha256(api_key.encode()).hexdigest()[:8]  # nosec B303 -- non-cryptographic fingerprint
+    digest = hashlib.sha256(bytearray(api_key.encode())).hexdigest()[:8]  # nosec B303 -- non-cryptographic fingerprint
     return f"{provider}-{digest}"
 
 

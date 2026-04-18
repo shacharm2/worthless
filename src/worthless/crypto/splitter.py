@@ -139,7 +139,7 @@ def split_key_fp(
     shard_a_str = prefix + "".join(shard_a_chars)
     shard_b_str = "".join(shard_b_chars)
 
-    commitment, nonce = _make_commitment(api_key.encode("utf-8"))
+    commitment, nonce = _make_commitment(bytearray(api_key.encode("utf-8")))
 
     return FormatPreservingSplitResult(
         shard_a=bytearray(shard_a_str.encode("utf-8")),
@@ -240,7 +240,7 @@ def split_key(api_key: bytes) -> SplitResult:
     mask = bytearray(secrets.token_bytes(len(api_key)))
     shard_a = bytearray(a ^ b for a, b in zip(api_key, mask, strict=True))
 
-    commitment, nonce = _make_commitment(api_key)
+    commitment, nonce = _make_commitment(bytearray(api_key))
 
     return SplitResult(
         shard_a=shard_a,
