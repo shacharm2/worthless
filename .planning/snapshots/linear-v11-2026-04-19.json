@@ -1,0 +1,1224 @@
+{
+  "project": "Worthless v1.1 Release",
+  "project_id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+  "fetched_at": "2026-04-19",
+  "issues": [
+    {
+      "id": "b29ba9b8-e7ea-47a5-83d1-bfa05bd4f228",
+      "identifier": "WOR-231",
+      "title": "Windows proxy startup path is internally inconsistent",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -184276,
+      "parent": {
+        "id": "42a2cca4-fd2e-4702-90a4-7bed6baf3101",
+        "identifier": "WOR-230",
+        "title": "Epic: Python audit remediation backlog (2026-04-08 review)"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "v1.1"
+          },
+          {
+            "name": "security"
+          },
+          {
+            "name": "Bug"
+          }
+        ]
+      }
+    },
+    {
+      "id": "42a2cca4-fd2e-4702-90a4-7bed6baf3101",
+      "identifier": "WOR-230",
+      "title": "Epic: Python audit remediation backlog (2026-04-08 review)",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 1,
+      "sortOrder": -183367,
+      "parent": null,
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "v1.1"
+          },
+          {
+            "name": "security"
+          },
+          {
+            "name": "debt"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ec6f3367-0a8f-4391-939b-4e3226c247f4",
+      "identifier": "WOR-229",
+      "title": "Ship worthless-mcp npm package for Claude Code / Cursor auto-install",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 1,
+      "sortOrder": -182294,
+      "parent": null,
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "DevOps"
+          },
+          {
+            "name": "v1.1"
+          },
+          {
+            "name": "Feature"
+          }
+        ]
+      }
+    },
+    {
+      "id": "9f4d6ea8-306f-4634-a7c2-ad5f8242c0ef",
+      "identifier": "WOR-228",
+      "title": "Default command: proxy PID detection broken \u2014 starts duplicate on second run",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 1,
+      "sortOrder": -7857,
+      "parent": null,
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "v1.1"
+          },
+          {
+            "name": "Bug"
+          }
+        ]
+      }
+    },
+    {
+      "id": "075f1e1f-96da-4d9c-a14a-a3d0dcccbd78",
+      "identifier": "WOR-227",
+      "title": "Documentation System",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 2,
+      "sortOrder": -5835,
+      "parent": null,
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "f32b0344-9dbd-4ced-993d-f3968007556f",
+      "identifier": "WOR-226",
+      "title": "External Website Documentation",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -179388,
+      "parent": {
+        "id": "075f1e1f-96da-4d9c-a14a-a3d0dcccbd78",
+        "identifier": "WOR-227",
+        "title": "Documentation System"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "16708c85-1339-4a23-b808-27cfe34148b7",
+      "identifier": "WOR-225",
+      "title": "Developer Internal Documentation",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 2,
+      "sortOrder": -6763,
+      "parent": {
+        "id": "075f1e1f-96da-4d9c-a14a-a3d0dcccbd78",
+        "identifier": "WOR-227",
+        "title": "Documentation System"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "5711cb65-4c8d-44d0-b116-b9704eff7cb7",
+      "identifier": "WOR-224",
+      "title": "Research backlog-shaping approach before converting audit findings into implementation work",
+      "state": {
+        "name": "Canceled"
+      },
+      "priority": 2,
+      "sortOrder": -4076,
+      "parent": {
+        "id": "6e3ce8cc-82c1-4bb3-be13-228d71b557a8",
+        "identifier": "WOR-220",
+        "title": "Convert audit findings into actionable Linear backlog items"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "f3d29720-041a-4207-9e12-62706eeca6a8",
+      "identifier": "WOR-223",
+      "title": "Research Semgrep, CodeQL, and AI-review capabilities against repo needs",
+      "state": {
+        "name": "Canceled"
+      },
+      "priority": 2,
+      "sortOrder": -2979,
+      "parent": {
+        "id": "7242e9e0-d3aa-433b-b848-cfe5a9f6cfed",
+        "identifier": "WOR-219",
+        "title": "Evaluate Semgrep, CodeQL, and AI-assisted security review roles for this repo"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "0b3e8892-de94-4b47-ac04-400221341715",
+      "identifier": "WOR-222",
+      "title": "Research current SR enforcement and suppression landscape before gap analysis",
+      "state": {
+        "name": "Canceled"
+      },
+      "priority": 1,
+      "sortOrder": -1913,
+      "parent": {
+        "id": "9fbf6763-9567-4753-b026-e4521d205acb",
+        "identifier": "WOR-218",
+        "title": "Build SR coverage matrix and identify missing rules vs missing enforcement"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "43c326c9-0e7c-4ae1-85fc-9a386ab4f7b5",
+      "identifier": "WOR-221",
+      "title": "Research current repo flows and choose artifact format before audit mapping",
+      "state": {
+        "name": "Canceled"
+      },
+      "priority": 2,
+      "sortOrder": -892,
+      "parent": {
+        "id": "b6f5f9b1-e6ff-4a96-b707-8d4304375100",
+        "identifier": "WOR-217",
+        "title": "Audit current repo flows into functionality inventory, state machines, and sensitive-data diagrams"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "6e3ce8cc-82c1-4bb3-be13-228d71b557a8",
+      "identifier": "WOR-220",
+      "title": "Convert audit findings into actionable Linear backlog items",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 2,
+      "sortOrder": -4787,
+      "parent": {
+        "id": "efada68f-f5c2-4099-b71f-24b95184e711",
+        "identifier": "WOR-216",
+        "title": "Security Testing Tightening"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "7242e9e0-d3aa-433b-b848-cfe5a9f6cfed",
+      "identifier": "WOR-219",
+      "title": "Evaluate Semgrep, CodeQL, and AI-assisted security review roles for this repo",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 2,
+      "sortOrder": -3825,
+      "parent": {
+        "id": "efada68f-f5c2-4099-b71f-24b95184e711",
+        "identifier": "WOR-216",
+        "title": "Security Testing Tightening"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "9fbf6763-9567-4753-b026-e4521d205acb",
+      "identifier": "WOR-218",
+      "title": "Build SR coverage matrix and identify missing rules vs missing enforcement",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 1,
+      "sortOrder": -2903,
+      "parent": {
+        "id": "efada68f-f5c2-4099-b71f-24b95184e711",
+        "identifier": "WOR-216",
+        "title": "Security Testing Tightening"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "b6f5f9b1-e6ff-4a96-b707-8d4304375100",
+      "identifier": "WOR-217",
+      "title": "Audit current repo flows into functionality inventory, state machines, and sensitive-data diagrams",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 2,
+      "sortOrder": -1848,
+      "parent": {
+        "id": "efada68f-f5c2-4099-b71f-24b95184e711",
+        "identifier": "WOR-216",
+        "title": "Security Testing Tightening"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "efada68f-f5c2-4099-b71f-24b95184e711",
+      "identifier": "WOR-216",
+      "title": "Security Testing Tightening",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -177297,
+      "parent": {
+        "id": "075f1e1f-96da-4d9c-a14a-a3d0dcccbd78",
+        "identifier": "WOR-227",
+        "title": "Documentation System"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "ef8dde78-8c2f-44f6-a4b4-d5e10592059d",
+      "identifier": "WOR-197",
+      "title": "Curl installer script for worthless.sh",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -75713,
+      "parent": {
+        "id": "5faaf143-f792-45af-8a68-053327166a01",
+        "identifier": "WOR-192",
+        "title": "Wave 6: Magic Default Command + PyPI Publish"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "50373f6e-2b18-4d51-b0e6-af3b107a0d89",
+      "identifier": "WOR-196",
+      "title": "Release hardening: SECURITY.md, attestations, sdist safety, Docker perms",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 1,
+      "sortOrder": -83710,
+      "parent": {
+        "id": "5faaf143-f792-45af-8a68-053327166a01",
+        "identifier": "WOR-192",
+        "title": "Wave 6: Magic Default Command + PyPI Publish"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "981b7972-709b-433f-90c3-8f9b82eb6aa0",
+      "identifier": "WOR-195",
+      "title": "Magic default command \u2014 bare `worthless` sequential pipeline",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 1,
+      "sortOrder": -71662,
+      "parent": {
+        "id": "5faaf143-f792-45af-8a68-053327166a01",
+        "identifier": "WOR-192",
+        "title": "Wave 6: Magic Default Command + PyPI Publish"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "5803cca5-af16-40bc-bd9f-bf3da5d6f213",
+      "identifier": "WOR-194",
+      "title": "Refactor: extract start_daemon() + add quiet to _lock_keys()",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -70742,
+      "parent": {
+        "id": "5faaf143-f792-45af-8a68-053327166a01",
+        "identifier": "WOR-192",
+        "title": "Wave 6: Magic Default Command + PyPI Publish"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "9c3a5bc4-e707-480e-8f12-2f63d2a546ac",
+      "identifier": "WOR-193",
+      "title": "Wave 7: Service Management \u2014 Persistent Proxy via launchd/systemd",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -155510,
+      "parent": null,
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "5faaf143-f792-45af-8a68-053327166a01",
+      "identifier": "WOR-192",
+      "title": "Wave 6: Magic Default Command + PyPI Publish",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 1,
+      "sortOrder": -80707,
+      "parent": null,
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "624b1531-05c8-4436-a8a2-b5eae8feaa7f",
+      "identifier": "WOR-185",
+      "title": "Move Fernet key from disk to OS keyring",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -68750,
+      "parent": null,
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "d0440a6e-3c8d-4967-bbe8-2ace35564ffd",
+        "name": "Wave 5 \u2014 README + Service Install"
+      },
+      "labels": {
+        "nodes": [
+          {
+            "name": "security"
+          }
+        ]
+      }
+    },
+    {
+      "id": "537f9112-74db-4a1c-b42f-2e59e64a7014",
+      "identifier": "WOR-184",
+      "title": "Phase 5: CLI rules configuration \u2014 lock flags + rules update/show",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -58472,
+      "parent": {
+        "id": "716b4012-99cc-469a-8b80-7df0502b1875",
+        "identifier": "WOR-181",
+        "title": "Wave 3: Rules Engine \u2014 model_allowlist, token_budget, time_window"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "7382787b-dc73-478b-934e-93e4339cd660",
+        "name": "Wave 3 \u2014 Rules Engine"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "ff299ee9-924f-4f27-afbc-9205cf58c9af",
+      "identifier": "WOR-183",
+      "title": "Phase 1: Schema migration + structured error factories",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -55483,
+      "parent": {
+        "id": "716b4012-99cc-469a-8b80-7df0502b1875",
+        "identifier": "WOR-181",
+        "title": "Wave 3: Rules Engine \u2014 model_allowlist, token_budget, time_window"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "7382787b-dc73-478b-934e-93e4339cd660",
+        "name": "Wave 3 \u2014 Rules Engine"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "528bd7b5-f42b-4ee0-912b-323419561aa2",
+      "identifier": "WOR-182",
+      "title": "Phase 0: Rule protocol refactor \u2014 add body parameter + spend_log cleanup",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -54535,
+      "parent": {
+        "id": "716b4012-99cc-469a-8b80-7df0502b1875",
+        "identifier": "WOR-181",
+        "title": "Wave 3: Rules Engine \u2014 model_allowlist, token_budget, time_window"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "7382787b-dc73-478b-934e-93e4339cd660",
+        "name": "Wave 3 \u2014 Rules Engine"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "716b4012-99cc-469a-8b80-7df0502b1875",
+      "identifier": "WOR-181",
+      "title": "Wave 3: Rules Engine \u2014 model_allowlist, token_budget, time_window",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -59513,
+      "parent": null,
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "7382787b-dc73-478b-934e-93e4339cd660",
+        "name": "Wave 3 \u2014 Rules Engine"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "b2fa234f-ceeb-414d-a9ab-dfa5847d2477",
+      "identifier": "WOR-180",
+      "title": "End-to-end smoke test for product promise",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -72720,
+      "parent": {
+        "id": "5faaf143-f792-45af-8a68-053327166a01",
+        "identifier": "WOR-192",
+        "title": "Wave 6: Magic Default Command + PyPI Publish"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "47f8d001-b3dc-442a-9044-39633a2d4d65",
+        "name": "Wave 6 \u2014 Version Bump + PyPI + Smoke Test"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "681f074e-675a-46e2-a57e-af4f2a76ae24",
+      "identifier": "WOR-179",
+      "title": "Check PyPI namespace availability for 'worthless'",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 1,
+      "sortOrder": -42592,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "29e17734-3780-4121-bd82-3539387c4df4",
+        "name": "Wave 1 \u2014 CLI + Daemon Fixes"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "3147b0b7-2210-4acd-8c5b-1b77c63c42b1",
+      "identifier": "WOR-178",
+      "title": "Post-lock next-step guidance",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -48515,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "29e17734-3780-4121-bd82-3539387c4df4",
+        "name": "Wave 1 \u2014 CLI + Daemon Fixes"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "632184a8-b46e-4494-b2c8-598fcdd19eb3",
+      "identifier": "WOR-177",
+      "title": "worthless --version flag",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 3,
+      "sortOrder": -46561,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "29e17734-3780-4121-bd82-3539387c4df4",
+        "name": "Wave 1 \u2014 CLI + Daemon Fixes"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "8f6a4ba6-fe26-4c12-9688-873c2e0e77df",
+      "identifier": "WOR-176",
+      "title": "Make mcp an optional dependency (worthless[mcp])",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -45491,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "29e17734-3780-4121-bd82-3539387c4df4",
+        "name": "Wave 1 \u2014 CLI + Daemon Fixes"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "479756fa-87d4-4330-acfe-c4e8e59d1479",
+      "identifier": "WOR-175",
+      "title": "worthless service install \u2014 Linux systemd",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -148298,
+      "parent": {
+        "id": "9c3a5bc4-e707-480e-8f12-2f63d2a546ac",
+        "identifier": "WOR-193",
+        "title": "Wave 7: Service Management \u2014 Persistent Proxy via launchd/systemd"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "d0440a6e-3c8d-4967-bbe8-2ace35564ffd",
+        "name": "Wave 5 \u2014 README + Service Install"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "0d9e0f79-fa06-47d6-9c51-c3f418cdcb88",
+      "identifier": "WOR-174",
+      "title": "worthless service install \u2014 macOS launchd",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -147261,
+      "parent": {
+        "id": "9c3a5bc4-e707-480e-8f12-2f63d2a546ac",
+        "identifier": "WOR-193",
+        "title": "Wave 7: Service Management \u2014 Persistent Proxy via launchd/systemd"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "d0440a6e-3c8d-4967-bbe8-2ace35564ffd",
+        "name": "Wave 5 \u2014 README + Service Install"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "9204a59e-9253-4a18-93c7-02975af41a87",
+      "identifier": "WOR-173",
+      "title": "worthless down \u2014 stop running proxy daemon",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 1,
+      "sortOrder": -53619,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "a67c4491-8d36-4d5e-875f-424aef16f84b",
+        "name": "Wave 2 \u2014 Docker + Windows + PaaS"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "91eb136a-8873-4ea7-9cac-7711e49dbf15",
+      "identifier": "WOR-172",
+      "title": "Windows experimental support \u2014 platform guards + CI",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -52563,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "a67c4491-8d36-4d5e-875f-424aef16f84b",
+        "name": "Wave 2 \u2014 Docker + Windows + PaaS"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "ffdb0276-7b0d-414c-a3e0-8524dc1643f8",
+      "identifier": "WOR-171",
+      "title": "First-run success feedback in worthless wrap",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -50444,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "29e17734-3780-4121-bd82-3539387c4df4",
+        "name": "Wave 1 \u2014 CLI + Daemon Fixes"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "34ed1a42-ace2-48b7-86b3-ccab2eca4431",
+      "identifier": "WOR-170",
+      "title": "Verify Docker/Railway/Render configs end-to-end",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -61411,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "d79fbd1a-423e-4508-b77e-51be79ff8227",
+        "name": "Wave 4 \u2014 SKILL.md + Deploy Verification"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "ed964202-edad-412f-a564-9d062bc0b9fb",
+      "identifier": "WOR-169",
+      "title": "Soften tagline for pre-Rust release",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -44504,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "29e17734-3780-4121-bd82-3539387c4df4",
+        "name": "Wave 1 \u2014 CLI + Daemon Fixes"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "7deaf945-bd13-456b-9d98-4964f36c0de8",
+      "identifier": "WOR-168",
+      "title": "Default spend cap on enrollment",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -49458,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "29e17734-3780-4121-bd82-3539387c4df4",
+        "name": "Wave 1 \u2014 CLI + Daemon Fixes"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "baf6531b-5369-4547-a03b-69ca05354ede",
+      "identifier": "WOR-167",
+      "title": "Version bump to 0.2.0",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 1,
+      "sortOrder": -69815,
+      "parent": {
+        "id": "5faaf143-f792-45af-8a68-053327166a01",
+        "identifier": "WOR-192",
+        "title": "Wave 6: Magic Default Command + PyPI Publish"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "47f8d001-b3dc-442a-9044-39633a2d4d65",
+        "name": "Wave 6 \u2014 Version Bump + PyPI + Smoke Test"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "6e7ca5f1-bc6d-4cf7-a77b-d3d9e12a3e5c",
+      "identifier": "WOR-166",
+      "title": "PyPI publish pipeline + first publish",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 1,
+      "sortOrder": -74625,
+      "parent": {
+        "id": "5faaf143-f792-45af-8a68-053327166a01",
+        "identifier": "WOR-192",
+        "title": "Wave 6: Magic Default Command + PyPI Publish"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "47f8d001-b3dc-442a-9044-39633a2d4d65",
+        "name": "Wave 6 \u2014 Version Bump + PyPI + Smoke Test"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "6ae393a4-383f-49cd-98ee-46e5e965b823",
+      "identifier": "WOR-165",
+      "title": "README quickstart rewrite for pip install",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 1,
+      "sortOrder": -73693,
+      "parent": {
+        "id": "5faaf143-f792-45af-8a68-053327166a01",
+        "identifier": "WOR-192",
+        "title": "Wave 6: Magic Default Command + PyPI Publish"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "d0440a6e-3c8d-4967-bbe8-2ace35564ffd",
+        "name": "Wave 5 \u2014 README + Service Install"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "71970e96-4b13-48c9-9336-edc8bf973437",
+      "identifier": "WOR-164",
+      "title": "Fix Python version badge vs pyproject.toml",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 1,
+      "sortOrder": -43574,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "29e17734-3780-4121-bd82-3539387c4df4",
+        "name": "Wave 1 \u2014 CLI + Daemon Fixes"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "59e2a07f-e9e1-496f-92fb-72befc66576e",
+      "identifier": "WOR-163",
+      "title": "SKILL.md agent discovery file",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 3,
+      "sortOrder": -60498,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "d79fbd1a-423e-4508-b77e-51be79ff8227",
+        "name": "Wave 4 \u2014 SKILL.md + Deploy Verification"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "2ba50751-ee25-4942-8c70-6dda2e9b9499",
+      "identifier": "WOR-162",
+      "title": "Verify scan pre-commit hook integration",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 3,
+      "sortOrder": -47541,
+      "parent": {
+        "id": "10bac4a4-42ef-4f74-ae70-1cbc87954588",
+        "identifier": "WOR-158",
+        "title": "v1.1 (0.2.0): First public release \u2014 pip install worthless"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "29e17734-3780-4121-bd82-3539387c4df4",
+        "name": "Wave 1 \u2014 CLI + Daemon Fixes"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "ffe39475-e7fb-43c0-bf28-2b0db05cbd52",
+      "identifier": "WOR-161",
+      "title": "TimeWindowRule: time-based access restrictions",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -57508,
+      "parent": {
+        "id": "716b4012-99cc-469a-8b80-7df0502b1875",
+        "identifier": "WOR-181",
+        "title": "Wave 3: Rules Engine \u2014 model_allowlist, token_budget, time_window"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "7382787b-dc73-478b-934e-93e4339cd660",
+        "name": "Wave 3 \u2014 Rules Engine"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "398f5d0e-dad6-4630-b3c4-6d5b8163f03d",
+      "identifier": "WOR-160",
+      "title": "TokenBudgetRule: daily/weekly/monthly token limits",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 2,
+      "sortOrder": -56423,
+      "parent": {
+        "id": "716b4012-99cc-469a-8b80-7df0502b1875",
+        "identifier": "WOR-181",
+        "title": "Wave 3: Rules Engine \u2014 model_allowlist, token_budget, time_window"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "7382787b-dc73-478b-934e-93e4339cd660",
+        "name": "Wave 3 \u2014 Rules Engine"
+      },
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "40e45ad7-b326-4589-883e-3be6e824d449",
+      "identifier": "WOR-159",
+      "title": "ModelAllowlistRule: per-alias model restrictions",
+      "state": {
+        "name": "Canceled"
+      },
+      "priority": 2,
+      "sortOrder": 37,
+      "parent": {
+        "id": "716b4012-99cc-469a-8b80-7df0502b1875",
+        "identifier": "WOR-181",
+        "title": "Wave 3: Rules Engine \u2014 model_allowlist, token_budget, time_window"
+      },
+      "project": {
+        "id": "9c14710c-b487-46e9-b40f-a08a8e986648",
+        "name": "Worthless v1.1 Release"
+      },
+      "projectMilestone": {
+        "id": "7382787b-dc73-478b-934e-93e4339cd660",
+        "name": "Wave 3 \u2014 Rules Engine"
+      },
+      "labels": {
+        "nodes": []
+      }
+    }
+  ]
+}

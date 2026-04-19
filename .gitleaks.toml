@@ -38,5 +38,6 @@ paths = [
     '''\.gitleaks\.toml$''',
     '''SECURITY_RULES\.md$''',
     '''\.planning/research/.*\.md$''',
+    '''\.planning/snapshots/.*\.json$''',
     '''tests/.*\.py$''',
 ]

@@ -1,0 +1,212 @@
+{
+  "project": "Worthless v2.0 Harden",
+  "project_id": "33529623-3e39-40bb-a4f9-8c825258cea7",
+  "fetched_at": "2026-04-19",
+  "issues": [
+    {
+      "id": "25a9998c-1470-478e-987e-096a5e5b9e6f",
+      "identifier": "WOR-157",
+      "title": "Phase 12: Migration \u2014 Optional Fernet-to-Shamir per-key conversion",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 3,
+      "sortOrder": -130125,
+      "parent": null,
+      "project": {
+        "id": "33529623-3e39-40bb-a4f9-8c825258cea7",
+        "name": "Worthless v2.0 Harden"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "gsd-phase"
+          }
+        ]
+      }
+    },
+    {
+      "id": "c96623d9-a2d9-4eaf-bebc-23b4ea4e3b61",
+      "identifier": "WOR-155",
+      "title": "Phase 9: Sidecar Hardening \u2014 OS sandboxing and performance validation",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 3,
+      "sortOrder": -128098,
+      "parent": null,
+      "project": {
+        "id": "33529623-3e39-40bb-a4f9-8c825258cea7",
+        "name": "Worthless v2.0 Harden"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "security"
+          },
+          {
+            "name": "gsd-phase"
+          }
+        ]
+      }
+    },
+    {
+      "id": "0a54bd0d-0613-4851-9dd8-0e24073c55da",
+      "identifier": "WOR-150",
+      "title": "Phase 13: Security Hardening and Documentation",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 3,
+      "sortOrder": -123038,
+      "parent": null,
+      "project": {
+        "id": "33529623-3e39-40bb-a4f9-8c825258cea7",
+        "name": "Worthless v2.0 Harden"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "security"
+          },
+          {
+            "name": "gsd-phase"
+          }
+        ]
+      }
+    },
+    {
+      "id": "92b40003-ba14-4f32-9177-ce88e72a3a4e",
+      "identifier": "WOR-149",
+      "title": "Phase 10: Distribution \u2014 maturin wheels, Docker multi-container, CI builds",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 3,
+      "sortOrder": -121965,
+      "parent": null,
+      "project": {
+        "id": "33529623-3e39-40bb-a4f9-8c825258cea7",
+        "name": "Worthless v2.0 Harden"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "DevOps"
+          },
+          {
+            "name": "gsd-phase"
+          }
+        ]
+      }
+    },
+    {
+      "id": "345f245b-9c5e-4424-a6c3-1cfed2c301c7",
+      "identifier": "WOR-148",
+      "title": "Phase 11: Python Layer Rewire \u2014 dual-mode proxy/CLI (light + secure coexist)",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -121050,
+      "parent": null,
+      "project": {
+        "id": "33529623-3e39-40bb-a4f9-8c825258cea7",
+        "name": "Worthless v2.0 Harden"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "gsd-phase"
+          },
+          {
+            "name": "Improvement"
+          }
+        ]
+      }
+    },
+    {
+      "id": "a4acff71-af69-41ec-863d-01fb46e0aa37",
+      "identifier": "WOR-147",
+      "title": "Phase 8: Sidecar Core \u2014 Rust binary with vault/proxy mode over IPC",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 1,
+      "sortOrder": -120010,
+      "parent": null,
+      "project": {
+        "id": "33529623-3e39-40bb-a4f9-8c825258cea7",
+        "name": "Worthless v2.0 Harden"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "security"
+          },
+          {
+            "name": "gsd-phase"
+          }
+        ]
+      }
+    },
+    {
+      "id": "91929c25-1401-44cd-95a2-ce7adfe38a59",
+      "identifier": "WOR-146",
+      "title": "Phase 7: Shard Store \u2014 Platform credential store backends",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -119089,
+      "parent": null,
+      "project": {
+        "id": "33529623-3e39-40bb-a4f9-8c825258cea7",
+        "name": "Worthless v2.0 Harden"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "security"
+          },
+          {
+            "name": "gsd-phase"
+          }
+        ]
+      }
+    },
+    {
+      "id": "6637b8b4-8954-4034-a2a0-c98648e063b0",
+      "identifier": "WOR-145",
+      "title": "Phase 6: Shamir Core \u2014 GF(256) Shamir 2-of-3",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 1,
+      "sortOrder": -118006,
+      "parent": null,
+      "project": {
+        "id": "33529623-3e39-40bb-a4f9-8c825258cea7",
+        "name": "Worthless v2.0 Harden"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "security"
+          },
+          {
+            "name": "gsd-phase"
+          }
+        ]
+      }
+    }
+  ]
+}
