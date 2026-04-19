@@ -55,7 +55,6 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pyright>=1.1",
-    "pylint>=3.3",
     "ruff>=0.8",
 ]
 test = [
@@ -94,7 +93,6 @@ dev = [
     "pip-licenses>=5.5.5",
     "pre-commit>=4.0",
     "pyright>=1.1",
-    "pylint>=3.3",
     "ruff>=0.8",
     "vulture>=2.16",
     "xenon>=0.9.3",

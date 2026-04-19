@@ -2,6 +2,8 @@
 
 This directory contains deterministic structure artifacts produced from the current Python package layout via `pyreverse`.
 
+The rendered artifacts are checked into the repo. Regeneration is a maintainer task and currently requires a local `pyreverse` installation outside the committed project dependency set.
+
 Current outputs:
 
 - `packages_worthless.dot`: package dependency and containment view
