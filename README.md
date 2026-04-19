@@ -73,9 +73,13 @@ Docker.
 | Native Windows | Not supported — `up`, `wrap`, and the default command exit with `WRTLS-110`. `down` is allowed so existing state can be cleaned up. |
 
 `WORTHLESS_WINDOWS_ACK=1` suppresses the soft warning on `down`; it does not
-bypass the hard gate on the other entry points. If you need native-Windows
-support, please open an issue rather than patching around the guard — the
-process-lifecycle work is tracked but deliberately out of V1 scope.
+bypass the hard gate on the other entry points.
+
+**Planned:** native-Windows support (stdin Fernet key transport, Windows Job
+Objects, `DETACHED_PROCESS`) is tracked in
+[WOR-237](https://linear.app/plumbusai/issue/WOR-237/v12-native-windows-support-stdin-fernet-job-objects-detached-process) —
+target v1.2. If you need it sooner or want to help, comment on the issue
+rather than patching around the guard locally.
 
 ## Undo everything
 

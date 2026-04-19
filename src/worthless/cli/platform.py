@@ -117,10 +117,16 @@ def kill_tree(pid: int, *, force: bool = False) -> None:
 def warn_windows_once(*, quiet: bool = False) -> None:
     """Print a one-shot experimental warning on Windows.
 
-    Used by commands that are allowed to run on Windows (e.g. ``down``,
-    so users have an escape hatch to clean up state). Commands that
-    rely on POSIX process semantics should call :func:`fail_if_windows`
-    instead.
+    Used by commands that are allowed to run on Windows (currently only
+    ``down``). Commands that rely on POSIX process semantics should call
+    :func:`fail_if_windows` instead.
+
+    The ``down`` exemption is narrow: a user who ran a pre-guard version
+    of worthless on native Windows can have a stale pidfile in
+    ``%USERPROFILE%\\.worthless\\`` that needs cleaning up. ``down`` is
+    still useful there. A daemon started from WSL, on the other hand,
+    lives in WSL's namespace and native ``down`` cannot touch it —
+    that's out of scope by design.
 
     Suppressed by ``--quiet`` or ``WORTHLESS_WINDOWS_ACK=1``.
     """
@@ -157,5 +163,6 @@ def fail_if_windows() -> None:
         ErrorCode.PLATFORM_UNSUPPORTED,
         "Native Windows is not supported. Please use WSL or run via Docker.\n"
         f"See: {PLATFORMS_URL}\n"
-        "(This check cannot be bypassed; WORTHLESS_WINDOWS_ACK does not apply here.)",
+        "(This check does not honor WORTHLESS_WINDOWS_ACK — that variable only "
+        "silences the soft warning on 'worthless down'.)",
     )

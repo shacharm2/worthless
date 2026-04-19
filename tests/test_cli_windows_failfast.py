@@ -102,28 +102,50 @@ class TestErrorMessageContract:
         result = runner.invoke(app, ["up"], env={"WORTHLESS_HOME": str(home_dir)})
         assert "WRTLS-110" in result.output, result.output
 
-    def test_error_says_it_cannot_be_bypassed(self, fake_windows: None, home_dir: Path) -> None:
-        """WORTHLESS_WINDOWS_ACK used to silence the soft warning; on the hard
-        path it's a no-op. The message must say so explicitly, otherwise users
-        file confused bug reports.
+    def test_error_names_the_ineffective_env_var(self, fake_windows: None, home_dir: Path) -> None:
+        """``WORTHLESS_WINDOWS_ACK`` silences the soft warning on ``down``; on
+        the hard-fail path it's a no-op. The message must name the variable
+        explicitly so users who try to set it don't file confused bug reports.
         """
         result = runner.invoke(app, ["up"], env={"WORTHLESS_HOME": str(home_dir)})
         collapsed = " ".join(result.output.split()).lower()
-        assert "cannot be bypassed" in collapsed, collapsed
+        assert "worthless_windows_ack" in collapsed, collapsed
+        assert "does not honor" in collapsed, collapsed
 
 
 class TestErrorLinkTargetExists:
     """The error message points at a README anchor — that anchor must exist.
 
-    Without this check, the link can silently rot (README rename, typo) and
-    Windows users hit a 404 at the exact point of frustration.
+    Substring-matching alone (``"## Platforms" in content``) passes for
+    ``## Platforms (deprecated)``, ``## Platforms Are Great``, etc. — which
+    would silently shift the GitHub slug and break the link. Pin the exact
+    heading with a regex, then derive the expected slug and confirm it
+    matches the fragment in ``PLATFORMS_URL``.
     """
 
-    def test_readme_has_platforms_section(self) -> None:
+    def test_readme_has_exact_platforms_heading(self) -> None:
+        import re
+
         readme = Path(__file__).resolve().parents[1] / "README.md"
         content = readme.read_text(encoding="utf-8")
-        # GitHub slugifies headings lowercase with dashes — "## Platforms"
-        # → #platforms. Match the heading verbatim to keep the test precise.
-        assert "## Platforms" in content, (
-            "error message points at #platforms but README has no ## Platforms heading"
+        assert re.search(r"^## Platforms\s*$", content, flags=re.MULTILINE), (
+            "README must have an exact '## Platforms' heading (no suffix) — "
+            "error message fragment '#platforms' depends on it"
+        )
+
+    def test_platforms_url_fragment_matches_readme_slug(self) -> None:
+        """``PLATFORMS_URL``'s fragment must equal the slug GitHub will generate
+        from the ``## Platforms`` heading. GitHub's rule: lowercase, punctuation
+        stripped, spaces → dashes. For an exact ``## Platforms`` the slug is
+        ``platforms``; pin the contract so a future URL rename is caught here.
+        """
+        from urllib.parse import urlparse
+
+        from worthless.cli.platform import PLATFORMS_URL
+
+        fragment = urlparse(PLATFORMS_URL).fragment
+        expected_slug = "platforms"  # slugify("Platforms")
+        assert fragment == expected_slug, (
+            f"PLATFORMS_URL fragment is '{fragment}', but the README heading "
+            f"'## Platforms' generates the GitHub slug '{expected_slug}'"
         )
