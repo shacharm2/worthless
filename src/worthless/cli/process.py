@@ -275,24 +275,30 @@ def _parse_uvicorn_port(proc: subprocess.Popen, timeout: float = 15.0) -> int:
 MAX_VALID_PID: int = 4_194_304
 
 
-def poll_health(port: int, timeout: float = 10.0) -> bool:
-    """Poll ``GET /healthz`` until 200 or *timeout*.
+def _iter_healthz_responses(port: int, timeout: float) -> Generator[httpx.Response, None, None]:
+    """Yield each 200 response from ``GET /healthz`` until *timeout*.
 
-    Returns True if healthy, False if timeout.
+    Swallows connection/timeout/OS errors so callers see only successful
+    responses. Private: call ``poll_health`` for liveness or
+    ``poll_health_pid`` for authoritative PID resolution.
     """
     deadline = time.monotonic() + timeout
     url = f"http://127.0.0.1:{port}/healthz"
-
     with httpx.Client(timeout=2.0) as client:
         while time.monotonic() < deadline:
             try:
                 resp = client.get(url)
                 if resp.status_code == 200:
-                    return True
-            except (httpx.ConnectError, httpx.TimeoutException, OSError):
+                    yield resp
+            except (httpx.HTTPError, OSError):
                 pass
             time.sleep(0.3)
 
+
+def poll_health(port: int, timeout: float = 10.0) -> bool:
+    """Return True if ``GET /healthz`` returns 200 within *timeout* seconds."""
+    for _resp in _iter_healthz_responses(port, timeout):
+        return True
     return False
 
 
@@ -309,31 +315,20 @@ def poll_health_pid(port: int, timeout: float = 10.0) -> int | None:
     of the valid range ``[2, MAX_VALID_PID]`` (in which case the caller
     is expected to fall back to its own best guess).
     """
-    deadline = time.monotonic() + timeout
-    url = f"http://127.0.0.1:{port}/healthz"
-
-    with httpx.Client(timeout=2.0) as client:
-        while time.monotonic() < deadline:
-            try:
-                resp = client.get(url)
-                if resp.status_code == 200:
-                    try:
-                        payload = resp.json()
-                    except (ValueError, TypeError, httpx.HTTPError):
-                        return None
-                    if not isinstance(payload, dict):
-                        return None
-                    raw_pid = payload.get("pid")
-                    # bool subclasses int in Python — reject True/False.
-                    if isinstance(raw_pid, bool) or not isinstance(raw_pid, int):
-                        return None
-                    if raw_pid < 2 or raw_pid > MAX_VALID_PID:
-                        return None
-                    return raw_pid
-            except (httpx.HTTPError, OSError):
-                pass
-            time.sleep(0.3)
-
+    for resp in _iter_healthz_responses(port, timeout):
+        try:
+            payload = resp.json()
+        except (ValueError, TypeError, httpx.HTTPError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        raw_pid = payload.get("pid")
+        # bool subclasses int in Python — reject True/False.
+        if isinstance(raw_pid, bool) or not isinstance(raw_pid, int):
+            return None
+        if raw_pid < 2 or raw_pid > MAX_VALID_PID:
+            return None
+        return raw_pid
     return None
 
 

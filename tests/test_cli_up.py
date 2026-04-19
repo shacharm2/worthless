@@ -163,7 +163,7 @@ class TestUpDaemonFlow:
         )
         # Force the descendant check to return False — 88888 is "foreign".
         monkeypatch.setattr(
-            "worthless.cli.commands.up._pid_in_our_tree",
+            "worthless.cli.commands.up.pid_in_tree",
             lambda _root, _candidate: False,
         )
 
