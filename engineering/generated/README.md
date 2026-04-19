@@ -11,4 +11,3 @@ Current subdirectories:
 
 - `pyreverse/`: deterministic Python package/class structure output
 - `module-tree.md`: deterministic package/module listing generated directly from the repo
-- `module-tree.md`: deterministic package/module listing generated directly from the repo

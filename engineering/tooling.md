@@ -36,6 +36,7 @@ Status right now:
 
 - `pyreverse` is available through the dev dependency set via `pylint`
 - current outputs live under `engineering/generated/pyreverse/`
+- rendered SVG diagrams can be produced from those DOT files via `graphviz`
 - `engineering/generated/module-tree.md` remains as a simple supplemental baseline generated directly from the repo tree
 
 ### Interactive helper: code graph tooling
