@@ -131,6 +131,10 @@
     .step-body { padding-bottom: 2.75rem; }
     .step h2 { font-size: 1.05rem; font-weight: 700; color: var(--text); margin-bottom: 0.5rem; padding-top: 0.3rem; letter-spacing: -0.01em; }
     .step p { font-size: 0.875rem; color: var(--text2); line-height: 1.8; }
+    details { margin-top: 0.75rem; }
+    details summary { font-size: 0.82rem; color: var(--slate); cursor: pointer; font-weight: 500; }
+    details summary:hover { color: var(--slate-dim); }
+    details p { font-size: 0.82rem; color: var(--text2); line-height: 1.8; margin-top: 0.5rem; padding-left: 0.5rem; border-left: 2px solid var(--slate-pale); }
     code { font-family: var(--mono); font-size: 0.82em; color: var(--slate); background: var(--slate-fog); border-radius: 4px; padding: 0.1em 0.4em; }
 
     /* Code block */
@@ -219,111 +223,51 @@
 
 <div class="page">
   <div class="eyebrow">How it works</div>
-  <h1>Three commands.<br />Zero code changes.</h1>
-  <p class="intro">Worthless splits your API key into two shares using XOR. One stays on your machine, the other goes to your server. When you make an API call, the server combines both shares for a split second, calls the provider, then destroys the key. A leaked share is useless on its own.</p>
+  <h1>Your key gets split. Leaked half does nothing.</h1>
 
   <div class="step">
     <div class="step-rail"><div class="step-num">01</div><div class="step-line"></div></div>
     <div class="step-body">
-      <h2>Lock your keys</h2>
-      <p>Run <code>worthless lock</code>. It scans your <code>.env</code>, detects API keys, and splits each one using XOR secret sharing. Share A is written to local encrypted storage. Share B lives in the proxy process memory only — never on disk. Your <code>.env</code> is updated to point at the proxy.</p>
-      <div class="code-card">
-        <div class="code-bar"><div class="cd r"></div><div class="cd y"></div><div class="cd g"></div><span class="code-fname">terminal</span></div>
-        <div class="code-body">
-          <span class="cp">$ </span><span class="ck">worthless</span> lock<br/>
-          <span class="co">&nbsp;&nbsp;Scanning .env... found 1 API key<br/>
-          &nbsp;&nbsp;Splitting OPENAI_API_KEY...<br/>
-          &nbsp;&nbsp;Share A → ~/.worthless/shares/<br/>
-          &nbsp;&nbsp;Share B → proxy memory<br/>
-          1 key(s) protected.</span>
-        </div>
-      </div>
-      <div class="callout">
-        <span class="callout-icon">🔑</span>
-        <div><strong>Information-theoretic security.</strong> Share A alone is a random-looking string. Given only A, an attacker cannot learn anything about the original key — not even a single bit. This cannot be brute-forced.</div>
-      </div>
+      <h2>You have an API key in your .env</h2>
+      <p>Right now it's sitting there in plaintext. If anyone gets that file, they have your key. They can use it. You pay.</p>
+      <details><summary>but why is that bad?</summary><p>Your .env gets committed to git, printed in CI logs, read by compromised packages, or pushed by an AI agent running <code>git add -A</code>. It happens constantly. Once the key is out there, anyone can use it and you get the bill.</p></details>
     </div>
   </div>
 
   <div class="step">
     <div class="step-rail"><div class="step-num">02</div><div class="step-line"></div></div>
     <div class="step-body">
-      <h2>Run your app — unchanged</h2>
-      <p>Prefix any command with <code>worthless wrap</code>. The proxy intercepts outbound API requests, reconstructs the full key in memory for the duration of the call, forwards the request, then zeroes memory immediately. Your code doesn't change.</p>
-      <div class="code-card">
-        <div class="code-bar"><div class="cd r"></div><div class="cd y"></div><div class="cd g"></div><span class="code-fname">terminal</span></div>
-        <div class="code-body">
-          <span class="cc"># Before</span><br/>
-          <span class="cp">$ </span>python app.py<br/><br/>
-          <span class="cc"># After — everything else stays the same</span><br/>
-          <span class="cp">$ </span><span class="ck">worthless</span> wrap python app.py<br/>
-          <span class="cp">$ </span><span class="ck">worthless</span> wrap node server.js<br/>
-          <span class="cp">$ </span><span class="ck">worthless</span> wrap pytest
-        </div>
-      </div>
-      <div class="arch-card">
-        <div class="arch-row">
-          <div class="an">your app</div>
-          <span class="aa">──→</span>
-          <div class="an blue">worthless proxy</div>
-          <span class="aa">──→</span>
-          <div class="an">OpenAI API</div>
-        </div>
-        <div class="arch-note">proxy reconstructs key in memory · checks budget · zeroes after use</div>
-        <div style="margin-top:1rem; border-top:1px solid var(--border-soft); padding-top:0.85rem;">
-          <div class="arch-row">
-            <div class="an blue">Share A</div><span style="color:var(--text3)">⊕</span><div class="an blue">Share B</div><span class="aa">──→</span><div class="an green">full key (ephemeral)</div>
-          </div>
-          <div class="arch-note" style="margin-top:0.75rem;">A leaked Share A alone → cryptographically worthless</div>
-        </div>
-      </div>
+      <h2>Worthless splits it in half</h2>
+      <p>Run <code>worthless lock</code>. Your key gets split into two random-looking pieces. One stays in your .env. The other goes to a local proxy on your machine. Neither piece works on its own.</p>
+      <p>Someone steals your .env? They get random bytes. Can't use it. Can't brute-force it. Mathematically impossible.</p>
+      <details><summary>wait, how is it impossible?</summary><p>It's called XOR secret sharing. Think of it like tearing a photo in half — each piece looks like random noise. You need both halves to see the picture. The math guarantees that one half reveals zero information about the original. Not "hard to guess" — literally zero. Even with every computer on earth running forever.</p></details>
     </div>
   </div>
 
   <div class="step">
     <div class="step-rail"><div class="step-num">03</div><div class="step-line"></div></div>
     <div class="step-body">
-      <h2>Budget enforcement — a hard stop</h2>
-      <p>Before reconstructing the key, the proxy checks your spending counter. If the budget is reached, the proxy refuses — even if both shares are available. This is a hard stop at the infrastructure layer. No alerts to miss, no override from the app side.</p>
-      <div class="callout">
-        <span class="callout-icon">💸</span>
-        <div><strong>Two independent guards:</strong> a cryptographic split and a spending cap. An attacker who somehow gets both shares still can't spend more than your limit allows.</div>
-      </div>
+      <h2>Your app works exactly the same</h2>
+      <p>Run <code>worthless wrap python app.py</code> instead of <code>python app.py</code>. That's the only change. Your code reads environment variables like before. The proxy combines both halves for a split second, makes the API call, then destroys the key.</p>
+      <details><summary>what happens under the hood?</summary><p>The proxy sits between your app and the API provider. When your app makes a request, the proxy grabs both halves, XORs them back together, makes the real API call, gets the response, wipes the key from memory, and passes the response to your app. The full key exists for milliseconds. Your app never sees it.</p></details>
     </div>
   </div>
 
   <div class="step">
     <div class="step-rail"><div class="step-num">04</div><div class="step-line"></div></div>
     <div class="step-body">
-      <h2>Pre-commit scanning</h2>
-      <p>Add the Worthless hook to prevent raw keys from ever reaching git history. First line of defense — the split-key proxy handles everything that slips through.</p>
-      <div class="yaml-block">
-        <div class="code-bar"><div class="cd r"></div><div class="cd y"></div><div class="cd g"></div><span class="code-fname">.pre-commit-config.yaml</span></div>
-        <div class="yaml-body">
-          <span class="yk">repos</span>:<br/>
-          &nbsp;&nbsp;- <span class="yk">repo</span>: <span class="ys">https://github.com/shacharm2/worthless</span><br/>
-          &nbsp;&nbsp;&nbsp;&nbsp;<span class="yk">rev</span>: <span class="ys">main</span><br/>
-          &nbsp;&nbsp;&nbsp;&nbsp;<span class="yk">hooks</span>:<br/>
-          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;- <span class="yk">id</span>: <span class="ys">worthless-scan</span><br/>
-          <br/>
-          <span class="yc"># Every commit is scanned automatically.</span>
-        </div>
-      </div>
+      <h2>Spending cap stops the bleeding</h2>
+      <p>Set a dollar limit. Hit it, the proxy stops reconstructing the key. Hard stop. Your app can't override it. Even if someone somehow gets both halves, the budget gate fires first.</p>
+      <details><summary>how is this different from OpenAI's spending limit?</summary><p>OpenAI's limit is checked after the request. Worthless checks before the key even forms. If you're over budget, the key never gets reconstructed. No API call happens. No money spent. The gate is at the infrastructure layer, not the provider's billing page.</p></details>
     </div>
   </div>
 
   <div class="step">
     <div class="step-rail"><div class="step-num">05</div><div class="step-line"></div></div>
     <div class="step-body">
-      <h2>Undo everything — fully reversible</h2>
-      <p>Run <code>worthless unlock</code> at any time. Original keys are restored, the proxy stops, no traces remain. No lock-in. No dependency on Worthless to keep your app running.</p>
-      <div class="code-card">
-        <div class="code-bar"><div class="cd r"></div><div class="cd y"></div><div class="cd g"></div><span class="code-fname">terminal</span></div>
-        <div class="code-body">
-          <span class="cp">$ </span><span class="ck">worthless</span> unlock<br/>
-          <span class="co">1 key(s) restored. .env as before.</span>
-        </div>
-      </div>
+      <h2>Don't like it? One command to undo</h2>
+      <p>Run <code>worthless unlock</code>. Original .env restored. Proxy gone. Shares deleted. Like it was never there.</p>
+      <details><summary>is there really zero lock-in?</summary><p>Zero. Your original key is stored encrypted locally. <code>worthless unlock</code> decrypts it, writes it back to .env, stops the proxy, and deletes the shares. Your app goes back to reading the real key directly. No artifacts, no config files, no dependencies left behind.</p></details>
     </div>
   </div>
 
