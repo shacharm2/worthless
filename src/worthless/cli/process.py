@@ -268,6 +268,11 @@ def _parse_uvicorn_port(proc: subprocess.Popen, timeout: float = 15.0) -> int:
 # Health polling
 # ---------------------------------------------------------------------------
 
+# Reject PIDs outside the valid range for any mainstream OS.
+# Linux default pid_max is 4194304; macOS uses 99998. Shared by
+# `poll_health_pid` (below) and `check_pid` (further down).
+MAX_VALID_PID: int = 4_194_304
+
 
 def poll_health(port: int, timeout: float = 10.0) -> bool:
     """Poll ``GET /healthz`` until 200 or *timeout*.
@@ -290,6 +295,47 @@ def poll_health(port: int, timeout: float = 10.0) -> bool:
     return False
 
 
+def poll_health_pid(port: int, timeout: float = 10.0) -> int | None:
+    """Poll ``GET /healthz`` and return the proxy's self-reported PID.
+
+    The listening process exposes ``os.getpid()`` in the healthz payload so
+    the CLI can record an authoritative PID — the one actually bound to the
+    port — rather than whatever ``subprocess.Popen(...).pid`` returns on
+    this platform.
+
+    Returns the PID on success, ``None`` on timeout, non-200 response,
+    malformed JSON, a payload missing the ``pid`` field, or a ``pid`` out
+    of the valid range ``[2, MAX_VALID_PID]`` (in which case the caller
+    is expected to fall back to its own best guess).
+    """
+    deadline = time.monotonic() + timeout
+    url = f"http://127.0.0.1:{port}/healthz"
+
+    with httpx.Client(timeout=2.0) as client:
+        while time.monotonic() < deadline:
+            try:
+                resp = client.get(url)
+                if resp.status_code == 200:
+                    try:
+                        payload = resp.json()
+                    except (ValueError, TypeError, httpx.HTTPError):
+                        return None
+                    if not isinstance(payload, dict):
+                        return None
+                    raw_pid = payload.get("pid")
+                    # bool subclasses int in Python — reject True/False.
+                    if isinstance(raw_pid, bool) or not isinstance(raw_pid, int):
+                        return None
+                    if raw_pid < 2 or raw_pid > MAX_VALID_PID:
+                        return None
+                    return raw_pid
+            except (httpx.HTTPError, OSError):
+                pass
+            time.sleep(0.3)
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # PID file management
 # ---------------------------------------------------------------------------
@@ -301,12 +347,21 @@ def pid_path(home: WorthlessHome) -> Path:
 
 
 def write_pid(pid_path: Path, pid: int, port: int) -> None:
-    """Write PID file with ``pid\\nport`` format (0600 permissions)."""
-    fd = os.open(str(pid_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    """Write PID file with ``pid\\nport`` format (0600 permissions).
+
+    Writes atomically via tmp + ``os.replace`` — a racing ``read_pid`` can
+    see the old content or the new, never a torn (truncated) state. Crucial
+    when the daemon path rewrites the file to upgrade from ``proc.pid`` to
+    the authoritative PID: a concurrent ``worthless down`` must not observe
+    an empty file and treat it as a stale-pid reclaim signal.
+    """
+    tmp = pid_path.with_suffix(pid_path.suffix + ".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.write(fd, f"{pid}\n{port}\n".encode())
     finally:
         os.close(fd)
+    tmp.replace(pid_path)
 
 
 def read_pid(pid_path: Path) -> tuple[int, int] | None:
@@ -319,11 +374,6 @@ def read_pid(pid_path: Path) -> tuple[int, int] | None:
         return int(parts[0]), int(parts[1])
     except (FileNotFoundError, ValueError, IndexError, OSError):
         return None
-
-
-# Reject PIDs outside the valid range for any mainstream OS.
-# Linux default pid_max is 4194304; macOS uses 99998.
-MAX_VALID_PID: int = 4_194_304
 
 
 def check_pid(pid: int) -> bool:

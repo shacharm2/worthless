@@ -26,7 +26,7 @@ from worthless.cli.process import (
     fernet_transport,
     finalize_fernet_transport,
     pid_path,
-    poll_health,
+    poll_health_pid,
     prepare_proxy_env,
     proxy_cmd,
     read_pid,
@@ -94,23 +94,35 @@ def start_daemon(
         if log_fd >= 0:
             os.close(log_fd)
 
-    # Write PID file — kill daemon if this fails to prevent orphans
+    # Write PID file immediately with the spawn PID so a racing second
+    # invocation has something to detect, even before health comes up.
+    # Kill the daemon if the write fails — we don't want orphans.
     try:
         write_pid(pid_file, proc.pid, port)
     except OSError:
         proc.kill()
         raise
 
-    # Brief health check
-    healthy = poll_health(port, timeout=10.0)
-    if healthy:
-        console.print_success(f"Proxy running on 127.0.0.1:{port} (PID {proc.pid})")
-    else:
+    # Resolve the authoritative PID — the process actually listening on the
+    # port, as reported by /healthz — and rewrite the PID file if it differs
+    # from proc.pid. Falls back to proc.pid on timeout or upgrade scenarios
+    # where an older daemon answers /healthz without a pid field.
+    resolved_pid = poll_health_pid(port, timeout=10.0)
+    if resolved_pid is None:
         console.print_warning(
             f"Proxy started (PID {proc.pid}) but health check timed out. Check logs."
         )
+        return proc.pid
 
-    return proc.pid
+    if resolved_pid != proc.pid:
+        try:
+            write_pid(pid_file, resolved_pid, port)
+        except OSError:
+            # Keep proc.pid in the file — better a stale-but-writable PID
+            # than an un-stoppable daemon.
+            pass
+    console.print_success(f"Proxy running on 127.0.0.1:{port} (PID {resolved_pid})")
+    return resolved_pid
 
 
 def register_up_commands(app: typer.Typer) -> None:
@@ -183,7 +195,9 @@ def register_up_commands(app: typer.Typer) -> None:
             )
             raise typer.Exit(code=1) from exc
 
-        # Write PID file
+        # Write PID file immediately so a racing second invocation has
+        # something to detect. Rewrite below once /healthz reports the
+        # authoritative PID.
         write_pid(pid_file, proxy.pid, actual_port)
 
         # Signal handler ONLY sets a flag — all cleanup in main thread.
@@ -198,9 +212,9 @@ def register_up_commands(app: typer.Typer) -> None:
         if not IS_WINDOWS:
             signal.signal(signal.SIGTERM, _on_signal)
 
-        # Poll health
-        healthy = poll_health(actual_port, timeout=15.0)
-        if not healthy:
+        # Resolve the authoritative PID from /healthz. None = timeout.
+        resolved_pid = poll_health_pid(actual_port, timeout=15.0)
+        if resolved_pid is None:
             proxy.terminate()
             try:
                 proxy.wait(timeout=5)
@@ -212,6 +226,13 @@ def register_up_commands(app: typer.Typer) -> None:
                 WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
             )
             raise typer.Exit(code=1)
+
+        if resolved_pid != proxy.pid:
+            try:
+                write_pid(pid_file, resolved_pid, actual_port)
+            except OSError:
+                # Keep proxy.pid — better a stale-but-writable PID than none.
+                pass
 
         console.print_success(f"Proxy running on 127.0.0.1:{actual_port} (Ctrl+C to stop)")
 

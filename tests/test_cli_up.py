@@ -122,8 +122,8 @@ class TestUpDaemonFlow:
             lambda *_a, **_kw: mock_proc,
         )
         monkeypatch.setattr(
-            "worthless.cli.commands.up.poll_health",
-            lambda *_a, **_kw: True,
+            "worthless.cli.commands.up.poll_health_pid",
+            lambda *_a, **_kw: 54321,
         )
 
         result = runner.invoke(
@@ -189,7 +189,7 @@ class TestUpErrorBranches:
     def test_up_foreground_health_timeout_exits_clean(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """poll_health returns False -> exit_code=1, proxy terminated."""
+        """poll_health_pid returns None -> exit_code=1, proxy terminated."""
         mock_proxy = MagicMock()
         mock_proxy.pid = 99999
         mock_proxy.poll.return_value = None
@@ -200,8 +200,8 @@ class TestUpErrorBranches:
             lambda **_kw: (mock_proxy, 8787),
         )
         monkeypatch.setattr(
-            "worthless.cli.commands.up.poll_health",
-            lambda *_a, **_kw: False,
+            "worthless.cli.commands.up.poll_health_pid",
+            lambda *_a, **_kw: None,
         )
 
         result = runner.invoke(
@@ -239,8 +239,8 @@ class TestUpErrorBranches:
 
         monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_proc)
         monkeypatch.setattr(
-            "worthless.cli.commands.up.poll_health",
-            lambda *_a, **_kw: False,
+            "worthless.cli.commands.up.poll_health_pid",
+            lambda *_a, **_kw: None,
         )
 
         result = runner.invoke(
@@ -252,7 +252,8 @@ class TestUpErrorBranches:
         assert result.exit_code == 0
         assert "health check timed out" in result.output.lower()
 
-        # PID file should still be written (daemon stays running)
+        # PID file should still be written (daemon stays running, falls back
+        # to proc.pid when /healthz never answers).
         pid_file = pid_path(home_with_key)
         assert pid_file.exists()
         info = read_pid(pid_file)
@@ -278,8 +279,8 @@ class TestUpStalePidReclaim:
             lambda **_kw: (mock_proxy, 8787),
         )
         monkeypatch.setattr(
-            "worthless.cli.commands.up.poll_health",
-            lambda *_a, **_kw: True,
+            "worthless.cli.commands.up.poll_health_pid",
+            lambda *_a, **_kw: 11111,
         )
         # Prevent blocking on proxy.wait()
         mock_proxy.wait.return_value = 0
@@ -365,8 +366,8 @@ class TestUpStartsProxyBackground:
             lambda **_kw: (mock_proxy, 8787),
         )
         monkeypatch.setattr(
-            "worthless.cli.commands.up.poll_health",
-            lambda *_a, **_kw: True,
+            "worthless.cli.commands.up.poll_health_pid",
+            lambda *_a, **_kw: 12345,
         )
         mock_proxy.wait.return_value = 0
 
@@ -419,8 +420,8 @@ class TestUpDuplicateDetection:
 
         monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_proc)
         monkeypatch.setattr(
-            "worthless.cli.commands.up.poll_health",
-            lambda *_a, **_kw: True,
+            "worthless.cli.commands.up.poll_health_pid",
+            lambda *_a, **_kw: 77777,
         )
 
         result = runner.invoke(

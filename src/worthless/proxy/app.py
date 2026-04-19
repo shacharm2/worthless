@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -209,6 +210,14 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
 
     @app.get("/healthz")
     async def healthz(request: Request) -> dict[str, object]:
+        """Liveness endpoint.
+
+        Returns status, a best-effort request counter, and ``pid``. The PID
+        is exposed intentionally so the CLI can record the authoritative
+        listening PID rather than the (possibly drifted) spawn PID; it is
+        not sensitive (already visible via ``ps``/``lsof`` to anyone on the
+        host) and must never be forwarded into audit streams.
+        """
         count = 0
         try:
             db: aiosqlite.Connection = request.app.state.db
@@ -218,7 +227,10 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     count = row[0]
         except Exception:  # noqa: S110 — spend_log may not exist yet  # nosec B110
             pass
-        return {"status": "ok", "requests_proxied": count}
+        # Expose the listening process PID so the CLI can write the
+        # authoritative PID — the process actually bound to the port —
+        # rather than whatever Popen returned on this platform.
+        return {"status": "ok", "requests_proxied": count, "pid": os.getpid()}
 
     @app.get("/readyz")
     async def readyz(request: Request) -> Response:
