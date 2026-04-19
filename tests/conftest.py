@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 
+import keyring
+import keyring.backends.null
 import pytest
 from cryptography.fernet import Fernet
 from hypothesis import HealthCheck, settings
@@ -15,6 +17,18 @@ from worthless.crypto import SplitResult, split_key
 from worthless.storage.repository import ShardRepository, StoredShard
 
 from tests.helpers import fake_openai_key
+
+# Disable the real OS keyring for the entire test session.
+#
+# Context: on macOS, concurrent ``SecItemAdd`` calls from multiple pytest-xdist
+# workers can hang indefinitely on the Keychain API. ``pytest-timeout`` then
+# kills the test with a 30 s signal, which surfaces as apparently-random test
+# failures that only ``--reruns 1`` was masking.
+#
+# The null backend is already in ``keystore._REJECTED_BACKENDS``, so
+# ``keyring_available()`` returns False and the file-fallback path is used
+# — same code path tests always exercised, minus the system-wide contention.
+keyring.set_keyring(keyring.backends.null.Keyring())
 
 # Suppress differing_executors health check ONLY when running under mutmut.
 # Mutmut runs tests from its mutants/ directory with a different rootdir,

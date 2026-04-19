@@ -52,6 +52,28 @@ def check_pid_alive(pid: int) -> bool:
     return psutil.pid_exists(pid)
 
 
+def pid_in_tree(root_pid: int, candidate_pid: int) -> bool:
+    """Return True if *candidate_pid* is *root_pid* or one of its descendants.
+
+    Conservative on error: if *root_pid* is gone or we lack permission to
+    inspect it, returns False so the caller falls back to *root_pid*. We
+    never want a transient psutil failure to silently upgrade a foreign
+    PID into our pidfile.
+
+    Walks ``children(recursive=True)``; O(N) in descendant count. For the
+    current single-process uvicorn launch this is O(1). If ``proxy_cmd``
+    ever gains ``--workers`` or ``--reload``, consider walking upward via
+    ``psutil.Process(candidate).parents()`` instead (usually 1-2 hops).
+    """
+    if candidate_pid == root_pid:
+        return True
+    try:
+        descendants = psutil.Process(root_pid).children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    return any(child.pid == candidate_pid for child in descendants)
+
+
 def kill_tree(pid: int, *, force: bool = False) -> None:
     """Kill a process and all its descendants.
 
