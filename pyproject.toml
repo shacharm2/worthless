@@ -49,6 +49,9 @@ Issues = "https://github.com/shacharm2/worthless/issues"
 mcp = [
     "mcp>=1.0",
 ]
+redis = [
+    "redis>=5.0",
+]
 dev = [
     "deptry>=0.22",
     "pre-commit>=4.0",

@@ -32,6 +32,7 @@ from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
 from worthless.proxy.metering import (
     StreamingUsageCollector,
+    create_redis_client,
     extract_usage_anthropic,
     extract_usage_openai,
     record_spend,
@@ -154,9 +155,14 @@ async def _lifespan(app: FastAPI):
     )
     app.state.httpx_client = client
 
+    redis_client = None
+    if settings.redis_url:
+        redis_client = await create_redis_client(settings.redis_url)
+    app.state.redis = redis_client
+
     rules_engine = RulesEngine(
         rules=[
-            SpendCapRule(db=db),
+            SpendCapRule(db=db, redis=redis_client),
             TokenBudgetRule(db=db),
             RateLimitRule(
                 default_rps=settings.default_rate_limit_rps,
@@ -171,6 +177,11 @@ async def _lifespan(app: FastAPI):
     # Cleanup — zeroing MUST happen even if earlier cleanup steps raise (SR-02)
     try:
         await client.aclose()
+        if redis_client is not None:
+            try:
+                await redis_client.aclose()
+            except Exception:  # noqa: S110 — best-effort close; do not mask other shutdown errors  # nosec B110
+                pass
         await db.close()
         repo.close()
     finally:
@@ -364,7 +375,14 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                         provider,
                     )
                 try:
-                    await record_spend(settings.db_path, alias, tokens, model, provider)
+                    await record_spend(
+                        settings.db_path,
+                        alias,
+                        tokens,
+                        model,
+                        provider,
+                        redis=getattr(request.app.state, "redis", None),
+                    )
                 except Exception:
                     logger.warning("Failed to record spend for alias=%s", alias)
 
@@ -401,6 +419,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                             usage.total_tokens,
                             usage.model,
                             encrypted.provider,
+                            redis=getattr(request.app.state, "redis", None),
                         )
                     else:
                         # Zero friction: if we can't extract usage (provider

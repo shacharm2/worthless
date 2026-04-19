@@ -11,7 +11,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -23,6 +23,10 @@ from worthless.proxy.errors import (
     time_window_error_response,
     token_budget_error_response,
 )
+from worthless.proxy.metering import RedisValueError, get_spend_hot, rehydrate_spend_hot
+
+if TYPE_CHECKING:
+    from redis.asyncio import Redis as AsyncRedis
 
 
 @runtime_checkable
@@ -54,25 +58,87 @@ class RulesEngine:
 class SpendCapRule:
     """Denies requests when accumulated spend exceeds the configured cap.
 
-    Queries spend_log and enrollment_config tables via a persistent aiosqlite
-    connection. Uses BEGIN IMMEDIATE to serialize concurrent reads (H-3).
-    Fails closed on any DB error (H-1/M-10).
-    Returns None if no cap is configured (NULL spend_cap) or spend is under cap.
-    Returns 402 ErrorResponse when cap is exceeded or on DB error.
+    Gate-before-reconstruct (SR-03): this rule runs BEFORE Fernet decrypt /
+    XOR reconstruction. A denial here means zero KMS calls and zero key
+    material touched.
 
-    .. note:: PoC limitation — the spend cap is a best-effort pre-check, not a
-       hard enforcement boundary. Token count is only known after the upstream
-       response, so check (here) and record (in metering.py) are separate
-       operations. Two concurrent requests can both pass the cap check before
-       either records its spend. Production fix: reserve estimated tokens at
-       check time, reconcile after response.
+    **Layering.** SQLite ``spend_log`` is the authoritative ledger. Redis is
+    a cache of the running total. The hot path is:
+
+    1. Read the cap from SQLite (policy; Redis never caches this).
+    2. ``GET`` the Redis counter.
+       * Hit → compare against the cap.
+       * Miss (cold start, eviction, restart, flush) → rehydrate from
+         ``SELECT SUM(tokens) FROM spend_log`` and ``SET NX``, then compare.
+       * Malformed value (tamper/corruption) → treat as miss, rehydrate.
+       * Transport error → fall back to the SQLite ``BEGIN IMMEDIATE`` path.
+         SR-03 still holds: reconstruction is gated on the return value, and
+         the SQLite path is itself fail-closed on DB error.
+    3. If Redis is not configured, use the SQLite path directly (pre-Redis
+       behaviour, no regression).
+
+    Returns ``None`` if no cap is configured (NULL ``spend_cap``) or spend is
+    under cap. Returns a 402 ``ErrorResponse`` when the cap is exceeded or
+    on any authoritative-source failure.
+
+    .. note:: PoC limitation — the spend cap is a best-effort pre-check, not
+       a hard enforcement boundary. Token count is only known after the
+       upstream response, so check (here) and record (in metering.py) are
+       separate operations. Two concurrent requests can both pass the cap
+       check before either records its spend. Production fix: reserve
+       estimated tokens at check time, reconcile after response.
     """
 
     db: aiosqlite.Connection
+    redis: AsyncRedis | Any | None = None
 
     async def evaluate(
         self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
     ) -> ErrorResponse | None:
+        if self.redis is not None:
+            return await self._evaluate_redis(alias, provider)
+        return await self._evaluate_sqlite(alias, provider)
+
+    async def _evaluate_redis(self, alias: str, provider: str) -> ErrorResponse | None:
+        # Policy (spend_cap) always comes from SQLite — Redis only caches
+        # the counter. Fail-closed if we cannot even read the cap.
+        try:
+            async with self.db.execute(
+                "SELECT spend_cap FROM enrollment_config WHERE key_alias = ?",
+                (alias,),
+            ) as cur:
+                cap_row = await cur.fetchone()
+        except Exception:
+            return spend_cap_error_response(provider=provider)
+
+        if cap_row is None or cap_row[0] is None:
+            return None
+        spend_cap = cap_row[0]
+
+        # Read the hot counter. Three shapes:
+        #   int  → direct comparison
+        #   None → cache miss; rehydrate from SQLite
+        #   raise RedisValueError → tamper/corruption; rehydrate
+        #   raise anything else  → transport error; drop to SQLite path
+        try:
+            counter = await get_spend_hot(self.redis, alias)
+        except RedisValueError:
+            counter = None  # treat as miss
+        except Exception:
+            return await self._evaluate_sqlite(alias, provider)
+
+        if counter is None:
+            try:
+                counter = await rehydrate_spend_hot(self.redis, self.db, alias)
+            except Exception:
+                # SQLite read inside rehydrate failed → fail closed.
+                return spend_cap_error_response(provider=provider)
+
+        if counter >= spend_cap:
+            return spend_cap_error_response(provider=provider)
+        return None
+
+    async def _evaluate_sqlite(self, alias: str, provider: str) -> ErrorResponse | None:
         try:
             # BEGIN IMMEDIATE acquires a write lock, preventing TOCTOU races
             await self.db.execute("BEGIN IMMEDIATE")

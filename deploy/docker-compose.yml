@@ -11,13 +11,22 @@ services:
       # Separate fernet key from shard data — requires the worthless-secrets
       # volume below. Remove this for single-volume PaaS deployments.
       WORTHLESS_FERNET_KEY_PATH: /secrets/fernet.key
+      # Hot-path metering: reaches Redis over the internal `backend` network.
+      # Unset this to fall back to SQLite-only metering.
+      WORTHLESS_REDIS_URL: redis://redis:6379/0
     volumes:
       - worthless-data:/data
       # Keeps the decryption key off the same volume as shard data.
       # Compromise of one volume alone cannot reconstruct API keys.
       - worthless-secrets:/secrets
     networks:
+      # Frontend: ingress from the reverse proxy / host.
       - frontend
+      # Backend: internal-only link to Redis; no external routing.
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -38,10 +47,61 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  redis:
+    image: redis:7-alpine
+    # No ports block: reachable only via the internal `backend` network.
+    command:
+      - redis-server
+      # No persistence: the counter is rebuildable from SQLite spend_log, so
+      # restart wipes the cache and the proxy rehydrates on the first GET.
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - "128mb"
+      # noeviction is mandatory for correctness. allkeys-lru would silently
+      # evict a spend counter under memory pressure; the next GET would
+      # return nil → rehydrate from SQLite. That's safe, but eviction of a
+      # HOT counter mid-traffic forces an extra SQLite SUM on the gate path.
+      # Fail loud on OOM so operators provision up instead of degrading.
+      - --maxmemory-policy
+      - "noeviction"
+    networks:
+      - backend
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /data:noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: "0.5"
+          pids: 100
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   frontend:
     driver: bridge
-  # Future: add `backend` with `internal: true` for Redis/DB services
+  # Backend carries Redis/DB traffic only; `internal: true` blocks egress
+  # so a compromised cache can't phone home.
+  backend:
+    driver: bridge
+    internal: true
 
 volumes:
   worthless-data:

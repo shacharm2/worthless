@@ -74,6 +74,9 @@ class ProxySettings:
         default_factory=lambda: float(os.environ.get("WORTHLESS_STREAMING_TIMEOUT", "300.0"))
     )
     allow_insecure: bool = field(default_factory=lambda: _env_bool("WORTHLESS_ALLOW_INSECURE"))
+    redis_url: str | None = field(
+        default_factory=lambda: os.environ.get("WORTHLESS_REDIS_URL") or None
+    )
 
     def validate(self) -> None:
         """Raise if required settings are missing."""

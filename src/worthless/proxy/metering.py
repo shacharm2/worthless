@@ -1,11 +1,143 @@
-"""Token extraction from provider responses and async spend recording."""
+"""Token extraction from provider responses and async spend recording.
+
+Dual-phase metering:
+    * Hot path (Redis) — fast ``GET`` / atomic ``INCRBY`` for spend-cap
+      enforcement before key reconstruction. Consulted by
+      :class:`worthless.proxy.rules.SpendCapRule`.
+    * Durable ledger (SQLite) — ``spend_log`` insert after the upstream
+      response has landed, used for reporting and budget windows.
+
+The ledger is authoritative. Redis is a cache whose counter is rebuildable
+from ``SELECT SUM(tokens) FROM spend_log``. The rule rehydrates the counter
+on every cache miss (cold start, LRU eviction, restart, tamper) and falls
+back to the SQLite path on any Redis transport error. Redis is optional;
+when ``WORTHLESS_REDIS_URL`` is unset, the gate uses SQLite end-to-end.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import aiosqlite
+
+if TYPE_CHECKING:
+    from redis.asyncio import Redis as AsyncRedis
+
+logger = logging.getLogger(__name__)
+
+SPEND_KEY_PREFIX = "worthless:spend:"
+
+# Only redis:// and rediss:// are accepted. unix:// and other schemes that
+# redis-py's from_url would otherwise honour could be used by a compromised
+# env var to redirect the counter to an attacker-controlled socket.
+_ALLOWED_REDIS_SCHEMES = frozenset({"redis", "rediss"})
+
+# Bounded timeouts so a hung Redis cannot park a request handler forever.
+# Values deliberately tight: the gate is on the hot path of every request.
+_REDIS_SOCKET_TIMEOUT = 2.0
+_REDIS_CONNECT_TIMEOUT = 1.0
+
+
+class RedisValueError(RuntimeError):
+    """Raised when the hot-path counter is non-integer (tamper or corruption).
+
+    Callers treat this as a cache miss — rehydrate from SQLite rather than
+    silently returning 0, which would bypass the cap.
+    """
+
+
+def spend_key(alias: str) -> str:
+    """Return the Redis key that holds the hot-path spend counter for ``alias``."""
+    return f"{SPEND_KEY_PREFIX}{alias}"
+
+
+async def create_redis_client(url: str) -> AsyncRedis:
+    """Create an async Redis client from a connection URL.
+
+    Validates the scheme, applies bounded socket timeouts, and pings the
+    server so a typo'd URL fails at boot instead of on the first request.
+    Lazily imports ``redis.asyncio`` so the dependency stays optional.
+    """
+    scheme = urlparse(url).scheme.lower()
+    if scheme not in _ALLOWED_REDIS_SCHEMES:
+        raise ValueError(
+            f"WORTHLESS_REDIS_URL scheme {scheme!r} not allowed; "
+            f"use one of {sorted(_ALLOWED_REDIS_SCHEMES)}"
+        )
+    try:
+        from redis.asyncio import Redis
+    except ImportError as exc:
+        raise ImportError(
+            "WORTHLESS_REDIS_URL is set but the 'redis' package is not installed. "
+            "Install with: pip install 'worthless[redis]'"
+        ) from exc
+    client = Redis.from_url(
+        url,
+        decode_responses=False,
+        socket_timeout=_REDIS_SOCKET_TIMEOUT,
+        socket_connect_timeout=_REDIS_CONNECT_TIMEOUT,
+        health_check_interval=30,
+    )
+    await client.ping()
+    return client
+
+
+async def get_spend_hot(redis: AsyncRedis | Any, alias: str) -> int | None:
+    """Return the hot-path token counter for ``alias``, or ``None`` on cache miss.
+
+    * ``None`` — key absent (cold start, evicted, restart, flushed).
+    * ``int`` — the stored counter.
+    * Raises :class:`RedisValueError` — stored value is not an integer
+      (tampering or corruption). Callers must NOT treat this as 0.
+    * Raises on any transport error — callers decide policy.
+    """
+    raw = await redis.get(spend_key(alias))
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as exc:
+        raise RedisValueError(f"hot-path counter for alias={alias!r} is non-integer") from exc
+
+
+async def incr_spend_hot(redis: AsyncRedis | Any, alias: str, tokens: int) -> int:
+    """Atomically add ``tokens`` to the hot-path counter; return the new total."""
+    if tokens <= 0:
+        current = await get_spend_hot(redis, alias)
+        return 0 if current is None else current
+    return int(await redis.incrby(spend_key(alias), tokens))
+
+
+async def sum_spend_sqlite(db: aiosqlite.Connection, alias: str) -> int:
+    """Return total tokens spent by ``alias`` from the authoritative SQLite ledger."""
+    async with db.execute(
+        "SELECT COALESCE(SUM(tokens), 0) FROM spend_log WHERE key_alias = ?",
+        (alias,),
+    ) as cur:
+        row = await cur.fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+async def rehydrate_spend_hot(redis: AsyncRedis | Any, db: aiosqlite.Connection, alias: str) -> int:
+    """Warm the hot-path counter from SQLite. Returns the authoritative total.
+
+    Uses ``SET NX`` so a concurrent warmer / writer doesn't overwrite a
+    fresher value. Best-effort: if the SET fails we still return the SQLite
+    total — the caller makes the authoritative decision from this return.
+    """
+    total = await sum_spend_sqlite(db, alias)
+    try:
+        await redis.set(spend_key(alias), total, nx=True)
+    except Exception:
+        logger.warning(
+            "Failed to warm hot-path counter for alias=%s; SQLite total used for this request",
+            alias,
+        )
+    return total
 
 
 @dataclass(frozen=True)
@@ -233,11 +365,28 @@ async def record_spend(
     tokens: int,
     model: str | None,
     provider: str,
+    redis: AsyncRedis | Any | None = None,
 ) -> None:
-    """Insert a spend record into the spend_log table."""
+    """Durably record spend to SQLite and (best-effort) increment the Redis counter.
+
+    The SQLite insert is the source of truth. The Redis hot-path counter is an
+    eventually-consistent cache used by :class:`SpendCapRule`; a Redis failure
+    here is logged but does NOT fail the request — the request has already been
+    served. The gate itself remains fail-closed on reads (see ``SpendCapRule``).
+    """
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             "INSERT INTO spend_log (key_alias, tokens, model, provider) VALUES (?, ?, ?, ?)",
             (alias, tokens, model, provider),
         )
         await db.commit()
+
+    if redis is not None and tokens > 0:
+        try:
+            await incr_spend_hot(redis, alias, tokens)
+        except Exception:
+            logger.warning(
+                "Failed to increment Redis hot-path counter for alias=%s; "
+                "SQLite ledger is authoritative",
+                alias,
+            )
