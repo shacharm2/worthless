@@ -109,6 +109,8 @@ uv run pytest
 ## Learn more
 
 - [Security model](docs/security-model.md) -- how the split-key proxy works
+- [Engineering docs](engineering/README.md) -- internal developer documentation for the live codebase
+- [Engineering architecture](engineering/architecture.md) -- current internal architecture overview
 - [Security rules](SECURITY_RULES.md) -- invariants all contributions must preserve
 - [SKILL.md](SKILL.md) -- agent discovery file
 
