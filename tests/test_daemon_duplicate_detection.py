@@ -31,8 +31,38 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(30)]
 
 
 def _ephemeral_port() -> int:
-    # Same collision-resistant pattern used in tests/test_cli_down.py.
-    return 18900 + os.getpid() % 100
+    """Reserve a port by letting the kernel pick a free one, then release it.
+
+    The older ``18900 + os.getpid() % 100`` pattern collides with orphaned
+    daemons from prior runs (different PID, same `% 100`) — the new daemon
+    gets EADDRINUSE or, worse, the test reads the orphan's ``/healthz`` and
+    sees a stale PID. Binding-then-closing on port 0 asks the kernel for a
+    unique ephemeral port; the short TIME_WAIT window before we re-bind is
+    acceptable for these tests (we're the only thing racing for it).
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _assert_port_unused(port: int) -> None:
+    """Fail loudly if something is already bound to *port*.
+
+    A previous-run orphan on the same port would silently answer `/healthz`
+    and poison assertions that compare pidfile vs self-reported PID. Catch
+    it at spawn time rather than letting the test fail 30 seconds later
+    with a confusing PID mismatch.
+    """
+    try:
+        resp = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=0.3)
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        return
+    raise AssertionError(
+        f"port {port} is already in use (healthz responded {resp.status_code}) — "
+        "kill leftover processes before running these tests"
+    )
 
 
 def _kill_pidfile(pf: Path) -> None:
@@ -85,6 +115,7 @@ class TestDuplicateProxyDetection:
         cli_home: Path,
     ) -> None:
         port = _ephemeral_port()
+        _assert_port_unused(port)
         first = subprocess.run(
             [worthless_bin, "up", "--daemon", "--port", str(port)],
             env=cli_env,
@@ -130,6 +161,7 @@ class TestDuplicateProxyDetection:
     ) -> None:
         """After the proxy crashes the next `up` must start cleanly."""
         port = _ephemeral_port()
+        _assert_port_unused(port)
         first = subprocess.run(
             [worthless_bin, "up", "--daemon", "--port", str(port)],
             env=cli_env,
@@ -190,6 +222,7 @@ class TestDuplicateProxyDetection:
         PID guarantees this invariant.
         """
         port = _ephemeral_port()
+        _assert_port_unused(port)
         first = subprocess.run(
             [worthless_bin, "up", "--daemon", "--port", str(port)],
             env=cli_env,
@@ -256,6 +289,7 @@ class TestDuplicateProxyDetection:
         enough — verify the port is actually free.
         """
         port = _ephemeral_port()
+        _assert_port_unused(port)
         first = subprocess.run(
             [worthless_bin, "up", "--daemon", "--port", str(port)],
             env=cli_env,
@@ -317,6 +351,7 @@ class TestDuplicateProxyDetection:
         before the behaviour drifts.
         """
         port = _ephemeral_port()
+        _assert_port_unused(port)
         first = subprocess.run(
             [worthless_bin, "up", "--daemon", "--port", str(port)],
             env=cli_env,
