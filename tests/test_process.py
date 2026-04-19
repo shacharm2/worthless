@@ -48,6 +48,46 @@ class TestPidFiles:
         result = read_pid(pid_path)
         assert result == (12345, 8787)
 
+    def test_concurrent_write_pid_does_not_clobber_tmp(self, tmp_path: Path):
+        """Two concurrent writers must not race on a shared tmp file.
+
+        Before the fix, every call used ``proxy.pid.tmp`` — two threads
+        calling ``write_pid`` simultaneously could leave the final
+        ``proxy.pid`` with a mangled body or even a bare ``proxy.pid.tmp``
+        dangling in the directory. Unique per-caller tmp names close the
+        gap; the final pidfile always parses to one of the two writes.
+        """
+        import threading
+
+        from worthless.cli.process import read_pid, write_pid
+
+        pid_path = tmp_path / "proxy.pid"
+        errors: list[BaseException] = []
+
+        def _write(pid: int) -> None:
+            try:
+                for _ in range(20):
+                    write_pid(pid_path, pid, 8787)
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_write, args=(11111,))
+        t2 = threading.Thread(target=_write, args=(22222,))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        assert not errors, f"concurrent writes raised: {errors!r}"
+        info = read_pid(pid_path)
+        assert info is not None, "pidfile unreadable — torn or missing"
+        assert info == (11111, 8787) or info == (22222, 8787), (
+            f"pidfile content is not from either writer: {info!r}"
+        )
+        # No dangling shared tmp file.
+        leftovers = [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+        assert not leftovers, f"tmp files leaked: {leftovers}"
+
     def test_read_missing_file(self, tmp_path: Path):
         from worthless.cli.process import read_pid
 

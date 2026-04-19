@@ -141,6 +141,50 @@ class TestUpDaemonFlow:
         assert pid == 54321
         assert port == 8787
 
+    def test_daemon_ignores_foreign_healthz_pid(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A foreign daemon already bound to the port would answer /healthz.
+
+        We must not upgrade the pidfile to that foreign PID — keep the spawn
+        PID so `worthless down` walks our own tree, not someone else's.
+        """
+        mock_proc = MagicMock()
+        mock_proc.pid = 54321
+
+        monkeypatch.setattr(
+            "subprocess.Popen",
+            lambda *_a, **_kw: mock_proc,
+        )
+        # /healthz reports a PID that is NOT in mock_proc's tree.
+        monkeypatch.setattr(
+            "worthless.cli.commands.up.poll_health_pid",
+            lambda *_a, **_kw: 88888,
+        )
+        # Force the descendant check to return False — 88888 is "foreign".
+        monkeypatch.setattr(
+            "worthless.cli.commands.up._pid_in_our_tree",
+            lambda _root, _candidate: False,
+        )
+
+        result = runner.invoke(
+            app,
+            ["up", "--daemon"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 0
+        # Rich wraps terminal output — collapse whitespace before the match.
+        collapsed = " ".join(result.output.split()).lower()
+        assert "not a descendant" in collapsed, collapsed
+
+        pid_file = pid_path(home_with_key)
+        info = read_pid(pid_file)
+        assert info is not None
+        # Must have stayed on the spawn PID, not accepted the foreign one.
+        assert info[0] == 54321, (
+            f"pidfile accepted foreign PID 88888 — expected 54321. Got {info[0]}"
+        )
+
 
 class TestUpErrorBranches:
     """Error branch coverage for up command failure paths."""

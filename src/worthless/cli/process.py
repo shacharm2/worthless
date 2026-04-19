@@ -16,6 +16,7 @@ import re
 import signal
 import subprocess  # nosec B404
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Generator
@@ -349,19 +350,30 @@ def pid_path(home: WorthlessHome) -> Path:
 def write_pid(pid_path: Path, pid: int, port: int) -> None:
     """Write PID file with ``pid\\nport`` format (0600 permissions).
 
-    Writes atomically via tmp + ``os.replace`` — a racing ``read_pid`` can
-    see the old content or the new, never a torn (truncated) state. Crucial
-    when the daemon path rewrites the file to upgrade from ``proc.pid`` to
-    the authoritative PID: a concurrent ``worthless down`` must not observe
-    an empty file and treat it as a stale-pid reclaim signal.
+    Writes atomically via a per-caller tmp file + ``os.replace`` — a
+    racing ``read_pid`` can see the old content or the new, never a torn
+    (truncated) state. The tmp name is unique per writer so two
+    concurrent ``worthless up`` invocations can't clobber each other's
+    in-flight tmp files and race the rename.
     """
-    tmp = pid_path.with_suffix(pid_path.suffix + ".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=pid_path.name + ".",
+        suffix=".tmp",
+        dir=str(pid_path.parent),
+    )
+    tmp_path = Path(tmp_name)
     try:
+        # mkstemp already creates at 0600 on POSIX; be explicit to guard
+        # against umask / future cross-platform drift.
+        tmp_path.chmod(0o600)
         os.write(fd, f"{pid}\n{port}\n".encode())
-    finally:
+    except Exception:
         os.close(fd)
-    tmp.replace(pid_path)
+        tmp_path.unlink(missing_ok=True)
+        raise
+    else:
+        os.close(fd)
+    tmp_path.replace(pid_path)
 
 
 def read_pid(pid_path: Path) -> tuple[int, int] | None:

@@ -12,6 +12,7 @@ import subprocess  # nosec B404 — required for daemon process management
 import time
 from pathlib import Path
 
+import psutil
 import typer
 
 from worthless.cli.bootstrap import get_home
@@ -114,6 +115,16 @@ def start_daemon(
         )
         return proc.pid
 
+    # Trust the self-reported PID only if it belongs to the process tree we
+    # just launched. A foreign daemon already bound to the port would also
+    # answer /healthz — we must not record its PID as ours.
+    if resolved_pid != proc.pid and not _pid_in_our_tree(proc.pid, resolved_pid):
+        console.print_warning(
+            f"Proxy started (PID {proc.pid}) but /healthz reports PID {resolved_pid}, "
+            "which is not a descendant of our spawn — recording the spawn PID instead."
+        )
+        return proc.pid
+
     if resolved_pid != proc.pid:
         try:
             write_pid(pid_file, resolved_pid, port)
@@ -123,6 +134,22 @@ def start_daemon(
             pass
     console.print_success(f"Proxy running on 127.0.0.1:{port} (PID {resolved_pid})")
     return resolved_pid
+
+
+def _pid_in_our_tree(root_pid: int, candidate_pid: int) -> bool:
+    """Return True if ``candidate_pid`` is ``root_pid`` or one of its descendants.
+
+    Conservative: on any psutil error (root already gone, permission denied)
+    returns False so the caller falls back to the root PID. We never want a
+    transient error to silently upgrade a foreign PID into our pidfile.
+    """
+    if candidate_pid == root_pid:
+        return True
+    try:
+        descendants = psutil.Process(root_pid).children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    return any(child.pid == candidate_pid for child in descendants)
 
 
 def register_up_commands(app: typer.Typer) -> None:
@@ -227,7 +254,15 @@ def register_up_commands(app: typer.Typer) -> None:
             )
             raise typer.Exit(code=1)
 
-        if resolved_pid != proxy.pid:
+        # Same foreign-PID guard as the daemon path: only trust the
+        # self-reported PID if it belongs to the tree we just launched.
+        if resolved_pid != proxy.pid and not _pid_in_our_tree(proxy.pid, resolved_pid):
+            console.print_warning(
+                f"Proxy started (PID {proxy.pid}) but /healthz reports PID "
+                f"{resolved_pid}, which is not a descendant of our spawn — "
+                "recording the spawn PID instead."
+            )
+        elif resolved_pid != proxy.pid:
             try:
                 write_pid(pid_file, resolved_pid, actual_port)
             except OSError:
