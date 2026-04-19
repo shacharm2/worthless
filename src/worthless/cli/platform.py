@@ -17,6 +17,11 @@ from worthless.cli.errors import ErrorCode, WorthlessError
 
 IS_WINDOWS: bool = sys.platform == "win32"
 
+# Single source of truth for the "Platforms" section of the README. Referenced
+# from the native-Windows error message so a rename or repo move only needs a
+# change in one place.
+PLATFORMS_URL = "https://github.com/shacharm2/worthless#platforms"
+
 # Windows creation flags (defined here to avoid conditional imports at use sites)
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NO_WINDOW = 0x08000000
@@ -151,6 +156,6 @@ def fail_if_windows() -> None:
     raise WorthlessError(
         ErrorCode.PLATFORM_UNSUPPORTED,
         "Native Windows is not supported. Please use WSL or run via Docker.\n"
-        "See: https://github.com/shacharm2/worthless#platforms\n"
+        f"See: {PLATFORMS_URL}\n"
         "(This check cannot be bypassed; WORTHLESS_WINDOWS_ACK does not apply here.)",
     )

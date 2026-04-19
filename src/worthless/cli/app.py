@@ -55,8 +55,6 @@ def _main(
     set_console(WorthlessConsole(quiet=quiet, json_mode=json_output))
 
     # When no subcommand is given, run the magic default pipeline.
-    # Subcommands handle their own Windows guard (up, wrap fail-fast;
-    # down stays allowed so users can clean up state).
     if ctx.invoked_subcommand is None:
         try:
             fail_if_windows()

@@ -1,12 +1,4 @@
-"""Native Windows is an unsupported host for the proxy/wrap entry points.
-
-Worthless's process lifecycle, fernet-key transport, and ``kill_tree``
-semantics all rely on POSIX primitives (``setsid``, ``os.killpg``, fd
-inheritance). The CLI must refuse to start on native Windows with an
-actionable message pointing at WSL or Docker, rather than degrading
-silently. ``worthless down`` is deliberately exempt so a Windows user
-who somehow ended up with a running daemon can still clean up.
-"""
+"""Windows fail-fast guard for ``up``, ``wrap``, and the default command."""
 
 from __future__ import annotations
 
@@ -83,6 +75,23 @@ class TestDownExemptOnWindows:
             "down must not trip the Windows fail-fast guard"
         )
         assert result.exit_code == 0, result.output
+
+    def test_down_still_emits_soft_warning(
+        self, fake_windows: None, home_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Positive proof: ``down`` must still call ``warn_windows_once``.
+
+        Asserting "no fail-fast message" alone would pass if a future refactor
+        silently dropped the warning too. Verify the warn is actively invoked.
+        """
+        called: list[bool] = []
+        monkeypatch.setattr(
+            "worthless.cli.commands.down.warn_windows_once",
+            lambda *_a, **_kw: called.append(True),
+        )
+        result = runner.invoke(app, ["down"], env={"WORTHLESS_HOME": str(home_dir)})
+        assert result.exit_code == 0, result.output
+        assert called, "warn_windows_once was not called on down path"
 
 
 class TestErrorMessageContract:
