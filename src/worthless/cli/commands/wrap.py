@@ -18,7 +18,7 @@ import typer
 
 from worthless.cli.bootstrap import WorthlessHome, get_home
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
-from worthless.cli.platform import popen_platform_kwargs, warn_windows_once
+from worthless.cli.platform import fail_if_windows, popen_platform_kwargs
 from worthless.cli.process import (
     build_proxy_env,
     create_liveness_pipe,
@@ -133,7 +133,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
         command: list[str] = typer.Argument(..., help="Command to run (e.g. python main.py)"),
     ) -> None:
         """Start ephemeral proxy, inject env vars, run COMMAND, clean up."""
-        warn_windows_once()
+        fail_if_windows()
 
         # Load home, verify keys enrolled
         home = get_home()

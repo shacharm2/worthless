@@ -13,6 +13,8 @@ import sys
 
 import psutil
 
+from worthless.cli.errors import ErrorCode, WorthlessError
+
 IS_WINDOWS: bool = sys.platform == "win32"
 
 # Windows creation flags (defined here to avoid conditional imports at use sites)
@@ -110,6 +112,11 @@ def kill_tree(pid: int, *, force: bool = False) -> None:
 def warn_windows_once(*, quiet: bool = False) -> None:
     """Print a one-shot experimental warning on Windows.
 
+    Used by commands that are allowed to run on Windows (e.g. ``down``,
+    so users have an escape hatch to clean up state). Commands that
+    rely on POSIX process semantics should call :func:`fail_if_windows`
+    instead.
+
     Suppressed by ``--quiet`` or ``WORTHLESS_WINDOWS_ACK=1``.
     """
     global _warned  # noqa: PLW0603
@@ -124,3 +131,25 @@ def warn_windows_once(*, quiet: bool = False) -> None:
         "Set WORTHLESS_WINDOWS_ACK=1 to suppress this message.\n"
     )
     sys.stderr.flush()
+
+
+def fail_if_windows() -> None:
+    """Raise ``WorthlessError`` on native Windows.
+
+    The proxy (``up``), ``wrap``, and default-command pipelines all rely
+    on POSIX-specific primitives — ``setsid``, ``os.killpg``, fd
+    inheritance for fernet-key transport, and signal-group shutdown.
+    On native Windows they degrade in subtle and unsafe ways, so we
+    refuse to start and point users at WSL or Docker.
+
+    ``worthless down`` stays on :func:`warn_windows_once` so a Windows
+    user who somehow already has a running daemon can still clean it
+    up.
+    """
+    if not IS_WINDOWS:
+        return
+    raise WorthlessError(
+        ErrorCode.PLATFORM_UNSUPPORTED,
+        "Native Windows is not supported. Please use WSL or run via Docker.\n"
+        "See: https://github.com/shacharm2/worthless#platforms",
+    )

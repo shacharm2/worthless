@@ -19,9 +19,9 @@ from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
 from worthless.cli.platform import (
     IS_WINDOWS,
+    fail_if_windows,
     pid_in_tree,
     popen_platform_kwargs,
-    warn_windows_once,
 )
 from worthless.cli.process import (
     build_proxy_env,
@@ -169,9 +169,9 @@ def register_up_commands(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Start the proxy server (foreground or daemon)."""
+        fail_if_windows()
         console = get_console()
         home = get_home()
-        warn_windows_once(quiet=console.quiet)
 
         actual_port = _resolve_port(port)
 
