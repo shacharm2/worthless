@@ -717,6 +717,20 @@ wheels = [
 ]
 
 [[package]]
+name = "fakeredis"
+version = "2.35.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "redis" },
+    { name = "sortedcontainers" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/43/50/b748233c02fa77e5105238190cc9bb58b852eb1c8b1d0763230d3a5b745a/fakeredis-2.35.1.tar.gz", hash = "sha256:5bae5eba7b9d93cb968944ac40936373cf2397ff71667d4b595df65c3d2e413f", size = 189118, upload-time = "2026-04-12T17:05:58.539Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/27/b8b057a23f7777177e92d3a602fd866751b6b45014964548997e92e048fd/fakeredis-2.35.1-py3-none-any.whl", hash = "sha256:67d97e11f562b7870e11e5c30cf182270bfb2dd37f6707dba47cc6d91628d1b9", size = 129678, upload-time = "2026-04-12T17:05:56.86Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.135.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3794,6 +3808,7 @@ redis = [
     { name = "redis" },
 ]
 test = [
+    { name = "fakeredis" },
     { name = "hypothesis" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -3804,6 +3819,7 @@ test = [
     { name = "pytest-rerunfailures" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
+    { name = "redis" },
     { name = "respx" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -3815,6 +3831,7 @@ test = [
 dev = [
     { name = "cyclonedx-bom" },
     { name = "deptry" },
+    { name = "fakeredis" },
     { name = "hypothesis" },
     { name = "pip-audit" },
     { name = "pip-licenses" },
@@ -3829,6 +3846,7 @@ dev = [
     { name = "pytest-rerunfailures" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
+    { name = "redis" },
     { name = "respx" },
     { name = "ruff" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -3839,6 +3857,7 @@ dev = [
     { name = "xenon" },
 ]
 test = [
+    { name = "fakeredis" },
     { name = "hypothesis" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -3849,6 +3868,7 @@ test = [
     { name = "pytest-rerunfailures" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
+    { name = "redis" },
     { name = "respx" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -3863,6 +3883,7 @@ requires-dist = [
     { name = "bandit", extras = ["sarif"], marker = "extra == 'qa'", specifier = ">=1.8" },
     { name = "cryptography", specifier = ">=46.0.5" },
     { name = "deptry", marker = "extra == 'dev'", specifier = ">=0.22" },
+    { name = "fakeredis", marker = "extra == 'test'", specifier = ">=2.20" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6.0" },
@@ -3886,6 +3907,7 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'test'", specifier = ">=3.6" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0" },
+    { name = "redis", marker = "extra == 'test'", specifier = ">=5.0" },
     { name = "respx", marker = "extra == 'test'", specifier = ">=0.22" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "schemathesis", marker = "python_full_version >= '3.11' and extra == 'qa'", specifier = ">=4.0" },
@@ -3902,6 +3924,7 @@ provides-extras = ["mcp", "redis", "dev", "test", "qa", "fuzz"]
 dev = [
     { name = "cyclonedx-bom", specifier = ">=7.3.0" },
     { name = "deptry", specifier = ">=0.22" },
+    { name = "fakeredis", specifier = ">=2.20" },
     { name = "hypothesis", specifier = ">=6.0" },
     { name = "pip-audit", specifier = ">=2.8" },
     { name = "pip-licenses", specifier = ">=5.5.5" },
@@ -3916,6 +3939,7 @@ dev = [
     { name = "pytest-rerunfailures", specifier = ">=16.1" },
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "redis", specifier = ">=5.0" },
     { name = "respx", specifier = ">=0.22" },
     { name = "ruff", specifier = ">=0.8" },
     { name = "scipy", specifier = ">=1.12" },
@@ -3925,6 +3949,7 @@ dev = [
     { name = "xenon", specifier = ">=0.9.3" },
 ]
 test = [
+    { name = "fakeredis", specifier = ">=2.20" },
     { name = "hypothesis", specifier = ">=6.0" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
@@ -3935,6 +3960,7 @@ test = [
     { name = "pytest-rerunfailures", specifier = ">=16.1" },
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pytest-xdist", specifier = ">=3.6" },
+    { name = "redis", specifier = ">=5.0" },
     { name = "respx", specifier = ">=0.22" },
     { name = "scipy", specifier = ">=1.12" },
     { name = "syrupy", specifier = ">=4.8" },

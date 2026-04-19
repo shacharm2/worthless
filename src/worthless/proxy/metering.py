@@ -82,7 +82,9 @@ async def create_redis_client(url: str) -> AsyncRedis:
         socket_connect_timeout=_REDIS_CONNECT_TIMEOUT,
         health_check_interval=30,
     )
-    await client.ping()
+    # redis-py's async type stubs mark ping() as returning bool, not
+    # Awaitable[bool] — it *is* a coroutine at runtime. Cast away.
+    await client.ping()  # type: ignore[misc]
     return client
 
 
