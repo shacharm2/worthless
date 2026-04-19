@@ -39,5 +39,6 @@ paths = [
     '''SECURITY_RULES\.md$''',
     '''\.planning/research/.*\.md$''',
     '''\.planning/snapshots/.*\.json$''',
+    '''\.planning/ROADMAP\.md$''',
     '''tests/.*\.py$''',
 ]
