@@ -58,3 +58,7 @@ jobs:
         with:
           print-hash: true
           attestations: true
+          # Idempotent: if the version already exists on PyPI (e.g. when a
+          # canonical tag is pushed after a successful pre-release upload),
+          # skip the upload and exit clean instead of failing the workflow.
+          skip-existing: true
