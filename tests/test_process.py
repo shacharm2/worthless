@@ -202,3 +202,35 @@ class TestSpawnProxyIntegration:
         finally:
             proc.terminate()
             proc.wait(timeout=5)
+
+
+class TestProxyCmdShape:
+    """``proxy_cmd`` must stay a single-process uvicorn launch.
+
+    Tripwire for the PID-authority assumption in ``poll_health_pid``:
+    ``os.getpid()`` inside the ``/healthz`` handler equals the process
+    bound to the port *only* when uvicorn runs as a single process. With
+    ``--reload`` (supervisor above uvicorn) or ``--workers N>1`` (pool
+    of accepting processes) the listening PID is not necessarily the
+    one answering ``/healthz`` — the authority logic would need
+    revisiting.
+    """
+
+    def test_proxy_cmd_has_no_workers_or_reload_flags(self):
+        from worthless.cli.process import proxy_cmd
+
+        cmd = proxy_cmd(port=0)
+        forbidden = {
+            "--workers",
+            "--reload",
+            "--reload-dir",
+            "--reload-include",
+            "--reload-exclude",
+            "--reload-delay",
+        }
+        present = forbidden.intersection(cmd)
+        assert not present, (
+            f"proxy_cmd now includes {sorted(present)} — these break the "
+            "single-process assumption poll_health_pid relies on. Revisit "
+            "the PID-authority logic before shipping."
+        )

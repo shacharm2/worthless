@@ -13,7 +13,6 @@ unit-level coverage of the polling helper lives in ``test_health_polling.py``.
 from __future__ import annotations
 
 import os
-import signal
 import shutil
 import subprocess
 import time
@@ -72,12 +71,25 @@ def _kill_pidfile(pf: Path) -> None:
     info = read_pid(pf)
     if info is not None:
         pid = info[0]
+        # Kill the recorded PID and its descendants via psutil — the same
+        # pattern production uses in `platform.kill_tree`. Avoid
+        # ``os.killpg(os.getpgid(pid), ...)`` here: the pidfile PID can be
+        # stale, and on Unix a recycled PID can share a process group with
+        # unrelated workloads. A tree-kill scoped to the recorded root is
+        # both sufficient for test cleanup and safe against recycling.
         try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
+            proc = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            proc = None
+        if proc is not None:
+            for child in reversed(proc.children(recursive=True)):
+                try:
+                    child.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
             try:
-                os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
+                proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
     pf.unlink(missing_ok=True)
 
@@ -330,54 +342,6 @@ class TestDuplicateProxyDetection:
                 time.sleep(0.1)
             assert not still_listening, (
                 f"after `down`, something is still serving /healthz on port {port}"
-            )
-        finally:
-            _kill_pidfile(pf)
-
-    def test_healthz_pid_matches_spawn_pid_under_default_cmd(
-        self,
-        worthless_bin: str,
-        cli_env: dict[str, str],
-        cli_home: Path,
-    ) -> None:
-        """Tripwire: under the current single-process uvicorn launch, the
-        self-reported PID and the Popen PID must be identical.
-
-        The fix assumes ``os.getpid()`` inside the healthz handler equals
-        the process actually bound to the port. That holds for a
-        single-process uvicorn run. The day someone adds ``--workers N``
-        or ``--reload`` to ``proxy_cmd``, the assumption breaks and this
-        test fails — forcing a rethink of ``poll_health_pid``'s authority
-        before the behaviour drifts.
-        """
-        port = _ephemeral_port()
-        _assert_port_unused(port)
-        first = subprocess.run(
-            [worthless_bin, "up", "--daemon", "--port", str(port)],
-            env=cli_env,
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        pf = pid_path(ensure_home(cli_home))
-        try:
-            if first.returncode != 0:
-                pytest.fail(f"first daemon failed to start: {first.stderr}")
-            assert poll_health(port, timeout=10.0)
-
-            info = read_pid(pf)
-            assert info is not None
-            recorded_pid = info[0]
-
-            resp = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=2.0)
-            resp.raise_for_status()
-            healthz_pid = resp.json()["pid"]
-
-            assert recorded_pid == healthz_pid, (
-                "pidfile PID must equal /healthz PID under the current "
-                "single-process proxy_cmd; a mismatch means `proxy_cmd` "
-                "now spawns workers/reloader/etc. and `poll_health_pid` "
-                "authority needs revisiting"
             )
         finally:
             _kill_pidfile(pf)
