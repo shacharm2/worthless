@@ -20,7 +20,7 @@ Worthless protects API keys in three scenarios:
 - **Entry point**: `worthless` (CLI command)
 - **Python**: 3.10+
 - **License**: AGPL-3.0
-- **Status**: Pre-release
+- **Status**: Beta
 
 ### Quick Install
 ```bash
