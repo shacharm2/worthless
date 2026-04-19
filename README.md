@@ -6,22 +6,18 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Tests](https://github.com/shacharm2/worthless/actions/workflows/tests.yml/badge.svg)](https://github.com/shacharm2/worthless/actions/workflows/tests.yml)
 
-Your API key is split into two pieces. Neither piece is useful on its own.
-Every request goes through a proxy that enforces a hard spend cap **before** the key ever reconstructs.
-Budget blown = key never forms = request never reaches the provider.
-
-> Every secrets tool protects the key until your app uses it.
-> Worthless protects you **after it leaks**.
+Your API key is split in two. Neither half works alone.
+The proxy enforces a hard spend cap **before** the key reconstructs — blow the budget, the key never forms, the request never leaves your machine.
 
 ## Quickstart
 
 ```bash
-pipx install worthless
+pipx install worthless   # or: pip install worthless
 cd your-project
 worthless
 ```
 
-That's it. Worthless detects API keys in your `.env`, splits them, starts a local proxy, and you're protected.
+Detects keys in your `.env`, splits them, starts a local proxy. No code changes.
 
 ```
 $ worthless
@@ -31,21 +27,10 @@ $ worthless
     ANTHROPIC_API_KEY   anthropic
 
   Lock these keys? [y/N] y
+    OPENAI_API_KEY      locked
+    ANTHROPIC_API_KEY   locked
 
-  Protecting OPENAI_API_KEY...      done
-  Protecting ANTHROPIC_API_KEY...   done
-
-  Starting proxy on 127.0.0.1:8787...   healthy
-
-  Proxy healthy on 127.0.0.1:8787
-```
-
-Your code doesn't change. The proxy handles everything.
-
-### Alternative install
-
-```bash
-pip install worthless        # in a virtualenv
+  Proxy ready on 127.0.0.1:8787
 ```
 
 ## How it works
