@@ -22,6 +22,13 @@ Planned role:
 - support incremental updates as the repo changes
 - write candidate content that can be reviewed and promoted into `engineering/`
 
+Local workflow:
+
+- `scripts/codewiki.sh`: bootstrap and run `CodeWiki` in an isolated tool env
+- `uv run docs-generate`: generate draft docs into `engineering/generated/codewiki-pilot/`
+- `.venvs/codewiki`: dedicated `CodeWiki` virtualenv, separate from the repo `.venv`
+- `.codewiki-home/`: repo-local `CodeWiki` state/config directory
+
 ### Deterministic verification: `pyreverse`
 
 `pyreverse` is the structural verification floor.
@@ -38,6 +45,7 @@ Status right now:
 - rendered SVG diagrams can be produced from those DOT files via `graphviz`
 - regenerating the `pyreverse` artifacts requires a local `pyreverse`/`pylint` install outside the project dependency set, because the repo license gate rejects committing `pylint` as a project dependency
 - `engineering/generated/module-tree.md` remains as a simple supplemental baseline generated directly from the repo tree
+- `CodeWiki` is isolated from repo dependencies via `scripts/codewiki.sh` and `.venvs/codewiki`
 
 ### Interactive helper: code graph tooling
 
