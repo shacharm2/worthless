@@ -151,5 +151,6 @@ def fail_if_windows() -> None:
     raise WorthlessError(
         ErrorCode.PLATFORM_UNSUPPORTED,
         "Native Windows is not supported. Please use WSL or run via Docker.\n"
-        "See: https://github.com/shacharm2/worthless#platforms",
+        "See: https://github.com/shacharm2/worthless#platforms\n"
+        "(This check cannot be bypassed; WORTHLESS_WINDOWS_ACK does not apply here.)",
     )

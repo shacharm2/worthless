@@ -83,3 +83,38 @@ class TestDownExemptOnWindows:
             "down must not trip the Windows fail-fast guard"
         )
         assert result.exit_code == 0, result.output
+
+
+class TestErrorMessageContract:
+    """The error message is a contract: code, link, and no-bypass notice."""
+
+    def test_error_carries_structured_code(self, fake_windows: None, home_dir: Path) -> None:
+        """Pin WRTLS-110 so silent ErrorCode swaps break the tests, not prod."""
+        result = runner.invoke(app, ["up"], env={"WORTHLESS_HOME": str(home_dir)})
+        assert "WRTLS-110" in result.output, result.output
+
+    def test_error_says_it_cannot_be_bypassed(self, fake_windows: None, home_dir: Path) -> None:
+        """WORTHLESS_WINDOWS_ACK used to silence the soft warning; on the hard
+        path it's a no-op. The message must say so explicitly, otherwise users
+        file confused bug reports.
+        """
+        result = runner.invoke(app, ["up"], env={"WORTHLESS_HOME": str(home_dir)})
+        collapsed = " ".join(result.output.split()).lower()
+        assert "cannot be bypassed" in collapsed, collapsed
+
+
+class TestErrorLinkTargetExists:
+    """The error message points at a README anchor — that anchor must exist.
+
+    Without this check, the link can silently rot (README rename, typo) and
+    Windows users hit a 404 at the exact point of frustration.
+    """
+
+    def test_readme_has_platforms_section(self) -> None:
+        readme = Path(__file__).resolve().parents[1] / "README.md"
+        content = readme.read_text(encoding="utf-8")
+        # GitHub slugifies headings lowercase with dashes — "## Platforms"
+        # → #platforms. Match the heading verbatim to keep the test precise.
+        assert "## Platforms" in content, (
+            "error message points at #platforms but README has no ## Platforms heading"
+        )

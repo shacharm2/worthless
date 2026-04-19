@@ -56,6 +56,27 @@ worthless wrap <cmd>   # Run a command through the proxy
 worthless revoke       # Revoke enrolled keys
 ```
 
+## Platforms
+
+Worthless runs on POSIX hosts. The proxy relies on `setsid`, `os.killpg`,
+fd-based key transport, and signal-group shutdown — primitives that have no
+reliable native-Windows equivalent. Rather than degrade silently, the CLI
+refuses to start on native Windows and tells you how to run it under WSL or
+Docker.
+
+| Platform | Status |
+|---|---|
+| macOS | Supported |
+| Linux | Supported |
+| Windows + WSL | Supported |
+| Windows + Docker | Supported |
+| Native Windows | Not supported — `up`, `wrap`, and the default command exit with `WRTLS-110`. `down` is allowed so existing state can be cleaned up. |
+
+`WORTHLESS_WINDOWS_ACK=1` suppresses the soft warning on `down`; it does not
+bypass the hard gate on the other entry points. If you need native-Windows
+support, please open an issue rather than patching around the guard — the
+process-lifecycle work is tracked but deliberately out of V1 scope.
+
 ## Undo everything
 
 ```console
