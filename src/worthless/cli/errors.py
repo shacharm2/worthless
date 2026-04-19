@@ -24,6 +24,7 @@ class ErrorCode(IntEnum):
     PORT_IN_USE = 107
     WRAP_CHILD_FAILED = 108
     PROXY_NOT_RUNNING = 109
+    PLATFORM_UNSUPPORTED = 110
     UNKNOWN = 199
 
 
