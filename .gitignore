@@ -54,6 +54,8 @@ LOCAL_MODE.md
 __pycache__/
 *.pyc
 *.egg-info/
+.venvs/
+.codewiki-home/
 
 # Mutmut working directory
 mutants/

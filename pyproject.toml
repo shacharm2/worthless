@@ -34,6 +34,7 @@ dependencies = [
 
 [project.scripts]
 worthless = "worthless.cli.app:app"
+docs-generate = "worthless.dev.docs:generate_docs"
 test-unit = "worthless.testing.runners:unit"
 test-docker = "worthless.testing.runners:docker"
 test-live = "worthless.testing.runners:live"
