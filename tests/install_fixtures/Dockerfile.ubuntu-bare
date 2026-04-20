@@ -1,0 +1,30 @@
+# Bare Ubuntu image — NO python3 installed. Used to validate the AC of WOR-235:
+# "fresh non-Python Linux box → curl install.sh | sh → worthless --version works."
+#
+# Keep this image minimal. Adding python3 here defeats the test.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Bare minimum required by install.sh: curl + ca-certs (TLS) + tar (uv extracts tarballs).
+# Nothing else. Especially: no python3, no pipx, no uv.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        tar \
+    && rm -rf /var/lib/apt/lists/*
+
+# Sanity: prove python3 is genuinely absent so the test fails noisily if the
+# base image ever changes upstream.
+RUN ! command -v python3 \
+    && ! command -v python \
+    && ! command -v pipx \
+    && ! command -v uv
+
+WORKDIR /work
+COPY install.sh /work/install.sh
+RUN chmod +x /work/install.sh
+
+# The integration test runs `sh /work/install.sh` then verifies `worthless --version`.
+CMD ["/bin/sh", "-c", "sh /work/install.sh && uv run --no-project worthless --version"]
