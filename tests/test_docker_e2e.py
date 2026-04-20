@@ -19,13 +19,17 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests._docker_helpers import docker_exec as _docker_exec
+
 # ---------------------------------------------------------------------------
 # Module-level skip + marker
 # ---------------------------------------------------------------------------
-docker_available = shutil.which("docker") is not None
+# Collection-time gate only — the `docker_image` fixture double-checks the
+# daemon at setup via `docker info` and calls pytest.skip() if it's dead.
+_DOCKER_ON_PATH = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.docker,
-    pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    pytest.mark.skipif(not _DOCKER_ON_PATH, reason="Docker not available"),
     pytest.mark.timeout(90),
 ]
 
@@ -51,15 +55,6 @@ def _run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
 def _run_ok(cmd: list[str]) -> str:
     """Run and return stdout, raise on failure."""
     return _run(cmd).stdout.strip()
-
-
-def _docker_exec(container: str, cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    """Execute a command inside a running container."""
-    return subprocess.run(
-        ["docker", "exec", container, *cmd],
-        capture_output=True,
-        text=True,
-    )
 
 
 def _wait_healthy(container: str, timeout: float = 60.0) -> bool:

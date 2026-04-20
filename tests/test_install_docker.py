@@ -9,11 +9,11 @@ can run install.sh and end up with a working `worthless` CLI.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 
 import pytest
 
+from tests._docker_helpers import docker_available
 from tests._install_helpers import INSTALL_FIXTURES, REPO_ROOT
 
 DOCKERFILE = INSTALL_FIXTURES / "Dockerfile.ubuntu-bare"
@@ -24,22 +24,13 @@ pytestmark = pytest.mark.docker
 
 
 @pytest.fixture(scope="module")
-def docker_available() -> bool:
-    if shutil.which("docker") is None:
-        pytest.skip("docker not installed")
-    probe = subprocess.run(  # noqa: S603
-        ["docker", "info"],  # noqa: S607
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-    if probe.returncode != 0:
-        pytest.skip("docker daemon not running")
+def require_docker() -> bool:
+    if not docker_available():
+        pytest.skip("docker binary or daemon not available")
     return True
 
 
-def test_bare_ubuntu_install_succeeds(docker_available: bool) -> None:
+def test_bare_ubuntu_install_succeeds(require_docker: bool) -> None:
     """Build bare-Ubuntu image, run install.sh, assert `worthless --version` works.
 
     This is the AC test. Slow (~60-120s including image build + uv + Python download).
