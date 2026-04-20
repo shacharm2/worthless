@@ -1,0 +1,209 @@
+name: Publish Docker image to GHCR
+
+# WOR-236 — on every v* tag, build multi-arch image, Trivy release-gate,
+# push to ghcr.io/<owner>/worthless-proxy, flip visibility public, smoke-test.
+# See .planning/ghcr-publish-spec.md for the full rationale.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Workflow-scoped minimum. Per-job permissions widen as needed.
+permissions:
+  contents: read
+
+# Never cancel a release mid-push — idempotent re-run is safer than a
+# half-pushed manifest list.
+concurrency:
+  group: publish-docker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-push:
+    name: Build, scan, and push multi-arch image
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tags: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU (arm64 emulation on amd64 runner)
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          # zizmor cache-poisoning: tag-only publish workflow, no cache reuse.
+          cache-binary: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          # Use repository_owner (not github.actor) so a bot-pushed tag or
+          # a scheduled re-dispatch still authenticates correctly. The
+          # GITHUB_TOKEN is what carries auth; username is a label.
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/worthless-proxy
+          # metadata-action handles pre-release semantics natively —
+          # do NOT hand-roll !contains(ref, '-'). latest=auto means
+          # full-semver tags get :latest, pre-releases do not.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          flavor: |
+            latest=auto
+
+      # Design choice: two build-push-action calls.
+      # First call: single-arch amd64, load into local daemon (load: true,
+      # push: false) so Trivy can scan a concrete image before anything
+      # leaves the runner. Second call: multi-arch build + push, reusing
+      # Buildx layer cache in-memory. This keeps the Trivy gate strict
+      # (scan-before-push) without standing up a registry-side scan.
+      - name: Build amd64 image locally for Trivy scan
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: worthless-proxy:scan-${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Trivy release-gate (fail on CRITICAL)
+        uses: aquasecurity/trivy-action@1f0aa582c8c8f5f7639610d6d38baddfea4fdcee # v0.9.2
+        with:
+          image-ref: worthless-proxy:scan-${{ github.sha }}
+          severity: CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Provenance + SBOM attestations attached to the manifest list.
+          # Cosign signing tracked as a separate v1.1-post-launch ticket.
+          provenance: true
+          sbom: true
+          # No GHA cache — tag-only workflow runs infrequently; cache
+          # would be theatre. Revisit if arm64 emulation pushes >20 min.
+
+  visibility:
+    name: Flip GHCR package visibility to public
+    needs: build-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      packages: write
+    # Signal-visible fail-open: continue-on-error keeps the RELEASE green
+    # (publish itself already succeeded), but the JOB goes red so the
+    # maintainer actually sees that a manual visibility flip is needed.
+    # Silent warnings in release workflows are write-only memory.
+    continue-on-error: true
+
+    steps:
+      - name: Set package visibility to public (org or user fallback)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set +e
+          # Try org path first, fall back to user path. PATCH to an
+          # already-public package is idempotent (204). Only hit the
+          # error-annotation path if BOTH paths fail.
+          gh api -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "/orgs/${OWNER}/packages/container/worthless-proxy/visibility" \
+            -f visibility=public
+          org_rc=$?
+          if [ "$org_rc" -ne 0 ]; then
+            echo "Org path failed (rc=$org_rc), trying user path..."
+            gh api -X PATCH \
+              -H "Accept: application/vnd.github+json" \
+              "/users/${OWNER}/packages/container/worthless-proxy/visibility" \
+              -f visibility=public
+            user_rc=$?
+            if [ "$user_rc" -ne 0 ]; then
+              echo "::error::Automatic visibility flip failed — package likely still private. Run manually:"
+              echo "  gh api -X PATCH /orgs/${OWNER}/packages/container/worthless-proxy/visibility -f visibility=public"
+              echo "  (or /users/${OWNER}/... for user accounts)"
+              echo "Or via UI: https://github.com/${OWNER}?tab=packages"
+              # Exit 1 so the job shows red in the Actions tab — surfaces
+              # the manual action in PR checks and the release view.
+              # continue-on-error at job level keeps the workflow green.
+              exit 1
+            fi
+          fi
+          echo "Package visibility set to public."
+
+  smoke:
+    name: Smoke-test published image from GHCR
+    needs: [build-push, visibility]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # packages: read covers the fallback where the visibility flip
+      # did not land and the image is still private at pull time.
+      packages: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@0c5e2b8115b80b4c7c5ddf6ffdd634974642d182 # v5
+        with:
+          # zizmor cache-poisoning: publish workflow, do not populate cache.
+          enable-cache: false
+
+      - name: Install test dependencies
+        run: uv sync --group test
+
+      - name: Log in to GHCR (read-only pull path)
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull published image from registry
+        env:
+          OWNER: ${{ github.repository_owner }}
+          VERSION: ${{ needs.build-push.outputs.version }}
+        run: |
+          docker pull "ghcr.io/${OWNER}/worthless-proxy:${VERSION}"
+
+      - name: Run Docker smoke tests against published image
+        env:
+          WORTHLESS_DOCKER_IMAGE: ghcr.io/${{ github.repository_owner }}/worthless-proxy:${{ needs.build-push.outputs.version }}
+        run: |
+          uv run pytest tests/test_docker_e2e.py -v -m docker \
+            -k "container_starts_healthy or enroll_and_healthz or runs_as_non_root" \
+            --tb=short
