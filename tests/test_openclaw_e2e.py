@@ -19,7 +19,9 @@ import time
 import uuid
 from pathlib import Path
 
+import anthropic
 import httpx
+import openai
 import pytest
 
 from tests.helpers import fake_anthropic_key, fake_openai_key
@@ -373,3 +375,130 @@ class TestOpenClawShardA:
             assert entry["authorization"] == f"Bearer {fake_key}", (
                 "Unexpected authorization value at upstream"
             )
+
+
+def _clear_mock_headers(mock_port: int) -> None:
+    httpx.delete(f"http://127.0.0.1:{mock_port}/captured-headers", timeout=5.0)
+
+
+class TestOpenAISDKOpenClaw:
+    """Prove the openai Python SDK works drop-in against the containerized proxy + mock."""
+
+    def test_basic_chat_via_openai_sdk(self, openclaw_stack):
+        proxy_port, mock_port, _fake_key, shard_a, alias = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+        )
+        resp = client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert resp.choices, f"no choices in response: {resp}"
+        assert resp.choices[0].message.content == "Hello from mock upstream!"
+
+    def test_streaming_via_openai_sdk(self, openclaw_stack):
+        proxy_port, mock_port, _fake_key, shard_a, alias = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+        )
+        stream = client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+        chunks = list(stream)
+        assert chunks, "stream yielded zero chunks — SSE broke through proxy"
+        contents = [
+            c.choices[0].delta.content for c in chunks if c.choices and c.choices[0].delta.content
+        ]
+        assert "".join(contents) == "Hello!"
+
+    def test_bad_model_raises_not_found_via_openai_sdk(self, openclaw_stack):
+        proxy_port, mock_port, _fake_key, shard_a, alias = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+        )
+        with pytest.raises(openai.APIStatusError) as exc:
+            client.chat.completions.create(
+                model="gpt-does-not-exist-zzz",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code == 404
+        msg = str(exc.value).lower()
+        assert "traceback" not in msg
+        assert "worthless" not in msg
+
+
+class TestAnthropicSDKOpenClaw:
+    """Prove the anthropic Python SDK works drop-in against the containerized proxy + mock."""
+
+    def test_basic_message_via_anthropic_sdk(self, openclaw_stack, openclaw_anthropic_alias):
+        proxy_port, mock_port, _openai_fake, _openai_shard, _openai_alias = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+        )
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert resp.content, f"no content in response: {resp}"
+        assert resp.content[0].text == "Hello from mock upstream!"
+
+    def test_streaming_via_anthropic_sdk(self, openclaw_stack, openclaw_anthropic_alias):
+        proxy_port, mock_port, _openai_fake, _openai_shard, _openai_alias = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+        )
+        texts = []
+        with client.messages.stream(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        ) as stream:
+            for text in stream.text_stream:
+                texts.append(text)
+        assert texts, "Anthropic stream yielded zero text events — SSE broke through proxy"
+        assert "".join(texts) == "Hello!"
+
+    def test_bad_model_raises_bad_request_via_anthropic_sdk(
+        self, openclaw_stack, openclaw_anthropic_alias
+    ):
+        proxy_port, mock_port, _openai_fake, _openai_shard, _openai_alias = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+        )
+        with pytest.raises(anthropic.BadRequestError) as exc:
+            client.messages.create(
+                model="claude-does-not-exist-zzz",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code == 400
+        msg = str(exc.value).lower()
+        assert "traceback" not in msg
+        assert "worthless" not in msg
