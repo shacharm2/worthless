@@ -208,7 +208,7 @@ def openclaw_stack():
             timeout=5.0,
         )
 
-        yield proxy_port, mock_port, fake_key, shard_a, alias
+        yield proxy_port, mock_port, fake_key, shard_a, alias, proxy_container
 
     finally:
         subprocess.run(
@@ -239,8 +239,7 @@ def openclaw_anthropic_alias(openclaw_stack):
 
     Yields (fake_key, shard_a, alias).
     """
-    proxy_port, _mock_port, _openai_fake_key, _openai_shard_a, _openai_alias = openclaw_stack
-    proxy_container = _find_proxy_container()
+    _, _, _, _, _, proxy_container = openclaw_stack
 
     fake_key = fake_anthropic_key()
     alias = _make_alias("anthropic", fake_key)
@@ -261,18 +260,6 @@ def openclaw_anthropic_alias(openclaw_stack):
     yield fake_key, shard_a, alias
 
 
-def _find_proxy_container() -> str:
-    """Locate the running worthless-proxy container from the openclaw project."""
-    result = subprocess.run(
-        ["docker", "ps", "--filter", "name=worthless-proxy", "--format", "{{.Names}}"],
-        capture_output=True,
-        text=True,
-    )
-    names = [n for n in result.stdout.strip().splitlines() if "openclaw-e2e-" in n]
-    assert len(names) == 1, f"expected exactly one openclaw-e2e proxy container, got: {names}"
-    return names[0]
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -288,7 +275,7 @@ class TestOpenClawShardA:
 
     def test_shard_a_reconstructs(self, openclaw_stack):
         """POST to proxy, verify mock-upstream receives the REAL key."""
-        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
         httpx.delete(
             f"http://127.0.0.1:{mock_port}/captured-headers",
@@ -319,7 +306,7 @@ class TestOpenClawShardA:
 
     def test_streaming(self, openclaw_stack):
         """Streaming request reconstructs the real key too."""
-        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
         httpx.delete(
             f"http://127.0.0.1:{mock_port}/captured-headers",
@@ -349,7 +336,7 @@ class TestOpenClawShardA:
 
     def test_shard_a_not_leaked_to_upstream(self, openclaw_stack):
         """Shard-A (format-preserving) never appears in upstream headers."""
-        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
         httpx.delete(
             f"http://127.0.0.1:{mock_port}/captured-headers",
@@ -385,7 +372,7 @@ class TestOpenAISDKOpenClaw:
     """Prove the openai Python SDK works drop-in against the containerized proxy + mock."""
 
     def test_basic_chat_via_openai_sdk(self, openclaw_stack):
-        proxy_port, mock_port, _fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
         _clear_mock_headers(mock_port)
 
         client = openai.OpenAI(
@@ -401,7 +388,7 @@ class TestOpenAISDKOpenClaw:
         assert resp.choices[0].message.content == "Hello from mock upstream!"
 
     def test_streaming_via_openai_sdk(self, openclaw_stack):
-        proxy_port, mock_port, _fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
         _clear_mock_headers(mock_port)
 
         client = openai.OpenAI(
@@ -422,7 +409,7 @@ class TestOpenAISDKOpenClaw:
         assert "".join(contents) == "Hello!"
 
     def test_bad_model_raises_not_found_via_openai_sdk(self, openclaw_stack):
-        proxy_port, mock_port, _fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
         _clear_mock_headers(mock_port)
 
         client = openai.OpenAI(
@@ -443,7 +430,7 @@ class TestOpenAISDKOpenClaw:
     def test_upstream_5xx_surfaces_as_typed_error_via_openai_sdk(self, openclaw_stack):
         """Adversarial: upstream 500 must surface as openai.InternalServerError
         (typed 5xx subclass), not a generic APIError or raw HTTP exception."""
-        proxy_port, mock_port, _fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
         _clear_mock_headers(mock_port)
 
         client = openai.OpenAI(
@@ -468,7 +455,7 @@ class TestAnthropicSDKOpenClaw:
     """Prove the anthropic Python SDK works drop-in against the containerized proxy + mock."""
 
     def test_basic_message_via_anthropic_sdk(self, openclaw_stack, openclaw_anthropic_alias):
-        proxy_port, mock_port, _openai_fake, _openai_shard, _openai_alias = openclaw_stack
+        proxy_port, mock_port, *_ = openclaw_stack
         _fake_key, shard_a, alias = openclaw_anthropic_alias
         _clear_mock_headers(mock_port)
 
@@ -485,7 +472,7 @@ class TestAnthropicSDKOpenClaw:
         assert resp.content[0].text == "Hello from mock upstream!"
 
     def test_streaming_via_anthropic_sdk(self, openclaw_stack, openclaw_anthropic_alias):
-        proxy_port, mock_port, _openai_fake, _openai_shard, _openai_alias = openclaw_stack
+        proxy_port, mock_port, *_ = openclaw_stack
         _fake_key, shard_a, alias = openclaw_anthropic_alias
         _clear_mock_headers(mock_port)
 
@@ -507,7 +494,7 @@ class TestAnthropicSDKOpenClaw:
     def test_bad_model_raises_bad_request_via_anthropic_sdk(
         self, openclaw_stack, openclaw_anthropic_alias
     ):
-        proxy_port, mock_port, _openai_fake, _openai_shard, _openai_alias = openclaw_stack
+        proxy_port, mock_port, *_ = openclaw_stack
         _fake_key, shard_a, alias = openclaw_anthropic_alias
         _clear_mock_headers(mock_port)
 
@@ -531,7 +518,7 @@ class TestAnthropicSDKOpenClaw:
     ):
         """Adversarial: upstream 500 must surface as anthropic.InternalServerError
         (typed 5xx subclass), not a generic APIError or raw HTTP exception."""
-        proxy_port, mock_port, _openai_fake, _openai_shard, _openai_alias = openclaw_stack
+        proxy_port, mock_port, *_ = openclaw_stack
         _fake_key, shard_a, alias = openclaw_anthropic_alias
         _clear_mock_headers(mock_port)
 
