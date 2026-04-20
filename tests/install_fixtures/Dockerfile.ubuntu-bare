@@ -26,5 +26,6 @@ WORKDIR /work
 COPY install.sh /work/install.sh
 RUN chmod +x /work/install.sh
 
-# The integration test runs `sh /work/install.sh` then verifies `worthless --version`.
-CMD ["/bin/sh", "-c", "sh /work/install.sh && uv run --no-project worthless --version"]
+# install.sh puts uv + worthless in $HOME/.local/bin; the `sh install.sh` child
+# shell's PATH mutation doesn't survive into this parent, so prepend it here.
+CMD ["/bin/sh", "-c", "sh /work/install.sh && PATH=\"$HOME/.local/bin:$PATH\" worthless --version"]

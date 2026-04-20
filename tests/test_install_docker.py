@@ -20,17 +20,16 @@ DOCKERFILE = INSTALL_FIXTURES / "Dockerfile.ubuntu-bare"
 IMAGE_TAG = "worthless-install-test:ubuntu-bare"
 
 
-pytestmark = pytest.mark.docker
+pytestmark = [pytest.mark.docker, pytest.mark.timeout(360)]
 
 
-@pytest.fixture(scope="module")
-def require_docker() -> bool:
+@pytest.fixture(scope="module", autouse=True)
+def _require_docker() -> None:
     if not docker_available():
         pytest.skip("docker binary or daemon not available")
-    return True
 
 
-def test_bare_ubuntu_install_succeeds(require_docker: bool) -> None:
+def test_bare_ubuntu_install_succeeds() -> None:
     """Build bare-Ubuntu image, run install.sh, assert `worthless --version` works.
 
     This is the AC test. Slow (~60-120s including image build + uv + Python download).

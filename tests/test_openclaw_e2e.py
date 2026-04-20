@@ -13,7 +13,6 @@ Run with:
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import time
 import uuid
@@ -22,17 +21,17 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests._docker_helpers import docker_available, docker_exec
 from tests.helpers import fake_openai_key
 from worthless.cli.commands.lock import _make_alias
 
 # ---------------------------------------------------------------------------
 # Module-level skip + markers
 # ---------------------------------------------------------------------------
-docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.openclaw,
     pytest.mark.docker,
-    pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    pytest.mark.skipif(not docker_available(), reason="Docker not available"),
     pytest.mark.timeout(300),
 ]
 
@@ -53,15 +52,6 @@ def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
 def _run_ok(cmd: list[str]) -> str:
     """Run and return stdout, raise on failure."""
     return _run(cmd).stdout.strip()
-
-
-def _docker_exec(container: str, cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    """Execute a command inside a running container."""
-    return subprocess.run(
-        ["docker", "exec", container, *cmd],
-        capture_output=True,
-        text=True,
-    )
 
 
 def _wait_healthy(container: str, timeout: float = 90.0) -> bool:
@@ -126,7 +116,7 @@ def _write_env_to_container(
 
 def _read_env_value(container: str, var_name: str, path: str = "/tmp/.env") -> str:
     """Read a variable value from a .env file inside a container."""
-    result = _docker_exec(
+    result = docker_exec(
         container,
         ["sh", "-c", f"grep '^{var_name}=' {path} | cut -d= -f2-"],
     )
@@ -148,8 +138,7 @@ def openclaw_stack():
 
     Yields (proxy_port, mock_port, fake_key, shard_a, alias).
     """
-    result = subprocess.run(["docker", "info"], capture_output=True)
-    if result.returncode != 0:
+    if not docker_available():
         pytest.skip("Docker daemon not running")
 
     project = f"openclaw-e2e-{uuid.uuid4().hex[:8]}"
@@ -192,7 +181,7 @@ def openclaw_stack():
         # 4. Lock the key — writes shard-A to .env, shard-B to DB
         env_content = f"OPENAI_API_KEY={fake_key}"
         _write_env_to_container(proxy_container, env_content)
-        lock = _docker_exec(proxy_container, ["worthless", "lock", "--env", "/tmp/.env"])
+        lock = docker_exec(proxy_container, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"Lock failed: {lock.stderr}"
 
         # 5. Read shard-A from .env (lock replaced the real key)
