@@ -357,7 +357,12 @@ class TestOpenClawShardA:
             f"http://127.0.0.1:{mock_port}/captured-headers",
             timeout=5.0,
         ).json()
-        for entry in captured["headers"]:
+        # Filter by provider: the captured-headers list is cross-provider once
+        # both OpenAI and Anthropic aliases exist. Assert only on the OpenAI
+        # rows here — Anthropic traffic uses x-api-key, not Authorization.
+        openai_entries = [e for e in captured["headers"] if e.get("provider") == "openai"]
+        assert openai_entries, "no OpenAI traffic captured at upstream"
+        for entry in openai_entries:
             assert shard_a not in entry["authorization"], "Shard-A leaked to upstream!"
             assert entry["authorization"] == f"Bearer {fake_key}", (
                 "Unexpected authorization value at upstream"
@@ -415,6 +420,7 @@ class TestOpenAISDKOpenClaw:
         client = openai.OpenAI(
             api_key=shard_a,
             base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+            max_retries=0,
         )
         with pytest.raises(openai.APIStatusError) as exc:
             client.chat.completions.create(
@@ -501,6 +507,7 @@ class TestAnthropicSDKOpenClaw:
         client = anthropic.Anthropic(
             api_key=shard_a,
             base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+            max_retries=0,
         )
         with pytest.raises(anthropic.BadRequestError) as exc:
             client.messages.create(
