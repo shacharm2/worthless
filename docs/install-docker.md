@@ -1,6 +1,6 @@
 # Install -- Docker (from GHCR)
 
-Pull a pre-built, multi-arch image from the GitHub Container Registry. No clone, no build.
+Pull a pre-built, multi-arch image from the GitHub Container Registry. No clone, no build. Every image is vulnerability-scanned with [Grype](https://github.com/anchore/grype) on both architectures and signed with cosign before publish.
 
 ```bash
 docker run -d --name worthless -p 127.0.0.1:8787:8787 \

@@ -58,7 +58,7 @@ worthless revoke       # Revoke enrolled keys
 
 ## Docker
 
-`docker run ghcr.io/shacharm2/worthless-proxy:<version>` — multi-arch, Trivy-scanned, cosign-signed. See [docs/install-docker.md](docs/install-docker.md).
+`docker run ghcr.io/shacharm2/worthless-proxy:<version>` — multi-arch, vulnerability-scanned, cosign-signed. See [docs/install-docker.md](docs/install-docker.md).
 
 ## Platforms
 

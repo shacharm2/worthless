@@ -7,7 +7,7 @@
 
 ## Target (one sentence)
 
-On every `v*` git tag push, GitHub Actions builds `./Dockerfile` for both `linux/amd64` and `linux/arm64`, scans the result with Trivy, publishes multi-tagged images to `ghcr.io/<owner>/worthless-proxy` authenticated with `GITHUB_TOKEN`, flips package visibility to public automatically on first push, and runs a pull-back-and-smoke test against the published manifest — so anyone with Docker can `docker run` the persistent proxy without running `worthless up`.
+On every `v*` git tag push, GitHub Actions builds `./Dockerfile` for both `linux/amd64` and `linux/arm64`, scans the result with Grype (Anchore — chosen over Trivy after the Feb-Mar 2026 `aquasecurity/trivy-action` TeamPCP compromise), signs with cosign, publishes multi-tagged images to `ghcr.io/<owner>/worthless-proxy` authenticated with `GITHUB_TOKEN`, flips package visibility to public automatically on first push, and runs a pull-back-and-smoke test (including `cosign verify`) against the published manifest — so anyone with Docker can `docker run` the persistent proxy without running `worthless up`.
 
 ## Why this is a launch blocker
 
@@ -29,7 +29,7 @@ Derived sub-criteria (all gated in-CI where feasible):
 | AC4 | Tags: full semver, major.minor, `latest` (stable-only) | `docker/metadata-action` with `flavor: latest=auto` + `type=semver` |
 | AC5 | Multi-arch: `linux/amd64` + `linux/arm64` | `platforms:` input on build-push |
 | AC6 | `GITHUB_TOKEN` only; no external secrets | `docker/login-action` password |
-| AC7 | Release-gate Trivy scan fails on CRITICAL before push | Trivy step with `exit-code: 1` before `push: true` |
+| AC7 | Release-gate Grype scan fails on CRITICAL before push | Grype step with `fail-build: true` + `severity-cutoff: critical` before `push: true` |
 | AC8 | Provenance + SBOM attached to manifest | `provenance: true, sbom: true` |
 | AC9 | First-push package visibility auto-flipped to public | `gh api -X PATCH` follow-up job |
 | AC10 | In-CI smoke: pull from ghcr.io, start container, hit `/healthz` | Pull-and-run job reusing `tests/test_docker_e2e.py` subset |
@@ -39,7 +39,8 @@ Derived sub-criteria (all gated in-CI where feasible):
 ## Non-goals (tracked as separate tickets — see below)
 
 - ~~Cosign image signing~~ → **folded in** after v2 review, Tier 2 pick-up. See workflow step "Sign image with cosign".
-- ~~arm64 Trivy scan~~ → **folded in** after v2 review, Tier 2 pick-up. Both arches now scanned before push.
+- ~~arm64 vulnerability scan~~ → **folded in** after v2 review, Tier 2 pick-up. Both arches now scanned (via Grype) before push.
+- ~~Trivy release-gate~~ → **replaced by Grype** (`anchore/scan-action`) after TeamPCP compromise of `aquasecurity/trivy-action` (Feb-Mar 2026). Different vendor, different codebase, currently clean supply chain.
 - **Registry fallback / GHCR SPOF mitigation** → new ticket, v1.2. Brief at `.planning/tickets/ghcr-registry-fallback-brief.md`.
 - **Dockerfile digest-pinning of `FROM python:...`** → already tracked in docker-hardening research backlog.
 - **No DockerHub mirror.** GHCR is the single-source registry (see registry-fallback ticket for v1.2 mitigation options).
@@ -66,9 +67,9 @@ Derived sub-criteria (all gated in-CI where feasible):
      - `images: ghcr.io/${{ github.repository_owner }}/worthless-proxy`
      - `tags: type=semver,pattern={{version}}` + `type=semver,pattern={{major}}.{{minor}}`
      - `flavor: latest=auto` (action handles pre-release correctly — NO hand-rolled `!contains(ref, '-')`)
-   - **Trivy release-gate** (`aquasecurity/trivy-action@<sha>` — same SHA as `docker-security.yml`):
-     - Build image locally first (`load: true, push: false` in a preliminary build-push step), scan, fail on CRITICAL before proceeding.
-     - Alternative: single `build-push-action` call with `push: false, load: true`, then Trivy, then a second call with `push: true`. Decide during implementation based on cache reuse.
+   - **Grype release-gate** (`anchore/scan-action@<sha>` — Grype not Trivy; Trivy deprecated after TeamPCP compromise):
+     - amd64: build locally via `load: true`, scan, fail on CRITICAL before proceeding.
+     - arm64: build to OCI tarball (`outputs: type=docker,dest=/tmp/...`), scan via Grype's `docker-archive:` scheme. Tarball is more portable than `load: true` for foreign-arch images.
    - `docker/build-push-action@<sha>` (final push):
      - `context: .`, `file: ./Dockerfile`, `platforms: linux/amd64,linux/arm64`
      - `push: true`
@@ -113,7 +114,7 @@ Zero hand-rolled string matching. This was a review fix.
 
 | Failure | Cause | Response |
 |---|---|---|
-| Trivy fails on CRITICAL | Base image CVE between PR-merge and tag | Release does not push. Bump Dockerfile base, re-tag. |
+| Grype fails on CRITICAL | Base image CVE between PR-merge and tag | Release does not push. Bump Dockerfile base, re-tag. |
 | First push 403 | Workflow permissions misconfigured | Check repo → Settings → Actions → Workflow permissions is "Read and write". |
 | `visibility` job 404 | First push on org vs user account — API path differs | Fallback: manual click (logged in job output). Does not block publish. |
 | `smoke` job fails | Published image actually broken | Release artifact exists but flagged broken in GitHub UI. Delete package version, fix, re-tag patch. |
