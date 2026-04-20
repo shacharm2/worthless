@@ -2,36 +2,31 @@
 # Worthless installer — https://worthless.sh
 # Usage: curl -sSL https://worthless.sh | sh
 #
-# Bootstraps `uv` (Astral's Python tool manager), which provides a managed
-# Python interpreter, then installs `worthless` from PyPI as a uv tool.
-#
 # Exit codes (UX contract):
 #   0   success
 #   10  network failure (curl/Astral CDN/PyPI unreachable)
 #   20  unsupported platform (Windows native, macOS <11, glibc <2.17)
 #   30  conflicting pipx-installed worthless detected
 #   40  unexpected internal failure (uv install crash, smoke-test failed)
-#
-# POSIX sh compatible. Uses `set -eu` for fail-fast; errors are wrapped
-# in `die()` to attach actionable remediation.
 
 set -eu
 
-# --- Pinned versions (bumped per release) ------------------------------------
+EXIT_NETWORK=10
+EXIT_PLATFORM=20
+EXIT_PIPX_CONFLICT=30
+EXIT_INTERNAL=40
 
 UV_VERSION="0.11.7"
-WORTHLESS_VERSION="0.3.0"  # pin: worthless==0.3.0 (no floating tag)
+WORTHLESS_VERSION="0.3.0"
 
-# SHA256 of https://astral.sh/uv/${UV_VERSION}/install.sh — pinned per release.
-# Bump together with UV_VERSION; verified before execution.
+# SHA256 of https://astral.sh/uv/${UV_VERSION}/install.sh — bump with UV_VERSION.
 ASTRAL_INSTALLER_SHA256="efed99618cb5c31e4e36a700ab7c3698e83c0ae0f3c336714043d0f932c8d32c"
 
 ASTRAL_INSTALLER_URL="https://astral.sh/uv/${UV_VERSION}/install.sh"
 DOCS_URL="https://docs.worthless.sh"
 WINDOWS_DOCS_URL="https://docs.worthless.sh/install/windows"
 
-# Force uv to use its own managed Python (python-build-standalone) for
-# fresh-box reproducibility. Override via env if a corp policy requires it.
+# Force uv to use its own managed Python for fresh-box reproducibility.
 export UV_PYTHON_PREFERENCE="${UV_PYTHON_PREFERENCE:-only-managed}"
 
 # --- Output helpers ----------------------------------------------------------
@@ -85,14 +80,12 @@ detect_os() {
             detect_linux_subenv
             ;;
         CYGWIN*|MINGW*|MSYS*)
-            # exit 20: unsupported platform (Windows native — Cygwin/MINGW/MSYS).
-            die 20 "Windows native shells are not supported." \
+            die "$EXIT_PLATFORM" "Windows native shells are not supported." \
                 "Run inside a Linux subsystem instead:" \
                 "  ${WINDOWS_DOCS_URL} (or see worthless.sh docs) for the full guide."
             ;;
         *)
-            # exit 20: unsupported platform (unknown uname).
-            die 20 "Unsupported OS: ${uname_s}" \
+            die "$EXIT_PLATFORM" "Unsupported OS: ${uname_s}" \
                 "macOS >=11 and Linux (glibc >=2.17) are supported." \
                 "  Docs: ${DOCS_URL}/install"
             ;;
@@ -107,8 +100,15 @@ check_macos_version() {
     fi
     macos_ver="$(sw_vers -productVersion 2>/dev/null || echo "")"
     macos_major="$(echo "$macos_ver" | cut -d. -f1)"
-    if [ -z "$macos_major" ] || ! [ "$macos_major" -ge 11 ] 2>/dev/null; then
-        die 20 "macOS ${macos_ver} is too old — Big Sur (11) or newer required." \
+    case "$macos_major" in
+        ''|*[!0-9]*)
+            die "$EXIT_PLATFORM" "Could not parse macOS version (got '${macos_ver}')." \
+                "Big Sur (11) or newer is required." \
+                "  Docs: ${DOCS_URL}/install"
+            ;;
+    esac
+    if [ "$macos_major" -lt 11 ]; then
+        die "$EXIT_PLATFORM" "macOS ${macos_ver} is too old — Big Sur (11) or newer required." \
             "uv's bundled Python (python-build-standalone) needs macOS >=11." \
             "  Upgrade macOS, or install via Homebrew: brew install pipx && pipx install worthless"
     fi
@@ -119,28 +119,23 @@ detect_linux_subenv() {
     # user is running from a Windows-mounted path, where Python tooling is slow.
     if [ -f /proc/version ] && grep -qi microsoft /proc/version 2>/dev/null; then
         IS_WSL=1
-        if [ "$(pwd)" != "${PWD#/mnt/}" ] || [ "$(pwd)" != "${PWD#/mnt/c/}" ]; then
-            case "$(pwd)" in
-                /mnt/*)
-                    warn "WSL detected, running from a Windows-mounted path (/mnt/...)."
-                    warn "Install will succeed but uv operations from /mnt/c are slow."
-                    warn "For best performance, install from your Linux home (~)."
-                    ;;
-            esac
-        fi
+        case "$(pwd)" in
+            /mnt/*)
+                warn "WSL detected, running from a Windows-mounted path (/mnt/...)."
+                warn "Install will succeed but uv operations from /mnt/c are slow."
+                warn "For best performance, install from your Linux home (~)."
+                ;;
+        esac
     fi
 }
 
 # --- Conflict detection ------------------------------------------------------
 
 check_pipx_conflict() {
-    # If the user has a pipx-installed worthless, the new uv-tool install will
-    # work but `worthless` on PATH may resolve to the pipx shim, causing version
-    # confusion. Stop early with a clear remediation.
+    # Stop early: a pipx shim on PATH would mask the uv-installed binary.
     if command -v pipx >/dev/null 2>&1; then
         if pipx list 2>/dev/null | grep -qi "package worthless "; then
-            # exit 30: pre-existing pipx-installed worthless conflicts with uv.
-            die 30 "Detected a pipx-installed worthless." \
+            die "$EXIT_PIPX_CONFLICT" "Detected a pipx-installed worthless." \
                 "uv and pipx both manage tool isolation; running both is confusing." \
                 "Remove the pipx version, then re-run this installer:" \
                 "  pipx uninstall worthless"
@@ -167,49 +162,41 @@ ensure_uv() {
     trap 'rm -rf "$tmpdir"' EXIT INT TERM
     installer="$tmpdir/uv-installer.sh"
 
-    # --fail: exit non-zero on HTTP 4xx/5xx (otherwise curl writes the error
-    #         page to stdout and we'd execute it).
-    # --retry / --retry-delay: tolerate transient CDN flakes.
-    # --max-time: cap total wall time per attempt.
     if ! curl --fail --silent --show-error --location \
               --retry 3 --retry-delay 2 --max-time 30 \
               --output "$installer" \
               "$ASTRAL_INSTALLER_URL"; then
         err "Failed to download Astral installer from ${ASTRAL_INSTALLER_URL}"
         proxy_hints
-        exit 10
+        exit "$EXIT_NETWORK"
     fi
 
-    # SHA256 verification: refuse to run a mutated installer.
     if command -v sha256sum >/dev/null 2>&1; then
         actual="$(sha256sum "$installer" | awk '{print $1}')"
     elif command -v shasum >/dev/null 2>&1; then
         actual="$(shasum -a 256 "$installer" | awk '{print $1}')"
     else
-        die 40 "Neither sha256sum nor shasum found." \
+        die "$EXIT_INTERNAL" "Neither sha256sum nor shasum found." \
             "Cannot verify Astral installer integrity. Aborting for safety."
     fi
     if [ "$actual" != "$ASTRAL_INSTALLER_SHA256" ]; then
-        die 40 "SHA256 mismatch on Astral installer ${UV_VERSION}." \
+        die "$EXIT_INTERNAL" "SHA256 mismatch on Astral installer ${UV_VERSION}." \
             "expected: ${ASTRAL_INSTALLER_SHA256}" \
             "actual:   ${actual}" \
             "Refusing to execute. Re-run later or report at ${DOCS_URL}."
     fi
 
-    # Pin the uv version the Astral installer drops onto disk.
     UV_INSTALL_VERSION="$UV_VERSION" sh "$installer" >/dev/null 2>&1 || {
         err "Astral uv installer failed."
         proxy_hints
-        exit 10
+        exit "$EXIT_NETWORK"
     }
 
-    # The Astral installer drops uv into ~/.local/bin (Linux) or
-    # ~/.cargo/bin / ~/.local/bin (macOS). Make it discoverable for this run.
     PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
     export PATH
 
     if ! command -v uv >/dev/null 2>&1; then
-        die 40 "uv installed but not on PATH after bootstrap." \
+        die "$EXIT_INTERNAL" "uv installed but not on PATH after bootstrap." \
             "Open a new shell and re-run, or add ~/.local/bin to PATH manually."
     fi
 }
@@ -224,15 +211,15 @@ install_or_upgrade_worthless() {
     else
         err "Failed to install worthless==${WORTHLESS_VERSION}."
         proxy_hints
-        exit 10
+        exit "$EXIT_NETWORK"
     fi
 }
 
 smoke_test() {
-    # Use `uv run` so the smoke test works even if the user hasn't activated
-    # their PATH yet — uv knows where it put worthless.
+    # `uv run` works even before the user activates PATH — uv knows where
+    # it put the binary.
     if ! uv run --no-project worthless --version >/dev/null 2>&1; then
-        die 40 "worthless installed but failed to run." \
+        die "$EXIT_INTERNAL" "worthless installed but failed to run." \
             "Try: uv run --no-project worthless --version" \
             "Or:  worthless doctor"
     fi
@@ -243,15 +230,10 @@ smoke_test() {
 print_activation_hint() {
     user_shell="$(basename "${SHELL:-/bin/sh}")"
     case "$user_shell" in
-        bash)
+        bash|zsh)
             printf "  Activate in this shell: %s\n" 'export PATH="$HOME/.local/bin:$PATH"'
             printf "  Make permanent:         %s\n" \
-                'echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> ~/.bashrc'
-            ;;
-        zsh)
-            printf "  Activate in this shell: %s\n" 'export PATH="$HOME/.local/bin:$PATH"'
-            printf "  Make permanent:         %s\n" \
-                'echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> ~/.zshrc'
+                "echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.${user_shell}rc"
             ;;
         fish)
             printf "  Activate in this shell: %s\n" 'set -gx PATH $HOME/.local/bin $PATH'

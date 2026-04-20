@@ -11,18 +11,18 @@ on:
   pull_request:
     paths:
       - "install.sh"
-      - "tests/test_install_docker.py"
+      - "tests/test_install_*.py"
       - "tests/_install_helpers.py"
-      - "tests/install_fixtures/Dockerfile.ubuntu-bare"
+      - "tests/install_fixtures/**"
       - ".github/workflows/install-docker.yml"
   push:
     branches:
       - main
     paths:
       - "install.sh"
-      - "tests/test_install_docker.py"
+      - "tests/test_install_*.py"
       - "tests/_install_helpers.py"
-      - "tests/install_fixtures/Dockerfile.ubuntu-bare"
+      - "tests/install_fixtures/**"
       - ".github/workflows/install-docker.yml"
 
 permissions:
@@ -55,5 +55,5 @@ jobs:
         env:
           UV_CACHE_DIR: /tmp/uv-cache
         run: |
-          uv sync --extra dev --extra test --extra mcp
+          uv sync --extra test
           uv run pytest -m docker -q tests/test_install_docker.py

@@ -28,8 +28,8 @@ def test_windows_native_exits_20_with_link(tmp_path: Path) -> None:
     assert "windows" in result.stderr.lower(), (
         "stderr must mention Windows so user understands the failure"
     )
-    assert "worthless.sh" in result.stderr or "docs" in result.stderr.lower(), (
-        "stderr must include a docs link, not a generic die message"
+    assert "worthless.sh" in result.stderr, (
+        "stderr must include a worthless.sh docs link, not a generic die message"
     )
 
 
@@ -46,11 +46,11 @@ def test_macos_below_11_exits_20(tmp_path: Path) -> None:
         f"expected exit 20 (unsupported platform) on macOS 10.15, got {result.returncode}\n"
         f"stderr: {result.stderr}"
     )
-    assert (
-        "11" in result.stderr
-        or "big sur" in result.stderr.lower()
-        or "macos" in result.stderr.lower()
-    ), "stderr must mention the macOS version requirement"
+    # Must pin the version requirement specifically, not just say "macOS".
+    assert "11" in result.stderr, "stderr must cite the macOS 11 minimum version"
+    assert "big sur" in result.stderr.lower() or "macos" in result.stderr.lower(), (
+        "stderr must name the OS/release so the user knows what to upgrade"
+    )
 
 
 def test_pipx_conflict_warns_and_exits_30(tmp_path: Path) -> None:
