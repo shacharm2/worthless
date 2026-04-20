@@ -1,0 +1,59 @@
+name: Install Docker (bare-Ubuntu integration)
+
+# WOR-235: per-PR Docker integration test. Validates the AC ("fresh box
+# without Python can install worthless via curl|sh") in a hermetic
+# environment with no Python/pipx/uv pre-installed.
+#
+# Slow (~3-5 min including image build + Python download), so it runs
+# only when the installer or its fixtures change.
+
+on:
+  pull_request:
+    paths:
+      - "install.sh"
+      - "tests/test_install_docker.py"
+      - "tests/_install_helpers.py"
+      - "tests/install_fixtures/Dockerfile.ubuntu-bare"
+      - ".github/workflows/install-docker.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "install.sh"
+      - "tests/test_install_docker.py"
+      - "tests/_install_helpers.py"
+      - "tests/install_fixtures/Dockerfile.ubuntu-bare"
+      - ".github/workflows/install-docker.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bare-ubuntu:
+    name: install.sh on bare ubuntu:24.04 (no python/pipx/uv)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python (for pytest harness only — not used inside container)
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: python -m pip install --disable-pip-version-check uv
+
+      - name: Run docker-marked integration test
+        env:
+          UV_CACHE_DIR: /tmp/uv-cache
+        run: |
+          uv sync --extra dev --extra test --extra mcp
+          uv run pytest -m docker -q tests/test_install_docker.py
