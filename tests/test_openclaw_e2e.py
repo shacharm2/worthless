@@ -19,10 +19,12 @@ import time
 import uuid
 from pathlib import Path
 
+import anthropic
 import httpx
+import openai
 import pytest
 
-from tests.helpers import fake_openai_key
+from tests.helpers import fake_anthropic_key, fake_openai_key
 from worthless.cli.commands.lock import _make_alias
 
 # ---------------------------------------------------------------------------
@@ -201,12 +203,9 @@ def openclaw_stack():
         assert shard_a.startswith("sk-"), f"Shard-A not format-preserving: {shard_a[:20]}"
 
         # 6. Clear any captured headers from startup
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
-        yield proxy_port, mock_port, fake_key, shard_a, alias
+        yield proxy_port, mock_port, fake_key, shard_a, alias, proxy_container
 
     finally:
         subprocess.run(
@@ -227,9 +226,45 @@ def openclaw_stack():
         )
 
 
+@pytest.fixture(scope="session")
+def openclaw_anthropic_alias(openclaw_stack):
+    """Enroll a second alias for Anthropic into the already-running stack.
+
+    Depends on openclaw_stack (proxy + mock are up, OpenAI alias enrolled).
+    Writes a distinct Anthropic fake key into a separate .env path inside
+    the proxy container, runs `worthless lock`, reads shard-A back.
+
+    Yields (fake_key, shard_a, alias).
+    """
+    _, _, _, _, _, proxy_container = openclaw_stack
+
+    fake_key = fake_anthropic_key()
+    alias = _make_alias("anthropic", fake_key)
+
+    env_path = "/tmp/.anthropic.env"
+    write = _write_env_to_container(proxy_container, f"ANTHROPIC_API_KEY={fake_key}", dest=env_path)
+    if write.returncode != 0:
+        pytest.skip(f"failed to write anthropic .env: {write.stderr}")
+
+    lock = _docker_exec(proxy_container, ["worthless", "lock", "--env", env_path])
+    if lock.returncode != 0:
+        pytest.skip(f"anthropic lock failed: {lock.stderr}")
+
+    shard_a = _read_env_value(proxy_container, "ANTHROPIC_API_KEY", path=env_path)
+    assert shard_a != fake_key, "lock did not replace anthropic key in .env"
+    assert shard_a.startswith("sk-ant-"), f"anthropic shard-A not format-preserving: {shard_a[:30]}"
+
+    yield fake_key, shard_a, alias
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def _clear_mock_headers(mock_port: int) -> None:
+    """Reset the mock-upstream's captured-headers log before a test."""
+    httpx.delete(f"http://127.0.0.1:{mock_port}/captured-headers", timeout=5.0)
 
 
 class TestOpenClawShardA:
@@ -242,12 +277,9 @@ class TestOpenClawShardA:
 
     def test_shard_a_reconstructs(self, openclaw_stack):
         """POST to proxy, verify mock-upstream receives the REAL key."""
-        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
         resp = httpx.post(
             f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
@@ -273,12 +305,9 @@ class TestOpenClawShardA:
 
     def test_streaming(self, openclaw_stack):
         """Streaming request reconstructs the real key too."""
-        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
         resp = httpx.post(
             f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
@@ -303,12 +332,9 @@ class TestOpenClawShardA:
 
     def test_shard_a_not_leaked_to_upstream(self, openclaw_stack):
         """Shard-A (format-preserving) never appears in upstream headers."""
-        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
         httpx.post(
             f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
@@ -324,8 +350,187 @@ class TestOpenClawShardA:
             f"http://127.0.0.1:{mock_port}/captured-headers",
             timeout=5.0,
         ).json()
-        for entry in captured["headers"]:
+        # Filter by provider: the captured-headers list is cross-provider once
+        # both OpenAI and Anthropic aliases exist. Assert only on the OpenAI
+        # rows here — Anthropic traffic uses x-api-key, not Authorization.
+        openai_entries = [e for e in captured["headers"] if e.get("provider") == "openai"]
+        assert openai_entries, "no OpenAI traffic captured at upstream"
+        for entry in openai_entries:
             assert shard_a not in entry["authorization"], "Shard-A leaked to upstream!"
             assert entry["authorization"] == f"Bearer {fake_key}", (
                 "Unexpected authorization value at upstream"
             )
+
+
+class TestOpenAISDKOpenClaw:
+    """Prove the openai Python SDK works drop-in against the containerized proxy + mock."""
+
+    def test_basic_chat_via_openai_sdk(self, openclaw_stack):
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+        )
+        resp = client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert resp.choices, f"no choices in response: {resp}"
+        assert resp.choices[0].message.content == "Hello from mock upstream!"
+
+    def test_streaming_via_openai_sdk(self, openclaw_stack):
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+        )
+        stream = client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+        chunks = list(stream)
+        assert chunks, "stream yielded zero chunks — SSE broke through proxy"
+        contents = [
+            c.choices[0].delta.content for c in chunks if c.choices and c.choices[0].delta.content
+        ]
+        assert "".join(contents) == "Hello!"
+
+    def test_bad_model_raises_not_found_via_openai_sdk(self, openclaw_stack):
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+            max_retries=0,
+        )
+        with pytest.raises(openai.APIStatusError) as exc:
+            client.chat.completions.create(
+                model="gpt-does-not-exist-zzz",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code == 404
+        msg = str(exc.value).lower()
+        assert "traceback" not in msg
+        assert "worthless" not in msg
+
+    def test_upstream_5xx_surfaces_as_typed_error_via_openai_sdk(self, openclaw_stack):
+        """Adversarial: upstream 500 must surface as openai.InternalServerError
+        (typed 5xx subclass), not a generic APIError or raw HTTP exception."""
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+            max_retries=0,
+        )
+        with pytest.raises(openai.APIStatusError) as exc:
+            client.chat.completions.create(
+                model="gpt-trigger-5xx",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code >= 500, (
+            f"expected 5xx passthrough, got {exc.value.status_code}"
+        )
+        assert "traceback" not in str(exc.value).lower()
+        assert "worthless" not in str(exc.value).lower()
+
+
+class TestAnthropicSDKOpenClaw:
+    """Prove the anthropic Python SDK works drop-in against the containerized proxy + mock."""
+
+    def test_basic_message_via_anthropic_sdk(self, openclaw_stack, openclaw_anthropic_alias):
+        proxy_port, mock_port, *_ = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+        )
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert resp.content, f"no content in response: {resp}"
+        assert resp.content[0].text == "Hello from mock upstream!"
+
+    def test_streaming_via_anthropic_sdk(self, openclaw_stack, openclaw_anthropic_alias):
+        proxy_port, mock_port, *_ = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+        )
+        texts = []
+        with client.messages.stream(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        ) as stream:
+            for text in stream.text_stream:
+                texts.append(text)
+        assert texts, "Anthropic stream yielded zero text events — SSE broke through proxy"
+        assert "".join(texts) == "Hello!"
+
+    def test_bad_model_raises_bad_request_via_anthropic_sdk(
+        self, openclaw_stack, openclaw_anthropic_alias
+    ):
+        proxy_port, mock_port, *_ = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+            max_retries=0,
+        )
+        with pytest.raises(anthropic.BadRequestError) as exc:
+            client.messages.create(
+                model="claude-does-not-exist-zzz",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code == 400
+        msg = str(exc.value).lower()
+        assert "traceback" not in msg
+        assert "worthless" not in msg
+
+    def test_upstream_5xx_surfaces_as_typed_error_via_anthropic_sdk(
+        self, openclaw_stack, openclaw_anthropic_alias
+    ):
+        """Adversarial: upstream 500 must surface as anthropic.InternalServerError
+        (typed 5xx subclass), not a generic APIError or raw HTTP exception."""
+        proxy_port, mock_port, *_ = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+            max_retries=0,
+        )
+        with pytest.raises(anthropic.APIStatusError) as exc:
+            client.messages.create(
+                model="claude-trigger-5xx",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code >= 500, (
+            f"expected 5xx passthrough, got {exc.value.status_code}"
+        )
+        assert "traceback" not in str(exc.value).lower()
+        assert "worthless" not in str(exc.value).lower()
