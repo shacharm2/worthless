@@ -38,10 +38,11 @@ Derived sub-criteria (all gated in-CI where feasible):
 
 ## Non-goals (tracked as separate tickets — see below)
 
-- **Cosign image signing** → new ticket, v1.1 post-launch hardening.
-- **Registry fallback / GHCR SPOF mitigation** → new ticket, v1.2.
+- ~~Cosign image signing~~ → **folded in** after v2 review, Tier 2 pick-up. See workflow step "Sign image with cosign".
+- ~~arm64 Trivy scan~~ → **folded in** after v2 review, Tier 2 pick-up. Both arches now scanned before push.
+- **Registry fallback / GHCR SPOF mitigation** → new ticket, v1.2. Brief at `.planning/tickets/ghcr-registry-fallback-brief.md`.
 - **Dockerfile digest-pinning of `FROM python:...`** → already tracked in docker-hardening research backlog.
-- **No DockerHub mirror.** GHCR is the single-source registry.
+- **No DockerHub mirror.** GHCR is the single-source registry (see registry-fallback ticket for v1.2 mitigation options).
 
 ## Spec — workflow file
 
