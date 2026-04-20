@@ -15,9 +15,13 @@ import os
 import subprocess
 import sys
 import textwrap
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
+import anthropic
 import httpx
+import openai
 import pytest
 from dotenv import dotenv_values
 from typer.testing import CliRunner
@@ -286,37 +290,10 @@ class TestSpawnProxyDirect:
     def test_spawn_proxy_openai_direct(
         self, openai_env: tuple[Path, Path, str, dict[str, str]]
     ) -> None:
-        env_file, worthless_home, original_key, cli_env = openai_env
+        _, _, original_key, _ = openai_env
+        with _locked_proxy(openai_env) as (port, alias, shard_a):
+            assert shard_a != original_key, "shard-A should differ from original key"
 
-        # Lock
-        result = runner.invoke(app, ["lock", "--env", str(env_file)], env=cli_env)
-        assert result.exit_code == 0, f"lock failed: {result.output}"
-
-        # Read shard-A from the locked .env
-        locked_vals = dotenv_values(env_file)
-        shard_a = locked_vals["OPENAI_API_KEY"]
-        assert shard_a != original_key, "shard-A should differ from original key"
-
-        # Determine the alias from the enrolled keys
-        home = WorthlessHome(base_dir=worthless_home)
-
-        repo = ShardRepository(str(home.db_path), home.fernet_key)
-        aliases = asyncio.run(repo.list_keys())
-        assert len(aliases) == 1
-        alias = aliases[0]
-
-        # Spawn proxy directly
-        proxy_env = build_proxy_env(home)
-        read_fd, write_fd = create_liveness_pipe()
-        proxy = None
-        try:
-            proxy, port = spawn_proxy(env=proxy_env, port=0, liveness_fd=read_fd)
-            os.close(read_fd)
-
-            healthy = poll_health(port, timeout=15.0)
-            assert healthy, "Proxy failed to become healthy"
-
-            # Send a real request with shard-A as Bearer token
             url = f"http://127.0.0.1:{port}/{alias}/v1/chat/completions"
             with httpx.Client(headers={"accept-encoding": "identity"}, timeout=60.0) as client:
                 resp = client.post(
@@ -329,25 +306,10 @@ class TestSpawnProxyDirect:
                     headers={"Authorization": f"Bearer {shard_a}"},
                 )
 
-            # 200 = success, 429 = quota — both prove reconstruction worked
             assert resp.status_code != 401, f"Got 401 — reconstruction failed. Body: {resp.text}"
             assert resp.status_code in {200, 429}, (
                 f"Unexpected status {resp.status_code}: {resp.text}"
             )
-
-        finally:
-            # Clean up proxy
-            if proxy is not None:
-                proxy.terminate()
-                proxy.wait(timeout=5)
-            try:
-                os.close(write_fd)
-            except OSError:
-                pass
-
-        # Unlock
-        result = runner.invoke(app, ["unlock", "--env", str(env_file)], env=cli_env)
-        assert result.exit_code == 0, f"unlock failed: {result.output}"
 
 
 # ---------------------------------------------------------------------------
@@ -411,3 +373,183 @@ class TestWrapBaseUrlInjection:
         # Unlock
         result = runner.invoke(app, ["unlock", "--env", str(env_file)], env=cli_env)
         assert result.exit_code == 0, f"unlock failed: {result.output}"
+
+
+@contextmanager
+def _locked_proxy(
+    env: tuple[Path, Path, str, dict[str, str]],
+) -> Iterator[tuple[int, str, str]]:
+    """Lock the key, spawn a proxy, yield (port, alias, shard_a); unlock on exit.
+
+    Teardown terminates the proxy, closes the liveness pipe, and unlocks — even
+    on SDK failure. write_fd must outlive the proxy; closing it early signals
+    liveness failure and the proxy exits.
+    """
+    env_file, worthless_home, _original_key, cli_env = env
+
+    result = runner.invoke(app, ["lock", "--env", str(env_file)], env=cli_env)
+    assert result.exit_code == 0, f"lock failed: {result.output}"
+
+    shard_a = next(iter(dotenv_values(env_file).values()))
+    assert shard_a, "no shard-A found in locked .env"
+
+    home = WorthlessHome(base_dir=worthless_home)
+    repo = ShardRepository(str(home.db_path), home.fernet_key)
+    aliases = asyncio.run(repo.list_keys())
+    assert len(aliases) == 1
+    alias = aliases[0]
+
+    read_fd, write_fd = create_liveness_pipe()
+    proxy: subprocess.Popen | None = None
+    try:
+        proxy, port = spawn_proxy(env=build_proxy_env(home), port=0, liveness_fd=read_fd)
+        os.close(read_fd)
+        read_fd = -1
+        assert poll_health(port, timeout=15.0), "proxy failed to become healthy"
+        yield port, alias, shard_a
+    finally:
+        if proxy is not None:
+            proxy.terminate()
+            proxy.wait(timeout=5)
+        for fd in (read_fd, write_fd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        result = runner.invoke(app, ["unlock", "--env", str(env_file)], env=cli_env)
+        assert result.exit_code == 0, f"unlock failed: {result.output}"
+
+
+@pytest.mark.live
+@pytest.mark.timeout(120)
+class TestOpenAILiveSDK:
+    """Prove the openai Python SDK works drop-in against the Worthless proxy."""
+
+    def test_basic_chat_via_openai_sdk(
+        self, openai_env: tuple[Path, Path, str, dict[str, str]]
+    ) -> None:
+        with _locked_proxy(openai_env) as (port, alias, shard_a):
+            client = openai.OpenAI(
+                api_key=shard_a,
+                base_url=f"http://127.0.0.1:{port}/{alias}/v1",
+            )
+            try:
+                resp = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    max_tokens=1,
+                    messages=[{"role": "user", "content": "say hi"}],
+                )
+                assert resp.choices, f"no choices in response: {resp}"
+                assert resp.choices[0].message is not None
+            except openai.RateLimitError:
+                pass
+
+    def test_streaming_via_openai_sdk(
+        self, openai_env: tuple[Path, Path, str, dict[str, str]]
+    ) -> None:
+        with _locked_proxy(openai_env) as (port, alias, shard_a):
+            client = openai.OpenAI(
+                api_key=shard_a,
+                base_url=f"http://127.0.0.1:{port}/{alias}/v1",
+            )
+            try:
+                stream = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    max_tokens=5,
+                    messages=[{"role": "user", "content": "say hi"}],
+                    stream=True,
+                )
+                chunks = list(stream)
+                assert chunks, "stream yielded zero chunks — SSE broke through proxy"
+                assert any(c.choices for c in chunks), f"no chunks had choices: {chunks[:3]}"
+            except openai.RateLimitError:
+                pass
+
+    def test_bad_model_raises_typed_error_via_openai_sdk(
+        self, openai_env: tuple[Path, Path, str, dict[str, str]]
+    ) -> None:
+        with _locked_proxy(openai_env) as (port, alias, shard_a):
+            client = openai.OpenAI(
+                api_key=shard_a,
+                base_url=f"http://127.0.0.1:{port}/{alias}/v1",
+            )
+            with pytest.raises(openai.APIStatusError) as exc:
+                client.chat.completions.create(
+                    model="gpt-does-not-exist-zzz",
+                    max_tokens=1,
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+            assert 400 <= exc.value.status_code < 500, (
+                f"expected 4xx for bad model, got {exc.value.status_code}"
+            )
+            msg = str(exc.value).lower()
+            assert "traceback" not in msg
+            assert "worthless" not in msg
+
+
+@pytest.mark.live
+@pytest.mark.timeout(120)
+class TestAnthropicLiveSDK:
+    """Prove the anthropic Python SDK works drop-in against the Worthless proxy."""
+
+    def test_basic_message_via_anthropic_sdk(
+        self, anthropic_env: tuple[Path, Path, str, dict[str, str]]
+    ) -> None:
+        with _locked_proxy(anthropic_env) as (port, alias, shard_a):
+            client = anthropic.Anthropic(
+                api_key=shard_a,
+                base_url=f"http://127.0.0.1:{port}/{alias}",
+            )
+            try:
+                resp = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=1,
+                    messages=[{"role": "user", "content": "say hi"}],
+                )
+                assert resp.content, f"no content in response: {resp}"
+            except anthropic.APIStatusError as err:
+                # Billing 400, 429, 529 still prove full proxy transit.
+                if err.status_code not in {400, 429, 529}:
+                    raise
+
+    def test_streaming_via_anthropic_sdk(
+        self, anthropic_env: tuple[Path, Path, str, dict[str, str]]
+    ) -> None:
+        with _locked_proxy(anthropic_env) as (port, alias, shard_a):
+            client = anthropic.Anthropic(
+                api_key=shard_a,
+                base_url=f"http://127.0.0.1:{port}/{alias}",
+            )
+            events = 0
+            try:
+                with client.messages.stream(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=5,
+                    messages=[{"role": "user", "content": "say hi"}],
+                ) as stream:
+                    for _ in stream.text_stream:
+                        events += 1
+                assert events > 0, "stream yielded zero text events"
+            except anthropic.APIStatusError as err:
+                if err.status_code not in {400, 429, 529}:
+                    raise
+
+    def test_bad_model_raises_bad_request_via_anthropic_sdk(
+        self, anthropic_env: tuple[Path, Path, str, dict[str, str]]
+    ) -> None:
+        with _locked_proxy(anthropic_env) as (port, alias, shard_a):
+            client = anthropic.Anthropic(
+                api_key=shard_a,
+                base_url=f"http://127.0.0.1:{port}/{alias}",
+            )
+            with pytest.raises(anthropic.BadRequestError) as exc:
+                client.messages.create(
+                    model="claude-does-not-exist-zzz",
+                    max_tokens=1,
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+            assert exc.value.status_code == 400
+            msg = str(exc.value).lower()
+            assert "traceback" not in msg
+            assert "worthless" not in msg
