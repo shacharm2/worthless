@@ -32,10 +32,11 @@ jobs:
   build-push:
     name: Build, scan, and push multi-arch image
     runs-on: ubuntu-latest
-    # 35-min budget: amd64 scan-build (~3m) + arm64 QEMU scan-build (~8-12m)
-    # + multi-arch push (~10-14m, buildx cache reuse) + cosign (~30s).
-    # Bumped from 25 after round-3 review flagged QEMU variance risk.
+    # amd64 scan-build (~3m) + arm64 QEMU scan-build (~8-12m) + multi-arch
+    # push (~10-14m) + cosign (~30s). 35m budget absorbs QEMU variance.
     timeout-minutes: 35
+    env:
+      ARM64_TAR: /tmp/worthless-proxy-arm64.tar
     permissions:
       contents: read
       packages: write
@@ -44,7 +45,6 @@ jobs:
       id-token: write
     outputs:
       version: ${{ steps.meta.outputs.version }}
-      tags: ${{ steps.meta.outputs.tags }}
       digest: ${{ steps.push.outputs.digest }}
 
     steps:
@@ -91,12 +91,8 @@ jobs:
           flavor: |
             latest=auto
 
-      # Design choice: two build-push-action calls.
-      # First call: single-arch amd64, load into local daemon (load: true,
-      # push: false) so the scanner can read a concrete image before
-      # anything leaves the runner. Second call: multi-arch build + push,
-      # reusing Buildx layer cache in-memory. This keeps the release gate
-      # strict (scan-before-push) without standing up a registry-side scan.
+      # Scan-before-push gate: amd64 loads to daemon, arm64 writes tarball
+      # (foreign-arch daemon load is unreliable across runner images).
       - name: Build amd64 image locally for vulnerability scan
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -133,7 +129,7 @@ jobs:
           file: ./Dockerfile
           platforms: linux/arm64
           push: false
-          outputs: type=docker,dest=/tmp/worthless-proxy-arm64.tar
+          outputs: type=docker,dest=${{ env.ARM64_TAR }}
           tags: worthless-proxy:scan-arm64-${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -142,7 +138,7 @@ jobs:
         with:
           # docker-archive: scheme tells Grype to read the tarball directly
           # (via its internal libs). No daemon load needed for foreign arch.
-          image: docker-archive:/tmp/worthless-proxy-arm64.tar
+          image: docker-archive:${{ env.ARM64_TAR }}
           severity-cutoff: critical
           only-fixed: true
           fail-build: true
@@ -164,12 +160,9 @@ jobs:
           # No GHA cache — tag-only workflow runs infrequently; cache
           # would be theatre. Revisit if arm64 emulation pushes >20 min.
 
-      # Cosign keyless signing: no long-lived keys. OIDC mints a short-lived
-      # certificate bound to this workflow's identity; the signature and
-      # Rekor transparency-log entry prove the image came from this repo
-      # + this workflow file. Users verify with `cosign verify` (see README).
-      # Installer ran earlier (right after Buildx) so any install failure
-      # surfaced before the 15-minute multi-arch build.
+      # Cosign keyless signing via OIDC. See docs/install-docker.md for the
+      # matching `cosign verify` command — keep the identity regex there in
+      # sync with the SAN format embedded by Fulcio on this workflow file.
       - name: Sign image with cosign (keyless, OIDC)
         env:
           IMAGE: ghcr.io/${{ github.repository_owner }}/worthless-proxy
@@ -227,13 +220,16 @@ jobs:
 
   smoke:
     name: Smoke-test published image from GHCR
-    needs: [build-push, visibility]
+    # Depend only on build-push. Visibility flip runs in parallel; smoke
+    # authenticates with GITHUB_TOKEN + packages:read, so private images
+    # are pullable even if the flip job is still running or failed.
+    needs: build-push
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      IMAGE_REF: ghcr.io/${{ github.repository_owner }}/worthless-proxy:${{ needs.build-push.outputs.version }}
     permissions:
       contents: read
-      # packages: read covers the fallback where the visibility flip
-      # did not land and the image is still private at pull time.
       packages: read
 
     steps:
@@ -265,24 +261,18 @@ jobs:
         uses: sigstore/cosign-installer@fb28c2b6339dcd94da6e4cbcbc5e888961f6f8c3 # v3.9.0
 
       - name: Verify signature of published image (pre-pull)
-        env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/worthless-proxy:${{ needs.build-push.outputs.version }}
         run: |
-          cosign verify "${IMAGE}" \
+          cosign verify "${IMAGE_REF}" \
             --certificate-identity-regexp 'https://github.com/${{ github.repository_owner }}/worthless/\.github/workflows/publish-docker\.yml@refs/tags/v.*' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             --certificate-github-workflow-repository ${{ github.repository }}
 
       - name: Pull published image from registry
-        env:
-          OWNER: ${{ github.repository_owner }}
-          VERSION: ${{ needs.build-push.outputs.version }}
-        run: |
-          docker pull "ghcr.io/${OWNER}/worthless-proxy:${VERSION}"
+        run: docker pull "${IMAGE_REF}"
 
       - name: Run Docker smoke tests against published image
         env:
-          WORTHLESS_DOCKER_IMAGE: ghcr.io/${{ github.repository_owner }}/worthless-proxy:${{ needs.build-push.outputs.version }}
+          WORTHLESS_DOCKER_IMAGE: ${{ env.IMAGE_REF }}
         run: |
           uv run pytest tests/test_docker_e2e.py -v -m docker \
             -k "container_starts_healthy or enroll_and_healthz or runs_as_non_root" \
