@@ -203,10 +203,7 @@ def openclaw_stack():
         assert shard_a.startswith("sk-"), f"Shard-A not format-preserving: {shard_a[:20]}"
 
         # 6. Clear any captured headers from startup
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
         yield proxy_port, mock_port, fake_key, shard_a, alias, proxy_container
 
@@ -265,6 +262,11 @@ def openclaw_anthropic_alias(openclaw_stack):
 # ---------------------------------------------------------------------------
 
 
+def _clear_mock_headers(mock_port: int) -> None:
+    """Reset the mock-upstream's captured-headers log before a test."""
+    httpx.delete(f"http://127.0.0.1:{mock_port}/captured-headers", timeout=5.0)
+
+
 class TestOpenClawShardA:
     """Prove the proxy reconstructs the real key and forwards it upstream.
 
@@ -277,10 +279,7 @@ class TestOpenClawShardA:
         """POST to proxy, verify mock-upstream receives the REAL key."""
         proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
         resp = httpx.post(
             f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
@@ -308,10 +307,7 @@ class TestOpenClawShardA:
         """Streaming request reconstructs the real key too."""
         proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
         resp = httpx.post(
             f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
@@ -338,10 +334,7 @@ class TestOpenClawShardA:
         """Shard-A (format-preserving) never appears in upstream headers."""
         proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
         httpx.post(
             f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
@@ -367,10 +360,6 @@ class TestOpenClawShardA:
             assert entry["authorization"] == f"Bearer {fake_key}", (
                 "Unexpected authorization value at upstream"
             )
-
-
-def _clear_mock_headers(mock_port: int) -> None:
-    httpx.delete(f"http://127.0.0.1:{mock_port}/captured-headers", timeout=5.0)
 
 
 class TestOpenAISDKOpenClaw:
