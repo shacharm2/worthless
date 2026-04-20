@@ -138,9 +138,6 @@ def openclaw_stack():
 
     Yields (proxy_port, mock_port, fake_key, shard_a, alias).
     """
-    if not docker_available():
-        pytest.skip("Docker daemon not running")
-
     project = f"openclaw-e2e-{uuid.uuid4().hex[:8]}"
     fake_key = fake_openai_key()
     alias = _make_alias("openai", fake_key)

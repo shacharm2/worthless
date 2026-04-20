@@ -124,10 +124,6 @@ def docker_image() -> str:
 
     If WORTHLESS_DOCKER_IMAGE is set (CI), skip the build and use that tag.
     """
-    result = subprocess.run(["docker", "info"], capture_output=True)
-    if result.returncode != 0:
-        pytest.skip("Docker daemon not running")
-
     if os.environ.get("WORTHLESS_DOCKER_IMAGE"):
         # CI already built the image -- just use it
         yield IMAGE_TAG  # type: ignore[misc]

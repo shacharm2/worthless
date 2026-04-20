@@ -9,10 +9,12 @@ importing this module at collection time does not probe the Docker daemon.
 
 from __future__ import annotations
 
+import functools
 import shutil
 import subprocess
 
 
+@functools.cache
 def docker_available() -> bool:
     """True iff `docker` is on PATH AND the daemon responds to `docker info`.
 

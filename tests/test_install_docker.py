@@ -20,13 +20,11 @@ DOCKERFILE = INSTALL_FIXTURES / "Dockerfile.ubuntu-bare"
 IMAGE_TAG = "worthless-install-test:ubuntu-bare"
 
 
-pytestmark = [pytest.mark.docker, pytest.mark.timeout(360)]
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _require_docker() -> None:
-    if not docker_available():
-        pytest.skip("docker binary or daemon not available")
+pytestmark = [
+    pytest.mark.docker,
+    pytest.mark.skipif(not docker_available(), reason="Docker not available"),
+    pytest.mark.timeout(240),
+]
 
 
 def test_bare_ubuntu_install_succeeds() -> None:
@@ -48,7 +46,7 @@ def test_bare_ubuntu_install_succeeds() -> None:
         ],
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=180,
         check=False,
     )
     assert build.returncode == 0, (
@@ -59,7 +57,7 @@ def test_bare_ubuntu_install_succeeds() -> None:
         ["docker", "run", "--rm", IMAGE_TAG],  # noqa: S607
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=180,
         check=False,
     )
     assert run.returncode == 0, (
