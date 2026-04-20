@@ -12,12 +12,33 @@ The proxy enforces a hard spend cap **before** the key reconstructs — blow the
 ## Quickstart
 
 ```bash
-pipx install worthless   # or: pip install worthless
+curl -sSL https://worthless.sh | sh        # fresh machine — no Python needed
+# or, if you already have Python 3.10+:
+pipx install worthless
+```
+
+Then, in your project:
+
+```bash
 cd your-project
 worthless
 ```
 
 Detects keys in your `.env`, splits them, starts a local proxy. No code changes.
+
+### Verify before running
+
+Piping a script from the internet into `sh` is a supply-chain risk. Read it first:
+
+```bash
+curl -sSL https://worthless.sh -o install.sh
+less install.sh                                   # inspect, then run
+sh install.sh
+```
+
+See [docs/install-security.md](docs/install-security.md) for trust roots
+(what the installer talks to and what it verifies) and the kill-switch
+runbook.
 
 ```
 $ worthless
