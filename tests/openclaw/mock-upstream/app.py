@@ -30,6 +30,13 @@ def _is_bad_model(model: str) -> bool:
     return "does-not-exist" in model
 
 
+def _is_trigger_5xx(model: str) -> bool:
+    """Test convention: a model name containing 'trigger-5xx' makes the mock
+    simulate an upstream 500 Internal Server Error. Used by Compose-lane
+    tests to prove typed SDK exceptions on 5xx passthrough."""
+    return "trigger-5xx" in model
+
+
 def _chat_completion_body(model: str = "gpt-4o") -> dict:
     """Build a valid OpenAI chat completion response body."""
     return {
@@ -185,6 +192,18 @@ async def chat_completions(request: Request):
     body = await request.json()
     model = body.get("model", "gpt-4o")
 
+    if _is_trigger_5xx(model):
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "upstream overloaded",
+                    "type": "server_error",
+                    "param": None,
+                    "code": None,
+                }
+            },
+            status_code=500,
+        )
     if _is_bad_model(model):
         return JSONResponse(_openai_not_found_body(model), status_code=404)
 
@@ -217,6 +236,14 @@ async def messages(request: Request):
     body = await request.json()
     model = body.get("model", "claude-haiku-4-5-20251001")
 
+    if _is_trigger_5xx(model):
+        return JSONResponse(
+            {
+                "type": "error",
+                "error": {"type": "api_error", "message": "upstream overloaded"},
+            },
+            status_code=500,
+        )
     if _is_bad_model(model):
         return JSONResponse(_anthropic_bad_model_body(model), status_code=400)
 

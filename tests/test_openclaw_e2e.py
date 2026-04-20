@@ -440,6 +440,29 @@ class TestOpenAISDKOpenClaw:
         assert "traceback" not in msg
         assert "worthless" not in msg
 
+    def test_upstream_5xx_surfaces_as_typed_error_via_openai_sdk(self, openclaw_stack):
+        """Adversarial: upstream 500 must surface as openai.InternalServerError
+        (typed 5xx subclass), not a generic APIError or raw HTTP exception."""
+        proxy_port, mock_port, _fake_key, shard_a, alias = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+            max_retries=0,
+        )
+        with pytest.raises(openai.APIStatusError) as exc:
+            client.chat.completions.create(
+                model="gpt-trigger-5xx",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code >= 500, (
+            f"expected 5xx passthrough, got {exc.value.status_code}"
+        )
+        assert "traceback" not in str(exc.value).lower()
+        assert "worthless" not in str(exc.value).lower()
+
 
 class TestAnthropicSDKOpenClaw:
     """Prove the anthropic Python SDK works drop-in against the containerized proxy + mock."""
@@ -502,3 +525,29 @@ class TestAnthropicSDKOpenClaw:
         msg = str(exc.value).lower()
         assert "traceback" not in msg
         assert "worthless" not in msg
+
+    def test_upstream_5xx_surfaces_as_typed_error_via_anthropic_sdk(
+        self, openclaw_stack, openclaw_anthropic_alias
+    ):
+        """Adversarial: upstream 500 must surface as anthropic.InternalServerError
+        (typed 5xx subclass), not a generic APIError or raw HTTP exception."""
+        proxy_port, mock_port, _openai_fake, _openai_shard, _openai_alias = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+            max_retries=0,
+        )
+        with pytest.raises(anthropic.APIStatusError) as exc:
+            client.messages.create(
+                model="claude-trigger-5xx",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code >= 500, (
+            f"expected 5xx passthrough, got {exc.value.status_code}"
+        )
+        assert "traceback" not in str(exc.value).lower()
+        assert "worthless" not in str(exc.value).lower()
