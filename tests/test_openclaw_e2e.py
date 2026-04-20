@@ -22,7 +22,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from tests.helpers import fake_openai_key
+from tests.helpers import fake_anthropic_key, fake_openai_key
 from worthless.cli.commands.lock import _make_alias
 
 # ---------------------------------------------------------------------------
@@ -225,6 +225,50 @@ def openclaw_stack():
             cwd=str(REPO_ROOT),
             timeout=60,
         )
+
+
+@pytest.fixture(scope="session")
+def openclaw_anthropic_alias(openclaw_stack):
+    """Enroll a second alias for Anthropic into the already-running stack.
+
+    Depends on openclaw_stack (proxy + mock are up, OpenAI alias enrolled).
+    Writes a distinct Anthropic fake key into a separate .env path inside
+    the proxy container, runs `worthless lock`, reads shard-A back.
+
+    Yields (fake_key, shard_a, alias).
+    """
+    proxy_port, _mock_port, _openai_fake_key, _openai_shard_a, _openai_alias = openclaw_stack
+    proxy_container = _find_proxy_container()
+
+    fake_key = fake_anthropic_key()
+    alias = _make_alias("anthropic", fake_key)
+
+    env_path = "/tmp/.anthropic.env"
+    write = _write_env_to_container(proxy_container, f"ANTHROPIC_API_KEY={fake_key}", dest=env_path)
+    if write.returncode != 0:
+        pytest.skip(f"failed to write anthropic .env: {write.stderr}")
+
+    lock = _docker_exec(proxy_container, ["worthless", "lock", "--env", env_path])
+    if lock.returncode != 0:
+        pytest.skip(f"anthropic lock failed: {lock.stderr}")
+
+    shard_a = _read_env_value(proxy_container, "ANTHROPIC_API_KEY", path=env_path)
+    assert shard_a != fake_key, "lock did not replace anthropic key in .env"
+    assert shard_a.startswith("sk-ant-"), f"anthropic shard-A not format-preserving: {shard_a[:30]}"
+
+    yield fake_key, shard_a, alias
+
+
+def _find_proxy_container() -> str:
+    """Locate the running worthless-proxy container from the openclaw project."""
+    result = subprocess.run(
+        ["docker", "ps", "--filter", "name=worthless-proxy", "--format", "{{.Names}}"],
+        capture_output=True,
+        text=True,
+    )
+    names = [n for n in result.stdout.strip().splitlines() if "openclaw-e2e-" in n]
+    assert len(names) == 1, f"expected exactly one openclaw-e2e proxy container, got: {names}"
+    return names[0]
 
 
 # ---------------------------------------------------------------------------
