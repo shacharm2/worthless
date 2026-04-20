@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -148,6 +149,13 @@ def main() -> None:
         "> Regenerate: `python scripts/roadmap.py`",
         "",
     ]
+
+    missing = [s for s in PROJECT_ORDER if s not in snapshots]
+    if missing:
+        print(
+            f"WARNING: no post-cleanup snapshot for: {', '.join(missing)}",
+            file=sys.stderr,
+        )
 
     for slug in PROJECT_ORDER:
         if slug not in snapshots:

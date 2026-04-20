@@ -32,4 +32,4 @@ Array of issue objects as returned by `bd list --json`.
 
 - Snapshots are inputs to `scripts/roadmap.py` — do not hand-edit
 - Re-fetch with Linear API + `bd list --json` after any structural changes
-- `parentId: null` means top-level issue (no parent epic)
+- `parent: null` means top-level issue (no parent epic)
