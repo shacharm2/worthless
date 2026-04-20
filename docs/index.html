@@ -225,6 +225,14 @@
       color: var(--text);
     }
 
+    .feed { margin-top: 2.5rem; border-top: 1px solid var(--border); padding-top: 1.75rem; }
+    .feed-label { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text2); margin-bottom: 1rem; }
+    .feed-row { display: flex; align-items: baseline; gap: 0.65rem; font-size: 0.875rem; line-height: 1.6; color: var(--text); text-decoration: none; padding: 0.45rem 0; }
+    .feed-row:hover .feed-desc { color: var(--slate); }
+    .feed-src { font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: var(--slate); min-width: 2.2rem; flex-shrink: 0; }
+    .feed-desc { color: var(--text); }
+    .feed-date { font-size: 0.75rem; color: var(--text2); margin-left: auto; white-space: nowrap; flex-shrink: 0; }
+
     @media (max-width: 520px) {
       .waitlist-form {
         flex-direction: column;
@@ -245,6 +253,25 @@
     <a href="https://tally.so/r/WOpNVL" target="_blank" rel="noopener" class="btn-waitlist">Join the waitlist</a>
 
     <a href="memes.html" class="coming-soon" style="text-decoration: none; display: block;">Leaking soon</a>
+
+    <div class="feed">
+      <div class="feed-label">In the wild</div>
+      <a href="https://news.ycombinator.com/item?id=47791871" target="_blank" rel="noopener" class="feed-row">
+        <span class="feed-src">HN</span><span class="feed-desc">€54K charged in 13 hours</span><span class="feed-date">Apr 2026</span>
+      </a>
+      <a href="https://news.ycombinator.com/item?id=47156925" target="_blank" rel="noopener" class="feed-row">
+        <span class="feed-src">HN</span><span class="feed-desc">Google API scope expansion - leaked keys do more than you think</span><span class="feed-date"></span>
+      </a>
+      <a href="https://news.ycombinator.com/item?id=45589628" target="_blank" rel="noopener" class="feed-row">
+        <span class="feed-src">HN</span><span class="feed-desc">OpenAI quietly removed hard spend caps</span><span class="feed-date">Dec 2025</span>
+      </a>
+      <a href="https://www.reddit.com/r/googlecloud/" target="_blank" rel="noopener" class="feed-row">
+        <span class="feed-src">r/</span><span class="feed-desc">r/googlecloud billing horror - stickied as permanent fixture</span><span class="feed-date"></span>
+      </a>
+      <a href="https://dev.to/ayame0328/60k-billed-in-13-hours-why-leaked-firebase-keys-keep-killing-ai-built-apps-6l6" target="_blank" rel="noopener" class="feed-row">
+        <span class="feed-src">dev</span><span class="feed-desc">"$60K in 13 hours" - AI agent pushed .env to public repo</span><span class="feed-date">Apr 2026</span>
+      </a>
+    </div>
 
   </div>
 
