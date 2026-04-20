@@ -1,0 +1,398 @@
+{
+  "project": "Worthless v1.2",
+  "project_id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+  "fetched_at": "2026-04-19",
+  "issues": [
+    {
+      "id": "b29ba9b8-e7ea-47a5-83d1-bfa05bd4f228",
+      "identifier": "WOR-231",
+      "title": "Windows proxy startup path is internally inconsistent",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -184276,
+      "parent": {
+        "id": "42a2cca4-fd2e-4702-90a4-7bed6baf3101",
+        "identifier": "WOR-230",
+        "title": "Epic: Python audit remediation backlog (2026-04-08 review)"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "v1.1"
+          },
+          {
+            "name": "security"
+          },
+          {
+            "name": "Bug"
+          }
+        ]
+      }
+    },
+    {
+      "id": "42a2cca4-fd2e-4702-90a4-7bed6baf3101",
+      "identifier": "WOR-230",
+      "title": "Epic: Python audit remediation backlog (2026-04-08 review)",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 1,
+      "sortOrder": -183367,
+      "parent": null,
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": [
+          {
+            "name": "v1.1"
+          },
+          {
+            "name": "security"
+          },
+          {
+            "name": "debt"
+          }
+        ]
+      }
+    },
+    {
+      "id": "075f1e1f-96da-4d9c-a14a-a3d0dcccbd78",
+      "identifier": "WOR-227",
+      "title": "Documentation System",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 2,
+      "sortOrder": -5835,
+      "parent": null,
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "f32b0344-9dbd-4ced-993d-f3968007556f",
+      "identifier": "WOR-226",
+      "title": "External Website Documentation",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -179388,
+      "parent": {
+        "id": "075f1e1f-96da-4d9c-a14a-a3d0dcccbd78",
+        "identifier": "WOR-227",
+        "title": "Documentation System"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "16708c85-1339-4a23-b808-27cfe34148b7",
+      "identifier": "WOR-225",
+      "title": "Developer Internal Documentation",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 2,
+      "sortOrder": -6763,
+      "parent": {
+        "id": "075f1e1f-96da-4d9c-a14a-a3d0dcccbd78",
+        "identifier": "WOR-227",
+        "title": "Documentation System"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "6e3ce8cc-82c1-4bb3-be13-228d71b557a8",
+      "identifier": "WOR-220",
+      "title": "Convert audit findings into actionable Linear backlog items",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 2,
+      "sortOrder": -4787,
+      "parent": {
+        "id": "efada68f-f5c2-4099-b71f-24b95184e711",
+        "identifier": "WOR-216",
+        "title": "Security Testing Tightening"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "7242e9e0-d3aa-433b-b848-cfe5a9f6cfed",
+      "identifier": "WOR-219",
+      "title": "Evaluate Semgrep, CodeQL, and AI-assisted security review roles for this repo",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 2,
+      "sortOrder": -3825,
+      "parent": {
+        "id": "efada68f-f5c2-4099-b71f-24b95184e711",
+        "identifier": "WOR-216",
+        "title": "Security Testing Tightening"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "9fbf6763-9567-4753-b026-e4521d205acb",
+      "identifier": "WOR-218",
+      "title": "Build SR coverage matrix and identify missing rules vs missing enforcement",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 1,
+      "sortOrder": -2903,
+      "parent": {
+        "id": "efada68f-f5c2-4099-b71f-24b95184e711",
+        "identifier": "WOR-216",
+        "title": "Security Testing Tightening"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "b6f5f9b1-e6ff-4a96-b707-8d4304375100",
+      "identifier": "WOR-217",
+      "title": "Audit current repo flows into functionality inventory, state machines, and sensitive-data diagrams",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 2,
+      "sortOrder": -1848,
+      "parent": {
+        "id": "efada68f-f5c2-4099-b71f-24b95184e711",
+        "identifier": "WOR-216",
+        "title": "Security Testing Tightening"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "efada68f-f5c2-4099-b71f-24b95184e711",
+      "identifier": "WOR-216",
+      "title": "Security Testing Tightening",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -177297,
+      "parent": null,
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "8d5271bb-44bb-4683-9780-f3ce54b8889c",
+      "identifier": "WOR-214",
+      "title": "Epic: worthless.cloud launch readiness",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -175355,
+      "parent": null,
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "dd139d2e-376f-4f13-8c99-76e296770838",
+      "identifier": "WOR-212",
+      "title": "SEO + AEO: make worthless.cloud discoverable by search and AI",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 3,
+      "sortOrder": -78724,
+      "parent": {
+        "id": "8d5271bb-44bb-4683-9780-f3ce54b8889c",
+        "identifier": "WOR-214",
+        "title": "Epic: worthless.cloud launch readiness"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "e60ae245-9a65-43cb-a750-6c4853421e54",
+      "identifier": "WOR-210",
+      "title": "Waitlist: email capture on worthless.cloud",
+      "state": {
+        "name": "Done"
+      },
+      "priority": 3,
+      "sortOrder": -77814,
+      "parent": {
+        "id": "8d5271bb-44bb-4683-9780-f3ce54b8889c",
+        "identifier": "WOR-214",
+        "title": "Epic: worthless.cloud launch readiness"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "62efc998-f256-4180-8a3a-d6a99d424a30",
+      "identifier": "WOR-209",
+      "title": "Domain setup: worthless.cloud (GitHub Pages) + worthless.sh (install script)",
+      "state": {
+        "name": "In Progress"
+      },
+      "priority": 2,
+      "sortOrder": -873,
+      "parent": {
+        "id": "8d5271bb-44bb-4683-9780-f3ce54b8889c",
+        "identifier": "WOR-214",
+        "title": "Epic: worthless.cloud launch readiness"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "9c3a5bc4-e707-480e-8f12-2f63d2a546ac",
+      "identifier": "WOR-193",
+      "title": "Service Management",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -155510,
+      "parent": null,
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "479756fa-87d4-4330-acfe-c4e8e59d1479",
+      "identifier": "WOR-175",
+      "title": "worthless service install \u2014 Linux systemd",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -148298,
+      "parent": {
+        "id": "9c3a5bc4-e707-480e-8f12-2f63d2a546ac",
+        "identifier": "WOR-193",
+        "title": "Service Management"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    },
+    {
+      "id": "0d9e0f79-fa06-47d6-9c51-c3f418cdcb88",
+      "identifier": "WOR-174",
+      "title": "worthless service install \u2014 macOS launchd",
+      "state": {
+        "name": "Backlog"
+      },
+      "priority": 2,
+      "sortOrder": -147261,
+      "parent": {
+        "id": "9c3a5bc4-e707-480e-8f12-2f63d2a546ac",
+        "identifier": "WOR-193",
+        "title": "Service Management"
+      },
+      "project": {
+        "id": "ad6e696f-befc-4c3f-99f0-2e700f6b0896",
+        "name": "Worthless v1.2"
+      },
+      "projectMilestone": null,
+      "labels": {
+        "nodes": []
+      }
+    }
+  ]
+}
