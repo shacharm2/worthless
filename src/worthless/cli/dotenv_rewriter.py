@@ -1,19 +1,45 @@
-"""Atomic .env key replacement and scanning via python-dotenv."""
+"""Atomic ``.env`` key replacement and scanning.
+
+All *destructive* write paths (``add_or_rewrite_env_key``,
+``remove_env_key``, ``rewrite_env_key``) route through
+:func:`worthless.cli.safe_rewrite.safe_rewrite`, which enforces the
+10 invariants that make the historical "zshrc lock bug" structurally
+impossible.
+
+The read path (``scan_env_keys``) still uses ``python-dotenv``'s
+``dotenv_values`` - reading is non-destructive and ``dotenv_values`` is
+the most accurate parser for quoted/multiline values.
+
+The write path is a hand-rolled line-preserving serializer because
+``safe_rewrite`` takes the full new file content as bytes, and round-
+tripping through ``dotenv_values`` would silently drop comments, blank
+lines, ordering, export prefixes, and BOM/CRLF formatting.
+"""
 
 from __future__ import annotations
 
 import math
+import os
+import re
+import stat as _stat
 from collections import Counter
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from dotenv import dotenv_values, set_key, unset_key
+from dotenv import dotenv_values
 
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
+from worthless.cli.safe_rewrite import safe_rewrite
 
 if TYPE_CHECKING:
     from worthless.storage.repository import EnrollmentRecord
+
+
+# ---------------------------------------------------------------------------
+# Public scan helpers (read-only, unchanged behaviour).
+# ---------------------------------------------------------------------------
 
 
 def shannon_entropy(s: str) -> float:
@@ -70,36 +96,413 @@ def scan_env_keys(
     return results
 
 
+# ---------------------------------------------------------------------------
+# Line-preserving serializer (private).
+# ---------------------------------------------------------------------------
+
+
+_BOM: bytes = b"\xef\xbb\xbf"
+
+# Identifier characters dotenv accepts on the left-hand side of ``=``.
+# Matches ``[A-Za-z_][A-Za-z0-9_]*`` (optionally preceded by ``export ``).
+_KEY_RE: re.Pattern[str] = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=")
+
+
+@dataclass(frozen=True)
+class _LogicalLine:
+    """One dotenv logical line.
+
+    ``raw`` includes any trailing EOL bytes (``b"\\n"`` or ``b"\\r\\n"``)
+    that were present on the source. A ``key`` of ``None`` means the
+    line is blank, a comment, or unparsable (and must be preserved
+    verbatim).
+    """
+
+    raw: bytes
+    key: str | None
+    has_export: bool
+
+
+def _detect_eol(buf: bytes) -> bytes:
+    """Return the EOL sequence used by *buf*: ``b"\\r\\n"`` or ``b"\\n"``.
+
+    Returns ``b"\\n"`` if no EOL is present. CRLF detection prefers the
+    first occurrence so a file whose first EOL is CRLF round-trips as
+    CRLF even if later lines mix.
+    """
+    crlf = buf.find(b"\r\n")
+    lf = buf.find(b"\n")
+    if crlf != -1 and (lf == -1 or crlf <= lf):
+        return b"\r\n"
+    return b"\n"
+
+
+def _strip_bom(buf: bytes) -> tuple[bytes, bool]:
+    """Strip a leading UTF-8 BOM. Returns ``(stripped, had_bom)``."""
+    if buf.startswith(_BOM):
+        return buf[len(_BOM) :], True
+    return buf, False
+
+
+def _restore_bom(buf: bytes, had_bom: bool) -> bytes:
+    """Re-prepend the UTF-8 BOM if it was present on the original file."""
+    if had_bom:
+        return _BOM + buf
+    return buf
+
+
+def _parse_key(line_text: str) -> tuple[str | None, bool]:
+    """Extract the dotenv key (and ``export`` flag) from a single physical line.
+
+    Returns ``(key, has_export)``. ``key`` is ``None`` for blanks,
+    comments, or non-assignment lines.
+    """
+    stripped = line_text.lstrip()
+    if not stripped or stripped.startswith("#"):
+        return None, False
+    has_export = False
+    if stripped.startswith("export") and len(stripped) > len("export"):
+        after = stripped[len("export") :]
+        if after[:1] in (" ", "\t"):
+            has_export = True
+            stripped = after.lstrip()
+    m = _KEY_RE.match(stripped)
+    if not m:
+        return None, has_export
+    return m.group(1), has_export
+
+
+def _value_opens_unclosed_quote(line_text: str) -> str | None:
+    """If the parsed value on *line_text* opens an unclosed quote, return the quote char.
+
+    Only considered when ``line_text`` parses as ``KEY=...``. The value
+    starts immediately after the first ``=``. Both ``"`` and ``'`` are
+    tracked; a backslash before a quote escapes it (python-dotenv
+    semantics). Returns ``None`` if the quote is balanced on this line.
+    """
+    eq_idx = line_text.find("=")
+    if eq_idx == -1:
+        return None
+    value = line_text[eq_idx + 1 :]
+    # Strip trailing EOL.
+    value = value.rstrip("\r\n")
+    if not value:
+        return None
+    quote_char: str | None = None
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if quote_char is None:
+            if ch in ('"', "'"):
+                quote_char = ch
+            i += 1
+            continue
+        # Inside a quote.
+        if ch == "\\" and i + 1 < len(value):
+            # Escaped char inside quote: skip both.
+            i += 2
+            continue
+        if ch == quote_char:
+            quote_char = None
+            i += 1
+            continue
+        i += 1
+    return quote_char
+
+
+def _split_logical_lines(buf: bytes) -> list[_LogicalLine]:
+    """Split *buf* into logical dotenv lines, preserving raw bytes.
+
+    Physical-line splitting is done with ``splitlines(keepends=True)`` so
+    EOLs stay attached to the preceding content. When a key's value
+    opens a quote that is not closed on the same physical line, the
+    subsequent physical lines are concatenated into the same
+    :class:`_LogicalLine` until the quote closes.
+    """
+    if not buf:
+        return []
+    # Decode permissively - we already accepted the file through the
+    # read path (which used dotenv_values) in callers; sniff in
+    # ``safe_rewrite`` will reject true non-UTF-8 bytes on the write.
+    try:
+        text = buf.decode("utf-8")
+    except UnicodeDecodeError:
+        # Fall back: treat as latin-1 so every byte maps somewhere. The
+        # output will still be byte-identical because we carry the raw
+        # bytes forward; only the key-parsing side loses fidelity and
+        # safe_rewrite will refuse the write on sniff.
+        text = buf.decode("latin-1")
+
+    physical_lines = text.splitlines(keepends=True)
+    raw_pieces = buf.splitlines(keepends=True)
+    # These two should be the same length (and usually are). If they
+    # diverge (unlikely with UTF-8 + keepends), fall back to the raw
+    # bytes as authoritative.
+    if len(physical_lines) != len(raw_pieces):
+        physical_lines = [p.decode("utf-8", errors="replace") for p in raw_pieces]
+
+    logical: list[_LogicalLine] = []
+    i = 0
+    while i < len(physical_lines):
+        line_text = physical_lines[i]
+        raw_bytes = raw_pieces[i]
+        key, has_export = _parse_key(line_text)
+
+        if key is None:
+            logical.append(_LogicalLine(raw=raw_bytes, key=None, has_export=False))
+            i += 1
+            continue
+
+        # Key line. Check whether the value opens an unclosed quote.
+        open_quote = _value_opens_unclosed_quote(line_text)
+        if open_quote is None:
+            logical.append(_LogicalLine(raw=raw_bytes, key=key, has_export=has_export))
+            i += 1
+            continue
+
+        # Gather subsequent physical lines until the quote closes (or EOF).
+        merged_text = line_text
+        merged_raw = raw_bytes
+        j = i + 1
+        while j < len(physical_lines):
+            merged_text += physical_lines[j]
+            merged_raw += raw_pieces[j]
+            if _value_opens_unclosed_quote(merged_text) is None:
+                j += 1
+                break
+            j += 1
+        logical.append(_LogicalLine(raw=merged_raw, key=key, has_export=has_export))
+        i = j
+
+    return logical
+
+
+def _serialize_lines(lines: list[_LogicalLine]) -> bytes:
+    """Concatenate raw bytes of every logical line."""
+    return b"".join(line.raw for line in lines)
+
+
+def _format_assignment(
+    key: str,
+    value: str,
+    *,
+    has_export: bool,
+    eol: bytes,
+) -> bytes:
+    """Build raw bytes for a ``[export ]KEY=VALUE<EOL>`` line.
+
+    The value is emitted unquoted and without any escape processing -
+    the rewriter only accepts values that ``_validate_value`` has
+    cleared. Callers upstream (lock/unlock/scan-apply) always pass
+    opaque decoy strings with no newlines/NUL/control bytes.
+    """
+    prefix = "export " if has_export else ""
+    text = f"{prefix}{key}={value}"
+    return text.encode("utf-8") + eol
+
+
+def _validate_value(value: str) -> None:
+    """Refuse values that would break the dotenv shape on write.
+
+    * Newlines (``\\n`` / ``\\r``) would let a caller inject a second
+      assignment line.
+    * NUL bytes routinely mis-parse downstream tooling.
+
+    All other control characters are currently accepted - they are
+    legitimate inside URL-encoded tokens. The sniff gate in
+    ``safe_rewrite`` catches files that later become shell-like.
+    """
+    if "\n" in value or "\r" in value:
+        raise ValueError("dotenv value must not contain newlines")
+    if "\x00" in value:
+        raise ValueError("dotenv value must not contain NUL bytes")
+
+
+def _safe_read_existing_bytes(path: Path) -> bytes:
+    """Read *path*'s bytes without following symlinks or blocking on specials.
+
+    Returns an empty byte string if the path does not exist. If the path
+    exists but is NOT a regular file (symlink, fifo, socket, dir,
+    char/block dev), hand the refusal decision to :func:`safe_rewrite`
+    by invoking it with a placeholder body so the gate's invariants
+    (SYMLINK, SPECIAL_FILE) fire on *our* behalf - the caller never
+    attempts an ``open()`` that would either follow the symlink or
+    block on a FIFO.
+
+    The placeholder body is never written: ``safe_rewrite`` refuses
+    before any bytes hit disk.
+    """
+    try:
+        lst = os.lstat(str(path))
+    except FileNotFoundError:
+        return b""
+    except OSError as exc:
+        # Permission or IO problem: let ``safe_rewrite`` produce the
+        # canonical refusal path.
+        safe_rewrite(path, b"", original_user_arg=path, allow_outside_repo=True)
+        raise AssertionError(  # pragma: no cover - unreachable.
+            "safe_rewrite must refuse on lstat() failure"
+        ) from exc
+    if not _stat.S_ISREG(lst.st_mode):
+        # Symlink, fifo, socket, directory, char/block device - refuse
+        # via the gate so every public entry point funnels through the
+        # same invariant logic.
+        safe_rewrite(path, b"", original_user_arg=path, allow_outside_repo=True)
+        raise AssertionError(  # pragma: no cover - unreachable.
+            "safe_rewrite must refuse non-regular files"
+        )
+    # Open with O_NOFOLLOW + O_RDONLY so a TOCTOU symlink-flip still
+    # refuses rather than reading through.
+    try:
+        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        safe_rewrite(path, b"", original_user_arg=path, allow_outside_repo=True)
+        raise AssertionError(  # pragma: no cover - unreachable.
+            "safe_rewrite must refuse on open() failure"
+        ) from exc
+    try:
+        size = lst.st_size
+        if size <= 0:
+            return b""
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining > 0:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Public destructive helpers (all route through ``safe_rewrite``).
+# ---------------------------------------------------------------------------
+
+
 def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
     """Set *var_name* to *value* in *env_path*, creating or updating.
 
-    If *var_name* already exists, its value is replaced in place.
-    If it does not exist, a new line is appended.
+    If *var_name* already exists, its value is replaced on the same
+    logical line (preserving any ``export`` prefix and surrounding
+    formatting). If not, a new ``KEY=VALUE`` line is appended.
+
+    All writes route through :func:`safe_rewrite`; invariant violations
+    raise :class:`UnsafeRewriteRefused` with the original file
+    byte-identical.
     """
-    set_key(str(env_path), var_name, value, quote_mode="never")
+    _validate_value(value)
+    existing = _safe_read_existing_bytes(env_path)
+    stripped, had_bom = _strip_bom(existing)
+    eol = _detect_eol(stripped)
+    lines = _split_logical_lines(stripped)
+
+    matched = False
+    for idx, line in enumerate(lines):
+        if line.key == var_name:
+            lines[idx] = _LogicalLine(
+                raw=_format_assignment(var_name, value, has_export=line.has_export, eol=eol),
+                key=var_name,
+                has_export=line.has_export,
+            )
+            matched = True
+            break
+
+    if not matched:
+        if lines and not lines[-1].raw.endswith((b"\n", b"\r\n")):
+            last = lines[-1]
+            lines[-1] = _LogicalLine(
+                raw=last.raw + eol,
+                key=last.key,
+                has_export=last.has_export,
+            )
+        lines.append(
+            _LogicalLine(
+                raw=_format_assignment(var_name, value, has_export=False, eol=eol),
+                key=var_name,
+                has_export=False,
+            )
+        )
+
+    new_content = _restore_bom(_serialize_lines(lines), had_bom)
+    if new_content == existing:
+        # Idempotent: same bytes. Skip the write so the gate's delta
+        # and sniff gates are not re-run on a no-op.
+        return
+    safe_rewrite(
+        env_path,
+        new_content,
+        original_user_arg=env_path,
+        allow_outside_repo=True,
+    )
 
 
 def remove_env_key(env_path: Path, var_name: str) -> None:
-    """Remove *var_name* from *env_path* if it exists.
+    """Remove *var_name* from *env_path* if present.
 
-    Uses python-dotenv's ``unset_key`` which handles quoted values,
-    export prefixes, and multiline entries correctly.
-    Silently no-ops if the variable is not present.
+    Drops the full logical line (including an ``export`` prefix and
+    every physical line of a multiline-quoted value). If *var_name* is
+    not present, this is a pure no-op - no write happens and
+    :func:`safe_rewrite` is NOT called.
     """
-    unset_key(str(env_path), var_name)
+    existing = _safe_read_existing_bytes(env_path)
+    stripped, had_bom = _strip_bom(existing)
+    lines = _split_logical_lines(stripped)
+
+    kept: list[_LogicalLine] = [line for line in lines if line.key != var_name]
+    if len(kept) == len(lines):
+        # Key absent: true no-op, including zero safe_rewrite calls.
+        return
+
+    new_content = _restore_bom(_serialize_lines(kept), had_bom)
+    if new_content == existing:
+        return
+    safe_rewrite(
+        env_path,
+        new_content,
+        original_user_arg=env_path,
+        allow_outside_repo=True,
+    )
 
 
 def rewrite_env_key(env_path: Path, var_name: str, new_value: str) -> None:
     """Atomically replace the value of *var_name* in *env_path*.
 
-    Preserves comments, blank lines, ordering, and all other variables.
-    Uses python-dotenv's ``set_key`` which handles multiline values,
-    export prefixes, and quoted strings correctly.
-    Raises ``KeyError`` if *var_name* is not found.
+    Preserves comments, blank lines, ordering, ``export`` prefixes, and
+    every other key's formatting. Raises :class:`KeyError` if
+    *var_name* is not present (matching the legacy contract).
     """
-    # Verify the key exists before writing — set_key would silently add it.
-    existing = dotenv_values(env_path)
-    if var_name not in existing:
+    _validate_value(new_value)
+    existing = _safe_read_existing_bytes(env_path)
+    stripped, had_bom = _strip_bom(existing)
+    eol = _detect_eol(stripped)
+    lines = _split_logical_lines(stripped)
+
+    matched = False
+    for idx, line in enumerate(lines):
+        if line.key == var_name:
+            lines[idx] = _LogicalLine(
+                raw=_format_assignment(var_name, new_value, has_export=line.has_export, eol=eol),
+                key=var_name,
+                has_export=line.has_export,
+            )
+            matched = True
+            break
+
+    if not matched:
         raise KeyError(f"Variable {var_name!r} not found in {env_path}")
 
-    set_key(str(env_path), var_name, new_value, quote_mode="never")
+    new_content = _restore_bom(_serialize_lines(lines), had_bom)
+    if new_content == existing:
+        return
+    safe_rewrite(
+        env_path,
+        new_content,
+        original_user_arg=env_path,
+        allow_outside_repo=True,
+    )
