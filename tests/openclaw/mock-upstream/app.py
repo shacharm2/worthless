@@ -37,6 +37,13 @@ def _is_trigger_5xx(model: str) -> bool:
     return "trigger-5xx" in model
 
 
+def _is_trigger_cache_hit(model: str) -> bool:
+    """Test convention: a model name containing 'cache-hit' makes the Anthropic
+    mock emit cache token fields in message_start.usage, simulating a prompt
+    cache hit. Used by Compose-lane tests to prove cache tokens are metered."""
+    return "cache-hit" in model
+
+
 def _chat_completion_body(model: str = "gpt-4o") -> dict:
     """Build a valid OpenAI chat completion response body."""
     return {
@@ -93,8 +100,14 @@ def _anthropic_bad_model_body(model: str) -> dict:
     }
 
 
-def _stream_chunks(model: str = "gpt-4o"):
-    """Yield SSE chunks mimicking OpenAI streaming format."""
+def _stream_chunks(model: str = "gpt-4o", include_usage: bool = False):
+    """Yield SSE chunks mimicking OpenAI streaming format.
+
+    When include_usage=True (set by client via stream_options), emit an
+    additional terminal chunk with populated usage — matching real OpenAI
+    behavior. Without the flag, no usage data appears in the stream, and
+    any downstream metering has nothing to extract.
+    """
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     chunk = {
         "id": chunk_id,
@@ -119,18 +132,42 @@ def _stream_chunks(model: str = "gpt-4o"):
         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
     }
     yield f"data: {json.dumps(done_chunk)}\n\n"
+
+    if include_usage:
+        usage_chunk = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        yield f"data: {json.dumps(usage_chunk)}\n\n"
+
     yield "data: [DONE]\n\n"
 
 
-def _anthropic_stream_events(model: str = "claude-haiku-4-5-20251001"):
+def _anthropic_stream_events(
+    model: str = "claude-haiku-4-5-20251001",
+    include_cache: bool = False,
+):
     """Yield SSE events for Anthropic Messages streaming.
 
     The Anthropic SDK's .messages.stream() iterator requires an exact event
     sequence and exact payload shapes. In particular, delta.type MUST be
     "text_delta" on content_block_delta events — otherwise stream.text_stream
     silently yields zero with no error.
+
+    When include_cache=True (triggered by 'cache-hit' in model name), the
+    message_start usage block includes cache_creation_input_tokens and
+    cache_read_input_tokens, simulating an Anthropic prompt-cache hit.
     """
     message_id = f"msg_mock_{uuid.uuid4().hex[:12]}"
+
+    usage: dict = {"input_tokens": 10, "output_tokens": 0}
+    if include_cache:
+        usage["cache_creation_input_tokens"] = 4
+        usage["cache_read_input_tokens"] = 6
 
     start = {
         "type": "message_start",
@@ -142,7 +179,7 @@ def _anthropic_stream_events(model: str = "claude-haiku-4-5-20251001"):
             "model": model,
             "stop_reason": None,
             "stop_sequence": None,
-            "usage": {"input_tokens": 10, "output_tokens": 0},
+            "usage": usage,
         },
     }
     yield f"event: message_start\ndata: {json.dumps(start)}\n\n"
@@ -209,8 +246,9 @@ async def chat_completions(request: Request):
 
     stream = body.get("stream", False)
     if stream:
+        include_usage = bool(body.get("stream_options", {}).get("include_usage", False))
         return StreamingResponse(
-            _stream_chunks(model),
+            _stream_chunks(model, include_usage=include_usage),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache"},
         )
@@ -250,7 +288,7 @@ async def messages(request: Request):
     stream = body.get("stream", False)
     if stream:
         return StreamingResponse(
-            _anthropic_stream_events(model),
+            _anthropic_stream_events(model, include_cache=_is_trigger_cache_hit(model)),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache"},
         )
