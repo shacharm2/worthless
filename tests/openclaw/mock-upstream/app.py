@@ -93,8 +93,14 @@ def _anthropic_bad_model_body(model: str) -> dict:
     }
 
 
-def _stream_chunks(model: str = "gpt-4o"):
-    """Yield SSE chunks mimicking OpenAI streaming format."""
+def _stream_chunks(model: str = "gpt-4o", include_usage: bool = False):
+    """Yield SSE chunks mimicking OpenAI streaming format.
+
+    When include_usage=True (set by client via stream_options), emit an
+    additional terminal chunk with populated usage — matching real OpenAI
+    behavior. Without the flag, no usage data appears in the stream, and
+    any downstream metering has nothing to extract.
+    """
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     chunk = {
         "id": chunk_id,
@@ -119,6 +125,18 @@ def _stream_chunks(model: str = "gpt-4o"):
         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
     }
     yield f"data: {json.dumps(done_chunk)}\n\n"
+
+    if include_usage:
+        usage_chunk = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        yield f"data: {json.dumps(usage_chunk)}\n\n"
+
     yield "data: [DONE]\n\n"
 
 
@@ -209,8 +227,9 @@ async def chat_completions(request: Request):
 
     stream = body.get("stream", False)
     if stream:
+        include_usage = bool(body.get("stream_options", {}).get("include_usage", False))
         return StreamingResponse(
-            _stream_chunks(model),
+            _stream_chunks(model, include_usage=include_usage),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache"},
         )
