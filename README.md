@@ -12,12 +12,33 @@ The proxy enforces a hard spend cap **before** the key reconstructs — blow the
 ## Quickstart
 
 ```bash
-pipx install worthless   # or: pip install worthless
+curl -sSL https://worthless.sh | sh        # fresh machine — no Python needed
+# or, if you already have Python 3.10+:
+pipx install worthless
+```
+
+Then, in your project:
+
+```bash
 cd your-project
 worthless
 ```
 
 Detects keys in your `.env`, splits them, starts a local proxy. No code changes.
+
+### Verify before running
+
+Piping a script from the internet into `sh` is a supply-chain risk. Read it first:
+
+```bash
+curl -sSL https://worthless.sh -o install.sh
+less install.sh                                   # inspect, then run
+sh install.sh
+```
+
+See [docs/install-security.md](docs/install-security.md) for trust roots
+(what the installer talks to and what it verifies) and the kill-switch
+runbook.
 
 ```
 $ worthless
@@ -55,6 +76,10 @@ worthless down         # Stop the proxy
 worthless wrap <cmd>   # Run a command through the proxy
 worthless revoke       # Revoke enrolled keys
 ```
+
+## Docker
+
+`docker run ghcr.io/shacharm2/worthless-proxy:<version>` — multi-arch, vulnerability-scanned, cosign-signed. See [docs/install-docker.md](docs/install-docker.md).
 
 ## Platforms
 
@@ -118,15 +143,15 @@ uv run pytest
 
 ## Learn more
 
-- [Security model](docs/security-model.md) -- how the split-key proxy works
+- [Security model](docs/security.md) -- threat model, invariants, known limitations
 - [Engineering docs](engineering/README.md) -- internal developer documentation for the live codebase
 - [Engineering architecture](engineering/architecture.md) -- current internal architecture overview
-- [Security rules](SECURITY_RULES.md) -- invariants all contributions must preserve
+- [Contributor security rules](CONTRIBUTING-security.md) -- invariants all contributions must preserve
 - [SKILL.md](SKILL.md) -- agent discovery file
 
 ## Contributing
 
-PRs welcome. Read [SECURITY_RULES.md](SECURITY_RULES.md) first.
+PRs welcome. Read [CONTRIBUTING-security.md](CONTRIBUTING-security.md) first.
 
 ## License
 

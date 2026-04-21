@@ -464,4 +464,4 @@ The proxy forwards requests and responses transparently. It does NOT log, store,
 - **Shard B** is encrypted in the database, but only an encryption boundary — not a trust boundary. The proxy should run on trusted infrastructure.
 - **Key Reconstruction** happens only in proxy memory during a single API call. Key is zero-filled immediately after use.
 - **Spend Cap** is best-effort pre-check, not a hard enforcement boundary (production fix pending).
-- For production deployments, see [SECURITY_RULES.md](SECURITY_RULES.md) for crypto constraints and threat model.
+- For production deployments, see [docs/security.md](docs/security.md) for the threat model and [CONTRIBUTING-security.md](CONTRIBUTING-security.md) for crypto invariants.

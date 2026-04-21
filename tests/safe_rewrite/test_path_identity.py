@@ -44,7 +44,7 @@ def test_refuses_symlink_to_zshrc(tmp_path, make_env_file, sha256_of) -> None:
 
     env_link = tmp_path / "project" / ".env"
     env_link.parent.mkdir(parents=True, exist_ok=True)
-    os.symlink(str(real_zshrc), str(env_link))
+    env_link.symlink_to(real_zshrc)
 
     with pytest.raises(UnsafeRewriteRefused) as exc_info:
         safe_rewrite(
@@ -76,7 +76,7 @@ def test_refusal_preserves_zshrc_sha256(tmp_path, make_env_file, sha256_of) -> N
 
     env_link = tmp_path / "project" / ".env"
     env_link.parent.mkdir(parents=True, exist_ok=True)
-    os.symlink(str(real_zshrc), str(env_link))
+    env_link.symlink_to(real_zshrc)
 
     with pytest.raises(UnsafeRewriteRefused):
         safe_rewrite(
@@ -139,7 +139,7 @@ def test_refuses_symlink_to_other_env(tmp_path, make_env_file, sha256_of) -> Non
 
     env_link = tmp_path / "project" / ".env"
     env_link.parent.mkdir(parents=True, exist_ok=True)
-    os.symlink(str(real_env), str(env_link))
+    env_link.symlink_to(real_env)
 
     with pytest.raises(UnsafeRewriteRefused) as exc_info:
         safe_rewrite(
