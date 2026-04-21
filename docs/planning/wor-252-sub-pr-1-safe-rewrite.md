@@ -3,7 +3,9 @@
 **Ticket:** [WOR-252](https://linear.app/plumbusai/issue/WOR-252) (Urgent)
 **Scope:** Part A (invariants 1–8 + 10). Invariant 9 is CLI-layer, out of scope.
 **Branch:** `shacharm/wor-252-sub-pr-1-safe-rewrite-invariants` → `main`
-**Revision:** v2 — post-expert review (brutus, security-auditor, chaos-engineer, qa-expert).
+**Revision:** v2.2 — post-expert review (brutus, security-auditor, chaos-engineer, qa-expert) + delta correction.
+
+**v2.2 delta correction (post-implementation):** Lower bound on the shrink ratio was removed for single-line files. Realistic `worthless lock` of a long API key (165+ char OpenAI `sk-proj-`) produces ratio ~0.22, which the v2 0.25 floor rejected. Since single-line truncation has near-zero attack value (basename + path identity + sniff already block substitution), only the blowup ceiling remains. Two refusal tests flipped to acceptance; one new realistic-scenario test added.
 
 ---
 

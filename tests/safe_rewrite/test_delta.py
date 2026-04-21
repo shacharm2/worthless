@@ -1,7 +1,9 @@
-"""Size-delta invariants: 0.25x <= new/old <= 4x.
+"""Size-delta invariant: blowup-only ceiling (new/old <= 4x) for single-line files.
 
-Red-first tests 9a and 9b plus edge cases around the exact bounds
-(empty-file passthrough, off-by-one at 0.25x and 4x).
+Shrinks are accepted regardless of ratio — locking a long real key with a
+short decoy shrinks the file 4x-8x and is the product's primary use case.
+Attack value of single-line truncation is near-zero because basename,
+path-identity, and sniff invariants already block content substitution.
 """
 
 from __future__ import annotations
@@ -55,19 +57,34 @@ def test_accepts_5x_shrink_first_run(tmp_path, make_env_file, sha256_of) -> None
     assert env.read_bytes() == new_content
 
 
-def test_refuses_10_percent_shrink(tmp_path, make_env_file, sha256_of) -> None:
-    """0.1x (10% of original) shrink is below the 0.25x floor → refused."""
+def test_accepts_realistic_openai_sk_proj_shrink(tmp_path, make_env_file) -> None:
+    """Real scenario: 165-char OpenAI sk-proj- key -> 24-char decoy.
+
+    Ratio ~0.22 — below the former 0.25 floor. Must be accepted because
+    this is exactly what ``worthless lock`` does to a single-key .env.
+    """
+    original = b"OPENAI_API_KEY=sk-proj-" + b"A" * 157 + b"\n"  # ~181 B
+    assert len(original) == 181
+    env = make_env_file(tmp_path / ".env", original)
+
+    decoy = b"OPENAI_API_KEY=" + b"0" * 24 + b"\n"  # 40 B
+    assert len(decoy) / len(original) < 0.25  # below former floor
+
+    safe_rewrite(env, decoy, original_user_arg=env)
+
+    assert env.read_bytes() == decoy
+
+
+def test_accepts_extreme_shrink_single_line(tmp_path, make_env_file) -> None:
+    """Single-line file may shrink arbitrarily; only blowups are attacks."""
     original = b"KEY=" + b"a" * 996 + b"\n"  # ~1001 bytes
     env = make_env_file(tmp_path / ".env", original)
-    baseline = sha256_of(env)
 
-    tiny = b"A=b\n"  # ~4 bytes, < 0.1x of original
+    tiny = b"A=b\n"  # 4 bytes, ~0.004x of original
 
-    with pytest.raises(UnsafeRewriteRefused) as exc_info:
-        safe_rewrite(env, tiny, original_user_arg=env)
+    safe_rewrite(env, tiny, original_user_arg=env)
 
-    assert exc_info.value.reason == UnsafeReason.DELTA
-    assert sha256_of(env) == baseline
+    assert env.read_bytes() == tiny
 
 
 def test_accepts_empty_to_anything(tmp_path, make_env_file) -> None:
@@ -115,19 +132,15 @@ def test_refuses_just_over_4x(tmp_path, make_env_file, sha256_of) -> None:
     assert sha256_of(env) == baseline
 
 
-def test_refuses_just_under_quarter(tmp_path, make_env_file, sha256_of) -> None:
-    """0.25x - 1 byte is below the lower bound → refused (off-by-one)."""
+def test_accepts_just_under_quarter(tmp_path, make_env_file) -> None:
+    """Below the former 0.25x floor is now accepted — shrink floor removed."""
     # Original: 100 bytes. 0.25x = 25; just under = 24.
     original = b"A=" + b"x" * 97 + b"\n"  # 100 bytes
     env = make_env_file(tmp_path / ".env", original)
-    baseline = sha256_of(env)
 
     new_content = b"A=" + b"y" * 21 + b"\n"  # 24 bytes
-    assert len(new_content) == 24
     assert len(new_content) * 4 < len(original)  # strictly under 0.25x
 
-    with pytest.raises(UnsafeRewriteRefused) as exc_info:
-        safe_rewrite(env, new_content, original_user_arg=env)
+    safe_rewrite(env, new_content, original_user_arg=env)
 
-    assert exc_info.value.reason == UnsafeReason.DELTA
-    assert sha256_of(env) == baseline
+    assert env.read_bytes() == new_content

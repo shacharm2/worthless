@@ -401,18 +401,18 @@ def _line_count(buf: bytes) -> int:
 
 
 def _check_delta(new_size: int, old_size: int, line_count: int, target: Path) -> None:
-    """Invariant 8c: asymmetric delta gate for single-entry small files only."""
+    """Invariant 8c: blowup-only delta gate for single-entry files.
+
+    Blocks "attacker replaces tiny .env with 10 MB payload" (upper bound).
+    Does NOT block shrinks: locking a real key (165+ chars) with a 24-char
+    decoy is the product's primary use case and shrinks the file 4x-8x.
+    Attack value of single-line truncation is near-zero — the basename,
+    path-identity, and sniff invariants already block content substitution.
+    """
     if not (old_size > 0 and old_size < _MAX_BYTES and line_count <= 1):
         return
     ratio = new_size / old_size
-    # Upper bound applies for any single-line file with at least
-    # a handful of bytes - catches "tiny old, huge new" attacks.
     if old_size >= 5 and ratio > _DELTA_MAX:
-        raise _refuse(UnsafeReason.DELTA, target)
-    # Lower bound only for files large enough that aggressive
-    # shrinkage indicates confusion (a 22-byte short value being
-    # rotated to a 4-byte decoy is normal first-run behaviour).
-    if old_size >= 50 and ratio < _DELTA_MIN:
         raise _refuse(UnsafeReason.DELTA, target)
 
 
