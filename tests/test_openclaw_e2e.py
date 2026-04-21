@@ -735,3 +735,70 @@ class TestMeteringCacheTokensAnthropic:
             f"non-cache Anthropic streaming metered {total_tokens} tokens; "
             f"expected 11 (input=10, output=1). Regression in base metering."
         )
+
+
+# ---------------------------------------------------------------------------
+# WOR-243: Error body field preservation (code/type/param must pass through)
+# ---------------------------------------------------------------------------
+
+
+class TestErrorBodyPreservation:
+    """WOR-243: prove proxy preserves error.code, error.type, and error.param
+    when sanitizing upstream error responses.
+
+    The proxy replaces error.message to avoid leaking internal details, but
+    must pass error.code, error.type, and error.param through unchanged so
+    SDK code can classify errors, trigger retries, and route fallbacks.
+    """
+
+    def test_openai_404_preserves_error_code(self, openclaw_stack):
+        """error.code must survive sanitization — SDK checks it for model classification."""
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+            max_retries=0,
+        )
+        with pytest.raises(openai.APIStatusError) as exc:
+            client.chat.completions.create(
+                model="gpt-does-not-exist-zzz",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code == 404
+        # The openai SDK extracts body.get("error", body) before storing in
+        # exc.value.body — so exc.value.body is already the inner error dict.
+        body = exc.value.body
+        assert isinstance(body, dict), f"expected dict body, got {type(body)}: {body}"
+        assert body.get("code") == "model_not_found", (
+            f"error.code was {body.get('code')!r}, expected 'model_not_found'. "
+            f"Proxy sanitization is stripping error.code."
+        )
+
+    def test_anthropic_400_preserves_error_type(self, openclaw_stack, openclaw_anthropic_alias):
+        """error.type must survive sanitization — SDK uses it to classify bad-request errors."""
+        proxy_port, mock_port, *_ = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+            max_retries=0,
+        )
+        with pytest.raises(anthropic.BadRequestError) as exc:
+            client.messages.create(
+                model="claude-does-not-exist-zzz",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code == 400
+        body = exc.value.body
+        assert isinstance(body, dict), f"expected dict body, got {type(body)}: {body}"
+        error = body.get("error", {})
+        assert error.get("type") == "invalid_request_error", (
+            f"error.type was {error.get('type')!r}, expected 'invalid_request_error'. "
+            f"Proxy sanitization is stripping error.type."
+        )
