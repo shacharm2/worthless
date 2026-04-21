@@ -438,3 +438,175 @@ def test_add_with_internal_quote_allowed(
     add_or_rewrite_env_key(env, "API_KEY", 'sk-ab"cd')
 
     assert b'API_KEY=sk-ab"cd\n' in env.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Refusal-dispatch safety: _safe_read_existing_bytes must raise
+# UnsafeRewriteRefused directly, NOT funnel through safe_rewrite(path, b"").
+#
+# Motivation: safe_rewrite performs its own fresh lstat/size/sniff under its
+# lock. If the hostile condition clears between our check and its check
+# (oversized file truncated, symlink swapped for regular file, EPERM
+# cleared), the gate would *succeed* on an empty payload and wipe the
+# file. Raising UnsafeRewriteRefused directly eliminates that race window
+# entirely — no write path is reached at all.
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_symlink_does_not_invoke_safe_rewrite(
+    tmp_path: Path,
+    make_env_file,
+    monkeypatch,
+) -> None:
+    """Symlink refusal MUST raise directly; safe_rewrite MUST NOT be called."""
+    from worthless.cli import dotenv_rewriter as _mod
+    from worthless.cli.errors import UnsafeReason
+
+    target = make_env_file(tmp_path / "real.env", content=b"KEY=value\n")
+    env_path = tmp_path / ".env"
+    env_path.symlink_to(target)
+
+    def _spy(*a, **kw):  # noqa: ANN002, ANN003
+        raise AssertionError(
+            "safe_rewrite was invoked on a refusal path — this is the "
+            "race-wipe vector CodeRabbit flagged"
+        )
+
+    monkeypatch.setattr(_mod, "safe_rewrite", _spy)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(env_path, "NEW", "v")
+
+    assert exc_info.value.reason in {UnsafeReason.SYMLINK, UnsafeReason.SPECIAL_FILE}
+
+
+def test_refuse_fifo_does_not_invoke_safe_rewrite(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """FIFO refusal MUST raise directly; safe_rewrite MUST NOT be called."""
+    from worthless.cli import dotenv_rewriter as _mod
+    from worthless.cli.errors import UnsafeReason
+
+    fifo_path = tmp_path / ".env"
+    os.mkfifo(str(fifo_path))
+
+    def _spy(*a, **kw):  # noqa: ANN002, ANN003
+        raise AssertionError("safe_rewrite invoked on FIFO refusal path")
+
+    monkeypatch.setattr(_mod, "safe_rewrite", _spy)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(fifo_path, "NEW", "v")
+
+    assert exc_info.value.reason == UnsafeReason.SPECIAL_FILE
+
+
+def test_refuse_oversized_does_not_invoke_safe_rewrite(
+    tmp_path: Path,
+    make_env_file,
+    monkeypatch,
+) -> None:
+    """Oversize refusal MUST raise directly; safe_rewrite MUST NOT be called.
+
+    This is the headline race: between our ``lst.st_size`` check and the
+    gate's own size check, a concurrent truncator could shrink the file
+    under us — if we funnelled through ``safe_rewrite(path, b"")``, the
+    gate would accept the empty payload and write it, wiping the file.
+    Raising ``UnsafeRewriteRefused`` directly closes the window.
+    """
+    from worthless.cli import dotenv_rewriter as _mod
+    from worthless.cli.errors import UnsafeReason
+
+    one_mib = 1 << 20
+    content = b"KEY=" + b"a" * (one_mib - len(b"KEY=\n")) + b"\n"
+    assert len(content) == one_mib
+    # One byte over the limit.
+    content += b"b"
+    assert len(content) == one_mib + 1
+    env_path = make_env_file(tmp_path / ".env", content=content)
+
+    def _spy(*a, **kw):  # noqa: ANN002, ANN003
+        raise AssertionError(
+            "safe_rewrite invoked on oversized-refusal path — "
+            "this is the truncation-race wipe vector"
+        )
+
+    monkeypatch.setattr(_mod, "safe_rewrite", _spy)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(env_path, "NEW", "v")
+
+    assert exc_info.value.reason == UnsafeReason.SIZE
+
+
+def test_refuse_lstat_error_does_not_invoke_safe_rewrite(
+    tmp_path: Path,
+    make_env_file,
+    monkeypatch,
+) -> None:
+    """An ``lstat`` ``OSError`` MUST raise ``UnsafeRewriteRefused`` directly.
+
+    Transient EACCES/EIO that clears between our lstat and the gate's
+    lstat would otherwise let safe_rewrite proceed on our empty-payload
+    call and wipe the file.
+    """
+    from worthless.cli import dotenv_rewriter as _mod
+    from worthless.cli.errors import UnsafeReason
+
+    env_path = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+
+    def _spy(*a, **kw):  # noqa: ANN002, ANN003
+        raise AssertionError("safe_rewrite invoked on lstat-OSError refusal path")
+
+    real_lstat = os.lstat
+    target_str = str(env_path)
+
+    def _boom_lstat(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if str(path) == target_str:
+            raise PermissionError(13, "Permission denied")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(_mod, "safe_rewrite", _spy)
+    monkeypatch.setattr(os, "lstat", _boom_lstat)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(env_path, "NEW", "v")
+
+    assert exc_info.value.reason == UnsafeReason.IO_ERROR
+
+
+def test_refuse_open_error_does_not_invoke_safe_rewrite(
+    tmp_path: Path,
+    make_env_file,
+    monkeypatch,
+) -> None:
+    """An ``os.open`` ``OSError`` after a successful ``lstat`` MUST raise directly.
+
+    Covers the TOCTOU case where ``lstat`` shows a regular file but
+    ``open`` fails (e.g., attacker swaps to a non-readable node between
+    the two syscalls).
+    """
+    from worthless.cli import dotenv_rewriter as _mod
+    from worthless.cli.errors import UnsafeReason
+
+    env_path = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+
+    def _spy(*a, **kw):  # noqa: ANN002, ANN003
+        raise AssertionError("safe_rewrite invoked on open-OSError refusal path")
+
+    real_open = os.open
+    target_str = str(env_path)
+
+    def _boom_open(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if str(path) == target_str:
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(_mod, "safe_rewrite", _spy)
+    monkeypatch.setattr(os, "open", _boom_open)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(env_path, "NEW", "v")
+
+    assert exc_info.value.reason == UnsafeReason.IO_ERROR

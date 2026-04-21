@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 
 from dotenv import dotenv_values
 
+from worthless.cli.errors import UnsafeReason, UnsafeRewriteRefused
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
 from worthless.cli.safe_rewrite import _MAX_BYTES, safe_rewrite
 
@@ -438,53 +439,36 @@ def _validate_value(value: str) -> None:
 def _safe_read_existing_bytes(path: Path) -> bytes:
     """Read *path*'s bytes without following symlinks or blocking on specials.
 
-    Returns an empty byte string if the path does not exist. If the path
-    exists but is NOT a regular file (symlink, fifo, socket, dir,
-    char/block dev), hand the refusal decision to :func:`safe_rewrite`
-    by invoking it with a placeholder body so the gate's invariants
-    (SYMLINK, SPECIAL_FILE) fire on *our* behalf - the caller never
-    attempts an ``open()`` that would either follow the symlink or
-    block on a FIFO.
-
-    The placeholder body is never written: ``safe_rewrite`` refuses
-    before any bytes hit disk.
+    Returns an empty byte string if the path does not exist. Raises
+    :class:`UnsafeRewriteRefused` directly for every hostile shape
+    (symlink, FIFO, socket, directory, char/block device, oversized
+    file, ``lstat``/``os.open`` failures). We do *not* route refusals
+    through :func:`safe_rewrite` with an empty payload: under a race
+    where the hostile condition clears (oversized file truncated,
+    symlink swapped for regular file, EPERM cleared) between our check
+    and the gate's check, such a call could succeed and wipe the file.
+    Raising directly here eliminates that window — no write path is
+    ever reached on a refusal.
     """
     try:
         lst = os.lstat(str(path))
     except FileNotFoundError:
         return b""
     except OSError as exc:
-        # Permission or IO problem: let ``safe_rewrite`` produce the
-        # canonical refusal path.
-        safe_rewrite(path, b"", original_user_arg=path, allow_outside_repo=True)
-        raise AssertionError(  # pragma: no cover - unreachable.
-            "safe_rewrite must refuse on lstat() failure"
-        ) from exc
+        raise UnsafeRewriteRefused(UnsafeReason.IO_ERROR) from exc
+    if _stat.S_ISLNK(lst.st_mode):
+        raise UnsafeRewriteRefused(UnsafeReason.SYMLINK)
     if not _stat.S_ISREG(lst.st_mode):
-        # Symlink, fifo, socket, directory, char/block device - refuse
-        # via the gate so every public entry point funnels through the
-        # same invariant logic.
-        safe_rewrite(path, b"", original_user_arg=path, allow_outside_repo=True)
-        raise AssertionError(  # pragma: no cover - unreachable.
-            "safe_rewrite must refuse non-regular files"
-        )
+        raise UnsafeRewriteRefused(UnsafeReason.SPECIAL_FILE)
     if lst.st_size > _MAX_BYTES:
-        # Short-circuit before reading: for an oversized existing file,
-        # route straight through ``safe_rewrite`` so its SIZE gate fires
-        # without pulling hundreds of MiB into our address space first.
-        safe_rewrite(path, b"", original_user_arg=path, allow_outside_repo=True)
-        raise AssertionError(  # pragma: no cover - unreachable.
-            "safe_rewrite must refuse on oversized source"
-        )
-    # Open with O_NOFOLLOW + O_RDONLY so a TOCTOU symlink-flip still
-    # refuses rather than reading through.
+        raise UnsafeRewriteRefused(UnsafeReason.SIZE)
+    # Open with O_NOFOLLOW + O_RDONLY so a TOCTOU symlink-flip between
+    # the lstat above and this open still refuses rather than reading
+    # through the symlink.
     try:
         fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
-        safe_rewrite(path, b"", original_user_arg=path, allow_outside_repo=True)
-        raise AssertionError(  # pragma: no cover - unreachable.
-            "safe_rewrite must refuse on open() failure"
-        ) from exc
+        raise UnsafeRewriteRefused(UnsafeReason.IO_ERROR) from exc
     try:
         size = lst.st_size
         if size <= 0:
