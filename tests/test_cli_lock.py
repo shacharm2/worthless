@@ -459,6 +459,56 @@ class TestLockCommand:
             f"expected real key restored, got: {parsed['OPENAI_API_KEY'][:12]}..."
         )
 
+    def test_relock_rolls_back_base_url_when_enrollment_fails(
+        self, home_dir: WorthlessHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-lock must restore the *whole* .env if enrollment fails after BASE_URL.
+
+        Step 2 (BASE_URL write) succeeds, step 3 (DB enrollment) fails. Partial-
+        restore that only rewrites OPENAI_API_KEY would leave a real key
+        coexisting with a proxy BASE_URL — inconsistent state the user can't
+        reason about. Whole-file snapshot rollback is the correct fix.
+        """
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        key = fake_openai_key()
+
+        env_a = tmp_path / "a" / ".env"
+        env_b = tmp_path / "b" / ".env"
+        env_a.parent.mkdir()
+        env_b.parent.mkdir()
+        env_a.write_text(f"OPENAI_API_KEY={key}\n")
+        env_b.write_text(f"OPENAI_API_KEY={key}\n")
+
+        # Prime: lock env_a cleanly.
+        r1 = runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars)
+        assert r1.exit_code == 0, r1.output
+
+        # Capture env_b pre-content (exactly the snapshot we expect restored).
+        original_content = env_b.read_text()
+
+        # Sabotage enrollment (step 3) so step 1 (key) and step 2 (BASE_URL)
+        # are already on disk when the failure fires.
+        from worthless.storage import repository as repo_mod
+
+        async def _boom_on_enrollment(self, *args, **kwargs):
+            raise RuntimeError("db write failed after BASE_URL was persisted")
+
+        monkeypatch.setattr(repo_mod.ShardRepository, "add_enrollment", _boom_on_enrollment)
+
+        r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
+        assert r2.exit_code == 1, r2.output
+
+        # Whole-file restoration: env_b must be byte-identical to pre-run.
+        # Partial compensation would leave OPENAI_BASE_URL lingering.
+        restored = env_b.read_text()
+        assert restored == original_content, (
+            "env_b should be restored to its pre-re-lock snapshot — "
+            "partial compensation would leak BASE_URL changes."
+        )
+        assert "OPENAI_BASE_URL" not in restored, (
+            "BASE_URL must not persist when re-lock fails mid-way."
+        )
+
     def test_lock_acquires_and_releases_lock_file(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:

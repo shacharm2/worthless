@@ -128,7 +128,12 @@ def _lock_keys(
                 stored_decrypted = repo.decrypt_shard(db_shard)
                 verify_payload = bytearray(value.encode("utf-8"))
                 derived_shard_a: bytearray | None = None
-                env_rewritten = False
+                # Whole-file snapshot: the re-lock branch makes up to two
+                # .env writes (key + BASE_URL) before the DB enrollment. A
+                # failure between them would leave a half-rewritten .env
+                # (e.g. real key restored but BASE_URL still pointing at
+                # the proxy). Snapshot once, restore whole file on any fail.
+                original_env_content: str | None = None
                 try:
                     try:
                         _verify_commitment(
@@ -149,8 +154,8 @@ def _lock_keys(
                         db_shard.prefix,
                         db_shard.charset,
                     )
+                    original_env_content = env_path.read_text()
                     rewrite_env_key(env_path, var_name, derived_shard_a.decode("utf-8"))
-                    env_rewritten = True
 
                     if not keys_only:
                         base_url_var = _PROVIDER_ENV_MAP.get(provider)
@@ -164,11 +169,9 @@ def _lock_keys(
                     )
                     count += 1
                 except Exception as exc:
-                    # Compensation: restore real key if downstream failed
-                    # after we rewrote .env, else the silent-leak recurs.
-                    if env_rewritten:
+                    if original_env_content is not None:
                         try:
-                            rewrite_env_key(env_path, var_name, value)
+                            env_path.write_text(original_env_content)
                         except Exception:
                             logger.debug("Failed to restore .env for %s", var_name, exc_info=True)
                     if isinstance(exc, WorthlessError):

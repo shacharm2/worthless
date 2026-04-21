@@ -164,8 +164,22 @@ def derive_shard_a_fp(
     shard-A rather than leaving the real key in the file. Inverting the
     modular split over charset index space: shard_a_idx = (key_idx - shard_b_idx) mod N.
     """
+    # Defense-in-depth: prefix + charset come from decrypted DB rows, a
+    # different trust boundary than the live env value. Row corruption /
+    # swap would otherwise silently slice the wrong bytes or KeyError.
+    if not api_key.startswith(prefix):
+        raise ValueError(f"Key does not start with stored prefix {prefix!r}")
+    if charset not in _CHAR_TO_IDX:
+        raise ValueError(f"Unsupported stored charset (len={len(charset)})")
+
     body = api_key[len(prefix) :]
-    b_body = bytes(shard_b).decode("utf-8")
+    # SR-01: decode via mutable bytearray so we can zero the copy. The
+    # caller owns shard_b's lifecycle; the transient copy here is ours.
+    tmp = bytearray(shard_b)
+    try:
+        b_body = tmp.decode("utf-8")
+    finally:
+        zero_buf(tmp)
 
     if len(body) != len(b_body):
         raise ValueError(f"Shard-B length mismatch: key_body={len(body)}, shard_b={len(b_body)}")
