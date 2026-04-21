@@ -388,20 +388,51 @@ def _validate_var_name(name: str) -> None:
 
 
 def _validate_value(value: str) -> None:
-    """Refuse values that would break the dotenv shape on write.
+    """Refuse values that would break the dotenv shape on write OR
+    silently corrupt when round-tripped through a standard dotenv parser.
+
+    Structural rejects (always catastrophic):
 
     * Newlines (``\\n`` / ``\\r``) would let a caller inject a second
       assignment line.
     * NUL bytes routinely mis-parse downstream tooling.
 
-    All other control characters are currently accepted - they are
-    legitimate inside URL-encoded tokens. The sniff gate in
-    ``safe_rewrite`` catches files that later become shell-like.
+    Round-trip-stability rejects (silent data loss on read-back):
+
+    * ``space + #`` sequence: dotenv parsers treat this as the start of
+      an inline comment; the stored value would be truncated at the
+      space. Literal ``#`` not preceded by whitespace is fine.
+    * Leading ``"`` or ``'``: parsers treat it as an opening quote and
+      strip it from the value.
+    * Leading or trailing whitespace: unquoted values are
+      whitespace-stripped on read.
+
+    Callers upstream (lock/unlock/scan) write opaque decoy strings
+    (UUIDs, tokens) that never trigger these guards. The validator's
+    job is to turn a future caller-side bug into a loud ``ValueError``
+    instead of a silent truncation.
     """
     if "\n" in value or "\r" in value:
         raise ValueError("dotenv value must not contain newlines")
     if "\x00" in value:
         raise ValueError("dotenv value must not contain NUL bytes")
+    if " #" in value or "\t#" in value:
+        raise ValueError(
+            "dotenv value contains ' #' (whitespace + hash); dotenv "
+            "parsers treat this as an inline comment and the value would "
+            "be truncated on read-back"
+        )
+    if value[:1] in ('"', "'"):
+        raise ValueError(
+            "dotenv value must not start with a quote character; "
+            "dotenv parsers treat a leading quote as an opening delimiter "
+            "and strip it on read-back"
+        )
+    if value and (value[0].isspace() or value[-1].isspace()):
+        raise ValueError(
+            "dotenv value must not have leading or trailing whitespace; "
+            "dotenv parsers strip surrounding whitespace on read-back"
+        )
 
 
 def _safe_read_existing_bytes(path: Path) -> bytes:

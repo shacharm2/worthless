@@ -310,3 +310,131 @@ def test_add_to_one_mib_plus_one_file_refused(
         add_or_rewrite_env_key(env, "NEW_KEY", "small")
 
     assert_byte_identical(env, baseline)
+
+
+# ---------------------------------------------------------------------------
+# Round-trip-stability guards: reject values that would silently corrupt
+# when read back by a standard dotenv parser.
+# ---------------------------------------------------------------------------
+
+
+def test_add_with_space_hash_in_value_refused(
+    tmp_path: Path,
+    make_env_file,
+    sha256_of,
+    assert_byte_identical,
+) -> None:
+    """A value containing ``' #'`` MUST be refused.
+
+    dotenv parsers treat ``space + #`` as the start of an inline comment;
+    on read-back everything after the space would be stripped, silently
+    losing data. Reject at the rewriter boundary.
+    """
+    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    with pytest.raises(ValueError, match=r"inline[- ]comment"):
+        add_or_rewrite_env_key(env, "API_KEY", "sk-new #leaked-note")
+
+    assert_byte_identical(env, baseline)
+
+
+def test_add_with_value_starting_with_double_quote_refused(
+    tmp_path: Path,
+    make_env_file,
+    sha256_of,
+    assert_byte_identical,
+) -> None:
+    """A value starting with ``"`` MUST be refused.
+
+    dotenv parsers treat a leading quote as an opening delimiter and strip
+    it on read-back, corrupting the stored value.
+    """
+    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    with pytest.raises(ValueError, match=r"quote"):
+        add_or_rewrite_env_key(env, "API_KEY", '"abc')
+
+    assert_byte_identical(env, baseline)
+
+
+def test_add_with_value_starting_with_single_quote_refused(
+    tmp_path: Path,
+    make_env_file,
+    sha256_of,
+    assert_byte_identical,
+) -> None:
+    """A value starting with ``'`` MUST be refused (same reason as ``"``)."""
+    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    with pytest.raises(ValueError, match=r"quote"):
+        add_or_rewrite_env_key(env, "API_KEY", "'abc")
+
+    assert_byte_identical(env, baseline)
+
+
+def test_add_with_leading_whitespace_in_value_refused(
+    tmp_path: Path,
+    make_env_file,
+    sha256_of,
+    assert_byte_identical,
+) -> None:
+    """A value with leading whitespace MUST be refused.
+
+    Unquoted dotenv values are whitespace-stripped on read; leading
+    whitespace would silently disappear.
+    """
+    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    with pytest.raises(ValueError, match=r"whitespace"):
+        add_or_rewrite_env_key(env, "API_KEY", " sk-abc")
+
+    assert_byte_identical(env, baseline)
+
+
+def test_add_with_trailing_whitespace_in_value_refused(
+    tmp_path: Path,
+    make_env_file,
+    sha256_of,
+    assert_byte_identical,
+) -> None:
+    """A value with trailing whitespace MUST be refused (same reason)."""
+    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    with pytest.raises(ValueError, match=r"whitespace"):
+        add_or_rewrite_env_key(env, "API_KEY", "sk-abc ")
+
+    assert_byte_identical(env, baseline)
+
+
+def test_add_with_hash_not_preceded_by_space_allowed(
+    tmp_path: Path,
+    make_env_file,
+) -> None:
+    """``sk-abc#tag`` (no space before ``#``) is a legal unquoted value.
+
+    Ensures the inline-comment guard is narrow: only ``space + #`` is
+    rejected; a literal ``#`` inside the value is fine because dotenv
+    parsers only treat ``#`` as a comment when preceded by whitespace.
+    """
+    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+
+    add_or_rewrite_env_key(env, "API_KEY", "sk-abc#tag")
+
+    assert b"API_KEY=sk-abc#tag\n" in env.read_bytes()
+
+
+def test_add_with_internal_quote_allowed(
+    tmp_path: Path,
+    make_env_file,
+) -> None:
+    """``sk-ab"cd`` (quote mid-value) is legal; only leading quote is rejected."""
+    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+
+    add_or_rewrite_env_key(env, "API_KEY", 'sk-ab"cd')
+
+    assert b'API_KEY=sk-ab"cd\n' in env.read_bytes()
