@@ -219,6 +219,399 @@ def _unlink_tmp(tmp_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-invariant gate helpers. Each raises UnsafeRewriteRefused directly.
+# These exist purely to keep safe_rewrite()'s cyclomatic complexity in
+# rank-B territory; they are NOT independent abstractions and the call
+# order in safe_rewrite() is load-bearing.
+# ---------------------------------------------------------------------------
+
+
+def _check_basename(target: Path) -> None:
+    """Invariant 2: literal basename, denylist, NUL/trailing-slash poison."""
+    # Guard against embedded NUL in the path (pathlib/os may raise ValueError
+    # or OSError - both are "refused" for our purposes).
+    try:
+        target_name = target.name
+    except (ValueError, OSError) as exc:
+        raise _refuse(UnsafeReason.BASENAME) from exc
+    if "\x00" in str(target):
+        raise _refuse(UnsafeReason.BASENAME)
+    # Refuse a trailing-slash path (foo/.env/): POSIX open() would ENOTDIR
+    # on a regular file; we translate to a clean refuse without opening.
+    if str(target).endswith("/") and str(target) != "/":
+        raise _refuse(UnsafeReason.BASENAME)
+    _ = target_name
+    _basename_check(target)
+
+
+def _check_user_arg_basename(target: Path, original_user_arg: Path) -> None:
+    """Invariant 2b: caller cannot pass a resolved .env with a denylisted user arg."""
+    try:
+        if original_user_arg.name != target.name:
+            raise _refuse(UnsafeReason.PATH_IDENTITY, target)
+    except (ValueError, OSError) as exc:
+        raise _refuse(UnsafeReason.PATH_IDENTITY, target) from exc
+
+
+def _lstat_target(target: Path) -> os.stat_result:
+    """Invariant 3a: lstat the target (refuses on missing/IO error)."""
+    try:
+        return os.lstat(str(target))
+    except FileNotFoundError as exc:
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+    except OSError as exc:
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+
+
+def _check_special_file(lst: os.stat_result, target: Path) -> None:
+    """Invariant 3b: reject symlinks, dirs, fifos, sockets, char/block devs."""
+    if _stat.S_ISLNK(lst.st_mode):
+        raise _refuse(UnsafeReason.SYMLINK, target)
+    if _stat.S_ISDIR(lst.st_mode):
+        raise _refuse(UnsafeReason.SPECIAL_FILE, target)
+    if (
+        _stat.S_ISFIFO(lst.st_mode)
+        or _stat.S_ISSOCK(lst.st_mode)
+        or _stat.S_ISCHR(lst.st_mode)
+        or _stat.S_ISBLK(lst.st_mode)
+    ):
+        raise _refuse(UnsafeReason.SPECIAL_FILE, target)
+    if not _stat.S_ISREG(lst.st_mode):
+        raise _refuse(UnsafeReason.SPECIAL_FILE, target)
+
+
+def _check_containment(target: Path, repo_root: Path | None, allow_outside_repo: bool) -> None:
+    """Invariant 4: realpath containment + same-filesystem (mount-ID) gate."""
+    if repo_root is None or allow_outside_repo:
+        return
+    try:
+        target_resolved = target.resolve(strict=False)
+        repo_resolved = repo_root.resolve(strict=False)
+    except (OSError, ValueError) as exc:
+        raise _refuse(UnsafeReason.CONTAINMENT, target) from exc
+
+    # Containment: target must be a direct child of repo_root after
+    # realpath resolution. Anything in a subdirectory or above the
+    # repo root is refused.
+    if target_resolved.parent != repo_resolved:
+        raise _refuse(UnsafeReason.CONTAINMENT, target)
+
+    # Mount-ID / filesystem ID check: if repo and target live on
+    # different filesystems (bind-mount, overlay, cross-device), refuse.
+    try:
+        repo_statvfs = os.statvfs(str(repo_root))
+        target_statvfs = os.statvfs(str(target.parent))
+    except OSError as exc:
+        raise _refuse(UnsafeReason.CONTAINMENT, target) from exc
+    if repo_statvfs.f_fsid != target_statvfs.f_fsid:
+        raise _refuse(UnsafeReason.CONTAINMENT, target)
+
+
+def _check_path_identity(target: Path, original_user_arg: Path, lst: os.stat_result) -> None:
+    """Invariant 5: target & original_user_arg resolve to same inode; no hardlinks."""
+    try:
+        # Use os.stat so tests that monkeypatch os.stat can observe the
+        # original-arg stat as well as the post-open recheck. Path.stat()
+        # uses pathlib's accessor and bypasses module-level patches.
+        orig_stat = os.stat(str(original_user_arg))  # noqa: PTH116
+    except OSError as exc:
+        # If original arg can't be stat'd at all, we refuse.
+        raise _refuse(UnsafeReason.PATH_IDENTITY, target) from exc
+    if (orig_stat.st_dev, orig_stat.st_ino) != (lst.st_dev, lst.st_ino):
+        raise _refuse(UnsafeReason.PATH_IDENTITY, target)
+
+    # Hardlink check: st_nlink > 1 means the same inode is referenced by
+    # another name. A benign .env rarely has hardlinks; the risk is a
+    # hardlink to a denylisted inode (.zshrc, id_rsa, ...). Refuse.
+    if lst.st_nlink > 1:
+        raise _refuse(UnsafeReason.PATH_IDENTITY, target)
+
+
+def _open_target_fd(target: Path) -> int:
+    """Invariant 6a: open target with O_RDWR | O_NOFOLLOW | O_CLOEXEC."""
+    try:
+        return os.open(
+            str(target),
+            os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except OSError as exc:
+        # ENOTDIR / ENOENT / EMFILE / ELOOP -> refuse cleanly.
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+
+
+def _fstat_baseline(target_fd: int, target: Path, lst: os.stat_result) -> os.stat_result:
+    """Invariant 6b: fstat the opened fd; double-check S_ISREG and dev/ino vs lst."""
+    try:
+        baseline_fstat = os.fstat(target_fd)
+    except OSError as exc:
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+
+    # Double-check identity on the opened fd. S_ISREG in particular.
+    if not _stat.S_ISREG(baseline_fstat.st_mode):
+        raise _refuse(UnsafeReason.SPECIAL_FILE, target)
+    if (baseline_fstat.st_dev, baseline_fstat.st_ino) != (lst.st_dev, lst.st_ino):
+        raise _refuse(UnsafeReason.TOCTOU, target)
+    return baseline_fstat
+
+
+def _flock_exclusive_nonblocking(target_fd: int, target: Path) -> None:
+    """Invariant 7: take LOCK_EX|LOCK_NB on target_fd or refuse LOCKED."""
+    try:
+        fcntl.flock(target_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        raise _refuse(UnsafeReason.LOCKED, target) from exc
+    except OSError as exc:
+        if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+            raise _refuse(UnsafeReason.LOCKED, target) from exc
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+
+
+def _read_existing(target_fd: int, old_size: int, target: Path) -> bytes:
+    """Read the existing file once for line-count + sniff. Refuses on IO error."""
+    try:
+        os.lseek(target_fd, 0, os.SEEK_SET)
+    except OSError as exc:
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+
+    if old_size <= 0:
+        return b""
+
+    to_read = old_size
+    chunks: list[bytes] = []
+    try:
+        while to_read > 0:
+            chunk = os.read(target_fd, to_read)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            to_read -= len(chunk)
+    except OSError as exc:
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+    return b"".join(chunks)
+
+
+def _line_count(buf: bytes) -> int:
+    """Count logical lines in *buf*. A non-newline-terminated last line counts."""
+    if not buf:
+        return 0
+    newline_count = buf.count(b"\n")
+    if buf.endswith(b"\n"):
+        return newline_count
+    return newline_count + 1
+
+
+def _check_delta(new_size: int, old_size: int, line_count: int, target: Path) -> None:
+    """Invariant 8c: asymmetric delta gate for single-entry small files only."""
+    if not (old_size > 0 and old_size < _MAX_BYTES and line_count <= 1):
+        return
+    ratio = new_size / old_size
+    # Upper bound applies for any single-line file with at least
+    # a handful of bytes - catches "tiny old, huge new" attacks.
+    if old_size >= 5 and ratio > _DELTA_MAX:
+        raise _refuse(UnsafeReason.DELTA, target)
+    # Lower bound only for files large enough that aggressive
+    # shrinkage indicates confusion (a 22-byte short value being
+    # rotated to a 4-byte decoy is normal first-run behaviour).
+    if old_size >= 50 and ratio < _DELTA_MIN:
+        raise _refuse(UnsafeReason.DELTA, target)
+
+
+def _check_size_sniff_delta(
+    target_fd: int,
+    baseline_fstat: os.stat_result,
+    new_content: bytes,
+    target: Path,
+) -> None:
+    """Invariant 8: size + line-count + sniff + delta on existing & new content."""
+    old_size = baseline_fstat.st_size
+    if old_size > _MAX_BYTES:
+        raise _refuse(UnsafeReason.SIZE, target)
+
+    existing_buf = _read_existing(target_fd, old_size, target)
+
+    # Line-count gate (bytes).
+    line_count = _line_count(existing_buf)
+    if line_count > _MAX_LINES:
+        raise _refuse(UnsafeReason.SIZE, target)
+
+    # Full-file sniff.
+    if existing_buf:
+        _check_dotenv_content(existing_buf)
+
+    # Delta gate.
+    new_size = len(new_content)
+    if new_size > _MAX_BYTES:
+        raise _refuse(UnsafeReason.SIZE, target)
+    _check_delta(new_size, old_size, line_count, target)
+
+
+def _open_dir_fd(parent: Path, target: Path) -> int:
+    """Invariant 9: open the parent directory fd for fsync + atomic rename."""
+    try:
+        return os.open(
+            str(parent),
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_CLOEXEC,
+        )
+    except OSError as exc:
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+
+
+def _create_tmp_excl(parent: Path, target: Path) -> tuple[int, str]:
+    """Invariant 10: create tmp file with O_EXCL and randomised suffix, with retries."""
+    last_exc: OSError | None = None
+    for _attempt in range(_TMP_RETRIES):
+        candidate = str(parent / f".env.tmp-{secrets.token_hex(16)}")
+        try:
+            tmp_fd = os.open(
+                candidate,
+                os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_WRONLY,
+                0o600,
+            )
+            return tmp_fd, candidate
+        except FileExistsError as exc:
+            last_exc = exc
+            continue
+        except OSError as exc:
+            if exc.errno == errno.EEXIST:
+                last_exc = exc
+                continue
+            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+    raise _refuse(UnsafeReason.TMP_COLLISION, target) from last_exc
+
+
+def _write_all(tmp_fd: int, new_content: bytes, target: Path) -> None:
+    """Invariant 11: short-write loop until all bytes are flushed to tmp_fd."""
+    try:
+        view = memoryview(new_content)
+        offset = 0
+        while offset < len(view):
+            written = os.write(tmp_fd, view[offset:])
+            if written <= 0:
+                raise OSError(errno.EIO, "short write")
+            offset += written
+    except OSError as exc:
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+
+
+def _fsync_tmp(tmp_fd: int, target: Path) -> None:
+    """Invariant 12: fsync + best-effort F_FULLFSYNC + chmod 0o600 on tmp_fd."""
+    try:
+        os.fsync(tmp_fd)
+    except OSError as exc:
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+    _fullfsync(tmp_fd)
+    # chmod explicitly in case umask or mode-mask weirdness left the
+    # tmp world-readable. (O_CREAT mode arg is masked by umask.)
+    try:
+        os.fchmod(tmp_fd, 0o600)
+    except OSError:
+        pass
+
+
+def _fsync_dir(dir_fd: int, target: Path) -> None:
+    """Invariant 13/17: fsync + F_FULLFSYNC the parent directory fd."""
+    try:
+        os.fsync(dir_fd)
+    except OSError as exc:
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+    _fullfsync(dir_fd)
+
+
+def _stage_tmp(tmp_path: str, parent: Path, target: Path) -> str:
+    """Invariant 13b: rename tmp under a non-".env.tmp-*" staging name.
+
+    Ensures the chaos suite's ".env.tmp-*" leak glob is empty even after
+    uncatchable signals between fsync and the atomic rename.
+    """
+    staging_path = str(parent / f".env.staging-{secrets.token_hex(16)}")
+    try:
+        Path(tmp_path).rename(staging_path)
+    except OSError as exc:
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+    return staging_path
+
+
+def _recheck_target(target: Path, baseline_fstat: os.stat_result) -> None:
+    """Invariant 15: re-stat target via os.stat (lstat) and compare dev/ino/mode."""
+    # We use plain os.stat here so tests that monkeypatch os.stat can
+    # observe dev/ino mutations between open and rename. Path.stat()
+    # uses an internal accessor that does not honour module-level
+    # patches, so the explicit os.stat call is load-bearing.
+    try:
+        recheck = os.stat(str(target))  # noqa: PTH116
+    except OSError as exc:
+        raise _refuse(UnsafeReason.TOCTOU, target) from exc
+    if (recheck.st_dev, recheck.st_ino) != (baseline_fstat.st_dev, baseline_fstat.st_ino):
+        raise _refuse(UnsafeReason.TOCTOU, target)
+    if not _stat.S_ISREG(recheck.st_mode):
+        raise _refuse(UnsafeReason.TOCTOU, target)
+    # Mode-match recheck: if a hook (or attacker) flipped permissions
+    # between open and rename, refuse. Otherwise ``os.replace`` would
+    # silently overwrite a chmod-0000 file and we'd lose the signal.
+    if _stat.S_IMODE(recheck.st_mode) != _stat.S_IMODE(baseline_fstat.st_mode):
+        raise _refuse(UnsafeReason.TOCTOU, target)
+
+
+def _atomic_replace_with_fallback(
+    staging_path: str, target: Path, baseline_fstat: os.stat_result
+) -> None:
+    """Invariant 16: atomic replace with fstatat-recheck fallback on ENOSYS/EINVAL."""
+    try:
+        _renameat2(staging_path, str(target))
+        return
+    except OSError as exc:
+        if exc.errno not in (errno.ENOSYS, errno.EINVAL):
+            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+
+    # Fall back: re-run the fstatat recheck (mock may have mutated
+    # state since the first recheck) then os.replace.
+    try:
+        recheck2 = os.stat(str(target))  # noqa: PTH116
+    except OSError as exc2:
+        raise _refuse(UnsafeReason.TOCTOU, target) from exc2
+    if (recheck2.st_dev, recheck2.st_ino) != (
+        baseline_fstat.st_dev,
+        baseline_fstat.st_ino,
+    ):
+        # Sanitised refusal: hide original errno from caller (may leak path/env data).
+        raise _refuse(UnsafeReason.TOCTOU, target) from None
+    try:
+        # fd-relative atomic replace; pathlib cannot express this alongside fstatat
+        os.replace(staging_path, str(target))  # noqa: PTH105
+    except OSError as exc2:
+        raise _refuse(UnsafeReason.IO_ERROR, target) from exc2
+
+
+def _close_fds(
+    target_fd: int | None,
+    dir_fd: int | None,
+    tmp_fd: int | None,
+    flock_held: bool,
+) -> None:
+    """Best-effort close of all fds, releasing flock first."""
+    if tmp_fd is not None:
+        try:
+            os.close(tmp_fd)
+        except OSError:
+            pass
+    if dir_fd is not None:
+        try:
+            os.close(dir_fd)
+        except OSError:
+            pass
+    if target_fd is not None:
+        if flock_held:
+            try:
+                fcntl.flock(target_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        try:
+            os.close(target_fd)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Public entry point.
 # ---------------------------------------------------------------------------
 
@@ -243,102 +636,16 @@ def safe_rewrite(
     rename. Sub-PR 2 uses it to order shard writes without monkeypatching.
     """
 
-    # -- 1. Platform. -------------------------------------------------------
+    # -- 1-5. Pre-open invariant gates. ------------------------------------
     _platform_check()
+    _check_basename(target)
+    _check_user_arg_basename(target, original_user_arg)
+    lst = _lstat_target(target)
+    _check_special_file(lst, target)
+    _check_containment(target, repo_root, allow_outside_repo)
+    _check_path_identity(target, original_user_arg, lst)
 
-    # -- 2. Basename + denylist. -------------------------------------------
-    # Guard against embedded NUL in the path (pathlib/os may raise ValueError
-    # or OSError - both are "refused" for our purposes).
-    try:
-        target_name = target.name
-    except (ValueError, OSError) as exc:
-        raise _refuse(UnsafeReason.BASENAME) from exc
-    if "\x00" in str(target):
-        raise _refuse(UnsafeReason.BASENAME)
-    # Refuse a trailing-slash path (foo/.env/): POSIX open() would ENOTDIR
-    # on a regular file; we translate to a clean refuse without opening.
-    if str(target).endswith("/") and str(target) != "/":
-        raise _refuse(UnsafeReason.BASENAME)
-    _ = target_name
-    _basename_check(target)
-
-    # Also enforce basename on the user-supplied argument - a caller that
-    # passes a resolved .env but claims the original was .zshrc is a bug
-    # or an attack.
-    try:
-        if original_user_arg.name != target.name:
-            raise _refuse(UnsafeReason.PATH_IDENTITY, target)
-    except (ValueError, OSError) as exc:
-        raise _refuse(UnsafeReason.PATH_IDENTITY, target) from exc
-
-    # -- 3. lstat: reject symlinks, special files, directories. ------------
-    try:
-        lst = os.lstat(str(target))
-    except FileNotFoundError as exc:
-        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
-    except OSError as exc:
-        raise _refuse(UnsafeReason.IO_ERROR, target) from exc
-
-    if _stat.S_ISLNK(lst.st_mode):
-        raise _refuse(UnsafeReason.SYMLINK, target)
-    if _stat.S_ISDIR(lst.st_mode):
-        raise _refuse(UnsafeReason.SPECIAL_FILE, target)
-    if (
-        _stat.S_ISFIFO(lst.st_mode)
-        or _stat.S_ISSOCK(lst.st_mode)
-        or _stat.S_ISCHR(lst.st_mode)
-        or _stat.S_ISBLK(lst.st_mode)
-    ):
-        raise _refuse(UnsafeReason.SPECIAL_FILE, target)
-    if not _stat.S_ISREG(lst.st_mode):
-        raise _refuse(UnsafeReason.SPECIAL_FILE, target)
-
-    # -- 4. Containment + mount-ID. ----------------------------------------
-    if repo_root is not None and not allow_outside_repo:
-        try:
-            target_resolved = target.resolve(strict=False)
-            repo_resolved = repo_root.resolve(strict=False)
-        except (OSError, ValueError) as exc:
-            raise _refuse(UnsafeReason.CONTAINMENT, target) from exc
-
-        # Containment: target must be a direct child of repo_root after
-        # realpath resolution. Anything in a subdirectory or above the
-        # repo root is refused.
-        if target_resolved.parent != repo_resolved:
-            raise _refuse(UnsafeReason.CONTAINMENT, target)
-
-        # Mount-ID / filesystem ID check: if repo and target live on
-        # different filesystems (bind-mount, overlay, cross-device), refuse.
-        try:
-            repo_statvfs = os.statvfs(str(repo_root))
-            target_statvfs = os.statvfs(str(target.parent))
-        except OSError as exc:
-            raise _refuse(UnsafeReason.CONTAINMENT, target) from exc
-        if repo_statvfs.f_fsid != target_statvfs.f_fsid:
-            raise _refuse(UnsafeReason.CONTAINMENT, target)
-
-    # -- 5. Path identity: target & original_user_arg resolve to same inode.
-    # This catches a caller that has already followed a symlink and passes
-    # the post-resolved target with a pre-resolved original_user_arg. We
-    # compare stat(dev, ino) on each.
-    try:
-        # Use os.stat so tests that monkeypatch os.stat can observe the
-        # original-arg stat as well as the post-open recheck. Path.stat()
-        # uses pathlib's accessor and bypasses module-level patches.
-        orig_stat = os.stat(str(original_user_arg))  # noqa: PTH116
-    except OSError as exc:
-        # If original arg can't be stat'd at all, we refuse.
-        raise _refuse(UnsafeReason.PATH_IDENTITY, target) from exc
-    if (orig_stat.st_dev, orig_stat.st_ino) != (lst.st_dev, lst.st_ino):
-        raise _refuse(UnsafeReason.PATH_IDENTITY, target)
-
-    # Hardlink check: st_nlink > 1 means the same inode is referenced by
-    # another name. A benign .env rarely has hardlinks; the risk is a
-    # hardlink to a denylisted inode (.zshrc, id_rsa, ...). Refuse.
-    if lst.st_nlink > 1:
-        raise _refuse(UnsafeReason.PATH_IDENTITY, target)
-
-    # -- 6. Open target with O_RDWR | O_NOFOLLOW | O_CLOEXEC. --------------
+    # -- 6+. Open target, fstat, lock, sniff, then atomic replace. ---------
     target_fd: int | None = None
     dir_fd: int | None = None
     tmp_fd: int | None = None
@@ -347,161 +654,20 @@ def safe_rewrite(
     flock_held = False
 
     try:
-        try:
-            target_fd = os.open(
-                str(target),
-                os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
-            )
-        except OSError as exc:
-            # ENOTDIR / ENOENT / EMFILE / ELOOP → refuse cleanly.
-            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+        target_fd = _open_target_fd(target)
+        baseline_fstat = _fstat_baseline(target_fd, target, lst)
 
-        try:
-            baseline_fstat = os.fstat(target_fd)
-        except OSError as exc:
-            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+        _flock_exclusive_nonblocking(target_fd, target)
+        flock_held = True
 
-        # Double-check identity on the opened fd. S_ISREG in particular.
-        if not _stat.S_ISREG(baseline_fstat.st_mode):
-            raise _refuse(UnsafeReason.SPECIAL_FILE, target)
-        if (baseline_fstat.st_dev, baseline_fstat.st_ino) != (lst.st_dev, lst.st_ino):
-            raise _refuse(UnsafeReason.TOCTOU, target)
+        _check_size_sniff_delta(target_fd, baseline_fstat, new_content, target)
 
-        # -- 7. flock(LOCK_EX | LOCK_NB). ----------------------------------
-        try:
-            fcntl.flock(target_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            flock_held = True
-        except BlockingIOError as exc:
-            raise _refuse(UnsafeReason.LOCKED, target) from exc
-        except OSError as exc:
-            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
-                raise _refuse(UnsafeReason.LOCKED, target) from exc
-            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
-
-        # -- 8. Size + sniff + delta on the *existing* file. ---------------
-        old_size = baseline_fstat.st_size
-        if old_size > _MAX_BYTES:
-            raise _refuse(UnsafeReason.SIZE, target)
-
-        # Read the whole file once for line-count and sniff checks.
-        try:
-            os.lseek(target_fd, 0, os.SEEK_SET)
-        except OSError as exc:
-            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
-
-        existing_buf = b""
-        if old_size > 0:
-            to_read = old_size
-            chunks: list[bytes] = []
-            try:
-                while to_read > 0:
-                    chunk = os.read(target_fd, to_read)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    to_read -= len(chunk)
-            except OSError as exc:
-                raise _refuse(UnsafeReason.IO_ERROR, target) from exc
-            existing_buf = b"".join(chunks)
-
-        # Line-count gate (bytes).
-        line_count = 0
-        if existing_buf:
-            newline_count = existing_buf.count(b"\n")
-            # If the file ends without a trailing newline, the last
-            # partial line still counts as one logical line.
-            if existing_buf.endswith(b"\n"):
-                line_count = newline_count
-            else:
-                line_count = newline_count + 1
-            if line_count > _MAX_LINES:
-                raise _refuse(UnsafeReason.SIZE, target)
-
-        # Full-file sniff.
-        if existing_buf:
-            _check_dotenv_content(existing_buf)
-
-        # Delta gate. Asymmetric, applies only to single-entry small
-        # files where confusing a real secret with a decoy is plausible
-        # user error. Skipped for multi-line, empty, or maxed files.
-        # The shrink floor (0.25x) is gated on a stricter old-size
-        # threshold than the growth ceiling (4x) so realistic API-key
-        # rotations and tiny first-run files are not over-restricted.
-        new_size = len(new_content)
-        if new_size > _MAX_BYTES:
-            raise _refuse(UnsafeReason.SIZE, target)
-        if old_size > 0 and old_size < _MAX_BYTES and line_count <= 1:
-            ratio = new_size / old_size
-            # Upper bound applies for any single-line file with at least
-            # a handful of bytes - catches "tiny old, huge new" attacks.
-            if old_size >= 5 and ratio > _DELTA_MAX:
-                raise _refuse(UnsafeReason.DELTA, target)
-            # Lower bound only for files large enough that aggressive
-            # shrinkage indicates confusion (a 22-byte short value being
-            # rotated to a 4-byte decoy is normal first-run behaviour).
-            if old_size >= 50 and ratio < _DELTA_MIN:
-                raise _refuse(UnsafeReason.DELTA, target)
-
-        # -- 9. Open parent directory fd. ----------------------------------
         parent = target.parent
-        try:
-            dir_fd = os.open(
-                str(parent),
-                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_CLOEXEC,
-            )
-        except OSError as exc:
-            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+        dir_fd = _open_dir_fd(parent, target)
+        tmp_fd, tmp_path = _create_tmp_excl(parent, target)
 
-        # -- 10. Create tmp file with O_EXCL + retries. --------------------
-        last_exc: OSError | None = None
-        for _attempt in range(_TMP_RETRIES):
-            candidate = str(parent / f".env.tmp-{secrets.token_hex(16)}")
-            try:
-                tmp_fd = os.open(
-                    candidate,
-                    os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_WRONLY,
-                    0o600,
-                )
-                tmp_path = candidate
-                break
-            except FileExistsError as exc:
-                last_exc = exc
-                continue
-            except OSError as exc:
-                if exc.errno == errno.EEXIST:
-                    last_exc = exc
-                    continue
-                raise _refuse(UnsafeReason.IO_ERROR, target) from exc
-        if tmp_fd is None:
-            raise _refuse(UnsafeReason.TMP_COLLISION, target) from last_exc
-
-        assert tmp_path is not None
-
-        # -- 11. Write content in a short-write loop. ----------------------
-        try:
-            view = memoryview(new_content)
-            offset = 0
-            while offset < len(view):
-                written = os.write(tmp_fd, view[offset:])
-                if written <= 0:
-                    raise OSError(errno.EIO, "short write")
-                offset += written
-        except OSError as exc:
-            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
-
-        # -- 12. fsync + F_FULLFSYNC on the tmp fd. ------------------------
-        try:
-            os.fsync(tmp_fd)
-        except OSError as exc:
-            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
-        _fullfsync(tmp_fd)
-
-        # chmod explicitly in case umask or mode-mask weirdness left the
-        # tmp world-readable. (O_CREAT mode arg is masked by umask.)
-        try:
-            os.fchmod(tmp_fd, 0o600)
-        except OSError:
-            pass
+        _write_all(tmp_fd, new_content, target)
+        _fsync_tmp(tmp_fd, target)
 
         # Close tmp fd so the rename target is not held open.
         try:
@@ -509,89 +675,28 @@ def safe_rewrite(
         finally:
             tmp_fd = None
 
-        # -- 13. fsync parent directory for the tmp entry. -----------------
-        try:
-            os.fsync(dir_fd)
-        except OSError as exc:
-            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
-        _fullfsync(dir_fd)
+        _fsync_dir(dir_fd, target)
 
-        # -- 13b. Stage the tmp under a non-".env.tmp-*" name so a
-        # SIGKILL or sub-PR-2 hook crash does not leave a file matching
-        # the public ".env.tmp-*" leak signature in the directory.
-        # The staging name is still cleaned up by our error paths; the
-        # ".env.tmp-*" glob asserted by the chaos suite must be empty
-        # even after uncatchable signals.
-        staging_path = str(target.parent / f".env.staging-{secrets.token_hex(16)}")
-        try:
-            Path(tmp_path).rename(staging_path)
-        except OSError as exc:
-            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
-        # tmp is now staging; the cleanup block must unlink staging_path
-        # instead of tmp_path on failure.
+        # Stage tmp under a non-".env.tmp-*" name (chaos-suite leak signature).
+        staging_path = _stage_tmp(tmp_path, parent, target)
         tmp_path = None
 
         # -- 14. Caller hook (e.g. shard-write ordering in sub-PR 2). ------
         if _hook_before_replace is not None:
             _hook_before_replace()
 
-        # -- 15. Recheck target via os.stat AT_SYMLINK_NOFOLLOW (=lstat). --
-        # We use plain os.stat here so tests that monkeypatch os.stat can
-        # observe dev/ino mutations between open and rename. Path.stat()
-        # uses an internal accessor that does not honour module-level
-        # patches, so the explicit os.stat call is load-bearing.
-        try:
-            recheck = os.stat(str(target))  # noqa: PTH116
-        except OSError as exc:
-            raise _refuse(UnsafeReason.TOCTOU, target) from exc
-        if (recheck.st_dev, recheck.st_ino) != (baseline_fstat.st_dev, baseline_fstat.st_ino):
-            raise _refuse(UnsafeReason.TOCTOU, target)
-        if not _stat.S_ISREG(recheck.st_mode):
-            raise _refuse(UnsafeReason.TOCTOU, target)
-        # Mode-match recheck: if a hook (or attacker) flipped permissions
-        # between open and rename, refuse. Otherwise ``os.replace`` would
-        # silently overwrite a chmod-0000 file and we'd lose the signal.
-        if _stat.S_IMODE(recheck.st_mode) != _stat.S_IMODE(baseline_fstat.st_mode):
-            raise _refuse(UnsafeReason.TOCTOU, target)
-
-        # -- 16. Atomic replace. -------------------------------------------
-        try:
-            _renameat2(staging_path, str(target))
-        except OSError as exc:
-            if exc.errno in (errno.ENOSYS, errno.EINVAL):
-                # Fall back: re-run the fstatat recheck (mock may have
-                # mutated state since the first recheck) then os.replace.
-                try:
-                    recheck2 = os.stat(str(target))  # noqa: PTH116
-                except OSError as exc2:
-                    raise _refuse(UnsafeReason.TOCTOU, target) from exc2
-                if (recheck2.st_dev, recheck2.st_ino) != (
-                    baseline_fstat.st_dev,
-                    baseline_fstat.st_ino,
-                ):
-                    # Sanitised refusal: hide original errno from caller (may leak path/env data).
-                    raise _refuse(UnsafeReason.TOCTOU, target) from None
-                try:
-                    # fd-relative atomic replace; pathlib cannot express this alongside fstatat
-                    os.replace(staging_path, str(target))  # noqa: PTH105
-                except OSError as exc2:
-                    raise _refuse(UnsafeReason.IO_ERROR, target) from exc2
-            else:
-                raise _refuse(UnsafeReason.IO_ERROR, target) from exc
+        _recheck_target(target, baseline_fstat)
+        _atomic_replace_with_fallback(staging_path, target, baseline_fstat)
         # Staging has been consumed by the rename - forget its path so the
         # cleanup handler doesn't try to unlink the live target.
         staging_path = None
 
         # -- 17. Final fsync of parent directory. --------------------------
-        try:
-            os.fsync(dir_fd)
-        except OSError as exc:
-            # Post-rename fsync failures do not roll back - the rename
-            # already landed. We surface as IO_ERROR for visibility, but
-            # the target is already updated; callers typically treat this
-            # as "likely durable, re-verify".
-            raise _refuse(UnsafeReason.IO_ERROR, target) from exc
-        _fullfsync(dir_fd)
+        # Post-rename fsync failures do not roll back - the rename
+        # already landed. We surface as IO_ERROR for visibility, but
+        # the target is already updated; callers typically treat this
+        # as "likely durable, re-verify".
+        _fsync_dir(dir_fd, target)
 
     except UnsafeRewriteRefused:
         if tmp_path is not None:
@@ -609,24 +714,4 @@ def safe_rewrite(
             _unlink_tmp(staging_path)
         raise
     finally:
-        # Close fds in reverse order; flock releases on target_fd close.
-        if tmp_fd is not None:
-            try:
-                os.close(tmp_fd)
-            except OSError:
-                pass
-        if dir_fd is not None:
-            try:
-                os.close(dir_fd)
-            except OSError:
-                pass
-        if target_fd is not None:
-            if flock_held:
-                try:
-                    fcntl.flock(target_fd, fcntl.LOCK_UN)
-                except OSError:
-                    pass
-            try:
-                os.close(target_fd)
-            except OSError:
-                pass
+        _close_fds(target_fd, dir_fd, tmp_fd, flock_held)
