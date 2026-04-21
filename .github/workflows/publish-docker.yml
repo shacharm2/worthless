@@ -168,7 +168,19 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository_owner }}/worthless-proxy
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
-          cosign sign --yes "${IMAGE}@${DIGEST}"
+          # Retry up to 3x with backoff. Rekor and Fulcio are external
+          # sigstore services — transient 5xx would otherwise leave the
+          # image published (already done above) but unsigned. cosign sign
+          # is idempotent by digest, so retrying is safe.
+          for attempt in 1 2 3; do
+            if cosign sign --yes "${IMAGE}@${DIGEST}"; then
+              exit 0
+            fi
+            echo "cosign sign attempt ${attempt} failed; sleeping 20s before retry..."
+            sleep 20
+          done
+          echo "::error::cosign sign failed after 3 attempts — image published but UNSIGNED."
+          exit 1
 
   visibility:
     name: Flip GHCR package visibility to public
