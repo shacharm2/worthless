@@ -795,6 +795,17 @@
         text-align: center;
       }
     }
+
+    /* Chyron ticker */
+    .chyron { overflow: hidden; white-space: nowrap; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 0.55rem 0; -webkit-mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent); mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent); }
+    .chyron:hover .chyron-inner { animation-play-state: paused; }
+    .chyron-inner { display: inline-block; animation: chyron-scroll 60s linear infinite; }
+    @keyframes chyron-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+    .chyron-item { display: inline-flex; align-items: baseline; gap: 0.5rem; margin-right: 3rem; font-size: 0.78rem; color: var(--text2); text-decoration: none; }
+    .chyron-item:hover { color: var(--text); }
+    .chyron-src { font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; color: var(--slate); flex-shrink: 0; }
+    .chyron-desc { color: var(--text2); }
+    .chyron-date { font-size: 0.7rem; color: var(--border); }
   </style>
 </head>
 
@@ -965,6 +976,43 @@
 
     </div>
   </section>
+
+  <!-- Chyron -->
+  <div class="chyron">
+    <div class="chyron-inner">
+      <a href="https://news.ycombinator.com/item?id=47791871" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">€54K charged in 13 hours</span><span class="chyron-date">Apr 2026</span></a>
+      <a href="https://news.ycombinator.com/item?id=47231469" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">$82K Gemini bill in 48 hours</span><span class="chyron-date">Mar 2026</span></a>
+      <a href="https://news.ycombinator.com/item?id=47417874" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">$128K GCP bill from one leaked key</span></a>
+      <a href="https://news.ycombinator.com/item?id=47156925" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">Google API scope expansion - leaked keys do more than you think</span></a>
+      <a href="https://news.ycombinator.com/item?id=45589628" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">OpenAI quietly removed hard spend caps</span><span class="chyron-date">Dec 2025</span></a>
+      <a href="https://news.ycombinator.com/item?id=45241001" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">Lost $300 from "vibe coding" key leak</span><span class="chyron-date">Sep 2025</span></a>
+      <a href="https://news.ycombinator.com/item?id=47164359" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">Anthropic "final query" policy allows overbilling past prepay</span></a>
+      <a href="https://reddit.com/r/googlecloud/comments/1klwz0v/98k1_day_firebase_bill_open_letter_to_google" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">r/</span><span class="chyron-desc">$98K in 1 day - open letter to Google</span><span class="chyron-date">May 2025</span></a>
+      <a href="https://reddit.com/r/Firebase/comments/17wqdnp/what_ever_happened_to_the_121k_bill" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">r/</span><span class="chyron-desc">$121K Firebase bill - Google forgave 90%</span><span class="chyron-date">Nov 2023</span></a>
+      <a href="https://www.reddit.com/r/googlecloud/" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">r/</span><span class="chyron-desc">r/googlecloud billing horror - stickied as permanent fixture</span></a>
+      <a href="https://dev.to/ayame0328/60k-billed-in-13-hours-why-leaked-firebase-keys-keep-killing-ai-built-apps-6l6" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">dev</span><span class="chyron-desc">"$60K in 13 hours" - AI agent pushed .env to GitHub</span><span class="chyron-date">Apr 2026</span></a>
+      <a href="https://dev.to/dhayabaran/googles-documentation-says-api-keys-are-secrets-and-also-not-secrets-2863-verified-keys-are-219k" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">dev</span><span class="chyron-desc">2,863 live Google keys exposed in Common Crawl</span><span class="chyron-date">Feb 2026</span></a>
+      <a href="https://dev.to/rainkode/google-api-keys-werent-secrets-until-gemini-broke-everything-ohm" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">dev</span><span class="chyron-desc">Google API keys weren't secrets - until Gemini broke everything</span><span class="chyron-date">Feb 2026</span></a>
+      <a href="https://dev.to/linou518/is-your-api-key-still-running-naked-the-complete-2026-secrets-management-guide-4m7n" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">dev</span><span class="chyron-desc">Is your API key still running naked?</span><span class="chyron-date">Feb 2026</span></a>
+      <a href="https://dev.to/uzyntra/top-api-security-vulnerabilities-in-2026-real-world-breakdown-e9g" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">dev</span><span class="chyron-desc">Top API security vulns 2026 - billing bypass tactics</span></a>
+      <!-- duplicate for seamless loop -->
+      <a href="https://news.ycombinator.com/item?id=47791871" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">€54K charged in 13 hours</span><span class="chyron-date">Apr 2026</span></a>
+      <a href="https://news.ycombinator.com/item?id=47231469" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">$82K Gemini bill in 48 hours</span><span class="chyron-date">Mar 2026</span></a>
+      <a href="https://news.ycombinator.com/item?id=47417874" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">$128K GCP bill from one leaked key</span></a>
+      <a href="https://news.ycombinator.com/item?id=47156925" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">Google API scope expansion - leaked keys do more than you think</span></a>
+      <a href="https://news.ycombinator.com/item?id=45589628" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">OpenAI quietly removed hard spend caps</span><span class="chyron-date">Dec 2025</span></a>
+      <a href="https://news.ycombinator.com/item?id=45241001" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">Lost $300 from "vibe coding" key leak</span><span class="chyron-date">Sep 2025</span></a>
+      <a href="https://news.ycombinator.com/item?id=47164359" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">HN</span><span class="chyron-desc">Anthropic "final query" policy allows overbilling past prepay</span></a>
+      <a href="https://reddit.com/r/googlecloud/comments/1klwz0v/98k1_day_firebase_bill_open_letter_to_google" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">r/</span><span class="chyron-desc">$98K in 1 day - open letter to Google</span><span class="chyron-date">May 2025</span></a>
+      <a href="https://reddit.com/r/Firebase/comments/17wqdnp/what_ever_happened_to_the_121k_bill" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">r/</span><span class="chyron-desc">$121K Firebase bill - Google forgave 90%</span><span class="chyron-date">Nov 2023</span></a>
+      <a href="https://www.reddit.com/r/googlecloud/" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">r/</span><span class="chyron-desc">r/googlecloud billing horror - stickied as permanent fixture</span></a>
+      <a href="https://dev.to/ayame0328/60k-billed-in-13-hours-why-leaked-firebase-keys-keep-killing-ai-built-apps-6l6" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">dev</span><span class="chyron-desc">"$60K in 13 hours" - AI agent pushed .env to GitHub</span><span class="chyron-date">Apr 2026</span></a>
+      <a href="https://dev.to/dhayabaran/googles-documentation-says-api-keys-are-secrets-and-also-not-secrets-2863-verified-keys-are-219k" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">dev</span><span class="chyron-desc">2,863 live Google keys exposed in Common Crawl</span><span class="chyron-date">Feb 2026</span></a>
+      <a href="https://dev.to/rainkode/google-api-keys-werent-secrets-until-gemini-broke-everything-ohm" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">dev</span><span class="chyron-desc">Google API keys weren't secrets - until Gemini broke everything</span><span class="chyron-date">Feb 2026</span></a>
+      <a href="https://dev.to/linou518/is-your-api-key-still-running-naked-the-complete-2026-secrets-management-guide-4m7n" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">dev</span><span class="chyron-desc">Is your API key still running naked?</span><span class="chyron-date">Feb 2026</span></a>
+      <a href="https://dev.to/uzyntra/top-api-security-vulnerabilities-in-2026-real-world-breakdown-e9g" target="_blank" rel="noopener" class="chyron-item"><span class="chyron-src">dev</span><span class="chyron-desc">Top API security vulns 2026 - billing bypass tactics</span></a>
+    </div>
+  </div>
 
   <!-- AEO intro -->
   <section class="on-bg" style="align-items: flex-start; padding-bottom: 2rem;">
