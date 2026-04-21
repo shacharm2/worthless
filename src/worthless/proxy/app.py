@@ -187,7 +187,9 @@ async def _lifespan(app: FastAPI):
                 default_rps=settings.default_rate_limit_rps,
                 db_path=settings.db_path,
             ),
-            SpendCapRule(db=db),  # LAST — reservation only placed after other rules pass
+            # LAST — TokenBudgetRule and SpendCapRule both place reservations;
+            # SpendCapRule runs last to minimise denial-path leaks.
+            SpendCapRule(db=db),
         ]
     )
     app.state.rules_engine = rules_engine
@@ -320,6 +322,9 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         if denial is not None:
             # Zero shard_a before returning
             shard_a[:] = b"\x00" * len(shard_a)
+            # Release any reservation placed by an earlier rule in the chain
+            # (e.g. TokenBudgetRule reserves before RateLimitRule/SpendCapRule run).
+            await rules_engine.release_spend_reservation(alias, _spend_reservation)
             return Response(
                 content=denial.body,
                 status_code=denial.status_code,

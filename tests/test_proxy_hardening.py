@@ -432,7 +432,8 @@ class TestGateBeforeDecrypt:
                         body=b'{"error": "spend cap exceeded"}',
                         headers={"content-type": "application/json"},
                     )
-                )
+                ),
+                "release_spend_reservation": AsyncMock(return_value=None),
             },
         )()
 
@@ -1809,7 +1810,8 @@ class TestTimingAttacks:
                         body=b'{"error": "spend cap exceeded"}',
                         headers={"content-type": "application/json"},
                     )
-                )
+                ),
+                "release_spend_reservation": AsyncMock(return_value=None),
             },
         )()
 
