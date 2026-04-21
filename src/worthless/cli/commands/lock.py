@@ -24,7 +24,13 @@ from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sani
 from worthless.cli.key_patterns import detect_prefix
 from worthless.cli.commands.up import _resolve_port
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
-from worthless.crypto.splitter import split_key_fp
+from worthless.crypto.splitter import (
+    _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
+    derive_shard_a_fp,
+    split_key_fp,
+)
+from worthless.crypto.types import zero_buf
+from worthless.exceptions import ShardTamperedError
 from worthless.storage.repository import ShardRepository, StoredShard
 
 logger = logging.getLogger(__name__)
@@ -106,18 +112,79 @@ def _lock_keys(
 
             alias = _make_alias(provider, value)
 
-            # Re-lock guard: alias already in DB (same key from another var/env).
-            # Add enrollment for this location but don't re-split — the original
-            # shard-B is tied to the first split's commitment. A fresh split would
-            # produce a shard-A that can't reconstruct with the stored shard-B.
+            # Re-lock guard: alias already in DB (same real key from another
+            # var/env). Derive the shard-A that pairs with the stored shard-B
+            # (modular inverse), verify the commitment, then rewrite this .env.
+            # Silent no-op here would leave the real key plaintext on disk.
             db_shard = await repo.fetch_encrypted(alias)
             if db_shard is not None:
-                await repo.add_enrollment(
-                    alias,
-                    var_name=var_name,
-                    env_path=env_str,
-                )
-                count += 1
+                if not db_shard.prefix or not db_shard.charset:
+                    raise WorthlessError(
+                        ErrorCode.SHARD_STORAGE_FAILED,
+                        f"Alias {alias!r} predates format-preserving split "
+                        "(no prefix/charset stored). Run `worthless unlock --all` "
+                        "then re-lock this .env.",
+                    )
+                stored_decrypted = repo.decrypt_shard(db_shard)
+                verify_payload = bytearray(value.encode("utf-8"))
+                derived_shard_a: bytearray | None = None
+                # Whole-file snapshot: the re-lock branch makes up to two
+                # .env writes (key + BASE_URL) before the DB enrollment. A
+                # failure between them would leave a half-rewritten .env
+                # (e.g. real key restored but BASE_URL still pointing at
+                # the proxy). Snapshot once, restore whole file on any fail.
+                original_env_content: str | None = None
+                try:
+                    try:
+                        _verify_commitment(
+                            verify_payload,
+                            stored_decrypted.commitment,
+                            stored_decrypted.nonce,
+                        )
+                    except ShardTamperedError as exc:
+                        raise WorthlessError(
+                            ErrorCode.SHARD_STORAGE_FAILED,
+                            f"Alias {alias!r} exists but the provided {var_name} does "
+                            "not match the originally-locked key (commitment mismatch).",
+                        ) from exc
+
+                    derived_shard_a = derive_shard_a_fp(
+                        value,
+                        stored_decrypted.shard_b,
+                        db_shard.prefix,
+                        db_shard.charset,
+                    )
+                    original_env_content = env_path.read_text()
+                    rewrite_env_key(env_path, var_name, derived_shard_a.decode("utf-8"))
+
+                    if not keys_only:
+                        base_url_var = _PROVIDER_ENV_MAP.get(provider)
+                        if base_url_var:
+                            add_or_rewrite_env_key(env_path, base_url_var, _proxy_base_url(alias))
+
+                    await repo.add_enrollment(
+                        alias,
+                        var_name=var_name,
+                        env_path=env_str,
+                    )
+                    count += 1
+                except Exception as exc:
+                    if original_env_content is not None:
+                        try:
+                            env_path.write_text(original_env_content)
+                        except Exception:
+                            logger.debug("Failed to restore .env for %s", var_name, exc_info=True)
+                    if isinstance(exc, WorthlessError):
+                        raise
+                    raise WorthlessError(
+                        ErrorCode.SHARD_STORAGE_FAILED,
+                        sanitize_exception(exc, generic="failed to re-lock key"),
+                    ) from exc
+                finally:
+                    zero_buf(verify_payload)
+                    if derived_shard_a is not None:
+                        zero_buf(derived_shard_a)
+                    stored_decrypted.zero()
                 continue
 
             try:
