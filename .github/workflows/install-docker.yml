@@ -1,11 +1,9 @@
 name: Install Docker (bare-Ubuntu integration)
 
-# WOR-235: per-PR Docker integration test. Validates the AC ("fresh box
-# without Python can install worthless via curl|sh") in a hermetic
-# environment with no Python/pipx/uv pre-installed.
-#
-# Slow (~3-5 min including image build + Python download), so it runs
-# only when the installer or its fixtures change.
+# Per-PR Docker integration test: validates that a fresh box without Python
+# can install worthless via curl|sh in a hermetic environment (no
+# Python/pipx/uv pre-installed). Slow (~3-5 min including image build +
+# Python download), so it runs only when the installer or its fixtures change.
 
 on:
   pull_request:

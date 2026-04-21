@@ -1,4 +1,4 @@
-"""shellcheck static analysis for install.sh (WOR-235).
+"""shellcheck static analysis for install.sh.
 
 Skipped if shellcheck is not installed locally; required in CI.
 """

@@ -1,6 +1,5 @@
-# Bare Ubuntu image — NO python3 installed. Used to validate the AC of WOR-235:
+# Bare Ubuntu image — NO python3 installed. Validates the fresh-box AC:
 # "fresh non-Python Linux box → curl install.sh | sh → worthless --version works."
-#
 # Keep this image minimal. Adding python3 here defeats the test.
 FROM ubuntu:24.04
 

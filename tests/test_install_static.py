@@ -1,4 +1,4 @@
-"""Static-content checks on install.sh (WOR-235).
+"""Static-content checks on install.sh.
 
 Regression guards for safety/config markers. Complement subprocess tests
 in test_install_logic.py and Docker tests in test_install_docker.py.

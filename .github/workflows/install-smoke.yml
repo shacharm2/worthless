@@ -1,6 +1,6 @@
 name: Install Smoke (live curl|sh)
 
-# WOR-235: live install.sh smoke across the OS matrix we promise to support.
+# Live install.sh smoke across the OS matrix we promise to support.
 # Triggers only when install.sh, its tests, or this workflow change — keeps
 # CI cheap. Pushes to a versioned worthless.sh blob still get manual smoke
 # from MANUAL_SMOKE.md before we promote.
@@ -40,9 +40,6 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
-
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
 
       - name: Set up uv + Python
         uses: ./.github/actions/setup-uv-python

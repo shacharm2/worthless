@@ -14,7 +14,6 @@ Run with:
 from __future__ import annotations
 
 import subprocess
-import time
 import uuid
 from pathlib import Path
 
@@ -23,7 +22,7 @@ import httpx
 import openai
 import pytest
 
-from tests._docker_helpers import docker_available, docker_exec
+from tests._docker_helpers import docker_available, docker_exec, wait_healthy
 from tests.helpers import fake_anthropic_key, fake_openai_key
 from worthless.cli.commands.lock import _make_alias
 
@@ -54,42 +53,6 @@ def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
 def _run_ok(cmd: list[str]) -> str:
     """Run and return stdout, raise on failure."""
     return _run(cmd).stdout.strip()
-
-
-def _wait_healthy(container: str, timeout: float = 90.0) -> bool:
-    """Poll container health status until healthy or timeout."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        result = subprocess.run(
-            [
-                "docker",
-                "inspect",
-                "--format",
-                "{{.State.Health.Status}}",
-                container,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        status = result.stdout.strip()
-        if status == "healthy":
-            return True
-        if status in ("unhealthy", ""):
-            state = subprocess.run(
-                [
-                    "docker",
-                    "inspect",
-                    "--format",
-                    "{{.State.Status}}",
-                    container,
-                ],
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            if state != "running":
-                return False
-        time.sleep(2)
-    return False
 
 
 def _get_host_port(container: str, internal_port: int) -> int:
@@ -164,7 +127,7 @@ def openclaw_stack():
 
         # 2. Wait for worthless-proxy to be healthy
         proxy_container = f"{project}-worthless-proxy-1"
-        if not _wait_healthy(proxy_container, timeout=90):
+        if not wait_healthy(proxy_container, timeout=90):
             logs = subprocess.run(
                 ["docker", "logs", proxy_container],
                 capture_output=True,

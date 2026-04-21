@@ -1,10 +1,10 @@
-"""Docker fresh-machine integration test for install.sh (WOR-235).
+"""Docker fresh-machine integration test for install.sh.
 
 Marked 'docker' (excluded from the default pytest run via pyproject.toml).
 Run with: pytest -m docker tests/test_install_docker.py
 
-Validates the WOR-235 acceptance criterion: a fresh non-Python Linux box
-can run install.sh and end up with a working `worthless` CLI.
+Validates the fresh-box AC: a non-Python Linux box can run install.sh and
+end up with a working `worthless` CLI.
 """
 
 from __future__ import annotations

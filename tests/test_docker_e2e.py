@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import time
 import uuid
 from pathlib import Path
 
@@ -20,7 +19,7 @@ import httpx
 import openai
 import pytest
 
-from tests._docker_helpers import docker_available, docker_exec
+from tests._docker_helpers import docker_available, docker_exec, wait_healthy
 from tests.helpers import fake_anthropic_key, fake_openai_key
 from worthless.cli.commands.lock import _make_alias
 
@@ -57,42 +56,6 @@ def _run_ok(cmd: list[str]) -> str:
     return _run(cmd).stdout.strip()
 
 
-def _wait_healthy(container: str, timeout: float = 60.0) -> bool:
-    """Poll container health status until healthy or timeout."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        result = subprocess.run(
-            [
-                "docker",
-                "inspect",
-                "--format",
-                "{{.State.Health.Status}}",
-                container,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        status = result.stdout.strip()
-        if status == "healthy":
-            return True
-        if status in ("unhealthy", ""):
-            state = subprocess.run(
-                [
-                    "docker",
-                    "inspect",
-                    "--format",
-                    "{{.State.Status}}",
-                    container,
-                ],
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            if state != "running":
-                return False
-        time.sleep(1)
-    return False
-
-
 def _cleanup_container(name: str) -> None:
     """Force-remove a container and its associated volumes if they exist."""
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
@@ -100,21 +63,6 @@ def _cleanup_container(name: str) -> None:
         ["docker", "volume", "rm", "-f", f"{name}-data", f"{name}-secrets"],
         capture_output=True,
     )
-
-
-def _fake_openai_key() -> str:
-    """Generate a scanner-safe fake OpenAI key at runtime."""
-    try:
-        from tests.helpers import fake_openai_key
-
-        return fake_openai_key()
-    except ImportError:
-        import base64
-        import hashlib
-
-        raw = hashlib.sha256(b"test-fixture-seed").digest()
-        body = base64.urlsafe_b64encode(raw).decode().rstrip("=")[:48]
-        return "sk-" + "proj-" + body
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +127,7 @@ def container(docker_image: str) -> tuple[str, int]:
     )
     port = int(_run_ok(["docker", "port", name, "8787"]).rsplit(":", 1)[-1])
     try:
-        assert _wait_healthy(name), f"Container {name} did not become healthy"
+        assert wait_healthy(name), f"Container {name} did not become healthy"
         yield name, port  # type: ignore[misc]
     finally:
         _cleanup_container(name)
@@ -214,7 +162,7 @@ def persistent_container(docker_image: str) -> tuple[str, int, str]:
     port_out = _run_ok(["docker", "port", name, "8787"])
     port = int(port_out.strip().rsplit(":", 1)[-1])
     try:
-        assert _wait_healthy(name), f"Container {name} did not become healthy"
+        assert wait_healthy(name), f"Container {name} did not become healthy"
         yield name, port, vol  # type: ignore[misc]
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
@@ -264,7 +212,7 @@ def compose_stack(docker_image: str) -> tuple[str, str]:
         )
 
         container_name = f"{project}-proxy-1"
-        assert _wait_healthy(container_name, timeout=30), (
+        assert wait_healthy(container_name, timeout=30), (
             f"Compose container {container_name} did not become healthy"
         )
         yield project, container_name  # type: ignore[misc]
@@ -388,7 +336,7 @@ class TestPersistence:
         name, _port, _vol = persistent_container
 
         # Enroll a fake key
-        key = _fake_openai_key()
+        key = fake_openai_key()
         enroll = subprocess.run(
             [
                 "docker",
@@ -412,7 +360,7 @@ class TestPersistence:
         # Stop and start (not rm)
         _run(["docker", "stop", name])
         _run(["docker", "start", name])
-        assert _wait_healthy(name, timeout=30), "Not healthy after restart"
+        assert wait_healthy(name, timeout=30), "Not healthy after restart"
 
         # Verify the alias still exists
         status = docker_exec(
@@ -439,7 +387,7 @@ class TestLifecycle:
         name, port = container
 
         # Enroll a fake key
-        key = _fake_openai_key()
+        key = fake_openai_key()
         enroll = subprocess.run(
             [
                 "docker",
@@ -506,7 +454,7 @@ class TestWave6Features:
     def test_json_mode_after_enroll(self, container: tuple[str, int]) -> None:
         """worthless --json reflects enrollment state after enroll."""
         name, _ = container
-        key = _fake_openai_key()
+        key = fake_openai_key()
 
         # Enroll a key
         enroll = subprocess.run(
@@ -540,7 +488,7 @@ class TestWave6Features:
     def test_status_json_has_keys(self, container: tuple[str, int]) -> None:
         """worthless status --json shows enrolled key details."""
         name, _ = container
-        key = _fake_openai_key()
+        key = fake_openai_key()
 
         # Enroll
         subprocess.run(
@@ -574,7 +522,7 @@ class TestWave6Features:
         output never leaks key material.
         """
         name, _ = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         _write_env_to_container(name, env_content)
@@ -639,7 +587,7 @@ class TestLockWrapE2E:
         no enrollment record.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         # Write .env into the container
@@ -698,7 +646,7 @@ class TestLockWrapE2E:
         127.0.0.1.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         # Lock first
@@ -735,7 +683,7 @@ class TestLockWrapE2E:
         Failure looks like: /healthz returns non-200 or connection refused.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         _write_env_to_container(name, env_content)
@@ -791,7 +739,7 @@ class TestLockWrapE2E:
         the request never reaches the proxy.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         _write_env_to_container(name, env_content)
@@ -856,7 +804,7 @@ class TestDockerEdgeCases:
         garbage data.
         """
         name, port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         # Lock first
@@ -897,7 +845,7 @@ class TestDockerEdgeCases:
         increase.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         _write_env_to_container(name, env_content)
@@ -942,7 +890,7 @@ class TestDockerEdgeCases:
         duplicate enrollment records.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         _write_env_to_container(name, env_content)

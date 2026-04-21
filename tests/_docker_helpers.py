@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import shutil
 import subprocess
+import time
 
 
 @functools.cache
@@ -44,3 +45,31 @@ def docker_exec(container: str, cmd: list[str]) -> subprocess.CompletedProcess[s
         text=True,
         check=False,
     )
+
+
+def wait_healthy(container: str, timeout: float = 60.0) -> bool:
+    """Poll a container's health until it reports `healthy` or times out.
+
+    Returns False early if the container is not running (e.g. crashed).
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = subprocess.run(  # noqa: S603
+            ["docker", "inspect", "--format", "{{.State.Health.Status}}", container],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if status == "healthy":
+            return True
+        if status in ("unhealthy", ""):
+            state = subprocess.run(  # noqa: S603
+                ["docker", "inspect", "--format", "{{.State.Status}}", container],  # noqa: S607
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            if state != "running":
+                return False
+        time.sleep(1)
+    return False

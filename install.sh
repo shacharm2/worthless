@@ -227,21 +227,62 @@ smoke_test() {
 
 # --- Per-shell PATH activation guidance --------------------------------------
 
+# True iff the user's rc file already references ~/.local/bin, i.e. a new
+# shell will find `worthless` without us telling them to edit anything.
+# Conservative: returns false on unknown shells so we always print the hint.
+path_is_persistent() {
+    user_shell="$(basename "${SHELL:-/bin/sh}")"
+    case "$user_shell" in
+        bash)
+            for rc in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+                [ -f "$rc" ] && grep -q "\.local/bin" "$rc" 2>/dev/null && return 0
+            done
+            return 1
+            ;;
+        zsh)
+            for rc in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.zshenv"; do
+                [ -f "$rc" ] && grep -q "\.local/bin" "$rc" 2>/dev/null && return 0
+            done
+            return 1
+            ;;
+        fish)
+            fish_config="$HOME/.config/fish/config.fish"
+            [ -f "$fish_config" ] && grep -q "\.local/bin" "$fish_config" 2>/dev/null && return 0
+            fish_vars="$HOME/.config/fish/fish_variables"
+            [ -f "$fish_vars" ] && grep -q "\.local/bin" "$fish_vars" 2>/dev/null && return 0
+            return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# mode: "full" (default) prints both current-shell + make-permanent hints;
+# "persist" prints only the make-permanent step (for when PATH is already
+# live in this shell but the user's rc file doesn't have it).
 print_activation_hint() {
+    mode="${1:-full}"
     user_shell="$(basename "${SHELL:-/bin/sh}")"
     case "$user_shell" in
         bash|zsh)
-            printf "  Activate in this shell: %s\n" 'export PATH="$HOME/.local/bin:$PATH"'
+            if [ "$mode" = "full" ]; then
+                printf "  Activate in this shell: %s\n" 'export PATH="$HOME/.local/bin:$PATH"'
+            fi
             printf "  Make permanent:         %s\n" \
                 "echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.${user_shell}rc"
             ;;
         fish)
-            printf "  Activate in this shell: %s\n" 'set -gx PATH $HOME/.local/bin $PATH'
+            if [ "$mode" = "full" ]; then
+                printf "  Activate in this shell: %s\n" 'set -gx PATH $HOME/.local/bin $PATH'
+            fi
             printf "  Make permanent:         %s\n" \
                 'fish_add_path $HOME/.local/bin'
             ;;
         *)
-            printf "  Activate in this shell: %s\n" 'export PATH="$HOME/.local/bin:$PATH"'
+            if [ "$mode" = "full" ]; then
+                printf "  Activate in this shell: %s\n" 'export PATH="$HOME/.local/bin:$PATH"'
+            fi
             printf "  (Detected shell: %s — adapt for your rc file)\n" "$user_shell"
             ;;
     esac
@@ -266,7 +307,17 @@ main() {
 
     printf "\n"
     if command -v worthless >/dev/null 2>&1; then
-        ok "Done! 'worthless' is on your PATH."
+        if path_is_persistent; then
+            ok "Done! 'worthless' is on your PATH."
+        else
+            # Most common fresh-macOS case: PATH works in this shell (we exported
+            # ~/.local/bin in ensure_uv) but a new terminal won't find it.
+            ok "Done! 'worthless' works in this shell."
+            printf "\n"
+            warn "Heads up: a new terminal won't find 'worthless' yet — ~/.local/bin isn't in your rc file."
+            printf "\n"
+            print_activation_hint persist
+        fi
     else
         warn "Done — but 'worthless' is not yet on your PATH."
         printf "\n"
