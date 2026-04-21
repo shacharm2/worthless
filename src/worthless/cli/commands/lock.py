@@ -29,6 +29,7 @@ from worthless.crypto.splitter import (
     derive_shard_a_fp,
     split_key_fp,
 )
+from worthless.crypto.types import zero_buf
 from worthless.exceptions import ShardTamperedError
 from worthless.storage.repository import ShardRepository, StoredShard
 
@@ -127,43 +128,63 @@ def _lock_keys(
                         "then re-lock this .env.",
                     )
                 stored_decrypted = repo.decrypt_shard(db_shard)
+                env_rewritten = False
                 try:
-                    _verify_commitment(
-                        bytearray(value.encode("utf-8")),
-                        stored_decrypted.commitment,
-                        stored_decrypted.nonce,
+                    try:
+                        _verify_commitment(
+                            bytearray(value.encode("utf-8")),
+                            stored_decrypted.commitment,
+                            stored_decrypted.nonce,
+                        )
+                    except ShardTamperedError as exc:
+                        raise WorthlessError(
+                            ErrorCode.SHARD_STORAGE_FAILED,
+                            f"Alias {alias!r} exists but the provided {var_name} does "
+                            "not match the originally-locked key (commitment mismatch).",
+                        ) from exc
+
+                    derived_shard_a = derive_shard_a_fp(
+                        value,
+                        stored_decrypted.shard_b,
+                        db_shard.prefix or "",
+                        db_shard.charset or "",
                     )
-                except ShardTamperedError as exc:
-                    stored_decrypted.zero()
+                    try:
+                        rewrite_env_key(env_path, var_name, derived_shard_a.decode("utf-8"))
+                        env_rewritten = True
+
+                        if not keys_only:
+                            base_url_var = _PROVIDER_ENV_MAP.get(provider)
+                            if base_url_var:
+                                add_or_rewrite_env_key(
+                                    env_path, base_url_var, _proxy_base_url(alias)
+                                )
+
+                        await repo.add_enrollment(
+                            alias,
+                            var_name=var_name,
+                            env_path=env_str,
+                        )
+                        count += 1
+                    finally:
+                        zero_buf(derived_shard_a)
+                except Exception as exc:
+                    # Compensation: restore real key to .env if we already
+                    # rewrote it but downstream failed. Without this, WOR-280's
+                    # silent-leak recurs on partial failure mid-re-lock.
+                    if env_rewritten:
+                        try:
+                            rewrite_env_key(env_path, var_name, value)
+                        except Exception:
+                            logger.debug("Failed to restore .env for %s", var_name, exc_info=True)
+                    if isinstance(exc, WorthlessError):
+                        raise
                     raise WorthlessError(
                         ErrorCode.SHARD_STORAGE_FAILED,
-                        f"Alias {alias!r} exists but the provided {var_name} does "
-                        "not match the originally-locked key (commitment mismatch).",
+                        sanitize_exception(exc, generic="failed to re-lock key"),
                     ) from exc
-
-                derived_shard_a = derive_shard_a_fp(
-                    value,
-                    stored_decrypted.shard_b,
-                    db_shard.prefix or "",
-                    db_shard.charset or "",
-                )
-                try:
-                    rewrite_env_key(env_path, var_name, derived_shard_a.decode("utf-8"))
                 finally:
-                    derived_shard_a[:] = b"\x00" * len(derived_shard_a)
                     stored_decrypted.zero()
-
-                if not keys_only:
-                    base_url_var = _PROVIDER_ENV_MAP.get(provider)
-                    if base_url_var:
-                        add_or_rewrite_env_key(env_path, base_url_var, _proxy_base_url(alias))
-
-                await repo.add_enrollment(
-                    alias,
-                    var_name=var_name,
-                    env_path=env_str,
-                )
-                count += 1
                 continue
 
             try:

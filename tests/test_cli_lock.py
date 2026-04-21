@@ -416,6 +416,49 @@ class TestLockCommand:
         )
         assert reconstructed.decode() == key
 
+    def test_relock_compensation_restores_env_on_base_url_failure(
+        self, home_dir: WorthlessHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-lock path must restore real key to .env if BASE_URL write fails.
+
+        Without compensation this recreates WOR-280: the re-lock overwrote .env
+        with shard-A, then the BASE_URL write crashed, and the real key was
+        gone from the file (destructive) while the user saw an error (not a
+        silent leak, but unrecoverable partial state).
+        """
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        key = fake_openai_key()
+
+        env_a = tmp_path / "a" / ".env"
+        env_b = tmp_path / "b" / ".env"
+        env_a.parent.mkdir()
+        env_b.parent.mkdir()
+        env_a.write_text(f"OPENAI_API_KEY={key}\n")
+        env_b.write_text(f"OPENAI_API_KEY={key}\n")
+
+        # Prime: lock env_a cleanly so alias is in DB.
+        r1 = runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars)
+        assert r1.exit_code == 0, r1.output
+
+        # Now sabotage BASE_URL writes so the re-lock fails mid-way.
+        from worthless.cli.commands import lock as lock_mod
+
+        def _boom_on_base_url(*args, **kwargs):
+            raise OSError("disk full on BASE_URL write")
+
+        monkeypatch.setattr(lock_mod, "add_or_rewrite_env_key", _boom_on_base_url)
+
+        r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
+        assert r2.exit_code == 1  # expected failure
+
+        from dotenv import dotenv_values
+
+        parsed = dotenv_values(env_b)
+        assert parsed["OPENAI_API_KEY"] == key, (
+            "Re-lock failed mid-way and left env_b in a broken state — "
+            f"expected real key restored, got: {parsed['OPENAI_API_KEY'][:12]}..."
+        )
+
     def test_lock_acquires_and_releases_lock_file(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
