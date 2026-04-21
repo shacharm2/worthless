@@ -228,3 +228,48 @@ def test_os_replace_fallback_on_darwin(tmp_path, make_env_file, fake_darwin, mon
 
     assert replace_calls["n"] >= 1, "os.replace not called on Darwin"
     assert stat_calls_before_replace["n"] >= 1, "no stat recheck before os.replace on Darwin"
+
+
+def test_expected_baseline_sha_mismatch_refused_toctou(tmp_path, make_env_file, sha256_of) -> None:
+    """A stale ``expected_baseline_sha256`` MUST be refused with ``TOCTOU``.
+
+    Callers that compute ``new_content`` from a baseline they read earlier
+    can pass the baseline's SHA-256 to :func:`safe_rewrite`. Under the
+    lock, the gate re-reads the existing file, hashes it, and refuses if
+    the hash doesn't match - preventing a concurrent writer's changes
+    from being silently clobbered.
+    """
+    import hashlib
+
+    env = make_env_file(tmp_path / ".env", b"A=1\n")
+    baseline = sha256_of(env)
+    # The caller "thinks" the file is this — but it's really `A=1\n`.
+    stale_sha = hashlib.sha256(b"A=PREVIOUS\n").digest()
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(
+            env,
+            b"A=2\n",
+            original_user_arg=env,
+            expected_baseline_sha256=stale_sha,
+        )
+
+    assert exc_info.value.reason == UnsafeReason.TOCTOU
+    assert sha256_of(env) == baseline, "file mutated despite TOCTOU refusal"
+
+
+def test_expected_baseline_sha_match_allows_write(tmp_path, make_env_file) -> None:
+    """A matching ``expected_baseline_sha256`` MUST allow the write through."""
+    import hashlib
+
+    env = make_env_file(tmp_path / ".env", b"A=1\n")
+    correct_sha = hashlib.sha256(b"A=1\n").digest()
+
+    safe_rewrite(
+        env,
+        b"A=2\n",
+        original_user_arg=env,
+        expected_baseline_sha256=correct_sha,
+    )
+
+    assert env.read_bytes() == b"A=2\n"

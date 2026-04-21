@@ -28,7 +28,7 @@ SHA256 of the repo absolute path is the directory name because (a) it's stable a
 
 Every call that reaches `safe_rewrite()` creates a byte-identical copy of the pre-write content at:
 
-```
+```text
 $XDG_DATA_HOME/worthless/backups/<sha256(repo_root)>/<basename>.<ISO8601>.<pid>.bak
 ```
 
@@ -57,7 +57,7 @@ Restore writes via `safe_rewrite()` itself — the gate checks the restore targe
 
 - **`RECOVERY.md`** at the repo root (committed into the tool's own repo, shipped in the wheel). One page. Opens with a code fence: `worthless restore` — that's the recovery command, first thing on the page. Then explains the backup directory, rotation policy, and the `--force` flag.
 - **First-run output** — the first time the CLI creates a backup dir for a given repo, print *once* to stderr:
-  ```
+  ```console
   worthless: backups enabled → ~/.local/share/worthless/backups/<bucket>/
   worthless: run `worthless restore` if you need to roll back
   ```
@@ -238,7 +238,7 @@ This plan is the input to two expert agents, **not a replacement for them:**
 
 The sequence is therefore:
 
-```
+```text
 this plan  →  planner agent  →  tdd-guide agent  →  milestones green  →  PR
 ```
 

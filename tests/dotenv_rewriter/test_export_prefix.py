@@ -75,13 +75,7 @@ def test_export_with_unusual_whitespace_preserved(tmp_path: Path, make_env_file)
     rewrite_env_key(env, "API_KEY", "new_value")
 
     after = env.read_bytes()
-    # Either the unusual whitespace round-trips exactly (ideal) OR the
-    # rewriter normalises it to a single space while still keeping the
-    # prefix. Both are acceptable; the forbidden outcome is dropping
-    # `export` entirely. Pin the strict form first; relax only if the
-    # implementation cannot preserve.
-    assert after.startswith(b"export"), (
-        f"export prefix lost on unusual whitespace:\n  before={before!r}\n  after ={after!r}"
+    assert after == b"export   API_KEY=new_value\n", (
+        f"export whitespace not preserved byte-identically:\n"
+        f"  before={before!r}\n  after ={after!r}"
     )
-    assert b"API_KEY=new_value" in after
-    assert b"old_value" not in after

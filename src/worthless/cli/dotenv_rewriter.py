@@ -18,6 +18,7 @@ lines, ordering, export prefixes, and BOM/CRLF formatting.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import re
@@ -31,7 +32,7 @@ from typing import TYPE_CHECKING
 from dotenv import dotenv_values
 
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
-from worthless.cli.safe_rewrite import safe_rewrite
+from worthless.cli.safe_rewrite import _MAX_BYTES, safe_rewrite
 
 if TYPE_CHECKING:
     from worthless.storage.repository import EnrollmentRecord
@@ -436,6 +437,14 @@ def _safe_read_existing_bytes(path: Path) -> bytes:
         raise AssertionError(  # pragma: no cover - unreachable.
             "safe_rewrite must refuse non-regular files"
         )
+    if lst.st_size > _MAX_BYTES:
+        # Short-circuit before reading: for an oversized existing file,
+        # route straight through ``safe_rewrite`` so its SIZE gate fires
+        # without pulling hundreds of MiB into our address space first.
+        safe_rewrite(path, b"", original_user_arg=path, allow_outside_repo=True)
+        raise AssertionError(  # pragma: no cover - unreachable.
+            "safe_rewrite must refuse on oversized source"
+        )
     # Open with O_NOFOLLOW + O_RDONLY so a TOCTOU symlink-flip still
     # refuses rather than reading through.
     try:
@@ -525,6 +534,7 @@ def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
         new_content,
         original_user_arg=env_path,
         allow_outside_repo=True,
+        expected_baseline_sha256=hashlib.sha256(existing).digest(),
     )
 
 
@@ -554,6 +564,7 @@ def remove_env_key(env_path: Path, var_name: str) -> None:
         new_content,
         original_user_arg=env_path,
         allow_outside_repo=True,
+        expected_baseline_sha256=hashlib.sha256(existing).digest(),
     )
 
 
@@ -592,4 +603,5 @@ def rewrite_env_key(env_path: Path, var_name: str, new_value: str) -> None:
         new_content,
         original_user_arg=env_path,
         allow_outside_repo=True,
+        expected_baseline_sha256=hashlib.sha256(existing).digest(),
     )
