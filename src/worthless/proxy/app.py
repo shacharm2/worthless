@@ -114,17 +114,25 @@ def _strip_worthless_headers(headers: dict[str, str]) -> dict[str, str]:
 def _sanitize_upstream_error(status_code: int, body: bytes, provider: str) -> bytes:
     """Sanitize upstream error response body — strip internal provider details.
 
-    Keeps the error type but replaces the message with a generic one
-    to prevent information leakage from the upstream provider.
+    Replaces only error.message with a generic string to prevent information
+    leakage. Preserves error.type, error.code, and error.param so SDK code
+    can classify errors, trigger retries, and route fallbacks correctly.
+
+    Falls back to a fully-constructed error body if the upstream response
+    cannot be parsed or does not contain an error dict.
     """
-    error_type = "api_error"
     try:
         parsed = json.loads(body)
         if isinstance(parsed, dict) and "error" in parsed and isinstance(parsed["error"], dict):
-            error_type = parsed["error"].get("type", "api_error")
+            sanitized_error = dict(parsed["error"])
+            sanitized_error["message"] = "upstream provider error"
+            sanitized = dict(parsed)
+            sanitized["error"] = sanitized_error
+            return json.dumps(sanitized).encode()
     except (json.JSONDecodeError, ValueError, KeyError):
         pass
-    return _error_body(status_code, "upstream provider error", error_type, provider)
+    # Fallback: build a generic body when upstream sent an unparsable response
+    return _error_body(status_code, "upstream provider error", "api_error", provider)
 
 
 @asynccontextmanager
