@@ -155,32 +155,101 @@ def test_refuses_known_hosts_basename(tmp_path, make_env_file, sha256_of) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_refuses_dot_env_local(tmp_path, make_env_file, sha256_of) -> None:
-    """``.env.local`` is not literal ``.env`` → refused."""
+# ---------------------------------------------------------------------------
+# Runtime per-env variants (Next.js / Vite / CRA / Rails / Laravel) MUST be
+# accepted. These are legitimate secrets files — refusing them breaks the
+# tool for users of every major JS framework.
+# ---------------------------------------------------------------------------
+
+
+def test_accepts_dot_env_local(tmp_path, make_env_file) -> None:
+    """``.env.local`` — universal convention for local overrides."""
     p = make_env_file(tmp_path / ".env.local", b"KEY=v\n")
-    baseline = sha256_of(p)
+    new_content = b"KEY=decoy\n"
 
-    with pytest.raises(UnsafeRewriteRefused) as exc_info:
-        safe_rewrite(p, b"A=1\n", original_user_arg=p)
+    safe_rewrite(p, new_content, original_user_arg=p)
 
-    assert exc_info.value.reason == UnsafeReason.BASENAME
-    assert sha256_of(p) == baseline
+    assert p.read_bytes() == new_content
 
 
-def test_refuses_dot_env_production(tmp_path, make_env_file, sha256_of) -> None:
-    """``.env.production`` is not literal ``.env`` → refused."""
+def test_accepts_dot_env_development(tmp_path, make_env_file) -> None:
+    """``.env.development`` — Next.js / CRA / Vite mode file."""
+    p = make_env_file(tmp_path / ".env.development", b"KEY=v\n")
+    new_content = b"KEY=decoy\n"
+
+    safe_rewrite(p, new_content, original_user_arg=p)
+
+    assert p.read_bytes() == new_content
+
+
+def test_accepts_dot_env_development_local(tmp_path, make_env_file) -> None:
+    """``.env.development.local`` — Next.js layered convention."""
+    p = make_env_file(tmp_path / ".env.development.local", b"KEY=v\n")
+    new_content = b"KEY=decoy\n"
+
+    safe_rewrite(p, new_content, original_user_arg=p)
+
+    assert p.read_bytes() == new_content
+
+
+def test_accepts_dot_env_production(tmp_path, make_env_file) -> None:
+    """``.env.production`` — mode file with real secrets."""
     p = make_env_file(tmp_path / ".env.production", b"KEY=v\n")
-    baseline = sha256_of(p)
+    new_content = b"KEY=decoy\n"
 
-    with pytest.raises(UnsafeRewriteRefused) as exc_info:
-        safe_rewrite(p, b"A=1\n", original_user_arg=p)
+    safe_rewrite(p, new_content, original_user_arg=p)
 
-    assert exc_info.value.reason == UnsafeReason.BASENAME
-    assert sha256_of(p) == baseline
+    assert p.read_bytes() == new_content
+
+
+def test_accepts_dot_env_production_local(tmp_path, make_env_file) -> None:
+    """``.env.production.local`` — Next.js layered convention."""
+    p = make_env_file(tmp_path / ".env.production.local", b"KEY=v\n")
+    new_content = b"KEY=decoy\n"
+
+    safe_rewrite(p, new_content, original_user_arg=p)
+
+    assert p.read_bytes() == new_content
+
+
+def test_accepts_dot_env_test(tmp_path, make_env_file) -> None:
+    """``.env.test`` — test env mode file."""
+    p = make_env_file(tmp_path / ".env.test", b"KEY=v\n")
+    new_content = b"KEY=decoy\n"
+
+    safe_rewrite(p, new_content, original_user_arg=p)
+
+    assert p.read_bytes() == new_content
+
+
+def test_accepts_dot_env_staging(tmp_path, make_env_file) -> None:
+    """``.env.staging`` — staging environment file."""
+    p = make_env_file(tmp_path / ".env.staging", b"KEY=v\n")
+    new_content = b"KEY=decoy\n"
+
+    safe_rewrite(p, new_content, original_user_arg=p)
+
+    assert p.read_bytes() == new_content
+
+
+def test_accepts_dot_env_testing(tmp_path, make_env_file) -> None:
+    """``.env.testing`` — Laravel convention."""
+    p = make_env_file(tmp_path / ".env.testing", b"KEY=v\n")
+    new_content = b"KEY=decoy\n"
+
+    safe_rewrite(p, new_content, original_user_arg=p)
+
+    assert p.read_bytes() == new_content
+
+
+# ---------------------------------------------------------------------------
+# Template / backup variants MUST be refused. These are checked-into-git
+# placeholder files; locking them corrupts the project template.
+# ---------------------------------------------------------------------------
 
 
 def test_refuses_dot_env_example(tmp_path, make_env_file, sha256_of) -> None:
-    """``.env.example`` is not literal ``.env`` → refused."""
+    """``.env.example`` — checked-in template, never real secrets."""
     p = make_env_file(tmp_path / ".env.example", b"KEY=example\n")
     baseline = sha256_of(p)
 
@@ -191,8 +260,56 @@ def test_refuses_dot_env_example(tmp_path, make_env_file, sha256_of) -> None:
     assert sha256_of(p) == baseline
 
 
+def test_refuses_dot_env_sample(tmp_path, make_env_file, sha256_of) -> None:
+    """``.env.sample`` — Rails/Rake convention for placeholders."""
+    p = make_env_file(tmp_path / ".env.sample", b"KEY=sample\n")
+    baseline = sha256_of(p)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(p, b"A=1\n", original_user_arg=p)
+
+    assert exc_info.value.reason == UnsafeReason.BASENAME
+    assert sha256_of(p) == baseline
+
+
+def test_refuses_dot_env_template(tmp_path, make_env_file, sha256_of) -> None:
+    """``.env.template`` — explicit template marker."""
+    p = make_env_file(tmp_path / ".env.template", b"KEY=template\n")
+    baseline = sha256_of(p)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(p, b"A=1\n", original_user_arg=p)
+
+    assert exc_info.value.reason == UnsafeReason.BASENAME
+    assert sha256_of(p) == baseline
+
+
+def test_refuses_dot_env_dist(tmp_path, make_env_file, sha256_of) -> None:
+    """``.env.dist`` — Symfony convention for distributed defaults."""
+    p = make_env_file(tmp_path / ".env.dist", b"KEY=dist\n")
+    baseline = sha256_of(p)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(p, b"A=1\n", original_user_arg=p)
+
+    assert exc_info.value.reason == UnsafeReason.BASENAME
+    assert sha256_of(p) == baseline
+
+
+def test_refuses_dot_env_defaults(tmp_path, make_env_file, sha256_of) -> None:
+    """``.env.defaults`` — checked-in default values, not real secrets."""
+    p = make_env_file(tmp_path / ".env.defaults", b"KEY=default\n")
+    baseline = sha256_of(p)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(p, b"A=1\n", original_user_arg=p)
+
+    assert exc_info.value.reason == UnsafeReason.BASENAME
+    assert sha256_of(p) == baseline
+
+
 def test_refuses_dot_env_bak(tmp_path, make_env_file, sha256_of) -> None:
-    """``.env.bak`` is not literal ``.env`` → refused."""
+    """``.env.bak`` — user-made backup, not in allowlist."""
     p = make_env_file(tmp_path / ".env.bak", b"KEY=v\n")
     baseline = sha256_of(p)
 

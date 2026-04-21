@@ -42,7 +42,19 @@ _log = logging.getLogger("worthless.safe_rewrite")
 # Module constants - the contract surface. Tests reference these values.
 # ---------------------------------------------------------------------------
 
-_BASENAME: str = ".env"
+_BASENAME_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        ".env",
+        ".env.local",
+        ".env.development",
+        ".env.development.local",
+        ".env.production",
+        ".env.production.local",
+        ".env.test",
+        ".env.staging",
+        ".env.testing",
+    }
+)
 _BASENAME_DENYLIST: frozenset[str] = frozenset(
     {
         ".zshrc",
@@ -203,7 +215,7 @@ def _basename_check(target: Path) -> None:
     name = target.name
     if name in _BASENAME_DENYLIST:
         raise _refuse(UnsafeReason.BASENAME, target)
-    if name != _BASENAME:
+    if name not in _BASENAME_ALLOWLIST:
         raise _refuse(UnsafeReason.BASENAME, target)
 
 
