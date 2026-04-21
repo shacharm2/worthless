@@ -768,11 +768,12 @@ class TestErrorBodyPreservation:
                 messages=[{"role": "user", "content": "hi"}],
             )
         assert exc.value.status_code == 404
+        # The openai SDK extracts body.get("error", body) before storing in
+        # exc.value.body — so exc.value.body is already the inner error dict.
         body = exc.value.body
         assert isinstance(body, dict), f"expected dict body, got {type(body)}: {body}"
-        error = body.get("error", {})
-        assert error.get("code") == "model_not_found", (
-            f"error.code was {error.get('code')!r}, expected 'model_not_found'. "
+        assert body.get("code") == "model_not_found", (
+            f"error.code was {body.get('code')!r}, expected 'model_not_found'. "
             f"Proxy sanitization is stripping error.code."
         )
 
