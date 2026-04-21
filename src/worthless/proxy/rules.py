@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time
@@ -24,11 +25,16 @@ from worthless.proxy.errors import (
     token_budget_error_response,
 )
 
+logger = logging.getLogger(__name__)
+
+# Conservative upper bound for spend-cap reservation when max_tokens is absent.
+_DEFAULT_TOKEN_ESTIMATE: int = 4096
+
 
 def _estimate_tokens(body: bytes) -> int:
     """Best-effort token reservation estimate from request body.
 
-    Reads ``max_tokens`` from the JSON body.  Falls back to 4096 — a
+    Reads ``max_tokens`` from the JSON body.  Falls back to _DEFAULT_TOKEN_ESTIMATE — a
     conservative upper bound so the spend cap remains a hard limit even
     when the client omits the field.
     """
@@ -40,7 +46,7 @@ def _estimate_tokens(body: bytes) -> int:
                 return v
     except (json.JSONDecodeError, ValueError):
         pass
-    return 4096
+    return _DEFAULT_TOKEN_ESTIMATE
 
 
 @runtime_checkable
@@ -68,14 +74,16 @@ class RulesEngine:
         return None
 
     async def release_spend_reservation(self, alias: str, amount: int) -> None:
-        """Release a spend reservation placed by SpendCapRule during evaluate().
+        """Release a spend reservation placed by SpendCapRule and/or
+        TokenBudgetRule during evaluate().
 
-        No-op if SpendCapRule is not in the rule list or amount is 0.
+        No-op if neither rule is in the rule list or amount is 0.
         """
         for rule in self.rules:
             if isinstance(rule, SpendCapRule):
                 await rule.release_reservation(alias, amount)
-                return
+            elif isinstance(rule, TokenBudgetRule):
+                await rule.release_reservation(alias, amount)
 
 
 @dataclass
@@ -160,6 +168,10 @@ class SpendCapRule:
         """
         async with self._reserve_lock:
             held = self._reserved.get(alias, 0)
+            if amount > 0 and alias not in self._reserved:
+                logger.debug(
+                    "release_reservation called for unreserved alias=%s amount=%d", alias, amount
+                )
             self._reserved[alias] = max(0, held - amount)
 
 
@@ -172,11 +184,15 @@ class TokenBudgetRule:
     Fails closed on any DB error.
     Budget periods are UTC-anchored (SQLite datetime('now') is always UTC).
 
-    .. note:: Same TOCTOU caveat as SpendCapRule — token count is only known
-       after the upstream response. Two concurrent requests can both pass.
+    Reservation mechanism (WOR-242): when a request passes the budget check, an
+    in-memory reservation is held until ``release_reservation`` is called.
+    Concurrent requests include the reservation in their effective-total check,
+    preventing the same TOCTOU overrun as SpendCapRule.
     """
 
     db: aiosqlite.Connection
+    _reserved: dict[str, int] = field(default_factory=dict, init=False, repr=False)
+    _reserve_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
     _PERIODS: tuple[tuple[str, str], ...] = (
         ("daily", "-1 day"),
@@ -188,45 +204,54 @@ class TokenBudgetRule:
         self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
     ) -> ErrorResponse | None:
         try:
-            await self.db.execute("BEGIN IMMEDIATE")
-            try:
-                async with self.db.execute(
-                    "SELECT token_budget_daily, token_budget_weekly,"
-                    " token_budget_monthly"
-                    " FROM enrollment_config WHERE key_alias = ?",
-                    (alias,),
-                ) as cur:
-                    row = await cur.fetchone()
+            async with self._reserve_lock:
+                await self.db.execute("BEGIN IMMEDIATE")
+                try:
+                    async with self.db.execute(
+                        "SELECT token_budget_daily, token_budget_weekly,"
+                        " token_budget_monthly"
+                        " FROM enrollment_config WHERE key_alias = ?",
+                        (alias,),
+                    ) as cur:
+                        row = await cur.fetchone()
 
-                if row is None:
-                    await self.db.execute("ROLLBACK")
-                    return None
+                    if row is None:
+                        await self.db.execute("ROLLBACK")
+                        return None
 
-                budgets = {
-                    "daily": row[0],
-                    "weekly": row[1],
-                    "monthly": row[2],
-                }
+                    budgets = {
+                        "daily": row[0],
+                        "weekly": row[1],
+                        "monthly": row[2],
+                    }
 
-                # If all budgets are NULL, no limit
-                if all(v is None for v in budgets.values()):
-                    await self.db.execute("ROLLBACK")
-                    return None
+                    # If all budgets are NULL, no limit
+                    if all(v is None for v in budgets.values()):
+                        await self.db.execute("ROLLBACK")
+                        return None
 
-                # Single scan with conditional aggregation (efficiency: 1 query not 3)
-                async with self.db.execute(
-                    "SELECT"
-                    " COALESCE(SUM(CASE WHEN created_at >= datetime('now','-1 day')"
-                    "   THEN tokens END), 0),"
-                    " COALESCE(SUM(CASE WHEN created_at >= datetime('now','-7 days')"
-                    "   THEN tokens END), 0),"
-                    " COALESCE(SUM(tokens), 0)"
-                    " FROM spend_log"
-                    " WHERE key_alias = ?"
-                    " AND created_at >= datetime('now', '-30 days')",
-                    (alias,),
-                ) as cur:
-                    used_daily, used_weekly, used_monthly = await cur.fetchone()  # type: ignore[assignment]
+                    # Single scan with conditional aggregation (efficiency: 1 query not 3)
+                    async with self.db.execute(
+                        "SELECT"
+                        " COALESCE(SUM(CASE WHEN created_at >= datetime('now','-1 day')"
+                        "   THEN tokens END), 0),"
+                        " COALESCE(SUM(CASE WHEN created_at >= datetime('now','-7 days')"
+                        "   THEN tokens END), 0),"
+                        " COALESCE(SUM(tokens), 0)"
+                        " FROM spend_log"
+                        " WHERE key_alias = ?"
+                        " AND created_at >= datetime('now', '-30 days')",
+                        (alias,),
+                    ) as cur:
+                        used_daily, used_weekly, used_monthly = await cur.fetchone()  # type: ignore[assignment]
+
+                    await self.db.execute("ROLLBACK")  # read-only, release lock
+                except Exception:
+                    try:
+                        await self.db.execute("ROLLBACK")
+                    except Exception:  # noqa: S110  # nosec B110
+                        pass
+                    raise
 
                 usage = {
                     "daily": int(used_daily),
@@ -234,12 +259,15 @@ class TokenBudgetRule:
                     "monthly": int(used_monthly),
                 }
 
+                # Include in-flight reservations from concurrent requests.
+                already_reserved = self._reserved.get(alias, 0)
+
+                # Check each active period (including reservations)
                 for period, _interval in self._PERIODS:
                     limit = budgets[period]
                     if limit is None:
                         continue
-                    if usage[period] >= limit:
-                        await self.db.execute("ROLLBACK")
+                    if usage[period] + already_reserved >= limit:
                         return token_budget_error_response(
                             period=period,
                             used=usage[period],
@@ -247,17 +275,39 @@ class TokenBudgetRule:
                             provider=provider,
                         )
 
-                await self.db.execute("ROLLBACK")  # read-only, release lock
-                return None
-            except Exception:
-                try:
-                    await self.db.execute("ROLLBACK")
-                except Exception:  # noqa: S110  # nosec B110
-                    pass
-                raise
+                # Compute remaining budget across all active periods; use the
+                # most-constrained period as the reservation cap.
+                min_remaining: int | None = None
+                for period, _interval in self._PERIODS:
+                    limit = budgets[period]
+                    if limit is None:
+                        continue
+                    remaining = int(limit) - usage[period] - already_reserved
+                    if min_remaining is None or remaining < min_remaining:
+                        min_remaining = remaining
+
+                if min_remaining is not None and min_remaining > 0:
+                    reservation = min(_estimate_tokens(body), min_remaining)
+                    self._reserved[alias] = already_reserved + reservation
+
+            return None
         except Exception:
             # Fail-closed: any DB error -> deny request
             return token_budget_error_response(period="unknown", used=0, limit=0, provider=provider)
+
+    async def release_reservation(self, alias: str, amount: int) -> None:
+        """Return *amount* reserved tokens to the available token budget.
+
+        Called after the actual spend has been recorded (or when the upstream
+        request fails with no tokens consumed).  Safe to call with amount=0.
+        """
+        async with self._reserve_lock:
+            held = self._reserved.get(alias, 0)
+            if amount > 0 and alias not in self._reserved:
+                logger.debug(
+                    "release_reservation called for unreserved alias=%s amount=%d", alias, amount
+                )
+            self._reserved[alias] = max(0, held - amount)
 
 
 @dataclass
