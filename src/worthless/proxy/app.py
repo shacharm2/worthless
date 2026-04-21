@@ -115,9 +115,15 @@ def _strip_worthless_headers(headers: dict[str, str]) -> dict[str, str]:
 def _sanitize_upstream_error(status_code: int, body: bytes, provider: str) -> bytes:
     """Sanitize upstream error response body — strip internal provider details.
 
-    Replaces only error.message with a generic string to prevent information
-    leakage. Preserves error.type, error.code, and error.param so SDK code
-    can classify errors, trigger retries, and route fallbacks correctly.
+    Uses an explicit allowlist — only ``type``, ``code``, and ``param`` are
+    forwarded from the upstream error dict. ``message`` is replaced with a
+    generic string. Any extra keys (known or unknown) are stripped to prevent
+    information leakage.
+
+    At the top level, only the ``error`` key is forwarded. The Anthropic
+    ``type: "error"`` sentinel (a fixed non-sensitive literal) is also
+    preserved so Anthropic SDK clients can classify the response correctly.
+    Any other top-level keys the upstream might include are discarded.
 
     Falls back to a fully-constructed error body if the upstream response
     cannot be parsed or does not contain an error dict.
@@ -125,11 +131,21 @@ def _sanitize_upstream_error(status_code: int, body: bytes, provider: str) -> by
     try:
         parsed = json.loads(body)
         if isinstance(parsed, dict) and "error" in parsed and isinstance(parsed["error"], dict):
-            sanitized_error = dict(parsed["error"])
+            # Explicit allowlist — only forward known safe keys from the error dict
+            sanitized_error = {
+                k: parsed["error"].get(k)
+                for k in ("type", "code", "param")
+                if parsed["error"].get(k) is not None
+            }
             sanitized_error["message"] = "upstream provider error"
-            sanitized = dict(parsed)
-            sanitized["error"] = sanitized_error
-            return json.dumps(sanitized).encode()
+            # Build output with only the error key at the top level.
+            # Exception: preserve the Anthropic sentinel `type: "error"` (always
+            # the literal string "error", never sensitive data) so Anthropic SDK
+            # clients can classify the response without inspecting the error dict.
+            output: dict[str, object] = {"error": sanitized_error}
+            if parsed.get("type") == "error":
+                output["type"] = "error"
+            return json.dumps(output).encode()
     except (json.JSONDecodeError, ValueError, KeyError):
         pass
     # Fallback: build a generic body when upstream sent an unparsable response
@@ -171,7 +187,9 @@ async def _lifespan(app: FastAPI):
                 default_rps=settings.default_rate_limit_rps,
                 db_path=settings.db_path,
             ),
-            SpendCapRule(db=db),  # LAST — reservation only placed after other rules pass
+            # LAST — TokenBudgetRule and SpendCapRule both place reservations;
+            # SpendCapRule runs last to minimise denial-path leaks.
+            SpendCapRule(db=db),
         ]
     )
     app.state.rules_engine = rules_engine
@@ -304,6 +322,9 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         if denial is not None:
             # Zero shard_a before returning
             shard_a[:] = b"\x00" * len(shard_a)
+            # Release any reservation placed by an earlier rule in the chain
+            # (e.g. TokenBudgetRule reserves before RateLimitRule/SpendCapRule run).
+            await rules_engine.release_spend_reservation(alias, _spend_reservation)
             return Response(
                 content=denial.body,
                 status_code=denial.status_code,
@@ -315,6 +336,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         adapter = get_adapter(clean_path)
         if adapter is None:
             shard_a[:] = b"\x00" * len(shard_a)
+            await rules_engine.release_spend_reservation(alias, _spend_reservation)
             return _uniform_401()
 
         # Decrypt now that the gate has passed
@@ -322,6 +344,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             stored = repo.decrypt_shard(encrypted)
         except Exception:
             shard_a[:] = b"\x00" * len(shard_a)
+            await rules_engine.release_spend_reservation(alias, _spend_reservation)
             return _uniform_401()
 
         # Reconstruct key inside secure_key context (body already read above)
@@ -342,6 +365,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         except Exception:
             shard_a[:] = b"\x00" * len(shard_a)
             stored.zero()
+            await rules_engine.release_spend_reservation(alias, _spend_reservation)
             return _uniform_401()
 
         # Build and send with stream=True for SSE support
@@ -386,7 +410,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 tokens = usage.total_tokens if usage else 0
                 model = usage.model if usage else None
                 if usage is None:
-                    logger.warning(  # nosemgrep: python-logger-credential-disclosure  # noqa: G200
+                    logger.warning(  # nosemgrep: python-logger-credential-disclosure
                         "Token extraction failed for alias=%s provider=%s",
                         alias,
                         provider,
