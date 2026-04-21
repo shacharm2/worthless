@@ -113,11 +113,9 @@ def _lock_keys(
             alias = _make_alias(provider, value)
 
             # Re-lock guard: alias already in DB (same real key from another
-            # var/env). Don't re-split — shard-B is bound to the original
-            # commitment. Derive the shard-A that pairs with the stored
-            # shard-B from real_key + shard-B (modular inverse), verify the
-            # commitment, then rewrite this .env. Silent no-op here would
-            # leave the real key in a .env the user believes is protected.
+            # var/env). Derive the shard-A that pairs with the stored shard-B
+            # (modular inverse), verify the commitment, then rewrite this .env.
+            # Silent no-op here would leave the real key plaintext on disk.
             db_shard = await repo.fetch_encrypted(alias)
             if db_shard is not None:
                 if not db_shard.prefix or not db_shard.charset:
@@ -128,11 +126,13 @@ def _lock_keys(
                         "then re-lock this .env.",
                     )
                 stored_decrypted = repo.decrypt_shard(db_shard)
+                verify_payload = bytearray(value.encode("utf-8"))
+                derived_shard_a: bytearray | None = None
                 env_rewritten = False
                 try:
                     try:
                         _verify_commitment(
-                            bytearray(value.encode("utf-8")),
+                            verify_payload,
                             stored_decrypted.commitment,
                             stored_decrypted.nonce,
                         )
@@ -146,32 +146,26 @@ def _lock_keys(
                     derived_shard_a = derive_shard_a_fp(
                         value,
                         stored_decrypted.shard_b,
-                        db_shard.prefix or "",
-                        db_shard.charset or "",
+                        db_shard.prefix,
+                        db_shard.charset,
                     )
-                    try:
-                        rewrite_env_key(env_path, var_name, derived_shard_a.decode("utf-8"))
-                        env_rewritten = True
+                    rewrite_env_key(env_path, var_name, derived_shard_a.decode("utf-8"))
+                    env_rewritten = True
 
-                        if not keys_only:
-                            base_url_var = _PROVIDER_ENV_MAP.get(provider)
-                            if base_url_var:
-                                add_or_rewrite_env_key(
-                                    env_path, base_url_var, _proxy_base_url(alias)
-                                )
+                    if not keys_only:
+                        base_url_var = _PROVIDER_ENV_MAP.get(provider)
+                        if base_url_var:
+                            add_or_rewrite_env_key(env_path, base_url_var, _proxy_base_url(alias))
 
-                        await repo.add_enrollment(
-                            alias,
-                            var_name=var_name,
-                            env_path=env_str,
-                        )
-                        count += 1
-                    finally:
-                        zero_buf(derived_shard_a)
+                    await repo.add_enrollment(
+                        alias,
+                        var_name=var_name,
+                        env_path=env_str,
+                    )
+                    count += 1
                 except Exception as exc:
-                    # Compensation: restore real key to .env if we already
-                    # rewrote it but downstream failed. Without this, WOR-280's
-                    # silent-leak recurs on partial failure mid-re-lock.
+                    # Compensation: restore real key if downstream failed
+                    # after we rewrote .env, else the silent-leak recurs.
                     if env_rewritten:
                         try:
                             rewrite_env_key(env_path, var_name, value)
@@ -184,6 +178,9 @@ def _lock_keys(
                         sanitize_exception(exc, generic="failed to re-lock key"),
                     ) from exc
                 finally:
+                    zero_buf(verify_payload)
+                    if derived_shard_a is not None:
+                        zero_buf(derived_shard_a)
                     stored_decrypted.zero()
                 continue
 
