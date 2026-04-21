@@ -8,21 +8,20 @@
 
 ## Reporting a Vulnerability
 
-I take security seriously. Worthless exists to protect API keys — a vulnerability here has real consequences.
+Worthless exists to protect API keys — a vulnerability here has real consequences.
 
 ### How to Report
 
 - **Preferred:** [GitHub Private Vulnerability Reporting](https://github.com/worthless-dev/worthless/security/advisories/new)
 - **Alternative:** Email `security@worthless.dev`
 
-### Response Timeline
+### Response timeline
 
-| Stage | SLA |
-|-------|-----|
-| Acknowledgment | 48 hours |
-| Triage & severity assessment | 7 days |
-| Fix or mitigation | Best-effort, proportional to severity |
-| Public disclosure | 90 days (coordinated) |
+Solo maintainer — response time is bounded by real life. Best-effort
+acknowledgment within one week. Triage, fix, and coordinated disclosure are
+handled proportional to severity; 90 days is the default
+coordinated-disclosure window by convention. If a report sits for longer than
+two weeks without reply, ping again or escalate publicly.
 
 ### Scope
 
@@ -32,6 +31,7 @@ Vulnerabilities in the following areas are in scope:
 - **Proxy** — gate-before-reconstruct bypass, request smuggling, error leakage
 - **Storage** — shard encryption at rest, repository access controls
 - **CLI** — credential handling, shard exposure, command injection
+- **Installer** — the `curl -sSL https://worthless.sh | sh` supply chain. Trust roots and what `install.sh` verifies today: [docs/install-security.md](docs/install-security.md).
 
 ### Out of Scope
 
@@ -51,6 +51,19 @@ As an open-source project, you are encouraged to audit and test the code. Please
 
 English.
 
-## Security Posture
+## How the split-key model works (in one paragraph)
 
-For a complete threat model, architectural invariants, known limitations, and confidence levels, see [SECURITY_POSTURE.md](SECURITY_POSTURE.md).
+Your API key is split in two on the client using a format-preserving one-time
+pad. Shard A replaces the original key in your `.env` — it looks like a real
+key but is cryptographically useless alone. Shard B lives on the proxy,
+Fernet-encrypted at rest. Every request hits the rules engine **before** the
+key reconstructs: spend cap blown, rate limit exceeded, model not allowed =
+the key never forms and the request never leaves the proxy.
+
+## Full threat model
+
+Architectural invariants, known limitations, breach scenarios, forensic
+logging gaps, and residual risk: [docs/security.md](docs/security.md).
+
+Contributor invariants (the SR-\* rules enforced by CI):
+[CONTRIBUTING-security.md](CONTRIBUTING-security.md).

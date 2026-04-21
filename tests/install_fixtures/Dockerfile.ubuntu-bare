@@ -1,0 +1,30 @@
+# Bare Ubuntu image — NO python3 installed. Validates the fresh-box AC:
+# "fresh non-Python Linux box → curl install.sh | sh → worthless --version works."
+# Keep this image minimal. Adding python3 here defeats the test.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Bare minimum required by install.sh: curl + ca-certs (TLS) + tar (uv extracts tarballs).
+# Nothing else. Especially: no python3, no pipx, no uv.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        tar \
+    && rm -rf /var/lib/apt/lists/*
+
+# Sanity: prove python3 is genuinely absent so the test fails noisily if the
+# base image ever changes upstream.
+RUN ! command -v python3 \
+    && ! command -v python \
+    && ! command -v pipx \
+    && ! command -v uv
+
+WORKDIR /work
+COPY install.sh /work/install.sh
+RUN chmod +x /work/install.sh
+
+# install.sh puts uv + worthless in $HOME/.local/bin; the `sh install.sh` child
+# shell's PATH mutation doesn't survive into this parent, so prepend it here.
+CMD ["/bin/sh", "-c", "sh /work/install.sh && PATH=\"$HOME/.local/bin:$PATH\" worthless --version"]

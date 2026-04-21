@@ -13,9 +13,7 @@ Run with:
 
 from __future__ import annotations
 
-import shutil
 import subprocess
-import time
 import uuid
 from pathlib import Path
 
@@ -24,17 +22,17 @@ import httpx
 import openai
 import pytest
 
+from tests._docker_helpers import docker_available, docker_exec, wait_healthy
 from tests.helpers import fake_anthropic_key, fake_openai_key
 from worthless.cli.commands.lock import _make_alias
 
 # ---------------------------------------------------------------------------
 # Module-level skip + markers
 # ---------------------------------------------------------------------------
-docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.openclaw,
     pytest.mark.docker,
-    pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    pytest.mark.skipif(not docker_available(), reason="Docker not available"),
     pytest.mark.timeout(300),
 ]
 
@@ -55,51 +53,6 @@ def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
 def _run_ok(cmd: list[str]) -> str:
     """Run and return stdout, raise on failure."""
     return _run(cmd).stdout.strip()
-
-
-def _docker_exec(container: str, cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    """Execute a command inside a running container."""
-    return subprocess.run(
-        ["docker", "exec", container, *cmd],
-        capture_output=True,
-        text=True,
-    )
-
-
-def _wait_healthy(container: str, timeout: float = 90.0) -> bool:
-    """Poll container health status until healthy or timeout."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        result = subprocess.run(
-            [
-                "docker",
-                "inspect",
-                "--format",
-                "{{.State.Health.Status}}",
-                container,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        status = result.stdout.strip()
-        if status == "healthy":
-            return True
-        if status in ("unhealthy", ""):
-            state = subprocess.run(
-                [
-                    "docker",
-                    "inspect",
-                    "--format",
-                    "{{.State.Status}}",
-                    container,
-                ],
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            if state != "running":
-                return False
-        time.sleep(2)
-    return False
 
 
 def _get_host_port(container: str, internal_port: int) -> int:
@@ -128,7 +81,7 @@ def _write_env_to_container(
 
 def _read_env_value(container: str, var_name: str, path: str = "/tmp/.env") -> str:
     """Read a variable value from a .env file inside a container."""
-    result = _docker_exec(
+    result = docker_exec(
         container,
         ["sh", "-c", f"grep '^{var_name}=' {path} | cut -d= -f2-"],
     )
@@ -150,10 +103,6 @@ def openclaw_stack():
 
     Yields (proxy_port, mock_port, fake_key, shard_a, alias).
     """
-    result = subprocess.run(["docker", "info"], capture_output=True)
-    if result.returncode != 0:
-        pytest.skip("Docker daemon not running")
-
     project = f"openclaw-e2e-{uuid.uuid4().hex[:8]}"
     fake_key = fake_openai_key()
     alias = _make_alias("openai", fake_key)
@@ -178,7 +127,7 @@ def openclaw_stack():
 
         # 2. Wait for worthless-proxy to be healthy
         proxy_container = f"{project}-worthless-proxy-1"
-        if not _wait_healthy(proxy_container, timeout=90):
+        if not wait_healthy(proxy_container, timeout=90):
             logs = subprocess.run(
                 ["docker", "logs", proxy_container],
                 capture_output=True,
@@ -194,7 +143,7 @@ def openclaw_stack():
         # 4. Lock the key — writes shard-A to .env, shard-B to DB
         env_content = f"OPENAI_API_KEY={fake_key}"
         _write_env_to_container(proxy_container, env_content)
-        lock = _docker_exec(proxy_container, ["worthless", "lock", "--env", "/tmp/.env"])
+        lock = docker_exec(proxy_container, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"Lock failed: {lock.stderr}"
 
         # 5. Read shard-A from .env (lock replaced the real key)
@@ -246,7 +195,7 @@ def openclaw_anthropic_alias(openclaw_stack):
     if write.returncode != 0:
         pytest.skip(f"failed to write anthropic .env: {write.stderr}")
 
-    lock = _docker_exec(proxy_container, ["worthless", "lock", "--env", env_path])
+    lock = docker_exec(proxy_container, ["worthless", "lock", "--env", env_path])
     if lock.returncode != 0:
         pytest.skip(f"anthropic lock failed: {lock.stderr}")
 
@@ -463,7 +412,7 @@ _SPEND_LOG_CLEAR_SNIPPET = (
 
 def _spend_log_sum(proxy_container: str, alias: str) -> int:
     """Query /data/worthless.db spend_log for total tokens recorded for an alias."""
-    result = _docker_exec(
+    result = docker_exec(
         proxy_container,
         ["python", "-c", _SPEND_LOG_SUM_SNIPPET, alias],
     )
@@ -473,7 +422,7 @@ def _spend_log_sum(proxy_container: str, alias: str) -> int:
 
 def _spend_log_clear(proxy_container: str, alias: str) -> None:
     """Reset spend_log for an alias so assertions start from zero."""
-    result = _docker_exec(
+    result = docker_exec(
         proxy_container,
         ["python", "-c", _SPEND_LOG_CLEAR_SNIPPET, alias],
     )

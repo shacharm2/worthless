@@ -1,7 +1,10 @@
-# Security Rules
+# Contributor Security Rules
 
-Mandatory constraints for all Worthless code. Every commit, every phase, every review.
-Referenced from CLAUDE.md. Verified by `/gsd:verify-work`.
+Mandatory invariants for all Worthless code. Every commit, every phase, every
+review. Referenced from CLAUDE.md. Verified by `/gsd:verify-work`.
+
+For the threat model (what these rules are defending and what attackers are in
+scope), see [docs/security.md](docs/security.md).
 
 ## Memory Safety
 
@@ -9,7 +12,7 @@ Referenced from CLAUDE.md. Verified by `/gsd:verify-work`.
 Never store key material, shards, or reconstructed keys in `str`, `bytes`, or any immutable type. Use `bytearray` (Python) or `zeroize`-backed structs (Rust). Immutable objects linger in GC-managed memory and cannot be wiped.
 
 **SR-02: Explicit memory zeroing.**
-The instant an upstream HTTP request is dispatched, overwrite the reconstructed key buffer with zeros. Do not defer to garbage collection. Use `key_buf[:] = b'\x00' * len(key_buf)` (Python) or `zeroize` (Rust). Document any GC limitations in SECURITY_POSTURE.md.
+The instant an upstream HTTP request is dispatched, overwrite the reconstructed key buffer with zeros. Do not defer to garbage collection. Use `buf[:] = bytearray(len(buf))` (Python — matches `_zero_buf` in `crypto/types.py`) or `zeroize` (Rust). Document any GC limitations in [docs/security.md](docs/security.md).
 
 ## Gate Ordering
 
