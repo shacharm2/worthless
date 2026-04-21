@@ -98,13 +98,19 @@ def main() -> int:
     alias = compute_alias(real_key)
     print(f"    alias: {alias}")
 
+    # Capture proxy logs: on failure the outer pytest otherwise sees only
+    # "exit code 1" with no clue why `worthless up` died inside the container.
+    proxy_log = Path("/tmp/worthless-up.log")  # noqa: S108 — ephemeral container
+    proxy_log_fh = proxy_log.open("w")
     proxy = subprocess.Popen(  # noqa: S603, S607
         ["worthless", "up"],  # noqa: S607
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=proxy_log_fh,
+        stderr=subprocess.STDOUT,
     )
     try:
         if not wait_until_healthy(PROXY_HEALTH_URL):
+            proxy_log_fh.flush()
+            sys.stderr.write(f"--- worthless up logs ---\n{proxy_log.read_text()}\n")
             return fail("proxy did not become healthy within 30s")
         print("[3] proxy healthy on :8787")
 
@@ -150,6 +156,7 @@ def main() -> int:
             proxy.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proxy.kill()
+        proxy_log_fh.close()
 
     headers = captured.get("headers") or []
     if not headers:
