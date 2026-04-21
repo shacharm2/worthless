@@ -199,3 +199,59 @@ def test_idempotent_rewrite_with_same_value(tmp_path: Path, make_env_file) -> No
     assert after == before, (
         f"idempotent rewrite changed bytes:\n  before={before!r}\n  after ={after!r}"
     )
+
+
+def test_rewrite_preserves_double_quotes(tmp_path: Path, make_env_file) -> None:
+    """``KEY="old"`` rewrite MUST keep the surrounding double quotes.
+
+    A line's original quote style is part of its formatting. A rewrite
+    that strips ``"`` silently mutates every quoted var on its first
+    touch - a regression from the "one byte changes, the rest stays"
+    goal.
+    """
+    from worthless.cli.dotenv_rewriter import rewrite_env_key
+
+    before = b'API_KEY="old"\nOTHER=keep\n'
+    env = make_env_file(tmp_path / ".env", content=before)
+
+    rewrite_env_key(env, "API_KEY", "new")
+
+    after = env.read_bytes()
+    assert after == b'API_KEY="new"\nOTHER=keep\n', (
+        f"double quotes lost on rewrite:\n  before={before!r}\n  after ={after!r}"
+    )
+
+
+def test_rewrite_preserves_single_quotes(tmp_path: Path, make_env_file) -> None:
+    """``KEY='old'`` rewrite MUST keep the surrounding single quotes."""
+    from worthless.cli.dotenv_rewriter import rewrite_env_key
+
+    before = b"API_KEY='old'\nOTHER=keep\n"
+    env = make_env_file(tmp_path / ".env", content=before)
+
+    rewrite_env_key(env, "API_KEY", "new")
+
+    after = env.read_bytes()
+    assert after == b"API_KEY='new'\nOTHER=keep\n", (
+        f"single quotes lost on rewrite:\n  before={before!r}\n  after ={after!r}"
+    )
+
+
+def test_rewrite_preserves_trailing_inline_comment(tmp_path: Path, make_env_file) -> None:
+    """``KEY=old  # note`` rewrite MUST keep the inline comment byte-for-byte.
+
+    Trailing ``# comment`` on the same physical line is a common dotenv
+    pattern. Dropping it on rewrite destroys documentation humans left
+    in the file.
+    """
+    from worthless.cli.dotenv_rewriter import rewrite_env_key
+
+    before = b"API_KEY=old  # keep this note\nOTHER=keep\n"
+    env = make_env_file(tmp_path / ".env", content=before)
+
+    rewrite_env_key(env, "API_KEY", "new")
+
+    after = env.read_bytes()
+    assert after == b"API_KEY=new  # keep this note\nOTHER=keep\n", (
+        f"inline comment lost on rewrite:\n  before={before!r}\n  after ={after!r}"
+    )

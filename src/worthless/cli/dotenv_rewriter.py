@@ -176,9 +176,13 @@ def _value_opens_unclosed_quote(line_text: str) -> str | None:
     """If the parsed value on *line_text* opens an unclosed quote, return the quote char.
 
     Only considered when ``line_text`` parses as ``KEY=...``. The value
-    starts immediately after the first ``=``. Both ``"`` and ``'`` are
-    tracked; a backslash before a quote escapes it (python-dotenv
-    semantics). Returns ``None`` if the quote is balanced on this line.
+    starts immediately after the first ``=``. Per python-dotenv
+    semantics, a value is only considered quoted when the *first
+    non-whitespace byte* after ``=`` is ``"`` or ``'``; any quote char
+    later in an otherwise-unquoted value is a literal, not a delimiter.
+
+    Within a quoted span, a backslash escapes the next char. Returns
+    ``None`` if the value is unquoted or the quote is balanced.
     """
     eq_idx = line_text.find("=")
     if eq_idx == -1:
@@ -186,26 +190,20 @@ def _value_opens_unclosed_quote(line_text: str) -> str | None:
     value = line_text[eq_idx + 1 :]
     # Strip trailing EOL.
     value = value.rstrip("\r\n")
-    if not value:
+    # Find first non-whitespace char to decide if this is a quoted value.
+    stripped = value.lstrip(" \t")
+    if not stripped or stripped[0] not in ('"', "'"):
         return None
-    quote_char: str | None = None
-    i = 0
+    quote_char = stripped[0]
+    # Scan the quoted span from after the opening quote.
+    i = len(value) - len(stripped) + 1
     while i < len(value):
         ch = value[i]
-        if quote_char is None:
-            if ch in ('"', "'"):
-                quote_char = ch
-            i += 1
-            continue
-        # Inside a quote.
         if ch == "\\" and i + 1 < len(value):
-            # Escaped char inside quote: skip both.
             i += 2
             continue
         if ch == quote_char:
-            quote_char = None
-            i += 1
-            continue
+            return None
         i += 1
     return quote_char
 
@@ -299,6 +297,93 @@ def _format_assignment(
     prefix = "export " if has_export else ""
     text = f"{prefix}{key}={value}"
     return text.encode("utf-8") + eol
+
+
+def _rebuild_assignment_preserving_format(raw: bytes, new_value: str) -> bytes:
+    """Surgically replace only the value bytes of a parsed ``KEY=VALUE`` line.
+
+    Preserves the ``export`` prefix, key, surrounding whitespace, the
+    ``=`` delimiter, the value's quote style (if any), a trailing inline
+    ``# comment``, and the EOL style (LF / CRLF / none). The rest of the
+    line is byte-identical to *raw*.
+
+    Called on the UPDATE path only. The APPEND path (new key) uses the
+    clean :func:`_format_assignment` instead.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+
+    eq_idx = text.find("=")
+    if eq_idx == -1:  # pragma: no cover - only called on parsed KEY=VALUE lines
+        return (text + new_value).encode("utf-8")
+
+    prefix = text[: eq_idx + 1]
+    remainder = text[eq_idx + 1 :]
+
+    if remainder.endswith("\r\n"):
+        trailing_eol = "\r\n"
+        body = remainder[:-2]
+    elif remainder.endswith("\n"):
+        trailing_eol = "\n"
+        body = remainder[:-1]
+    else:
+        trailing_eol = ""
+        body = remainder
+
+    stripped_body = body.lstrip(" \t")
+    leading_ws = body[: len(body) - len(stripped_body)]
+
+    if not stripped_body:
+        return (prefix + leading_ws + new_value + trailing_eol).encode("utf-8")
+
+    first = stripped_body[0]
+
+    if first in ('"', "'"):
+        quote = first
+        i = 1
+        while i < len(stripped_body):
+            ch = stripped_body[i]
+            if ch == "\\" and i + 1 < len(stripped_body):
+                i += 2
+                continue
+            if ch == quote:
+                after_quote = stripped_body[i + 1 :]
+                return (
+                    prefix + leading_ws + quote + new_value + quote + after_quote + trailing_eol
+                ).encode("utf-8")
+            i += 1
+        return (prefix + leading_ws + quote + new_value + quote + trailing_eol).encode("utf-8")
+
+    comment_start: int | None = None
+    for i, ch in enumerate(stripped_body):
+        if ch == "#" and i > 0 and stripped_body[i - 1] in (" ", "\t"):
+            j = i - 1
+            while j > 0 and stripped_body[j - 1] in (" ", "\t"):
+                j -= 1
+            comment_start = j
+            break
+
+    if comment_start is not None:
+        ws_and_comment = stripped_body[comment_start:]
+        return (prefix + leading_ws + new_value + ws_and_comment + trailing_eol).encode("utf-8")
+
+    return (prefix + leading_ws + new_value + trailing_eol).encode("utf-8")
+
+
+_POSIX_NAME_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+def _validate_var_name(name: str) -> None:
+    """Refuse keys outside POSIX env-var syntax.
+
+    Matches ``[A-Za-z_][A-Za-z0-9_]*``. This structurally prevents line
+    injection (no newlines), assignment smuggling (no ``=``), empty
+    strings, and keys the shell couldn't ``export`` anyway.
+    """
+    if not isinstance(name, str) or not _POSIX_NAME_RE.match(name):
+        raise ValueError("dotenv var name must match POSIX env syntax [A-Za-z_][A-Za-z0-9_]*")
 
 
 def _validate_value(value: str) -> None:
@@ -396,6 +481,7 @@ def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
     raise :class:`UnsafeRewriteRefused` with the original file
     byte-identical.
     """
+    _validate_var_name(var_name)
     _validate_value(value)
     existing = _safe_read_existing_bytes(env_path)
     stripped, had_bom = _strip_bom(existing)
@@ -406,7 +492,7 @@ def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
     for idx, line in enumerate(lines):
         if line.key == var_name:
             lines[idx] = _LogicalLine(
-                raw=_format_assignment(var_name, value, has_export=line.has_export, eol=eol),
+                raw=_rebuild_assignment_preserving_format(line.raw, value),
                 key=var_name,
                 has_export=line.has_export,
             )
@@ -450,6 +536,7 @@ def remove_env_key(env_path: Path, var_name: str) -> None:
     not present, this is a pure no-op - no write happens and
     :func:`safe_rewrite` is NOT called.
     """
+    _validate_var_name(var_name)
     existing = _safe_read_existing_bytes(env_path)
     stripped, had_bom = _strip_bom(existing)
     lines = _split_logical_lines(stripped)
@@ -477,17 +564,17 @@ def rewrite_env_key(env_path: Path, var_name: str, new_value: str) -> None:
     every other key's formatting. Raises :class:`KeyError` if
     *var_name* is not present (matching the legacy contract).
     """
+    _validate_var_name(var_name)
     _validate_value(new_value)
     existing = _safe_read_existing_bytes(env_path)
     stripped, had_bom = _strip_bom(existing)
-    eol = _detect_eol(stripped)
     lines = _split_logical_lines(stripped)
 
     matched = False
     for idx, line in enumerate(lines):
         if line.key == var_name:
             lines[idx] = _LogicalLine(
-                raw=_format_assignment(var_name, new_value, has_export=line.has_export, eol=eol),
+                raw=_rebuild_assignment_preserving_format(line.raw, new_value),
                 key=var_name,
                 has_export=line.has_export,
             )

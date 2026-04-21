@@ -97,6 +97,33 @@ def test_quoted_value_with_escaped_quote_preserved_on_unrelated_change(
     assert b"API_KEY=new" in after
 
 
+def test_bare_quote_in_unquoted_value_does_not_start_multiline(
+    tmp_path: Path, make_env_file
+) -> None:
+    """A literal quote char inside an unquoted value MUST NOT trigger multiline mode.
+
+    dotenv semantics: a value is only quoted when the first non-whitespace
+    byte after ``=`` is ``"`` or ``'``. ``KEY=plain"value`` is a plain
+    unquoted string whose value happens to contain a ``"``; the logical
+    line ends at the EOL, not on the next quote char.
+
+    Regression: the splitter previously entered quote-tracking on any
+    ``"``/``'`` anywhere after ``=``, so ``KEY=plain"nope\\nNEXT=x\\n``
+    would swallow ``NEXT=x`` into a phantom multiline value, and a rewrite
+    of ``NEXT`` would either fail to find it or corrupt the file.
+    """
+    from worthless.cli.dotenv_rewriter import rewrite_env_key
+
+    before = b'KEY=plain"nope\nNEXT=original\n'
+    env = make_env_file(tmp_path / ".env", content=before)
+
+    rewrite_env_key(env, "NEXT", "updated")
+
+    after = env.read_bytes()
+    assert b"NEXT=updated" in after, f"NEXT not rewritten: {after!r}"
+    assert b'KEY=plain"nope' in after, f"KEY's bytes mangled: {after!r}"
+
+
 def test_dollar_sign_value_not_expanded(tmp_path: Path, make_env_file) -> None:
     """A ``$VAR`` in a value MUST be stored as the literal bytes.
 

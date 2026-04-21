@@ -49,7 +49,7 @@ def test_add_to_symlink_pointing_at_zshrc_refused(
     env_dir = tmp_path / "project"
     env_dir.mkdir()
     env_path = env_dir / ".env"
-    os.symlink(zshrc, env_path)  # noqa: PTH211
+    env_path.symlink_to(zshrc)
 
     with pytest.raises(UnsafeRewriteRefused):
         add_or_rewrite_env_key(env_path, "DECOY_KEY", "sk-decoy-0001")
@@ -74,7 +74,7 @@ def test_rewrite_to_symlink_pointing_at_zshrc_refused(
     env_dir = tmp_path / "project"
     env_dir.mkdir()
     env_path = env_dir / ".env"
-    os.symlink(zshrc, env_path)  # noqa: PTH211
+    env_path.symlink_to(zshrc)
 
     with pytest.raises(UnsafeRewriteRefused):
         rewrite_env_key(env_path, "EXISTING_KEY", "sk-decoy-0001")
@@ -99,7 +99,7 @@ def test_remove_to_symlink_pointing_at_zshrc_refused(
     env_dir = tmp_path / "project"
     env_dir.mkdir()
     env_path = env_dir / ".env"
-    os.symlink(zshrc, env_path)  # noqa: PTH211
+    env_path.symlink_to(zshrc)
 
     with pytest.raises(UnsafeRewriteRefused):
         remove_env_key(env_path, "SOME_KEY")
@@ -212,6 +212,77 @@ def test_add_with_value_containing_nul_byte_refused(
     with pytest.raises((UnsafeRewriteRefused, ValueError)):
         add_or_rewrite_env_key(env, "NULLED", "before\x00after")
 
+    assert_byte_identical(env, baseline)
+
+
+def test_add_with_newline_in_var_name_refused(
+    tmp_path: Path,
+    make_env_file,
+    sha256_of,
+    assert_byte_identical,
+) -> None:
+    """A ``var_name`` containing a newline MUST be refused.
+
+    Without key validation, ``var_name="FOO\\nBAR=evil"`` would produce
+    two assignment lines in the file: ``FOO`` and ``BAR=evil``. The
+    rewriter must reject before any write happens.
+    """
+    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    with pytest.raises((UnsafeRewriteRefused, ValueError)):
+        add_or_rewrite_env_key(env, "FOO\nBAR=evil", "real_value")
+
+    assert_byte_identical(env, baseline)
+
+
+def test_add_with_equals_in_var_name_refused(
+    tmp_path: Path,
+    make_env_file,
+    sha256_of,
+    assert_byte_identical,
+) -> None:
+    """A ``var_name`` containing ``=`` MUST be refused.
+
+    ``FOO=injected`` as a key would produce ``FOO=injected=real_value``,
+    which dotenv parses as ``FOO=injected=real_value`` (one key with an
+    odd value) - off-semantics. Reject at the boundary.
+    """
+    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    with pytest.raises((UnsafeRewriteRefused, ValueError)):
+        add_or_rewrite_env_key(env, "FOO=injected", "real")
+
+    assert_byte_identical(env, baseline)
+
+
+def test_add_with_non_posix_var_name_refused(
+    tmp_path: Path,
+    make_env_file,
+    sha256_of,
+    assert_byte_identical,
+) -> None:
+    """Keys outside POSIX env-var syntax MUST be refused.
+
+    POSIX env names match ``[A-Za-z_][A-Za-z0-9_]*``. Keys like
+    ``KEY-WITH-DASH`` or ``1LEADING_DIGIT`` would land in the file but
+    cannot be ``export``ed by a shell. Reject them so the file stays
+    shell-usable.
+    """
+    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    with pytest.raises((UnsafeRewriteRefused, ValueError)):
+        add_or_rewrite_env_key(env, "KEY-WITH-DASH", "x")
+    assert_byte_identical(env, baseline)
+
+    with pytest.raises((UnsafeRewriteRefused, ValueError)):
+        add_or_rewrite_env_key(env, "1LEADING_DIGIT", "x")
+    assert_byte_identical(env, baseline)
+
+    with pytest.raises((UnsafeRewriteRefused, ValueError)):
+        add_or_rewrite_env_key(env, "", "x")
     assert_byte_identical(env, baseline)
 
 
