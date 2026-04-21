@@ -36,7 +36,7 @@ def _inject_include_usage(body: bytes) -> bytes:
     except (json.JSONDecodeError, ValueError):
         return body
 
-    if not payload.get("stream"):
+    if not isinstance(payload, dict) or not payload.get("stream"):
         return body
 
     # Already set — return original bytes; no re-serialisation needed.
