@@ -57,7 +57,7 @@ def test_refuses_dev_null(tmp_path) -> None:
     instead of an illusory "success".
     """
     env_link = tmp_path / ".env"
-    os.symlink("/dev/null", str(env_link))
+    env_link.symlink_to("/dev/null")
 
     with pytest.raises(UnsafeRewriteRefused) as exc_info:
         safe_rewrite(env_link, b"A=1\n", original_user_arg=env_link)
@@ -80,7 +80,7 @@ def test_refuses_proc_self_environ(tmp_path) -> None:
     caller's environment including secrets. Refuse on symlink gate.
     """
     env_link = tmp_path / ".env"
-    os.symlink("/proc/self/environ", str(env_link))
+    env_link.symlink_to("/proc/self/environ")
 
     with pytest.raises(UnsafeRewriteRefused) as exc_info:
         safe_rewrite(env_link, b"A=1\n", original_user_arg=env_link)
@@ -130,7 +130,7 @@ def test_refuses_character_device_via_symlink(tmp_path) -> None:
     """
     target = "/dev/zero" if Path("/dev/zero").exists() else "/dev/null"
     env_link = tmp_path / ".env"
-    os.symlink(target, str(env_link))
+    env_link.symlink_to(target)
 
     with pytest.raises(UnsafeRewriteRefused) as exc_info:
         safe_rewrite(env_link, b"A=1\n", original_user_arg=env_link)

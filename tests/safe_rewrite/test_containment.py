@@ -84,7 +84,7 @@ def test_refuses_realpath_escape_via_symlinked_directory(
     baseline = sha256_of(real_env)
 
     inner_link = in_fake_repo / "inner"
-    os.symlink(str(outside), str(inner_link))
+    inner_link.symlink_to(outside)
 
     env_via_link = inner_link / ".env"
 

@@ -121,7 +121,7 @@ def test_sha256_preserved_across_all_refusal_reasons(
         baseline = sha256_of(real)
         link = tmp_path / "outer" / ".env"
         link.parent.mkdir(parents=True, exist_ok=True)
-        os.symlink(str(real), str(link))
+        link.symlink_to(real)
         with pytest.raises(UnsafeRewriteRefused):
             safe_rewrite(link, b"A=1\n", original_user_arg=link)
         assert sha256_of(real) == baseline
