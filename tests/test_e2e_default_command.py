@@ -206,14 +206,6 @@ class TestDefaultCommandE2E:
         except (httpx.ConnectError, httpx.ConnectTimeout):
             pass  # Expected — nothing on the port
 
-    @pytest.mark.skip(
-        reason=(
-            "WOR-252: safe_rewrite BASENAME gate refuses non-.env filenames "
-            "(including .env.local). Follow-up ticket needed to decide "
-            "whether to extend the gate or remove .env.local auto-detection. "
-            "Sub-PR 2 intentionally does not relax the gate."
-        )
-    )
     def test_env_local_detected(self, e2e_home: Path, project_with_env_local: Path) -> None:
         """.env.local (no .env) is detected and offered for locking."""
         result = _run_worthless(["--yes"], e2e_home, project_with_env_local)
