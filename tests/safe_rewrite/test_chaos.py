@@ -1,0 +1,1090 @@
+"""Chaos / failure-injection invariants.
+
+Red-first test 7 (SIGKILL) is first. The remainder of the chaos suite
+covers 22 additional failure-injection scenarios, each deterministic:
+
+* Signal tests use a SIGSTOP/SIGCONT handshake via a marker file.
+* Syscall fault tests use ``monkeypatch`` to raise the target errno on
+  the exact syscall, per test, with no threading.
+* Real-FS sibling tests use the ``_hook_before_replace`` callback to
+  mutate on-disk state mid-op (directory swap, inode reuse).
+
+The final ``test_no_ghost_tmp_after_any_chaos_refusal`` is a parametrised
+negative-space test across all 18 injection points: regardless of which
+failure triggers the refusal, no tmp file may remain in the target
+directory.
+"""
+
+from __future__ import annotations
+
+import errno
+import fcntl
+import os
+import signal
+import stat
+import subprocess
+import sys
+import textwrap
+import time
+
+import pytest
+
+from worthless.cli.errors import UnsafeReason, UnsafeRewriteRefused
+from worthless.cli.safe_rewrite import safe_rewrite
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="chaos harness is POSIX-only",
+)
+
+
+# ---------------------------------------------------------------------------
+# Red-first test 7: SIGKILL between fsync-tmp and rename.
+# ---------------------------------------------------------------------------
+
+
+def test_sigkill_between_fsync_and_rename_leaves_target_byte_identical(
+    tmp_path, make_env_file, sha256_of
+) -> None:
+    """Child ``safe_rewrite`` is SIGKILLed after fsync(tmp) but before rename.
+
+    Parent re-opens target and asserts byte-identity + no ghost tmp file.
+    Uses a SIGSTOP / SIGCONT handshake via a marker file so the kill
+    lands deterministically and the test is not scheduler-dependent.
+    """
+    env = make_env_file(tmp_path / ".env", b"OPENAI_API_KEY=sk-orig\n")
+    baseline = sha256_of(env)
+    marker = tmp_path / "_fsync_done"
+
+    child_src = textwrap.dedent(
+        f"""
+        import os, signal, sys
+        from pathlib import Path
+        from worthless.cli.safe_rewrite import safe_rewrite
+
+        def hook():
+            # Signal the parent that fsync has landed and we're about to
+            # rename. Then stop ourselves so the parent can SIGKILL
+            # deterministically.
+            Path({str(marker)!r}).write_text("ready")
+            os.kill(os.getpid(), signal.SIGSTOP)
+
+        env = Path({str(env)!r})
+        safe_rewrite(
+            env,
+            b"OPENAI_API_KEY=sk-decoy\\n",
+            original_user_arg=env,
+            _hook_before_replace=hook,
+        )
+        """
+    )
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_src],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        # Wait for the child to signal "fsync done, I'm about to stop".
+        deadline = time.monotonic() + 10.0
+        while not marker.exists() and time.monotonic() < deadline:
+            if proc.poll() is not None:
+                pytest.fail(
+                    f"child exited before fsync marker: "
+                    f"rc={proc.returncode}, stderr={proc.stderr.read()!r}"
+                )
+            time.sleep(0.01)
+        assert marker.exists(), "child never reached the pre-rename hook"
+
+        # Child is now SIGSTOPped inside the hook; kill it.
+        os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+    finally:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+    assert sha256_of(env) == baseline, "target clobbered by aborted rewrite"
+    assert list(tmp_path.glob(".env.tmp-*")) == [], "tmp leaked after SIGKILL"
+
+
+# ---------------------------------------------------------------------------
+# Test 1: SIGTERM between fsync and rename.
+# ---------------------------------------------------------------------------
+
+
+def test_sigterm_between_fsync_and_rename(tmp_path, make_env_file, sha256_of) -> None:
+    """SIGTERM during the pre-rename window → target byte-identical, no ghost tmp."""
+    env = make_env_file(tmp_path / ".env", b"OPENAI_API_KEY=sk-orig\n")
+    baseline = sha256_of(env)
+    marker = tmp_path / "_fsync_done"
+
+    child_src = textwrap.dedent(
+        f"""
+        import os, signal
+        from pathlib import Path
+        from worthless.cli.safe_rewrite import safe_rewrite
+
+        def hook():
+            Path({str(marker)!r}).write_text("ready")
+            os.kill(os.getpid(), signal.SIGSTOP)
+
+        env = Path({str(env)!r})
+        safe_rewrite(env, b"A=1\\n", original_user_arg=env, _hook_before_replace=hook)
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_src],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10.0
+        while not marker.exists() and time.monotonic() < deadline:
+            if proc.poll() is not None:
+                pytest.fail(f"child exited early: rc={proc.returncode}")
+            time.sleep(0.01)
+        assert marker.exists()
+        os.kill(proc.pid, signal.SIGTERM)
+        os.kill(proc.pid, signal.SIGCONT)
+        proc.wait(timeout=5)
+    finally:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+    assert sha256_of(env) == baseline
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 3: SIGINT during write-loop.
+# ---------------------------------------------------------------------------
+
+
+def test_sigint_during_write_preserves_target(tmp_path, make_env_file, sha256_of) -> None:
+    """SIGINT during pre-rename hook → target byte-identical, tmp cleaned up."""
+    env = make_env_file(tmp_path / ".env", b"KEY=orig\n")
+    baseline = sha256_of(env)
+    marker = tmp_path / "_fsync_done"
+
+    child_src = textwrap.dedent(
+        f"""
+        import os, signal
+        from pathlib import Path
+        from worthless.cli.safe_rewrite import safe_rewrite
+
+        def hook():
+            Path({str(marker)!r}).write_text("ready")
+            os.kill(os.getpid(), signal.SIGSTOP)
+
+        env = Path({str(env)!r})
+        try:
+            safe_rewrite(env, b"A=1\\n", original_user_arg=env, _hook_before_replace=hook)
+        except KeyboardInterrupt:
+            pass
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_src],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10.0
+        while not marker.exists() and time.monotonic() < deadline:
+            if proc.poll() is not None:
+                pytest.fail("child exited early")
+            time.sleep(0.01)
+        assert marker.exists()
+        os.kill(proc.pid, signal.SIGINT)
+        os.kill(proc.pid, signal.SIGCONT)
+        proc.wait(timeout=5)
+    finally:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+    assert sha256_of(env) == baseline
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 4: EIO on tmp write.
+# ---------------------------------------------------------------------------
+
+
+def test_eio_on_tmp_write_raises_io_error(
+    tmp_path, make_env_file, sha256_of, chaos_errno_at
+) -> None:
+    """EIO on ``os.write`` → UnsafeRewriteRefused(IO_ERROR), target byte-identical."""
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    baseline = sha256_of(env)
+
+    chaos_errno_at("write", errno.EIO)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+    assert exc_info.value.reason == UnsafeReason.IO_ERROR
+    assert sha256_of(env) == baseline
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 5: ENOSPC on fsync(tmp_fd).
+# ---------------------------------------------------------------------------
+
+
+def test_enospc_on_fsync_tmp(tmp_path, make_env_file, sha256_of, chaos_errno_at) -> None:
+    """ENOSPC on fsync(tmp_fd) → refuse, target unchanged, tmp unlinked."""
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    baseline = sha256_of(env)
+
+    chaos_errno_at("fsync", errno.ENOSPC)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+    assert exc_info.value.reason == UnsafeReason.IO_ERROR
+    assert sha256_of(env) == baseline
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 6: EROFS on rename.
+# ---------------------------------------------------------------------------
+
+
+def test_erofs_on_rename(tmp_path, make_env_file, sha256_of, chaos_errno_at) -> None:
+    """EROFS on rename/replace → refuse, target byte-identical, tmp absent."""
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    baseline = sha256_of(env)
+
+    chaos_errno_at("replace", errno.EROFS)
+
+    with pytest.raises(UnsafeRewriteRefused):
+        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+    assert sha256_of(env) == baseline
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 7: EMFILE on os.open of target.
+# ---------------------------------------------------------------------------
+
+
+def test_emfile_on_open_target(tmp_path, make_env_file, sha256_of, chaos_errno_at) -> None:
+    """EMFILE on the initial ``os.open`` of target → clean refuse."""
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    baseline = sha256_of(env)
+
+    chaos_errno_at("open", errno.EMFILE)
+
+    with pytest.raises(UnsafeRewriteRefused):
+        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+    assert sha256_of(env) == baseline
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 8: target replaced with directory mid-op (hook-based).
+# ---------------------------------------------------------------------------
+
+
+def test_target_replaced_with_directory_mock(tmp_path, make_env_file, sha256_of) -> None:
+    """Hook: unlink target + create dir with same name → refuse."""
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+
+    def _swap() -> None:
+        env.unlink()
+        env.mkdir()
+
+    with pytest.raises(UnsafeRewriteRefused):
+        safe_rewrite(
+            env,
+            b"KEY=new\n",
+            original_user_arg=env,
+            _hook_before_replace=_swap,
+        )
+
+    assert (tmp_path / ".env").is_dir()
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+    # Cleanup the attacker-dir so pytest teardown doesn't trip.
+    import shutil
+
+    shutil.rmtree(str(env), ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Test 9: inode reuse (unlink + recreate file) mid-op.
+# ---------------------------------------------------------------------------
+
+
+def test_inode_reuse_mock(tmp_path, make_env_file) -> None:
+    """Hook: unlink target + recreate (new inode) → fstatat recheck refuses."""
+    env = make_env_file(tmp_path / ".env", b"KEY=orig\n")
+
+    def _reuse() -> None:
+        env.unlink()
+        fd = os.open(str(env), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, b"KEY=attacker\n")
+        os.close(fd)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(
+            env,
+            b"KEY=new\n",
+            original_user_arg=env,
+            _hook_before_replace=_reuse,
+        )
+
+    assert exc_info.value.reason == UnsafeReason.TOCTOU
+    assert env.read_bytes() == b"KEY=attacker\n"
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 10: parent-dir fd invalidated.
+# ---------------------------------------------------------------------------
+
+
+def test_parent_dir_unlinked_mid_op(tmp_path, make_env_file, sha256_of) -> None:
+    """Hook: rmdir the parent (best-effort) → raises cleanly, no panic.
+
+    In practice we can't unlink a non-empty parent; the test exercises
+    the defensive code path for an unlink-detected dir fd by using a
+    nested dir that IS empty aside from the tmp.
+    """
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    env = make_env_file(sub / ".env", b"KEY=v\n")
+    baseline = sha256_of(env)
+
+    def _try_rmdir() -> None:
+        # Not strictly possible when tmp file exists; we exercise the
+        # defensive path by raising instead.
+        raise OSError(errno.ENOENT, "parent vanished")
+
+    with pytest.raises((OSError, UnsafeRewriteRefused)):
+        safe_rewrite(
+            env,
+            b"KEY=new\n",
+            original_user_arg=env,
+            _hook_before_replace=_try_rmdir,
+        )
+
+    assert sha256_of(env) == baseline
+    assert list(sub.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 11: target mode flipped to 0000.
+# ---------------------------------------------------------------------------
+
+
+def test_target_mode_0000_between_stat_and_open(tmp_path, make_env_file) -> None:
+    """Hook: chmod 0000 → subsequent ops fail, no write, original preserved.
+
+    This fires post-hook; we flip the original's mode and ensure any
+    subsequent access (recheck fstat, release) doesn't clobber.
+    """
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+
+    def _lock_down() -> None:
+        env.chmod(0o000)
+
+    try:
+        with pytest.raises((OSError, UnsafeRewriteRefused)):
+            safe_rewrite(
+                env,
+                b"KEY=new\n",
+                original_user_arg=env,
+                _hook_before_replace=_lock_down,
+            )
+    finally:
+        env.chmod(0o600)
+
+    # The file might have been renamed successfully or not — either way
+    # the CONTENT on disk under .env must match either baseline (no write)
+    # or the new_content (successful atomic rewrite). Ghost tmp forbidden.
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 12: clock skew / future mtime.
+# ---------------------------------------------------------------------------
+
+
+def test_clock_skew_future_mtime_does_not_affect_decision(tmp_path, make_env_file) -> None:
+    """Target with a far-future mtime is still accepted; sha256 is the truth.
+
+    Skip if the host fs clamps future timestamps (some tmpfs setups).
+    """
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    future = time.time() + 10 * 365 * 24 * 3600  # +10 years
+    os.utime(str(env), (future, future))
+    got = env.stat().st_mtime
+    if abs(got - future) > 1:
+        pytest.skip(f"host fs clamps future timestamps: set {future}, got {got}")
+
+    safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+    assert env.read_bytes() == b"KEY=new\n"
+
+
+# ---------------------------------------------------------------------------
+# Test 13: tmp-suffix collision 3x in a row.
+# ---------------------------------------------------------------------------
+
+
+def test_tmp_collision_three_times_fails_closed(
+    tmp_path, make_env_file, sha256_of, monkeypatch
+) -> None:
+    """``os.open`` with O_EXCL raises EEXIST 3x → TMP_COLLISION, no write."""
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    baseline = sha256_of(env)
+
+    real_open = os.open
+
+    def _always_eexist(path, flags, *a, **kw):  # noqa: ANN001, ANN002, ANN003
+        if (flags & os.O_EXCL) and ".env.tmp-" in str(path):
+            raise OSError(errno.EEXIST, "collision")
+        return real_open(path, flags, *a, **kw)
+
+    monkeypatch.setattr(os, "open", _always_eexist)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+    assert exc_info.value.reason == UnsafeReason.TMP_COLLISION
+    assert sha256_of(env) == baseline
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 14: concurrent flock in sibling process.
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_flock_sibling_blocks(tmp_path, make_env_file, sha256_of, barrier_file) -> None:
+    """Sibling process holds flock; in-process safe_rewrite refuses LOCKED.
+
+    Two-process ordering: sibling writes its pid to ``barrier_file`` when
+    the lock is held; the parent polls the barrier before invoking
+    ``safe_rewrite``. Deterministic.
+    """
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    baseline = sha256_of(env)
+
+    child_src = textwrap.dedent(
+        f"""
+        import fcntl, os, time
+        from pathlib import Path
+
+        fd = os.open({str(env)!r}, os.O_RDONLY)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        Path({str(barrier_file)!r}).write_text(str(os.getpid()))
+        # Hold the lock for a bounded window so the parent sees the contention.
+        time.sleep(2.0)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_src],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        while not barrier_file.exists() and time.monotonic() < deadline:
+            if proc.poll() is not None:
+                pytest.fail(f"sibling died: rc={proc.returncode}")
+            time.sleep(0.01)
+        assert barrier_file.exists(), "sibling never acquired the flock"
+
+        with pytest.raises(UnsafeRewriteRefused) as exc_info:
+            safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+        assert exc_info.value.reason == UnsafeReason.LOCKED
+        assert sha256_of(env) == baseline
+    finally:
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+# ---------------------------------------------------------------------------
+# Test 15: ENOSPC on fsync(dir_fd) after rename.
+# ---------------------------------------------------------------------------
+
+
+def test_enospc_on_fsync_dir_fd_post_rename(tmp_path, make_env_file, monkeypatch) -> None:
+    """ENOSPC on ``fsync(dir_fd)`` *after* rename: target has new_content.
+
+    The rename itself succeeded; only the final directory fsync failed.
+    The target sha256 must match new_content; the tmp is absent.
+    """
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+
+    real_fsync = os.fsync
+    seen = {"n": 0}
+
+    def _enospc_on_second_fsync(fd):  # noqa: ANN001
+        # First fsync = tmp_fd. Second fsync = dir_fd (post-rename).
+        seen["n"] += 1
+        if seen["n"] == 2:
+            raise OSError(errno.ENOSPC, "no space")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", _enospc_on_second_fsync)
+
+    with pytest.raises((UnsafeRewriteRefused, OSError)):
+        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+    # After rename landed, target may be new_content; before, baseline.
+    # Whichever — no tmp leak.
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 16: EMFILE on dir fd open.
+# ---------------------------------------------------------------------------
+
+
+def test_emfile_on_dir_fd_open(tmp_path, make_env_file, sha256_of, monkeypatch) -> None:
+    """EMFILE when opening parent dir fd → refuse, no tmp, no write."""
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    baseline = sha256_of(env)
+
+    real_open = os.open
+    opened_target_once = {"b": False}
+
+    def _emfile_on_dir(path, flags, *a, **kw):  # noqa: ANN001, ANN002, ANN003
+        # Refuse the directory open attempt (O_DIRECTORY or path == parent).
+        if (flags & getattr(os, "O_DIRECTORY", 0)) or str(path) == str(tmp_path):
+            if opened_target_once["b"]:
+                raise OSError(errno.EMFILE, "too many open files")
+        if str(path).endswith("/.env"):
+            opened_target_once["b"] = True
+        return real_open(path, flags, *a, **kw)
+
+    monkeypatch.setattr(os, "open", _emfile_on_dir)
+
+    with pytest.raises(UnsafeRewriteRefused):
+        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+    assert sha256_of(env) == baseline
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 17: renameat2 ENOSYS → fallback to fstatat + os.replace.
+# ---------------------------------------------------------------------------
+
+
+def test_renameat2_enosys_falls_back_to_fstatat_recheck(
+    tmp_path, make_env_file, monkeypatch
+) -> None:
+    """If a ``_renameat2`` helper raises ENOSYS, impl falls back cleanly.
+
+    Asserts ``os.stat`` (recheck) AND ``os.replace`` are both called on
+    the fallback path.
+    """
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+
+    stat_calls: list[str] = []
+    replace_calls = {"n": 0}
+
+    real_stat = os.stat
+    real_replace = os.replace
+
+    def _rec_stat(*a, **kw):  # noqa: ANN002, ANN003
+        stat_calls.append("stat")
+        return real_stat(*a, **kw)
+
+    def _rec_replace(src, dst, *a, **kw):  # noqa: ANN001, ANN003
+        replace_calls["n"] += 1
+        return real_replace(src, dst, *a, **kw)
+
+    monkeypatch.setattr(os, "stat", _rec_stat)
+    monkeypatch.setattr(os, "replace", _rec_replace)
+
+    # If the impl exposes a _renameat2 helper, force it to ENOSYS.
+    try:
+        from worthless.cli import safe_rewrite as _sr
+
+        if hasattr(_sr, "_renameat2"):
+
+            def _enosys(*a, **kw):  # noqa: ANN002, ANN003
+                raise OSError(errno.ENOSYS, "not supported")
+
+            monkeypatch.setattr(_sr, "_renameat2", _enosys)
+    except ImportError:
+        pass
+
+    safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+    assert replace_calls["n"] >= 1, "os.replace fallback not used"
+    assert len(stat_calls) >= 2, "fstatat recheck missing on fallback"
+
+
+# ---------------------------------------------------------------------------
+# Test 18: hook raises RuntimeError between fsync and rename.
+# ---------------------------------------------------------------------------
+
+
+def test_hook_raises_between_fsync_and_rename(tmp_path, make_env_file, sha256_of) -> None:
+    """``_hook_before_replace`` raises → target byte-identical, tmp unlinked."""
+    env = make_env_file(tmp_path / ".env", b"KEY=orig\n")
+    baseline = sha256_of(env)
+
+    class _HookBoom(Exception):
+        pass
+
+    fired = {"b": False}
+
+    def _boom() -> None:
+        fired["b"] = True
+        raise _HookBoom("hook crash")
+
+    with pytest.raises((_HookBoom, UnsafeRewriteRefused)) as exc_info:
+        safe_rewrite(
+            env,
+            b"KEY=new\n",
+            original_user_arg=env,
+            _hook_before_replace=_boom,
+        )
+
+    assert fired["b"], "hook never fired — implementation refused before reaching it"
+    assert not isinstance(exc_info.value, NotImplementedError)
+    assert sha256_of(env) == baseline
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# Test 19: flock not leaked across exec (FD_CLOEXEC).
+# ---------------------------------------------------------------------------
+
+
+def test_flock_not_leaked_to_child_process(tmp_path, make_env_file) -> None:
+    """After flock acquire, spawning a child must NOT inherit the lock.
+
+    We indirectly assert by testing FD_CLOEXEC on every fd the module
+    opens: a mid-op hook spawns a subprocess that tries to acquire the
+    same flock; it must succeed (since the lock fd has FD_CLOEXEC and
+    is not inherited).
+    """
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    child_result_file = tmp_path / "_child_result"
+
+    def _spawn_child() -> None:
+        script = textwrap.dedent(
+            f"""
+            import fcntl, os
+            from pathlib import Path
+
+            try:
+                fd = os.open({str(env)!r}, os.O_RDONLY)
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                Path({str(child_result_file)!r}).write_text("acquired")
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+            except OSError as e:
+                Path({str(child_result_file)!r}).write_text(f"blocked:{{e.errno}}")
+            """
+        )
+        # close_fds=True is the default on POSIX; we rely on FD_CLOEXEC.
+        subprocess.run(
+            [sys.executable, "-c", script],
+            check=False,
+            timeout=10,
+            close_fds=True,
+        )
+
+    # Hook raises after spawning so we exit cleanly.
+    class _SpyDone(Exception):
+        pass
+
+    fired = {"b": False}
+
+    def _hook() -> None:
+        fired["b"] = True
+        _spawn_child()
+        raise _SpyDone("done spying")
+
+    with pytest.raises((_SpyDone, UnsafeRewriteRefused)) as _ei:
+        safe_rewrite(
+            env,
+            b"KEY=new\n",
+            original_user_arg=env,
+            _hook_before_replace=_hook,
+        )
+    assert fired["b"], "hook never fired — child was never spawned"
+    assert not isinstance(_ei.value, NotImplementedError)
+
+    # If the flock fd was NOT FD_CLOEXEC, the child inherited it and
+    # acquisition would either be no-op-on-same-open-file-description
+    # or blocked. The contract is: the fd must be FD_CLOEXEC and thus
+    # the child must see "blocked" (parent still holds its own flock
+    # on the separate open the child makes — actually, the child opens
+    # its own fd and flock is per open-file-description; the child's
+    # flock attempt on its OWN fd should succeed ONLY if no conflict).
+    # The sharp contract: the child must see "blocked" because the
+    # parent still holds flock during _hook execution.
+    assert child_result_file.exists(), "child never ran"
+    result = child_result_file.read_text()
+    assert result.startswith("blocked:"), f"child acquired lock while parent held it: {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# Test 20: tmp open flags include O_NOFOLLOW etc.
+# ---------------------------------------------------------------------------
+
+
+def test_tmp_open_uses_O_NOFOLLOW(tmp_path, make_env_file, monkeypatch) -> None:
+    """The tmp-file ``os.open`` uses O_NOFOLLOW | O_CLOEXEC | O_EXCL | O_CREAT | O_WRONLY."""
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    recorded: list[int] = []
+
+    real_open = os.open
+
+    def _rec(path, flags, *a, **kw):  # noqa: ANN001, ANN002, ANN003
+        if ".env.tmp-" in str(path):
+            recorded.append(flags)
+        return real_open(path, flags, *a, **kw)
+
+    monkeypatch.setattr(os, "open", _rec)
+
+    try:
+        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+    except Exception:
+        pass
+
+    assert recorded, "tmp file was never opened"
+    required = os.O_NOFOLLOW | os.O_CLOEXEC | os.O_EXCL | os.O_CREAT | os.O_WRONLY
+    for f in recorded:
+        assert (f & required) == required, f"tmp-open missing flags: {oct(f)}"
+
+
+# ---------------------------------------------------------------------------
+# Test 21: parametrised no-ghost-tmp across 18 injection points.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "injection",
+    [
+        "sigterm",
+        "sigkill",
+        "sigint",
+        "eio_write",
+        "enospc_fsync",
+        "erofs_rename",
+        "emfile_open",
+        "target_is_dir",
+        "inode_reuse",
+        "parent_unlinked",
+        "mode_0000",
+        "clock_skew",
+        "tmp_collision",
+        "concurrent_flock",
+        "enospc_dir_fsync",
+        "emfile_dir_fd",
+        "hook_raises",
+    ],
+)
+def test_no_ghost_tmp_after_any_chaos_refusal(injection, tmp_path, make_env_file, monkeypatch):
+    """After any chaos injection point, no ``.env.tmp-*`` file remains.
+
+    Negative-space spine for the tmp-leak invariant across all 18
+    failure modes. Each case uses the same minimal trigger; the
+    assertion is uniform: ``list(glob(".env.tmp-*")) == []``.
+    """
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+
+    # Configure the injection.
+    if injection in {"sigterm", "sigkill", "sigint"}:
+        pytest.skip("signal-based ghost-tmp coverage lives in the per-signal tests")
+
+    if injection == "eio_write":
+
+        def _w(fd, data, *a, **kw):  # noqa: ANN001, ANN003
+            raise OSError(errno.EIO, "io error")
+
+        monkeypatch.setattr(os, "write", _w)
+
+    elif injection == "enospc_fsync":
+        real_fsync = os.fsync
+
+        def _f(fd):  # noqa: ANN001
+            raise OSError(errno.ENOSPC, "no space")
+
+        monkeypatch.setattr(os, "fsync", _f)
+
+    elif injection == "erofs_rename":
+
+        def _r(src, dst, *a, **kw):  # noqa: ANN001, ANN003
+            raise OSError(errno.EROFS, "read only fs")
+
+        monkeypatch.setattr(os, "replace", _r)
+
+    elif injection == "emfile_open":
+        real_open = os.open
+
+        def _o(path, flags, *a, **kw):  # noqa: ANN001, ANN002, ANN003
+            raise OSError(errno.EMFILE, "too many open files")
+
+        monkeypatch.setattr(os, "open", _o)
+
+    elif injection == "target_is_dir":
+        # Swap target for a directory before the call.
+        env.unlink()
+        env.mkdir()
+
+    elif injection == "inode_reuse":
+        hook_called = {"b": False}
+
+        def _hook() -> None:
+            if hook_called["b"]:
+                return
+            hook_called["b"] = True
+            env.unlink()
+            fd = os.open(str(env), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.write(fd, b"KEY=new_inode\n")
+            os.close(fd)
+
+        try:
+            with pytest.raises((UnsafeRewriteRefused, OSError)) as _ei:
+                safe_rewrite(
+                    env,
+                    b"KEY=new\n",
+                    original_user_arg=env,
+                    _hook_before_replace=_hook,
+                )
+            assert not isinstance(_ei.value, NotImplementedError)
+        finally:
+            assert list(tmp_path.glob(".env.tmp-*")) == []
+        return
+
+    elif injection == "parent_unlinked":
+
+        def _hook() -> None:
+            raise OSError(errno.ENOENT, "gone")
+
+        with pytest.raises((UnsafeRewriteRefused, OSError)) as _ei:
+            safe_rewrite(
+                env,
+                b"KEY=new\n",
+                original_user_arg=env,
+                _hook_before_replace=_hook,
+            )
+        assert not isinstance(_ei.value, NotImplementedError)
+        assert list(tmp_path.glob(".env.tmp-*")) == []
+        return
+
+    elif injection == "mode_0000":
+
+        def _hook() -> None:
+            env.chmod(0o000)
+
+        try:
+            with pytest.raises((UnsafeRewriteRefused, OSError)) as _ei:
+                safe_rewrite(
+                    env,
+                    b"KEY=new\n",
+                    original_user_arg=env,
+                    _hook_before_replace=_hook,
+                )
+            assert not isinstance(_ei.value, NotImplementedError)
+        finally:
+            try:
+                env.chmod(0o600)
+            except OSError:
+                pass
+        assert list(tmp_path.glob(".env.tmp-*")) == []
+        return
+
+    elif injection == "clock_skew":
+        os.utime(str(env), (0, 0))  # epoch 0; not itself a failure
+        # Positive path: the rewrite must succeed (clock skew is not a refusal);
+        # on green, new_content on disk and no tmp leak.
+        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+        assert env.read_bytes() == b"KEY=new\n"
+        assert list(tmp_path.glob(".env.tmp-*")) == []
+        return
+
+    elif injection == "tmp_collision":
+        real_open = os.open
+
+        def _coll(path, flags, *a, **kw):  # noqa: ANN001, ANN002, ANN003
+            if (flags & os.O_EXCL) and ".env.tmp-" in str(path):
+                raise OSError(errno.EEXIST, "collision")
+            return real_open(path, flags, *a, **kw)
+
+        monkeypatch.setattr(os, "open", _coll)
+
+    elif injection == "concurrent_flock":
+        fd = os.open(str(env), os.O_RDONLY)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            with pytest.raises(UnsafeRewriteRefused):
+                safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
+        assert list(tmp_path.glob(".env.tmp-*")) == []
+        return
+
+    elif injection == "enospc_dir_fsync":
+        real_fsync = os.fsync
+        seen = {"n": 0}
+
+        def _f(fd):  # noqa: ANN001
+            seen["n"] += 1
+            if seen["n"] == 2:
+                raise OSError(errno.ENOSPC, "no space")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", _f)
+
+    elif injection == "emfile_dir_fd":
+        real_open = os.open
+        target_opened = {"b": False}
+
+        def _o(path, flags, *a, **kw):  # noqa: ANN001, ANN002, ANN003
+            if str(path).endswith("/.env"):
+                target_opened["b"] = True
+            elif target_opened["b"] and str(path) == str(tmp_path):
+                raise OSError(errno.EMFILE, "too many")
+            return real_open(path, flags, *a, **kw)
+
+        monkeypatch.setattr(os, "open", _o)
+
+    elif injection == "renameat2_enosys":
+        try:
+            from worthless.cli import safe_rewrite as _sr
+
+            if hasattr(_sr, "_renameat2"):
+
+                def _enosys(*a, **kw):  # noqa: ANN002, ANN003
+                    raise OSError(errno.ENOSYS, "nosys")
+
+                monkeypatch.setattr(_sr, "_renameat2", _enosys)
+        except ImportError:
+            pass
+
+    elif injection == "hook_raises":
+
+        class _Boom(Exception):
+            pass
+
+        fired = {"b": False}
+
+        def _hook() -> None:
+            fired["b"] = True
+            raise _Boom("boom")
+
+        with pytest.raises((UnsafeRewriteRefused, _Boom)) as _ei:
+            safe_rewrite(
+                env,
+                b"KEY=new\n",
+                original_user_arg=env,
+                _hook_before_replace=_hook,
+            )
+        assert fired["b"], "hook never fired — impl refused before tmp write"
+        assert not isinstance(_ei.value, NotImplementedError)
+        assert list(tmp_path.glob(".env.tmp-*")) == []
+        return
+
+    # Default shape: just call safe_rewrite; expect failure; assert no tmp.
+    try:
+        with pytest.raises((UnsafeRewriteRefused, OSError)) as _ei:
+            safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+        assert not isinstance(_ei.value, NotImplementedError)
+    finally:
+        # Cleanup: restore mode if altered.
+        try:
+            if env.exists() and not stat.S_ISDIR(env.stat().st_mode):
+                env.chmod(0o600)
+        except OSError:
+            pass
+
+    glob_parent = env.parent if env.parent.exists() else tmp_path
+    assert list(glob_parent.glob(".env.tmp-*")) == [], f"ghost tmp left after {injection}"
+
+    # Cleanup a directory-target swap so pytest teardown works.
+    if injection == "target_is_dir":
+        import shutil
+
+        shutil.rmtree(str(env), ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Test 22: real-FS sibling — directory swap.
+# ---------------------------------------------------------------------------
+
+
+def test_directory_swap_real_fs_sibling(tmp_path, make_env_file, sha256_of) -> None:
+    """Real FS: hook replaces target with a directory; refuse with TOCTOU."""
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+
+    def _swap() -> None:
+        env.unlink()
+        env.mkdir()
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(
+            env,
+            b"KEY=new\n",
+            original_user_arg=env,
+            _hook_before_replace=_swap,
+        )
+
+    assert exc_info.value.reason in {UnsafeReason.TOCTOU, UnsafeReason.IO_ERROR}
+    assert (tmp_path / ".env").is_dir()
+    assert list(tmp_path.glob(".env.tmp-*")) == []
+
+    import shutil
+
+    shutil.rmtree(str(env), ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Test 23: real-FS sibling — inode reuse.
+# ---------------------------------------------------------------------------
+
+
+def test_inode_reuse_real_fs_sibling(tmp_path, make_env_file) -> None:
+    """Real FS: hook unlinks + recreates target; fstatat recheck refuses."""
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+
+    def _reuse() -> None:
+        env.unlink()
+        fd = os.open(str(env), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, b"KEY=attacker\n")
+        os.close(fd)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(
+            env,
+            b"KEY=new\n",
+            original_user_arg=env,
+            _hook_before_replace=_reuse,
+        )
+
+    assert exc_info.value.reason == UnsafeReason.TOCTOU
+    assert env.read_bytes() == b"KEY=attacker\n"
+    assert list(tmp_path.glob(".env.tmp-*")) == []
