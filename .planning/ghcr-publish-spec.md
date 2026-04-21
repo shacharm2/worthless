@@ -134,7 +134,11 @@ Zero hand-rolled string matching. This was a review fix.
 
 - User moves WOR-236 to Done in Linear after first `v*` tag passes `smoke` job.
 
-## Ticket briefs created alongside this spec
+## Follow-up tickets in Linear
 
-- `.planning/tickets/ghcr-cosign-signing-brief.md` → proposed v1.1 post-launch hardening
-- `.planning/tickets/ghcr-registry-fallback-brief.md` → proposed v1.2
+- **[WOR-253](https://linear.app/plumbusai/issue/WOR-253)** — GHCR registry fallback (v1.2, P2)
+- **[WOR-254](https://linear.app/plumbusai/issue/WOR-254)** — Docker Hub authenticated pull (v1.1 post-launch, P1; chaos-engineer finding)
+- **[WOR-255](https://linear.app/plumbusai/issue/WOR-255)** — Smoke proxy-path coverage + marker selection (v1.1 post-launch, P1; QA-expert finding)
+- **[WOR-256](https://linear.app/plumbusai/issue/WOR-256)** — Grype DB freshness pre-check (v1.2, P2)
+
+Cosign signing and arm64 Trivy scan were originally brief'd as follow-ups but folded into WOR-236 itself during review rounds.
