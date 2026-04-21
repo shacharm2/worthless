@@ -32,7 +32,7 @@ Vulnerabilities in the following areas are in scope:
 - **Proxy** — gate-before-reconstruct bypass, request smuggling, error leakage
 - **Storage** — shard encryption at rest, repository access controls
 - **CLI** — credential handling, shard exposure, command injection
-- **Installer** — the `curl -sSL https://worthless.sh | sh` supply chain. Trust model, release-blocking controls, and the kill-switch runbook live in [docs/install-security.md](docs/install-security.md).
+- **Installer** — the `curl -sSL https://worthless.sh | sh` supply chain. Trust model and what `install.sh` verifies today live in [docs/install-security.md](docs/install-security.md).
 
 ### Out of Scope
 
