@@ -5,10 +5,6 @@ to `worthless.sh`.
 
 For supply-chain trust roots, see
 [docs/install-security.md](../../docs/install-security.md).
-Release-hardening TODOs (SHA manifest, detached sig, kill-switch,
-second-reviewer) are tracked under Linear epic
-[WOR-257](https://linear.app/plumbusai/issue/WOR-257) — not yet wired,
-so not yet on this checklist.
 
 ## Pre-flight
 

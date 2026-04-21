@@ -40,15 +40,4 @@ less install.sh    # inspect
 sh install.sh
 ```
 
-## Roadmap
-
-The controls above are tracked under Linear epic
-[WOR-257: v1.2 supply-chain & threat-model hardening](https://linear.app/plumbusai/issue/WOR-257/epic-v12-supply-chain-and-threat-model-hardening):
-
-- [WOR-258](https://linear.app/plumbusai/issue/WOR-258) — Cloudflare Worker kill-switch
-- [WOR-259](https://linear.app/plumbusai/issue/WOR-259) — `install.sh.sha256` manifest
-- [WOR-260](https://linear.app/plumbusai/issue/WOR-260) — detached signature (cosign/minisign)
-- [WOR-261](https://linear.app/plumbusai/issue/WOR-261) — second-reviewer release process
-
-This file describes what's real today. When a control ships, it moves
-here and out of the roadmap list.
+Planned hardening is tracked in Linear under [WOR-257](https://linear.app/plumbusai/issue/WOR-257). This file describes what's real today; controls move in here when they ship.

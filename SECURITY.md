@@ -15,14 +15,14 @@ I take security seriously. Worthless exists to protect API keys — a vulnerabil
 - **Preferred:** [GitHub Private Vulnerability Reporting](https://github.com/worthless-dev/worthless/security/advisories/new)
 - **Alternative:** Email `security@worthless.dev`
 
-### Response Timeline
+### Response timeline
 
-| Stage | SLA |
-|-------|-----|
-| Acknowledgment | 48 hours |
-| Triage & severity assessment | 7 days |
-| Fix or mitigation | Best-effort, proportional to severity |
-| Public disclosure | 90 days (coordinated) |
+Solo maintainer — response time is bounded by real life. Best-effort
+acknowledgment within one week. Triage, fix, and coordinated
+disclosure are handled proportional to severity; 90 days is the
+default coordinated-disclosure window by convention. If a report
+sits for longer than two weeks without reply, ping again or escalate
+publicly.
 
 ### Scope
 
