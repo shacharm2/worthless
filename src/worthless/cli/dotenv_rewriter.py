@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import os
+import stat
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
@@ -70,13 +72,53 @@ def scan_env_keys(
     return results
 
 
+def _check_env_path_safe(path: Path) -> None:
+    """Reject symlinks, FIFOs, block devices, and hardlinked files."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    mode = st.st_mode
+    if stat.S_ISLNK(mode) or stat.S_ISFIFO(mode) or stat.S_ISBLK(mode):
+        raise OSError(f"Refusing to write to non-regular file: {path}")
+    if st.st_nlink > 1:
+        raise OSError(f"Refusing to write to hardlinked file: {path}")
+
+
+def _fsync_path(path: Path) -> None:
+    """fsync the file at *path*; swallow OSError."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def _fsync_dir(path: Path) -> None:
+    """fsync the parent directory of *path*; swallow OSError (Windows)."""
+    try:
+        fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
 def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
     """Set *var_name* to *value* in *env_path*, creating or updating.
 
     If *var_name* already exists, its value is replaced in place.
     If it does not exist, a new line is appended.
     """
+    _check_env_path_safe(env_path)
     set_key(str(env_path), var_name, value, quote_mode="never")
+    _fsync_path(env_path)
+    _fsync_dir(env_path)
 
 
 def remove_env_key(env_path: Path, var_name: str) -> None:
@@ -102,4 +144,7 @@ def rewrite_env_key(env_path: Path, var_name: str, new_value: str) -> None:
     if var_name not in existing:
         raise KeyError(f"Variable {var_name!r} not found in {env_path}")
 
+    _check_env_path_safe(env_path)
     set_key(str(env_path), var_name, new_value, quote_mode="never")
+    _fsync_path(env_path)
+    _fsync_dir(env_path)
