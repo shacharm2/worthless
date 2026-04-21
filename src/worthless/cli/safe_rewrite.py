@@ -14,7 +14,6 @@ byte-identical across every refusal path.
 from __future__ import annotations
 
 import errno
-import fcntl
 import io
 import logging
 import os
@@ -23,6 +22,11 @@ import stat as _stat
 import sys
 from pathlib import Path
 from collections.abc import Callable
+
+if sys.platform != "win32":
+    import fcntl
+else:  # pragma: no cover — PLATFORM gate refuses before any fcntl is used
+    fcntl = None  # type: ignore[assignment]
 
 from dotenv import dotenv_values
 
