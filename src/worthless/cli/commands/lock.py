@@ -24,7 +24,12 @@ from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sani
 from worthless.cli.key_patterns import detect_prefix
 from worthless.cli.commands.up import _resolve_port
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
-from worthless.crypto.splitter import split_key_fp
+from worthless.crypto.splitter import (
+    _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
+    derive_shard_a_fp,
+    split_key_fp,
+)
+from worthless.exceptions import ShardTamperedError
 from worthless.storage.repository import ShardRepository, StoredShard
 
 logger = logging.getLogger(__name__)
@@ -106,12 +111,53 @@ def _lock_keys(
 
             alias = _make_alias(provider, value)
 
-            # Re-lock guard: alias already in DB (same key from another var/env).
-            # Add enrollment for this location but don't re-split — the original
-            # shard-B is tied to the first split's commitment. A fresh split would
-            # produce a shard-A that can't reconstruct with the stored shard-B.
+            # Re-lock guard: alias already in DB (same real key from another
+            # var/env). Don't re-split — shard-B is bound to the original
+            # commitment. Derive the shard-A that pairs with the stored
+            # shard-B from real_key + shard-B (modular inverse), verify the
+            # commitment, then rewrite this .env. Silent no-op here would
+            # leave the real key in a .env the user believes is protected.
             db_shard = await repo.fetch_encrypted(alias)
             if db_shard is not None:
+                if not db_shard.prefix or not db_shard.charset:
+                    raise WorthlessError(
+                        ErrorCode.SHARD_STORAGE_FAILED,
+                        f"Alias {alias!r} predates format-preserving split "
+                        "(no prefix/charset stored). Run `worthless unlock --all` "
+                        "then re-lock this .env.",
+                    )
+                stored_decrypted = repo.decrypt_shard(db_shard)
+                try:
+                    _verify_commitment(
+                        bytearray(value.encode("utf-8")),
+                        stored_decrypted.commitment,
+                        stored_decrypted.nonce,
+                    )
+                except ShardTamperedError as exc:
+                    stored_decrypted.zero()
+                    raise WorthlessError(
+                        ErrorCode.SHARD_STORAGE_FAILED,
+                        f"Alias {alias!r} exists but the provided {var_name} does "
+                        "not match the originally-locked key (commitment mismatch).",
+                    ) from exc
+
+                derived_shard_a = derive_shard_a_fp(
+                    value,
+                    stored_decrypted.shard_b,
+                    db_shard.prefix or "",
+                    db_shard.charset or "",
+                )
+                try:
+                    rewrite_env_key(env_path, var_name, derived_shard_a.decode("utf-8"))
+                finally:
+                    derived_shard_a[:] = b"\x00" * len(derived_shard_a)
+                    stored_decrypted.zero()
+
+                if not keys_only:
+                    base_url_var = _PROVIDER_ENV_MAP.get(provider)
+                    if base_url_var:
+                        add_or_rewrite_env_key(env_path, base_url_var, _proxy_base_url(alias))
+
                 await repo.add_enrollment(
                     alias,
                     var_name=var_name,

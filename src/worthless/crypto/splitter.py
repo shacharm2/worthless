@@ -151,6 +151,47 @@ def split_key_fp(
     )
 
 
+def derive_shard_a_fp(
+    api_key: str,
+    shard_b: bytes | bytearray,
+    prefix: str,
+    charset: str,
+) -> bytearray:
+    """Derive the shard-A that pairs with *shard_b* to reconstruct *api_key*.
+
+    Re-lock path: when an alias is already enrolled (shard-B stored), locking
+    the same real key in a new .env must recreate the format-preserving
+    shard-A rather than leaving the real key in the file. Inverting the
+    modular split over charset index space: shard_a_idx = (key_idx - shard_b_idx) mod N.
+    """
+    if not api_key:
+        raise ValueError("Cannot derive shard-A for empty key")
+    if not api_key.startswith(prefix):
+        raise ValueError(f"Key does not start with prefix {prefix!r}")
+    if not charset:
+        raise ValueError("Cannot derive shard-A without charset")
+
+    body = api_key[len(prefix) :]
+    if isinstance(shard_b, bytearray):
+        b_body = shard_b.decode("utf-8")
+    else:
+        tmp = bytearray(shard_b)
+        b_body = tmp.decode("utf-8")
+        tmp[:] = b"\x00" * len(tmp)
+
+    if len(body) != len(b_body):
+        raise ValueError(f"Shard-B length mismatch: key_body={len(body)}, shard_b={len(b_body)}")
+
+    n = len(charset)
+    char_to_idx = _CHAR_TO_IDX[charset]
+
+    shard_a_chars: list[str] = []
+    for k_char, b_char in zip(body, b_body, strict=True):
+        shard_a_chars.append(charset[(char_to_idx[k_char] - char_to_idx[b_char]) % n])
+
+    return bytearray((prefix + "".join(shard_a_chars)).encode("utf-8"))
+
+
 def reconstruct_key_fp(
     shard_a: bytes | bytearray,
     shard_b: bytes | bytearray,
