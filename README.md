@@ -56,6 +56,10 @@ worthless wrap <cmd>   # Run a command through the proxy
 worthless revoke       # Revoke enrolled keys
 ```
 
+## Docker
+
+`docker run ghcr.io/shacharm2/worthless-proxy:<version>` — multi-arch, vulnerability-scanned, cosign-signed. See [docs/install-docker.md](docs/install-docker.md).
+
 ## Platforms
 
 Worthless runs on POSIX hosts. The proxy relies on `setsid`, `os.killpg`,
