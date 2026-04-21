@@ -419,20 +419,15 @@ def _validate_value(value: str) -> None:
         raise ValueError("dotenv value must not contain NUL bytes")
     if " #" in value or "\t#" in value:
         raise ValueError(
-            "dotenv value contains ' #' (whitespace + hash); dotenv "
-            "parsers treat this as an inline comment and the value would "
-            "be truncated on read-back"
+            "dotenv value contains whitespace+'#' (inline comment; truncates on read-back)"
         )
     if value[:1] in ('"', "'"):
         raise ValueError(
-            "dotenv value must not start with a quote character; "
-            "dotenv parsers treat a leading quote as an opening delimiter "
-            "and strip it on read-back"
+            "dotenv value must not start with a quote character (stripped on read-back)"
         )
     if value and (value[0].isspace() or value[-1].isspace()):
         raise ValueError(
-            "dotenv value must not have leading or trailing whitespace; "
-            "dotenv parsers strip surrounding whitespace on read-back"
+            "dotenv value must not have leading or trailing whitespace (stripped on read-back)"
         )
 
 
