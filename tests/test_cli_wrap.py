@@ -59,8 +59,10 @@ class TestWrapEnvInjection:
 class TestBuildChildEnvEdgeCases:
     """Edge cases for _build_child_env."""
 
-    def test_unknown_provider_skipped(self):
+    def test_unknown_provider_skipped(self, monkeypatch: pytest.MonkeyPatch):
         """Unknown provider should not inject any env var."""
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
         child_env = _build_child_env(port=9999, aliases=[("gem-alias", "gemini")])
         assert "OPENAI_BASE_URL" not in child_env
         assert "ANTHROPIC_BASE_URL" not in child_env
@@ -84,8 +86,10 @@ class TestBuildChildEnvEdgeCases:
             )
         assert any("Multiple aliases" in r.message for r in caplog.records)
 
-    def test_empty_aliases(self):
+    def test_empty_aliases(self, monkeypatch: pytest.MonkeyPatch):
         """Empty aliases list produces env without any BASE_URL vars."""
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
         child_env = _build_child_env(port=9999, aliases=[])
         assert "OPENAI_BASE_URL" not in child_env
         assert "ANTHROPIC_BASE_URL" not in child_env

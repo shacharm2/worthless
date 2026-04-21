@@ -79,3 +79,6 @@ jobs:
         run: uv run pytest tests/test_docker_e2e.py -v -m docker --tb=short
         env:
           WORTHLESS_DOCKER_IMAGE: worthless-proxy:test
+
+      - name: Run OpenClaw/Compose E2E tests
+        run: uv run pytest tests/test_openclaw_e2e.py -v -m openclaw --tb=short --timeout=360

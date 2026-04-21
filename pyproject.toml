@@ -59,7 +59,9 @@ dev = [
     "ruff>=0.8",
 ]
 test = [
+    "anthropic>=0.40",
     "hypothesis>=6.0",
+    "openai>=1.54",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-benchmark>=5.0",
@@ -99,7 +101,9 @@ dev = [
     "xenon>=0.9.3",
 ]
 test = [
+    "anthropic>=0.40",
     "hypothesis>=6.0",
+    "openai>=1.54",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-benchmark>=5.0",

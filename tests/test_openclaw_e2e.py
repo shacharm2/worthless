@@ -18,11 +18,13 @@ import time
 import uuid
 from pathlib import Path
 
+import anthropic
 import httpx
+import openai
 import pytest
 
 from tests._docker_helpers import docker_available, docker_exec
-from tests.helpers import fake_openai_key
+from tests.helpers import fake_anthropic_key, fake_openai_key
 from worthless.cli.commands.lock import _make_alias
 
 # ---------------------------------------------------------------------------
@@ -187,12 +189,9 @@ def openclaw_stack():
         assert shard_a.startswith("sk-"), f"Shard-A not format-preserving: {shard_a[:20]}"
 
         # 6. Clear any captured headers from startup
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
-        yield proxy_port, mock_port, fake_key, shard_a, alias
+        yield proxy_port, mock_port, fake_key, shard_a, alias, proxy_container
 
     finally:
         subprocess.run(
@@ -213,9 +212,45 @@ def openclaw_stack():
         )
 
 
+@pytest.fixture(scope="session")
+def openclaw_anthropic_alias(openclaw_stack):
+    """Enroll a second alias for Anthropic into the already-running stack.
+
+    Depends on openclaw_stack (proxy + mock are up, OpenAI alias enrolled).
+    Writes a distinct Anthropic fake key into a separate .env path inside
+    the proxy container, runs `worthless lock`, reads shard-A back.
+
+    Yields (fake_key, shard_a, alias).
+    """
+    _, _, _, _, _, proxy_container = openclaw_stack
+
+    fake_key = fake_anthropic_key()
+    alias = _make_alias("anthropic", fake_key)
+
+    env_path = "/tmp/.anthropic.env"
+    write = _write_env_to_container(proxy_container, f"ANTHROPIC_API_KEY={fake_key}", dest=env_path)
+    if write.returncode != 0:
+        pytest.skip(f"failed to write anthropic .env: {write.stderr}")
+
+    lock = docker_exec(proxy_container, ["worthless", "lock", "--env", env_path])
+    if lock.returncode != 0:
+        pytest.skip(f"anthropic lock failed: {lock.stderr}")
+
+    shard_a = _read_env_value(proxy_container, "ANTHROPIC_API_KEY", path=env_path)
+    assert shard_a != fake_key, "lock did not replace anthropic key in .env"
+    assert shard_a.startswith("sk-ant-"), f"anthropic shard-A not format-preserving: {shard_a[:30]}"
+
+    yield fake_key, shard_a, alias
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+def _clear_mock_headers(mock_port: int) -> None:
+    """Reset the mock-upstream's captured-headers log before a test."""
+    httpx.delete(f"http://127.0.0.1:{mock_port}/captured-headers", timeout=5.0)
 
 
 class TestOpenClawShardA:
@@ -228,12 +263,9 @@ class TestOpenClawShardA:
 
     def test_shard_a_reconstructs(self, openclaw_stack):
         """POST to proxy, verify mock-upstream receives the REAL key."""
-        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
         resp = httpx.post(
             f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
@@ -259,12 +291,9 @@ class TestOpenClawShardA:
 
     def test_streaming(self, openclaw_stack):
         """Streaming request reconstructs the real key too."""
-        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
         resp = httpx.post(
             f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
@@ -289,12 +318,9 @@ class TestOpenClawShardA:
 
     def test_shard_a_not_leaked_to_upstream(self, openclaw_stack):
         """Shard-A (format-preserving) never appears in upstream headers."""
-        proxy_port, mock_port, fake_key, shard_a, alias = openclaw_stack
+        proxy_port, mock_port, fake_key, shard_a, alias, _proxy_container = openclaw_stack
 
-        httpx.delete(
-            f"http://127.0.0.1:{mock_port}/captured-headers",
-            timeout=5.0,
-        )
+        _clear_mock_headers(mock_port)
 
         httpx.post(
             f"http://127.0.0.1:{proxy_port}/{alias}/v1/chat/completions",
@@ -310,8 +336,388 @@ class TestOpenClawShardA:
             f"http://127.0.0.1:{mock_port}/captured-headers",
             timeout=5.0,
         ).json()
-        for entry in captured["headers"]:
+        # Filter by provider: the captured-headers list is cross-provider once
+        # both OpenAI and Anthropic aliases exist. Assert only on the OpenAI
+        # rows here — Anthropic traffic uses x-api-key, not Authorization.
+        openai_entries = [e for e in captured["headers"] if e.get("provider") == "openai"]
+        assert openai_entries, "no OpenAI traffic captured at upstream"
+        for entry in openai_entries:
             assert shard_a not in entry["authorization"], "Shard-A leaked to upstream!"
             assert entry["authorization"] == f"Bearer {fake_key}", (
                 "Unexpected authorization value at upstream"
             )
+
+
+class TestOpenAISDKOpenClaw:
+    """Prove the openai Python SDK works drop-in against the containerized proxy + mock."""
+
+    def test_basic_chat_via_openai_sdk(self, openclaw_stack):
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+        )
+        resp = client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert resp.choices, f"no choices in response: {resp}"
+        assert resp.choices[0].message.content == "Hello from mock upstream!"
+
+    def test_streaming_via_openai_sdk(self, openclaw_stack):
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+        )
+        stream = client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+        chunks = list(stream)
+        assert chunks, "stream yielded zero chunks — SSE broke through proxy"
+        contents = [
+            c.choices[0].delta.content for c in chunks if c.choices and c.choices[0].delta.content
+        ]
+        assert "".join(contents) == "Hello!"
+
+    def test_bad_model_raises_not_found_via_openai_sdk(self, openclaw_stack):
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+            max_retries=0,
+        )
+        with pytest.raises(openai.APIStatusError) as exc:
+            client.chat.completions.create(
+                model="gpt-does-not-exist-zzz",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code == 404
+        msg = str(exc.value).lower()
+        assert "traceback" not in msg
+        assert "worthless" not in msg
+
+    def test_upstream_5xx_surfaces_as_typed_error_via_openai_sdk(self, openclaw_stack):
+        """Adversarial: upstream 500 must surface as openai.InternalServerError
+        (typed 5xx subclass), not a generic APIError or raw HTTP exception."""
+        proxy_port, mock_port, _fake_key, shard_a, alias, _proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+            max_retries=0,
+        )
+        with pytest.raises(openai.APIStatusError) as exc:
+            client.chat.completions.create(
+                model="gpt-trigger-5xx",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code >= 500, (
+            f"expected 5xx passthrough, got {exc.value.status_code}"
+        )
+        assert "traceback" not in str(exc.value).lower()
+        assert "worthless" not in str(exc.value).lower()
+
+
+_SPEND_LOG_SUM_SNIPPET = (
+    "import sqlite3, sys;"
+    "c = sqlite3.connect('/data/worthless.db');"
+    "q = 'SELECT COALESCE(SUM(tokens), 0) FROM spend_log WHERE key_alias = ?';"
+    "print(c.execute(q, (sys.argv[1],)).fetchone()[0]);"
+)
+
+_SPEND_LOG_CLEAR_SNIPPET = (
+    "import sqlite3, sys;"
+    "c = sqlite3.connect('/data/worthless.db');"
+    "c.execute('DELETE FROM spend_log WHERE key_alias = ?', (sys.argv[1],));"
+    "c.commit();"
+)
+
+
+def _spend_log_sum(proxy_container: str, alias: str) -> int:
+    """Query /data/worthless.db spend_log for total tokens recorded for an alias."""
+    result = docker_exec(
+        proxy_container,
+        ["python", "-c", _SPEND_LOG_SUM_SNIPPET, alias],
+    )
+    assert result.returncode == 0, f"spend_log query failed: {result.stderr}"
+    return int(result.stdout.strip() or "0")
+
+
+def _spend_log_clear(proxy_container: str, alias: str) -> None:
+    """Reset spend_log for an alias so assertions start from zero."""
+    result = docker_exec(
+        proxy_container,
+        ["python", "-c", _SPEND_LOG_CLEAR_SNIPPET, alias],
+    )
+    assert result.returncode == 0, f"spend_log delete failed: {result.stderr}"
+
+
+class TestMeteringStreamingOpenAI:
+    """WOR-240: prove streaming metering records > 0 tokens even when the client
+    does not set stream_options.include_usage=true.
+
+    Default openai-python streaming does NOT set include_usage. Without the
+    flag, real OpenAI emits no usage field in any chunk — our proxy's
+    StreamingUsageCollector then returns None and record_spend is called with
+    tokens=0. The hard spend cap silently never fires on the majority of agent
+    traffic. Fix: proxy must inject stream_options.include_usage=true when
+    forwarding an OpenAI streaming request that lacks it.
+    """
+
+    def test_streaming_without_include_usage_meters_tokens(self, openclaw_stack):
+        """MAIN bug proof. FAILS on current proxy (no include_usage injection)."""
+        proxy_port, mock_port, _fake_key, shard_a, alias, proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+        _spend_log_clear(proxy_container, alias)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+        )
+        stream = client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        )
+        list(stream)
+
+        total_tokens = _spend_log_sum(proxy_container, alias)
+        assert total_tokens > 0, (
+            f"proxy metered {total_tokens} tokens on streaming without include_usage — "
+            f"spend cap would silently never fire"
+        )
+
+    def test_streaming_with_client_include_usage_preserved(self, openclaw_stack):
+        """Regression guard. Clients that already set include_usage must keep working."""
+        proxy_port, mock_port, _fake_key, shard_a, alias, proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+        _spend_log_clear(proxy_container, alias)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+        )
+        stream = client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        list(stream)
+
+        total_tokens = _spend_log_sum(proxy_container, alias)
+        assert total_tokens > 0, (
+            "proxy did not meter a streaming request that explicitly set "
+            "stream_options.include_usage=true — fix regression"
+        )
+
+    def test_nonstreaming_meters_tokens(self, openclaw_stack):
+        """Regression guard. Non-streaming path is unaffected by the fix and must stay green."""
+        proxy_port, mock_port, _fake_key, shard_a, alias, proxy_container = openclaw_stack
+        _clear_mock_headers(mock_port)
+        _spend_log_clear(proxy_container, alias)
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}/v1",
+        )
+        client.chat.completions.create(
+            model="gpt-4o",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        total_tokens = _spend_log_sum(proxy_container, alias)
+        assert total_tokens > 0, "non-streaming metering regressed"
+
+
+class TestAnthropicSDKOpenClaw:
+    """Prove the anthropic Python SDK works drop-in against the containerized proxy + mock."""
+
+    def test_basic_message_via_anthropic_sdk(self, openclaw_stack, openclaw_anthropic_alias):
+        proxy_port, mock_port, *_ = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+        )
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert resp.content, f"no content in response: {resp}"
+        assert resp.content[0].text == "Hello from mock upstream!"
+
+    def test_streaming_via_anthropic_sdk(self, openclaw_stack, openclaw_anthropic_alias):
+        proxy_port, mock_port, *_ = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+        )
+        texts = []
+        with client.messages.stream(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        ) as stream:
+            for text in stream.text_stream:
+                texts.append(text)
+        assert texts, "Anthropic stream yielded zero text events — SSE broke through proxy"
+        assert "".join(texts) == "Hello!"
+
+    def test_bad_model_raises_bad_request_via_anthropic_sdk(
+        self, openclaw_stack, openclaw_anthropic_alias
+    ):
+        proxy_port, mock_port, *_ = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+            max_retries=0,
+        )
+        with pytest.raises(anthropic.BadRequestError) as exc:
+            client.messages.create(
+                model="claude-does-not-exist-zzz",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code == 400
+        msg = str(exc.value).lower()
+        assert "traceback" not in msg
+        assert "worthless" not in msg
+
+    def test_upstream_5xx_surfaces_as_typed_error_via_anthropic_sdk(
+        self, openclaw_stack, openclaw_anthropic_alias
+    ):
+        """Adversarial: upstream 500 must surface as anthropic.InternalServerError
+        (typed 5xx subclass), not a generic APIError or raw HTTP exception."""
+        proxy_port, mock_port, *_ = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _clear_mock_headers(mock_port)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+            max_retries=0,
+        )
+        with pytest.raises(anthropic.APIStatusError) as exc:
+            client.messages.create(
+                model="claude-trigger-5xx",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        assert exc.value.status_code >= 500, (
+            f"expected 5xx passthrough, got {exc.value.status_code}"
+        )
+        assert "traceback" not in str(exc.value).lower()
+        assert "worthless" not in str(exc.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# WOR-241: Anthropic cache token metering gap
+# ---------------------------------------------------------------------------
+
+# Mock values emitted by _anthropic_stream_events when include_cache=True:
+#   message_start.usage.input_tokens              = 10
+#   message_start.usage.cache_creation_input_tokens = 4
+#   message_start.usage.cache_read_input_tokens     = 6
+#   message_delta.usage.output_tokens              =  1
+# Expected total WITH fix  = 10 + 4 + 6 + 1 = 21
+# Expected total WITHOUT fix = 10 + 0 + 0 + 1 = 11  (cache fields ignored)
+_CACHE_HIT_EXPECTED_TOKENS = 21
+_CACHE_HIT_NO_FIX_TOKENS = 11
+
+
+class TestMeteringCacheTokensAnthropic:
+    """WOR-241: prove Anthropic cache tokens (creation + read) are included
+    in the proxy's metered total.
+
+    Anthropic's prompt-cache API adds two extra usage fields to
+    ``message_start.message.usage``:
+      - ``cache_creation_input_tokens``: tokens written to the cache (1.25x cost)
+      - ``cache_read_input_tokens``:    tokens read from the cache   (0.10x cost)
+
+    Both represent real token consumption that spend-cap rules must see.
+    Without the fix, the proxy counts only ``input_tokens`` +
+    ``output_tokens`` and silently under-meters every cached prompt, letting
+    spend caps fire too late (or never).
+    """
+
+    def test_cache_tokens_included_in_streaming_meter(
+        self, openclaw_stack, openclaw_anthropic_alias
+    ):
+        """MAIN bug proof. FAILS on unpatched proxy (cache fields ignored)."""
+        proxy_port, mock_port, *_ = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _proxy_container = openclaw_stack[5]
+        _clear_mock_headers(mock_port)
+        _spend_log_clear(_proxy_container, alias)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+        )
+        # Model name contains 'cache-hit' — triggers mock to emit cache fields
+        with client.messages.stream(
+            model="claude-haiku-cache-hit",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        ) as stream:
+            list(stream.text_stream)
+
+        total_tokens = _spend_log_sum(_proxy_container, alias)
+        assert total_tokens == _CACHE_HIT_EXPECTED_TOKENS, (
+            f"proxy metered {total_tokens} tokens; expected {_CACHE_HIT_EXPECTED_TOKENS}. "
+            f"If {_CACHE_HIT_NO_FIX_TOKENS}: cache fields (creation + read) are being ignored."
+        )
+
+    def test_non_cache_streaming_unaffected(self, openclaw_stack, openclaw_anthropic_alias):
+        """Regression guard: normal Anthropic streaming still meters correctly."""
+        proxy_port, mock_port, *_ = openclaw_stack
+        _fake_key, shard_a, alias = openclaw_anthropic_alias
+        _proxy_container = openclaw_stack[5]
+        _clear_mock_headers(mock_port)
+        _spend_log_clear(_proxy_container, alias)
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{proxy_port}/{alias}",
+        )
+        # Normal model — no cache fields in mock response
+        with client.messages.stream(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=16,
+            messages=[{"role": "user", "content": "hi"}],
+        ) as stream:
+            list(stream.text_stream)
+
+        total_tokens = _spend_log_sum(_proxy_container, alias)
+        # mock emits input=10, output=1 -> expect 11 (no cache tokens)
+        assert total_tokens == 11, (
+            f"non-cache Anthropic streaming metered {total_tokens} tokens; "
+            f"expected 11 (input=10, output=1). Regression in base metering."
+        )

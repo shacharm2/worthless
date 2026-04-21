@@ -15,10 +15,14 @@ import time
 import uuid
 from pathlib import Path
 
+import anthropic
 import httpx
+import openai
 import pytest
 
 from tests._docker_helpers import docker_available, docker_exec
+from tests.helpers import fake_anthropic_key, fake_openai_key
+from worthless.cli.commands.lock import _make_alias
 
 # ---------------------------------------------------------------------------
 # Module-level skip + marker
@@ -1046,3 +1050,101 @@ class TestComposeSecurity:
         assert result.returncode == 0
         assert "worthless" in result.stdout
         assert "uid=0" not in result.stdout
+
+
+class TestSDKSmokeDocker:
+    """Smoke: SDKs on the host can reach the production Docker image's proxy.
+
+    Guards against regressions in the production image's route dispatch —
+    e.g., if the Dockerfile stops shipping uvicorn or the worthless CLI,
+    this catches it before release. Does NOT prove round-trip round-trip
+    correctness; that's the Compose lane's job.
+
+    Design note: plan originally called for in-container pip install of
+    the SDKs, but the container's /tmp is mounted noexec (per the
+    container fixture at line 179) and both openai and anthropic pull
+    in Rust-compiled extensions (jiter, tokenizers) that can't import
+    from noexec tmpfs. Running the SDKs from the host against the
+    containerized proxy proves the same thing — "the image serves SDK
+    requests" — without fighting the tmpfs policy.
+    """
+
+    def _enroll_fake_key(self, container_name: str, env_var: str, fake_key: str) -> None:
+        env_content = f"{env_var}={fake_key}"
+        subprocess.run(
+            [
+                "docker",
+                "exec",
+                container_name,
+                "sh",
+                "-c",
+                f"cat > /tmp/.env << 'ENVEOF'\n{env_content}\nENVEOF",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        lock = docker_exec(container_name, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock.returncode == 0, f"lock failed: {lock.stderr}"
+
+    def _read_shard_a(self, container_name: str, env_var: str) -> str:
+        result = docker_exec(
+            container_name,
+            ["sh", "-c", f"grep '^{env_var}=' /tmp/.env | cut -d= -f2-"],
+        )
+        assert result.returncode == 0
+        return result.stdout.strip()
+
+    def test_openai_sdk_reaches_proxy_from_host(self, container: tuple[str, int]) -> None:
+        name, port = container
+        fake_key = fake_openai_key()
+        alias = _make_alias("openai", fake_key)
+
+        self._enroll_fake_key(name, "OPENAI_API_KEY", fake_key)
+        shard_a = self._read_shard_a(name, "OPENAI_API_KEY")
+        assert shard_a != fake_key
+        assert shard_a.startswith("sk-")
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{port}/{alias}/v1",
+        )
+        with pytest.raises(openai.APIError) as exc:
+            client.chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        err_name = type(exc.value).__name__
+        err_str = str(exc.value).lower()
+        assert "connectionerror" != err_name, (
+            f"SDK raised raw ConnectionError — proxy unreachable: {exc.value}"
+        )
+        assert "traceback" not in err_str
+        assert "worthless" not in err_str
+
+    def test_anthropic_sdk_reaches_proxy_from_host(self, container: tuple[str, int]) -> None:
+        name, port = container
+        fake_key = fake_anthropic_key()
+        alias = _make_alias("anthropic", fake_key)
+
+        self._enroll_fake_key(name, "ANTHROPIC_API_KEY", fake_key)
+        shard_a = self._read_shard_a(name, "ANTHROPIC_API_KEY")
+        assert shard_a != fake_key
+        assert shard_a.startswith("sk-ant-")
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{port}/{alias}",
+        )
+        with pytest.raises(anthropic.APIError) as exc:
+            client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        err_name = type(exc.value).__name__
+        err_str = str(exc.value).lower()
+        assert "connectionerror" != err_name
+        assert "traceback" not in err_str
+        assert "worthless" not in err_str
