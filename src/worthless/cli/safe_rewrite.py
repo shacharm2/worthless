@@ -14,6 +14,8 @@ byte-identical across every refusal path.
 from __future__ import annotations
 
 import errno
+import hashlib
+import hmac
 import io
 import logging
 import os
@@ -439,13 +441,26 @@ def _check_size_sniff_delta(
     baseline_fstat: os.stat_result,
     new_content: bytes,
     target: Path,
+    expected_baseline_sha256: bytes | None = None,
 ) -> None:
-    """Invariant 8: size + line-count + sniff + delta on existing & new content."""
+    """Invariant 8: size + line-count + sniff + delta on existing & new content.
+
+    If *expected_baseline_sha256* is supplied, the under-lock read of the
+    existing file is hashed and compared; a mismatch refuses with
+    :attr:`UnsafeReason.TOCTOU`. This lets callers pass the baseline they
+    derived their *new_content* from and catch a concurrent writer that
+    mutated the file after the caller's read but before we took the lock.
+    """
     old_size = baseline_fstat.st_size
     if old_size > _MAX_BYTES:
         raise _refuse(UnsafeReason.SIZE, target)
 
     existing_buf = _read_existing(target_fd, old_size, target)
+
+    if expected_baseline_sha256 is not None:
+        actual_sha = hashlib.sha256(existing_buf).digest()
+        if not hmac.compare_digest(actual_sha, expected_baseline_sha256):
+            raise _refuse(UnsafeReason.TOCTOU, target)
 
     # Line-count gate (bytes).
     line_count = _line_count(existing_buf)
@@ -641,6 +656,7 @@ def safe_rewrite(
     original_user_arg: Path,
     repo_root: Path | None = None,
     allow_outside_repo: bool = False,
+    expected_baseline_sha256: bytes | None = None,
     _hook_before_replace: Callable[[], None] | None = None,
 ) -> None:
     """Atomically rewrite a literal ``.env`` file under invariant gates.
@@ -648,6 +664,12 @@ def safe_rewrite(
     Raises :class:`UnsafeRewriteRefused` for any invariant violation. The
     public exception message is opaque; callers inspect ``.reason`` or the
     DEBUG log for granular cause.
+
+    ``expected_baseline_sha256``: when supplied, the under-lock read of the
+    existing file is SHA-256 hashed and compared against this value. A
+    mismatch refuses the write with :attr:`UnsafeReason.TOCTOU`, so callers
+    that derived *new_content* from a previously-read baseline cannot clobber
+    a concurrent writer's changes.
 
     ``_hook_before_replace`` fires after the tmp file has been written,
     fsynced, and the parent directory fsynced - and before the atomic
@@ -678,7 +700,13 @@ def safe_rewrite(
         _flock_exclusive_nonblocking(target_fd, target)
         flock_held = True
 
-        _check_size_sniff_delta(target_fd, baseline_fstat, new_content, target)
+        _check_size_sniff_delta(
+            target_fd,
+            baseline_fstat,
+            new_content,
+            target,
+            expected_baseline_sha256=expected_baseline_sha256,
+        )
 
         parent = target.parent
         dir_fd = _open_dir_fd(parent, target)
