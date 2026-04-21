@@ -1,17 +1,19 @@
 # install.sh manual smoke checklist (WOR-235)
 
-Filled out per release. Run the full list before pushing a new install.sh to `worthless.sh`.
+Filled out per release. Run the full list before pushing a new install.sh
+to `worthless.sh`.
 
-See also [docs/install-security.md](../../docs/install-security.md) for the full release-blocking checklist and kill-switch runbook.
+For supply-chain trust roots, see
+[docs/install-security.md](../../docs/install-security.md).
+Release-hardening TODOs (SHA manifest, detached sig, kill-switch,
+second-reviewer) are tracked under Linear epic
+[WOR-257](https://linear.app/plumbusai/issue/WOR-257) — not yet wired,
+so not yet on this checklist.
 
 ## Pre-flight
 
-- [ ] CI green on `tests.yml`, `install-smoke.yml`, Docker integration job
+- [ ] CI green on `tests.yml`, `install-smoke.yml`, and the Docker integration job for the tagged commit
 - [ ] `UV_VERSION` / `ASTRAL_INSTALLER_SHA256` / `WORTHLESS_VERSION` triplet re-verified (see "Bumping UV_VERSION" below)
-- [ ] `install.sh.sha256` published alongside `install.sh` at `worthless.sh/v<ver>/` *(planned — see docs/install-security.md "What install.sh does NOT verify today")*
-- [ ] cosign / minisign detached signature published alongside SHA file *(planned — same)*
-- [ ] Release-blocking checklist in docs/install-security.md signed off (Worker config diff, second-reviewer sign-off)
-- [ ] Kill-switch rehearsal date within last 90 days (see "Kill-switch rehearsal" below)
 
 ## Personal Mac (current dev machine)
 
@@ -58,7 +60,8 @@ See also [docs/install-security.md](../../docs/install-security.md) for the full
 
 ## Bumping UV_VERSION
 
-When pulling in a new uv release, the SHA pin in `install.sh` must be recomputed from the live Astral CDN — not copied from release notes.
+When pulling in a new uv release, the SHA pin in `install.sh` must be
+recomputed from the live Astral CDN — not copied from release notes.
 
 - [ ] Set the target version: `NEW=0.11.8`  *(replace with actual)*
 - [ ] Fetch + hash the Astral installer:
@@ -67,25 +70,14 @@ When pulling in a new uv release, the SHA pin in `install.sh` must be recomputed
   ```
 - [ ] Edit `install.sh`: update `UV_VERSION` and `ASTRAL_INSTALLER_SHA256` together in one commit
 - [ ] Re-run `pytest -m docker tests/test_install_docker.py` to confirm the bare-Ubuntu E2E still passes with the new pair
-- [ ] Second maintainer independently recomputes the SHA and signs off on the commit
 
-Never accept a SHA256 from a pull request without re-fetching yourself. A malicious PR that bumps both `UV_VERSION` and the SHA together to attacker-controlled values is exactly the attack this pin is supposed to prevent.
-
-## Kill-switch rehearsal
-
-Required at least every 90 days, and blocking for any release where the last rehearsal is older. Full runbook in [docs/install-security.md](../../docs/install-security.md#kill-switch-runbook).
-
-- [ ] Break-glass maintainer (not the primary) logs into Cloudflare
-- [ ] Deploys a 503-response Worker to the **staging** domain (not prod)
-- [ ] Verifies `curl -sSL https://staging.worthless.sh` returns 503 with the "installer temporarily unavailable" message
-- [ ] Reverts the staging Worker
-- [ ] Records rehearsal date + maintainer initials in the release checklist
-
-If the break-glass maintainer cannot complete the rehearsal (lost access, MFA broken, role revoked), the issue blocks the next `install.sh` release until resolved.
+Never accept a SHA256 from a pull request without re-fetching yourself.
+A malicious PR that bumps both `UV_VERSION` and the SHA together to
+attacker-controlled values is exactly the attack this pin is supposed
+to prevent.
 
 ## Sign-off
 
 - [ ] All boxes ticked
 - [ ] Release tag pushed
-- [ ] Worker config promoted from staging to prod
 - [ ] Linear WOR-235 closed with PR + commit references
