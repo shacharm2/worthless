@@ -70,7 +70,6 @@ _TMP_RETRIES: int = 3
 _SHELL_PREFIXES: tuple[str, ...] = (
     "#!",
     "alias ",
-    "export ",
     "function ",
     "source ",
     "if ",
@@ -78,6 +77,9 @@ _SHELL_PREFIXES: tuple[str, ...] = (
     "eval ",
     "eval\t",
 )
+# "export KEY=value" is valid dotenv syntax (python-dotenv reads it; our own
+# rewriter must preserve it). Actual shell rc files (.zshrc, .bashrc, .profile)
+# are already blocked by the basename denylist before sniff ever runs.
 _SHELL_INFIX_MARKERS: tuple[str, ...] = ("<<",)
 
 # Darwin's F_FULLFSYNC command constant. We don't rely on fcntl exporting

