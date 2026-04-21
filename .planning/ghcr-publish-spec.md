@@ -2,7 +2,6 @@
 
 **Linear**: WOR-236 (v1.1 project → Wave 7 — Launch → Launch Blockers epic WOR-234)
 **Branch**: `gsd/wor-236-ghcr-docker`
-**Worktree**: `/Users/shachar/Projects/worthless/worthless-wor236`
 **Spec version**: v2 (folds in deployment-engineer + security-engineer + brutus review findings)
 
 ## Target (one sentence)
@@ -123,12 +122,11 @@ Zero hand-rolled string matching. This was a review fix.
 
 ## Definition of Done
 
-- [ ] `.github/workflows/publish-docker.yml` committed on `gsd/wor-236-ghcr-docker`
-- [ ] `actionlint` run (or visual diff against `publish.yml` for syntax/style parity)
-- [ ] PR body: one sentence telling users to pin `:X.Y.Z` for prod, `:latest` moves on every release
-- [ ] PR body: release-notes line "Unsigned — verify via provenance attestation; cosign signing tracked in <new-cosign-ticket-id>"
-- [ ] Two new tickets filed in Linear (see below)
-- [ ] Commit message: `feat(ci): WOR-236 publish multi-arch docker image to GHCR on tag push`
+- [x] `.github/workflows/publish-docker.yml` committed on `gsd/wor-236-ghcr-docker`
+- [x] Actionlint + zizmor + secrets-scan green in CI
+- [x] `docs/install-docker.md` documents pull, pinning guidance, and `cosign verify` command
+- [x] Follow-up tickets filed in Linear (WOR-253, WOR-254, WOR-255, WOR-256)
+- [x] Sign-before-tag invariant: canonical tags (`:X.Y.Z` / `:X.Y` / `:latest`) only created after cosign sign succeeds — CodeRabbit structural finding resolved
 
 ## Out-of-repo follow-ups (not this ticket)
 

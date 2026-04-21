@@ -143,18 +143,24 @@ jobs:
           only-fixed: true
           fail-build: true
 
-      - name: Build and push multi-arch image
+      # Sign-before-tag invariant: we push by DIGEST ONLY (no human-readable
+      # tags) so the image exists at sha256:... but is not yet pullable via
+      # :X.Y.Z / :X.Y / :latest. We sign the digest next; only if signing
+      # succeeds do we promote the digest to tags. This guarantees every
+      # published human tag in GHCR points at a signed digest — no race
+      # window where a transient sigstore outage leaves a tagged-unsigned
+      # release visible to users.
+      - name: Push multi-arch manifest list by digest (no tags)
         id: push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          push: false
+          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/worthless-proxy,push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           # Provenance + SBOM attestations attached to the manifest list.
-          # Cosign signature added in the next step — see below.
           provenance: true
           sbom: true
           # No GHA cache — tag-only workflow runs infrequently; cache
@@ -163,15 +169,17 @@ jobs:
       # Cosign keyless signing via OIDC. See docs/install-docker.md for the
       # matching `cosign verify` command — keep the identity regex there in
       # sync with the SAN format embedded by Fulcio on this workflow file.
-      - name: Sign image with cosign (keyless, OIDC)
+      - name: Sign digest with cosign (keyless, OIDC)
         env:
           IMAGE: ghcr.io/${{ github.repository_owner }}/worthless-proxy
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           # Retry up to 3x with backoff. Rekor and Fulcio are external
-          # sigstore services — transient 5xx would otherwise leave the
-          # image published (already done above) but unsigned. cosign sign
-          # is idempotent by digest, so retrying is safe.
+          # sigstore services — transient 5xx would otherwise block the
+          # release. cosign sign is idempotent by digest, so retrying is
+          # safe. If all 3 fail, we exit 1 without promoting to tags —
+          # the image exists at sha256:... but is not pullable by any
+          # canonical tag, preserving the sign-before-tag invariant.
           for attempt in 1 2 3; do
             if cosign sign --yes "${IMAGE}@${DIGEST}"; then
               exit 0
@@ -179,8 +187,29 @@ jobs:
             echo "cosign sign attempt ${attempt} failed; sleeping 20s before retry..."
             sleep 20
           done
-          echo "::error::cosign sign failed after 3 attempts — image published but UNSIGNED."
+          echo "::error::cosign sign failed after 3 attempts — image exists at ${IMAGE}@${DIGEST} but no human tags were created. Re-run the workflow or delete the orphan digest."
           exit 1
+
+      # Only reached if signing succeeded. Promote the signed digest to
+      # all the tags metadata-action produced (:X.Y.Z, :X.Y, :latest).
+      # docker buildx imagetools create operates on the manifest list, so
+      # every arch in the list inherits the tag pointer atomically.
+      - name: Promote signed digest to human tags
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/worthless-proxy
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          tag_args=""
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && tag_args="${tag_args} --tag ${tag}"
+          done <<< "$TAGS"
+          if [ -z "$tag_args" ]; then
+            echo "::error::No tags produced by metadata-action — nothing to promote."
+            exit 1
+          fi
+          # shellcheck disable=SC2086
+          docker buildx imagetools create ${tag_args} "${IMAGE}@${DIGEST}"
 
   visibility:
     name: Flip GHCR package visibility to public
