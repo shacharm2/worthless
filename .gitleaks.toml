@@ -1,5 +1,5 @@
 # Gitleaks config — extends default rules with SR-05 denylist patterns
-# Ref: SECURITY_RULES.md SR-04, SR-05
+# Ref: CONTRIBUTING-security.md SR-04, SR-05
 
 [extend]
 useDefault = true
@@ -36,7 +36,8 @@ regex = '''(?i)(?:secret|token|key|credential|password|shard)\s*[:=]\s*["']?[A-Z
 [allowlist]
 paths = [
     '''\.gitleaks\.toml$''',
-    '''SECURITY_RULES\.md$''',
+    '''CONTRIBUTING-security\.md$''',
+    '''docs/security\.md$''',
     '''\.planning/research/.*\.md$''',
     '''\.planning/snapshots/.*\.json$''',
     '''\.planning/ROADMAP\.md$''',

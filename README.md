@@ -139,15 +139,15 @@ uv run pytest
 
 ## Learn more
 
-- [Security model](docs/security-model.md) -- how the split-key proxy works
+- [Security model](docs/security.md) -- threat model, invariants, known limitations
 - [Engineering docs](engineering/README.md) -- internal developer documentation for the live codebase
 - [Engineering architecture](engineering/architecture.md) -- current internal architecture overview
-- [Security rules](SECURITY_RULES.md) -- invariants all contributions must preserve
+- [Contributor security rules](CONTRIBUTING-security.md) -- invariants all contributions must preserve
 - [SKILL.md](SKILL.md) -- agent discovery file
 
 ## Contributing
 
-PRs welcome. Read [SECURITY_RULES.md](SECURITY_RULES.md) first.
+PRs welcome. Read [CONTRIBUTING-security.md](CONTRIBUTING-security.md) first.
 
 ## License
 

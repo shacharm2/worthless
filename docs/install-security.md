@@ -4,7 +4,7 @@ Supply-chain model for `curl -sSL https://worthless.sh | sh`: which hosts
 the installer talks to, and what it verifies today.
 
 For general vulnerability reporting, see [SECURITY.md](../SECURITY.md).
-For the cryptographic architecture, see [SECURITY_POSTURE.md](../SECURITY_POSTURE.md).
+For the cryptographic architecture, see [security.md](security.md).
 
 ## Trust roots
 
