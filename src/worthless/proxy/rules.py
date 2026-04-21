@@ -25,6 +25,24 @@ from worthless.proxy.errors import (
 )
 
 
+def _estimate_tokens(body: bytes) -> int:
+    """Best-effort token reservation estimate from request body.
+
+    Reads ``max_tokens`` from the JSON body.  Falls back to 4096 — a
+    conservative upper bound so the spend cap remains a hard limit even
+    when the client omits the field.
+    """
+    try:
+        payload = json.loads(body)
+        if isinstance(payload, dict):
+            v = payload.get("max_tokens")
+            if isinstance(v, int) and v > 0:
+                return v
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return 4096
+
+
 @runtime_checkable
 class Rule(Protocol):
     """Protocol for a single rule in the gate-before-reconstruct pipeline."""
@@ -49,6 +67,16 @@ class RulesEngine:
                 return result
         return None
 
+    async def release_spend_reservation(self, alias: str, amount: int) -> None:
+        """Release a spend reservation placed by SpendCapRule during evaluate().
+
+        No-op if SpendCapRule is not in the rule list or amount is 0.
+        """
+        for rule in self.rules:
+            if isinstance(rule, SpendCapRule):
+                await rule.release_reservation(alias, amount)
+                return
+
 
 @dataclass
 class SpendCapRule:
@@ -60,62 +88,79 @@ class SpendCapRule:
     Returns None if no cap is configured (NULL spend_cap) or spend is under cap.
     Returns 402 ErrorResponse when cap is exceeded or on DB error.
 
-    .. note:: PoC limitation — the spend cap is a best-effort pre-check, not a
-       hard enforcement boundary. Token count is only known after the upstream
-       response, so check (here) and record (in metering.py) are separate
-       operations. Two concurrent requests can both pass the cap check before
-       either records its spend. Production fix: reserve estimated tokens at
-       check time, reconcile after response.
+    Reservation mechanism (WOR-242): when a request passes the cap check, an
+    in-memory reservation of ``_estimate_tokens(body)`` tokens is held until
+    ``release_reservation`` is called.  Subsequent concurrent requests include
+    the reservation in their effective-total calculation, preventing the TOCTOU
+    overrun that arises when N requests all read the same stale DB total.
     """
 
     db: aiosqlite.Connection
+    _reserved: dict[str, int] = field(default_factory=dict, init=False, repr=False)
+    _reserve_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
     async def evaluate(
         self, alias: str, request: object, *, provider: str = "openai", body: bytes = b""
     ) -> ErrorResponse | None:
         try:
-            # BEGIN IMMEDIATE acquires a write lock, preventing TOCTOU races
-            await self.db.execute("BEGIN IMMEDIATE")
-            try:
-                # Check if there's a spend cap for this alias
-                async with self.db.execute(
-                    "SELECT spend_cap FROM enrollment_config WHERE key_alias = ?",
-                    (alias,),
-                ) as cur:
-                    row = await cur.fetchone()
+            async with self._reserve_lock:
+                # BEGIN IMMEDIATE acquires a write lock, serialising concurrent
+                # readers on this connection (H-3).
+                await self.db.execute("BEGIN IMMEDIATE")
+                try:
+                    async with self.db.execute(
+                        "SELECT spend_cap FROM enrollment_config WHERE key_alias = ?",
+                        (alias,),
+                    ) as cur:
+                        row = await cur.fetchone()
 
-                if row is None:
+                    if row is None:
+                        await self.db.execute("ROLLBACK")
+                        return None
+
+                    spend_cap = row[0]
+                    if spend_cap is None:
+                        await self.db.execute("ROLLBACK")
+                        return None
+
+                    async with self.db.execute(
+                        "SELECT COALESCE(SUM(tokens), 0) FROM spend_log WHERE key_alias = ?",
+                        (alias,),
+                    ) as cur:
+                        (total_tokens,) = await cur.fetchone()  # type: ignore[assignment]
+
                     await self.db.execute("ROLLBACK")
-                    return None
+                except Exception:
+                    try:
+                        await self.db.execute("ROLLBACK")
+                    except Exception:  # noqa: S110  # nosec B110
+                        pass
+                    raise
 
-                spend_cap = row[0]
-                if spend_cap is None:
-                    await self.db.execute("ROLLBACK")
-                    return None
-
-                # Sum tokens spent by this alias
-                async with self.db.execute(
-                    "SELECT COALESCE(SUM(tokens), 0) FROM spend_log WHERE key_alias = ?",
-                    (alias,),
-                ) as cur:
-                    (total_tokens,) = await cur.fetchone()  # type: ignore[assignment]
-
-                await self.db.execute("ROLLBACK")  # read-only, release lock
-
-                if total_tokens >= spend_cap:
+                # Include in-flight reservations from concurrent requests.
+                already_reserved = self._reserved.get(alias, 0)
+                if total_tokens + already_reserved >= spend_cap:
                     return spend_cap_error_response(provider=provider)
 
-                return None
-            except Exception:
-                # Ensure lock is released on inner error
-                try:
-                    await self.db.execute("ROLLBACK")
-                except Exception:  # noqa: S110 — ROLLBACK on error path; if it fails, re-raise original anyway  # nosec B110
-                    pass
-                raise
+                # Reserve up to the remaining budget so concurrent requests
+                # correctly observe that capacity is taken.
+                remaining = int(spend_cap) - total_tokens - already_reserved
+                reservation = min(_estimate_tokens(body), remaining)
+                self._reserved[alias] = already_reserved + reservation
+
+            return None
         except Exception:
-            # Fail-closed: any DB error -> deny request
             return spend_cap_error_response(provider=provider)
+
+    async def release_reservation(self, alias: str, amount: int) -> None:
+        """Return *amount* reserved tokens to the available budget.
+
+        Called after the actual spend has been recorded (or when the upstream
+        request fails with no tokens consumed).  Safe to call with amount=0.
+        """
+        async with self._reserve_lock:
+            held = self._reserved.get(alias, 0)
+            self._reserved[alias] = max(0, held - amount)
 
 
 @dataclass

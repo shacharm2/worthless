@@ -921,6 +921,75 @@ async def test_spend_cap_concurrent_under_cap_serialized(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_spend_cap_toctou_20_concurrent(tmp_path):
+    """TOCTOU regression: 20 concurrent requests on ONE rule instance must
+    honour the hard cap. Without the reservation fix all 20 observe
+    total_tokens=0 and all return None (pass), overrunning the cap 4x.
+
+    Setup: cap=90, max_tokens=18 per request -> exactly 5 should pass
+    (5x18=90 <= cap).  Without the fix passes==20; with the fix passes==5.
+    """
+    db_path = str(tmp_path / "toctou.db")
+    async with aiosqlite.connect(db_path) as setup_db:
+        await setup_db.executescript(SCHEMA)
+        await setup_db.execute(
+            "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
+            ("k1", 90),
+        )
+        await setup_db.commit()
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        body = json.dumps(
+            {"max_tokens": 18, "messages": [{"role": "user", "content": "hi"}]}
+        ).encode()
+
+        results = await asyncio.gather(*[rule.evaluate("k1", None, body=body) for _ in range(20)])
+
+        passes = sum(1 for r in results if r is None)
+        assert passes == 5, (
+            f"Expected exactly 5 passes (cap=90, estimated_cost=18), got {passes}. "
+            "TOCTOU not fixed -- concurrent requests bypassed the spend cap."
+        )
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_release_reservation(tmp_path):
+    """release_reservation() returns budget so subsequent requests can proceed."""
+    db_path = str(tmp_path / "release.db")
+    async with aiosqlite.connect(db_path) as setup_db:
+        await setup_db.executescript(SCHEMA)
+        await setup_db.execute(
+            "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
+            ("k1", 18),
+        )
+        await setup_db.commit()
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        body = json.dumps({"max_tokens": 18}).encode()
+
+        # First request occupies the full budget
+        r1 = await rule.evaluate("k1", None, body=body)
+        assert r1 is None  # passes
+
+        # Second request is denied (budget fully reserved)
+        r2 = await rule.evaluate("k1", None, body=body)
+        assert r2 is not None  # denied
+
+        # After releasing reservation, third request can proceed
+        await rule.release_reservation("k1", 18)
+        r3 = await rule.evaluate("k1", None, body=body)
+        assert r3 is None  # passes again
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
 async def test_spend_cap_fail_closed_on_db_error(tmp_path):
     """SpendCapRule returns deny (ErrorResponse) when DB raises an exception."""
 

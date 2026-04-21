@@ -42,6 +42,7 @@ from worthless.proxy.rules import (
     RulesEngine,
     SpendCapRule,
     TokenBudgetRule,
+    _estimate_tokens,
 )
 from worthless.storage.repository import ShardRepository
 from worthless.storage.schema import SCHEMA
@@ -165,12 +166,12 @@ async def _lifespan(app: FastAPI):
 
     rules_engine = RulesEngine(
         rules=[
-            SpendCapRule(db=db),
             TokenBudgetRule(db=db),
             RateLimitRule(
                 default_rps=settings.default_rate_limit_rps,
                 db_path=settings.db_path,
             ),
+            SpendCapRule(db=db),  # LAST — reservation only placed after other rules pass
         ]
     )
     app.state.rules_engine = rules_engine
@@ -294,6 +295,10 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         # Starlette body-caching coupling — rules receive bytes, not stream)
         body = await request.body()
 
+        # Estimate max tokens for spend-cap reservation (WOR-242).
+        # Computed once here so error paths and spend recording can release it.
+        _spend_reservation = _estimate_tokens(body)
+
         # GATE: rules engine evaluates BEFORE any Fernet decrypt
         denial = await rules_engine.evaluate(alias, request, provider=encrypted.provider, body=body)
         if denial is not None:
@@ -357,10 +362,13 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 try:
                     upstream_resp = await httpx_client.send(upstream_req, stream=True)
                 except httpx.TimeoutException:
+                    await rules_engine.release_spend_reservation(alias, _spend_reservation)
                     return _make_gateway_response(504, "gateway timeout")
                 except httpx.ConnectError:
+                    await rules_engine.release_spend_reservation(alias, _spend_reservation)
                     return _make_gateway_response(502, "bad gateway")
                 except httpx.HTTPError:
+                    await rules_engine.release_spend_reservation(alias, _spend_reservation)
                     return _make_gateway_response(502, "bad gateway")
 
             # Relay response (key_buf is zeroed after secure_key exits)
@@ -387,6 +395,8 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     await record_spend(settings.db_path, alias, tokens, model, provider)
                 except Exception:
                     logger.warning("Failed to record spend for alias=%s", alias)
+                # Release the spend reservation now that actual tokens are recorded (WOR-242).
+                await rules_engine.release_spend_reservation(alias, _spend_reservation)
 
             if adapter_resp.status_code >= 400:
                 sanitized_body = _sanitize_upstream_error(
@@ -431,6 +441,8 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                             "for alias=%s; spend not recorded",
                             alias,
                         )
+                    # Release the spend reservation (WOR-242).
+                    await rules_engine.release_spend_reservation(alias, _spend_reservation)
 
                 return StreamingResponse(
                     _stream_with_metering(),
