@@ -306,7 +306,8 @@ class TestGateBeforeReconstruct:
                             body=error_body,
                             headers={"content-type": "application/json", **extra_headers},
                         )
-                    )
+                    ),
+                    "release_spend_reservation": AsyncMock(return_value=None),
                 },
             )()
 
