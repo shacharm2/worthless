@@ -455,16 +455,13 @@ def test_add_with_hash_not_preceded_by_space_allowed(
     assert b"API_KEY=sk-abc#tag\n" in env.read_bytes()
 
 
-def test_add_with_internal_quote_allowed(
-    tmp_path: Path,
-    make_env_file,
-) -> None:
-    """``sk-ab"cd`` (quote mid-value) is legal; only leading quote is rejected."""
-    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
-
-    add_or_rewrite_env_key(env, "API_KEY", 'sk-ab"cd')
-
-    assert b'API_KEY=sk-ab"cd\n' in env.read_bytes()
+# NOTE: a predecessor test here asserted "quote mid-value is allowed".
+# Finding 1 from CR on PR #86 tightened that contract: embedded ``"``
+# or ``'`` in a value is now refused globally (python-dotenv mis-parses
+# ``KEY="abc"def"`` as a syntax error the next time it reads the file,
+# so "refuse, don't mangle" applies). See
+# ``test_rewrite_refuses_values_with_embedded_quotes`` below for the
+# positive-space coverage of the new contract.
 
 
 # ---------------------------------------------------------------------------
@@ -679,3 +676,92 @@ def test_refuse_symlink_via_sister_apis(
         operation(env_path)
 
     assert exc_info.value.reason == UnsafeReason.SYMLINK
+
+
+# ---------------------------------------------------------------------------
+# CR PR #86 / sub-PR-4 — embedded-quote and missing-file coverage.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        pytest.param('abc"def', id="embedded-double-quote"),
+        pytest.param("abc'def", id="embedded-single-quote"),
+        pytest.param('"has-double"', id="surrounding-doubles"),
+        pytest.param("has'single'", id="embedded-singles"),
+    ],
+)
+def test_rewrite_refuses_values_with_embedded_quotes(
+    tmp_path: Path, make_env_file, sha256_of, bad_value
+) -> None:
+    """Values with embedded quotes must be refused.
+
+    Rewriting ``KEY="old"`` with such a value would produce a line
+    whose embedded quote closes the surrounding quote and leaves the
+    rest as noise, mis-parsed on read-back (python-dotenv flags the
+    line as unparsable). ``_validate_value`` refuses the value before
+    any rewrite can emit it.
+    """
+    env = make_env_file(tmp_path / ".env", content=b'KEY="old"\n')
+    baseline = sha256_of(env)
+
+    with pytest.raises(ValueError):
+        rewrite_env_key(env, "KEY", bad_value)
+
+    assert sha256_of(env) == baseline
+
+
+def test_add_or_rewrite_refuses_embedded_double_quote(
+    tmp_path: Path, make_env_file, sha256_of
+) -> None:
+    """``add_or_rewrite_env_key`` also refuses embedded-quote values."""
+    env = make_env_file(tmp_path / ".env", content=b'KEY="old"\n')
+    baseline = sha256_of(env)
+
+    with pytest.raises(ValueError):
+        add_or_rewrite_env_key(env, "KEY", 'abc"def')
+
+    assert sha256_of(env) == baseline
+
+
+def test_add_or_rewrite_creates_missing_env_file(tmp_path: Path) -> None:
+    """Missing ``.env`` MUST be created atomically with mode 0600.
+
+    ``safe_rewrite`` refuses missing targets by contract, so the
+    ``add_or_rewrite_env_key`` public docstring's "creating or updating"
+    promise requires a separate atomic-create path
+    (``O_CREAT|O_EXCL|O_NOFOLLOW`` + ``fsync``).
+    """
+    import stat as _stat
+
+    env = tmp_path / ".env"
+    assert not env.exists()
+
+    add_or_rewrite_env_key(env, "KEY", "value")
+
+    assert env.read_bytes() == b"KEY=value\n"
+    assert _stat.S_IMODE(env.stat().st_mode) == 0o600
+
+
+def test_add_or_rewrite_create_refuses_symlink_race(tmp_path: Path) -> None:
+    """A symlink at the target path must not be dereferenced on create.
+
+    ``O_NOFOLLOW`` ensures that if a racing symlink appears between the
+    "does ``.env`` exist?" check and the ``os.open`` call, the open
+    fails rather than silently writing through to the decoy.
+    """
+    decoy = tmp_path / "decoy"
+    decoy.write_text("")
+    link = tmp_path / ".env"
+    link.symlink_to(decoy)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(link, "KEY", "value")
+
+    assert exc_info.value.reason in {
+        UnsafeReason.SYMLINK,
+        UnsafeReason.TOCTOU,
+    }
+    # Decoy must be untouched.
+    assert decoy.read_text() == ""

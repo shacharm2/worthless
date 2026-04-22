@@ -525,35 +525,61 @@ def test_concurrent_flock_sibling_blocks(tmp_path, make_env_file, sha256_of, bar
 
 # ---------------------------------------------------------------------------
 # Test 15: ENOSPC on fsync(dir_fd) after rename.
+#
+# Call order inside safe_rewrite:
+#   1. fsync(tmp_fd)     — _fsync_tmp, BEFORE rename   (raises  → refuse)
+#   2. fsync(dir_fd)     — _fsync_dir, BEFORE rename   (raises  → refuse)
+#   3. fsync(dir_fd)     — inline,     AFTER  rename   (raises → WARN, no raise)
+# The contract for #3 is what we're pinning here and in the parametrized
+# ``enospc_dir_fsync`` branch of the ghost-tmp matrix below.
 # ---------------------------------------------------------------------------
 
 
-def test_enospc_on_fsync_dir_fd_post_rename(tmp_path, make_env_file, monkeypatch) -> None:
-    """ENOSPC on ``fsync(dir_fd)`` *after* rename: target has new_content.
-
-    The rename itself succeeded; only the final directory fsync failed.
-    The target sha256 must match new_content; the tmp is absent.
-    """
-    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
-
+def _inject_enospc_on_nth_fsync(monkeypatch, n: int) -> None:
+    """Monkey-patch ``os.fsync`` to raise ENOSPC on the *n*-th call only."""
     real_fsync = os.fsync
     seen = {"n": 0}
 
-    def _enospc_on_second_fsync(fd):  # noqa: ANN001
-        # First fsync = tmp_fd. Second fsync = dir_fd (post-rename).
+    def _fsync(fd):  # noqa: ANN001
         seen["n"] += 1
-        if seen["n"] == 2:
+        if seen["n"] == n:
             raise OSError(errno.ENOSPC, "no space")
         return real_fsync(fd)
 
-    monkeypatch.setattr(os, "fsync", _enospc_on_second_fsync)
+    monkeypatch.setattr(os, "fsync", _fsync)
 
-    with pytest.raises((UnsafeRewriteRefused, OSError)):
-        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
 
-    # After rename landed, target may be new_content; before, baseline.
-    # Whichever — no tmp leak.
+def test_enospc_on_fsync_dir_fd_post_rename(tmp_path, make_env_file, monkeypatch, caplog) -> None:
+    """ENOSPC on ``fsync(dir_fd)`` *after* rename MUST NOT raise.
+
+    Raising ``UnsafeRewriteRefused`` here would be a contract lie (the
+    rewrite *did* happen on disk; only the durability barrier failed)
+    and would cause idempotent retry callers that re-check baseline-sha
+    to double-write on top of the new content. See Finding 4 in the
+    sub-PR-4 writeup for the full argument.
+
+    The contract (all four clauses must hold):
+
+    1. ``safe_rewrite`` returns normally (no exception).
+    2. Target reflects ``new_content`` (rename committed before fsync).
+    3. No ``.env.tmp-*`` / ``.env.staging-*`` left behind.
+    4. A warning was logged via the ``worthless.safe_rewrite`` logger
+       so operators can see durability was unconfirmed.
+    """
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    new_content = b"KEY=new\n"
+
+    _inject_enospc_on_nth_fsync(monkeypatch, n=3)
+
+    with caplog.at_level("WARNING", logger="worthless.safe_rewrite"):
+        safe_rewrite(env, new_content, original_user_arg=env)
+
+    assert env.read_bytes() == new_content
     assert list(tmp_path.glob(".env.tmp-*")) == []
+    assert list(tmp_path.glob(".env.staging-*")) == []
+    assert any(
+        "post-rename parent-dir fsync failed" in rec.getMessage() for rec in caplog.records
+    ), f"expected post-rename warning, got: {[r.getMessage() for r in caplog.records]}"
 
 
 # ---------------------------------------------------------------------------
@@ -672,17 +698,26 @@ def test_hook_raises_between_fsync_and_rename(tmp_path, make_env_file, sha256_of
 
 
 # ---------------------------------------------------------------------------
-# Test 19: flock not leaked across exec (FD_CLOEXEC).
+# Test 19: flock provides cross-process mutual exclusion on the inode.
 # ---------------------------------------------------------------------------
 
 
-def test_flock_not_leaked_to_child_process(tmp_path, make_env_file) -> None:
-    """After flock acquire, spawning a child must NOT inherit the lock.
+def test_flock_blocks_concurrent_child_process(tmp_path, make_env_file) -> None:
+    """While safe_rewrite holds flock, a concurrent child must be blocked.
 
-    We indirectly assert by testing FD_CLOEXEC on every fd the module
-    opens: a mid-op hook spawns a subprocess that tries to acquire the
-    same flock; it must succeed (since the lock fd has FD_CLOEXEC and
-    is not inherited).
+    A mid-op hook spawns a subprocess that opens its *own* fd on the
+    same target and attempts ``LOCK_EX | LOCK_NB``. The child must
+    observe ``EWOULDBLOCK`` because the parent still holds the flock
+    on the inode (``flock`` is per-inode / per-open-file-description
+    advisory locking on Linux/macOS).
+
+    NOTE: This test verifies *cross-process lock contention* — NOT
+    ``FD_CLOEXEC`` inheritance. ``subprocess.run`` is invoked with
+    ``close_fds=True`` (POSIX default), which closes every inherited
+    fd in the child regardless of ``FD_CLOEXEC``, so this test cannot
+    distinguish "fd had CLOEXEC" from "fd inherited then closed by
+    subprocess". ``O_CLOEXEC`` on the tmp fd is covered by
+    ``test_tmp_open_uses_O_NOFOLLOW`` below.
     """
     env = make_env_file(tmp_path / ".env", b"KEY=v\n")
     child_result_file = tmp_path / "_child_result"
@@ -703,7 +738,9 @@ def test_flock_not_leaked_to_child_process(tmp_path, make_env_file) -> None:
                 Path({str(child_result_file)!r}).write_text(f"blocked:{{e.errno}}")
             """
         )
-        # close_fds=True is the default on POSIX; we rely on FD_CLOEXEC.
+        # close_fds=True is the POSIX default. This test verifies
+        # cross-process lock contention on the inode, not FD_CLOEXEC —
+        # close_fds would close any inherited fd regardless of CLOEXEC.
         subprocess.run(
             [sys.executable, "-c", script],
             check=False,
@@ -732,15 +769,11 @@ def test_flock_not_leaked_to_child_process(tmp_path, make_env_file) -> None:
     assert fired["b"], "hook never fired — child was never spawned"
     assert not isinstance(_ei.value, NotImplementedError)
 
-    # If the flock fd was NOT FD_CLOEXEC, the child inherited it and
-    # acquisition would either be no-op-on-same-open-file-description
-    # or blocked. The contract is: the fd must be FD_CLOEXEC and thus
-    # the child must see "blocked" (parent still holds its own flock
-    # on the separate open the child makes — actually, the child opens
-    # its own fd and flock is per open-file-description; the child's
-    # flock attempt on its OWN fd should succeed ONLY if no conflict).
-    # The sharp contract: the child must see "blocked" because the
-    # parent still holds flock during _hook execution.
+    # The child opens its OWN fd and attempts LOCK_NB. Because flock
+    # on Linux/macOS is per-inode (advisory, whole-file), the child
+    # must see EWOULDBLOCK while the parent still holds the lock
+    # during _hook execution. This confirms cross-process exclusion,
+    # not FD_CLOEXEC (see docstring above for why).
     assert child_result_file.exists(), "child never ran"
     result = child_result_file.read_text()
     assert result.startswith("blocked:"), f"child acquired lock while parent held it: {result!r}"
@@ -824,7 +857,6 @@ def test_no_ghost_tmp_after_any_chaos_refusal(injection, tmp_path, make_env_file
         monkeypatch.setattr(os, "write", _w)
 
     elif injection == "enospc_fsync":
-        real_fsync = os.fsync
 
         def _f(fd):  # noqa: ANN001
             raise OSError(errno.ENOSPC, "no space")
@@ -949,16 +981,16 @@ def test_no_ghost_tmp_after_any_chaos_refusal(injection, tmp_path, make_env_file
         return
 
     elif injection == "enospc_dir_fsync":
-        real_fsync = os.fsync
-        seen = {"n": 0}
-
-        def _f(fd):  # noqa: ANN001
-            seen["n"] += 1
-            if seen["n"] == 2:
-                raise OSError(errno.ENOSPC, "no space")
-            return real_fsync(fd)
-
-        monkeypatch.setattr(os, "fsync", _f)
+        # Post-rename fsync is call #3 (see _inject_enospc_on_nth_fsync
+        # docstring). The contract is "no raise" — full coverage lives
+        # in test_enospc_on_fsync_dir_fd_post_rename; here we only spine
+        # the shared no-ghost-tmp invariant.
+        _inject_enospc_on_nth_fsync(monkeypatch, n=3)
+        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+        assert env.read_bytes() == b"KEY=new\n"
+        assert list(tmp_path.glob(".env.tmp-*")) == []
+        assert list(tmp_path.glob(".env.staging-*")) == []
+        return
 
     elif injection == "emfile_dir_fd":
         real_open = os.open
