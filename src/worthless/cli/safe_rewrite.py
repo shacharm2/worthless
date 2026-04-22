@@ -751,20 +751,33 @@ def safe_rewrite(
         # be a contract lie (the message is literally "unsafe rewrite
         # refused") and would cause idempotent retry callers to
         # double-write on top of baseline-sha checks. Inline the fsync
-        # instead and log + continue on OSError. Durability is "likely"
-        # but unconfirmed; the rewrite itself succeeded.
+        # instead and log + continue on OSError.
+        #
+        # IMPORTANT: ``_fullfsync(dir_fd)`` must run EVEN IF ``os.fsync``
+        # raises. On Darwin/APFS, plain ``os.fsync`` is effectively a
+        # no-op for durability - ``F_FULLFSYNC`` is the only barrier
+        # that actually flushes the drive cache. If we gated
+        # ``_fullfsync`` on ``os.fsync`` success, an ENOSPC on macOS
+        # would skip the only call that matters and the rewrite really
+        # could revert on crash. ``_fullfsync`` swallows its own
+        # ``OSError`` (see its docstring), so calling it unconditionally
+        # is safe.
+        fsync_exc: OSError | None = None
         try:
             os.fsync(dir_fd)
         except OSError as exc:
+            fsync_exc = exc
+        _fullfsync(dir_fd)
+        if fsync_exc is not None:
             _log.warning(
                 "post-rename parent-dir fsync failed for %s: errno=%s %s; "
-                "rewrite committed, durability unconfirmed",
+                "rewrite may revert on crash (durability barrier unconfirmed); "
+                "callers relying on baseline-sha idempotency should treat "
+                "this as a successful write",
                 target,
-                exc.errno,
-                exc.strerror,
+                fsync_exc.errno,
+                fsync_exc.strerror,
             )
-        else:
-            _fullfsync(dir_fd)
 
     except UnsafeRewriteRefused:
         if tmp_path is not None:

@@ -577,9 +577,85 @@ def test_enospc_on_fsync_dir_fd_post_rename(tmp_path, make_env_file, monkeypatch
     assert env.read_bytes() == new_content
     assert list(tmp_path.glob(".env.tmp-*")) == []
     assert list(tmp_path.glob(".env.staging-*")) == []
-    assert any(
-        "post-rename parent-dir fsync failed" in rec.getMessage() for rec in caplog.records
-    ), f"expected post-rename warning, got: {[r.getMessage() for r in caplog.records]}"
+    # Warning text is load-bearing: it's the ONLY user-visible signal
+    # that the rewrite may revert on an unclean shutdown. Pin the
+    # strong phrasing rather than a softer "durability unconfirmed" so
+    # a future well-intentioned edit that softens the message fails
+    # the test instead of silently hiding data-risk from operators.
+    assert any("rewrite may revert on crash" in rec.getMessage() for rec in caplog.records), (
+        f"expected post-rename warning, got: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 15b: Darwin/APFS regression guard — _fullfsync MUST run even when
+# the preceding os.fsync raises. On APFS, plain fsync is effectively a
+# no-op for drive-cache durability; F_FULLFSYNC is the only real barrier.
+# Gating _fullfsync on fsync success would silently skip the only call
+# that matters for durability on macOS, so this test pins the contract:
+# given ENOSPC on os.fsync(dir_fd) post-rename, fcntl.fcntl(_, F_FULLFSYNC)
+# must still be attempted on the dir fd.
+# ---------------------------------------------------------------------------
+
+
+def test_fullfsync_runs_even_when_post_rename_fsync_raises_on_darwin(
+    tmp_path, make_env_file, fake_darwin, monkeypatch, caplog
+) -> None:
+    """ENOSPC on ``fsync(dir_fd)`` post-rename MUST NOT skip ``_fullfsync``.
+
+    Contract (all must hold):
+
+    1. ``safe_rewrite`` returns normally (durability-barrier failure
+       is not a refusal — rename already committed).
+    2. Target reflects the new content.
+    3. ``fcntl.fcntl`` is invoked at least once with a non-zero ``cmd``
+       (F_FULLFSYNC on Darwin is 51; under ``fake_darwin`` on Linux the
+       kernel ENOTTYs but the *attempt* must still happen, and the
+       implementation's ``_fullfsync`` helper swallows that OSError).
+    4. A post-rename warning is logged for the failed ``os.fsync``.
+    """
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    new_content = b"KEY=new\n"
+
+    _inject_enospc_on_nth_fsync(monkeypatch, n=3)
+
+    fcntl_cmds: list[int] = []
+    real_fcntl = fcntl.fcntl
+
+    def _rec(fd, cmd, *a, **kw):  # noqa: ANN001, ANN002, ANN003
+        fcntl_cmds.append(cmd)
+        try:
+            return real_fcntl(fd, cmd, *a, **kw)
+        except OSError:
+            # F_FULLFSYNC on a faked-Darwin Linux kernel will ENOTTY;
+            # the implementation swallows that. Test asserts the attempt.
+            return 0
+
+    monkeypatch.setattr(fcntl, "fcntl", _rec)
+
+    with caplog.at_level("WARNING", logger="worthless.safe_rewrite"):
+        safe_rewrite(env, new_content, original_user_arg=env)
+
+    assert env.read_bytes() == new_content
+    # _fullfsync is called on both tmp_fd (pre-rename) and dir_fd
+    # (post-rename). The post-rename one is the load-bearing assertion:
+    # even though os.fsync raised, fcntl.fcntl must still have been
+    # called afterwards. We can't trivially distinguish which fd each
+    # call was for without more patching, but we CAN assert that
+    # _fullfsync fired at least twice (tmp + dir). The pre-rename call
+    # happens before the ENOSPC fsync; the post-rename one happens
+    # AFTER. If the impl short-circuited on os.fsync failure, we'd see
+    # only one call.
+    assert len(fcntl_cmds) >= 2, (
+        f"expected ≥2 fcntl.fcntl calls (tmp_fd + dir_fd F_FULLFSYNC); "
+        f"got {len(fcntl_cmds)}: {fcntl_cmds}. If this is 1, the impl "
+        f"regressed to gating _fullfsync on os.fsync success — which "
+        f"silently skips the only real durability barrier on APFS."
+    )
+    # Sanity: the warning must still fire so operators see the risk.
+    assert any("rewrite may revert on crash" in rec.getMessage() for rec in caplog.records), (
+        f"expected post-rename warning, got: {[r.getMessage() for r in caplog.records]}"
+    )
 
 
 # ---------------------------------------------------------------------------

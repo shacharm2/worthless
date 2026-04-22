@@ -13,6 +13,7 @@ shell config.
 from __future__ import annotations
 
 import os
+import stat as _stat
 from pathlib import Path
 
 import pytest
@@ -733,8 +734,6 @@ def test_add_or_rewrite_creates_missing_env_file(tmp_path: Path) -> None:
     promise requires a separate atomic-create path
     (``O_CREAT|O_EXCL|O_NOFOLLOW`` + ``fsync``).
     """
-    import stat as _stat
-
     env = tmp_path / ".env"
     assert not env.exists()
 
@@ -765,3 +764,46 @@ def test_add_or_rewrite_create_refuses_symlink_race(tmp_path: Path) -> None:
     }
     # Decoy must be untouched.
     assert decoy.read_text() == ""
+
+
+def test_add_or_rewrite_create_fsyncs_parent_directory(tmp_path: Path, monkeypatch) -> None:
+    """Create path MUST fsync the parent directory so the dirent is durable.
+
+    POSIX: a rename or a newly-created file enters a parent directory
+    whose entry isn't on disk until the parent dir is fsynced. Without
+    this, a power-loss between create+fsync(file) and dir-fsync can
+    leave a "ghost file" — the inode exists but the directory entry is
+    gone, so the file effectively disappeared.
+
+    Regression guard for reviewer finding B1: originally,
+    ``_create_new_env_file`` fsynced the file contents but skipped the
+    parent-dir fsync, leaving a durability gap on unclean shutdown.
+
+    We assert the parent directory fd was passed to ``os.fsync`` at
+    least once by wrapping ``os.fsync`` and checking ``os.fstat`` for
+    ``S_ISDIR``.
+    """
+    env = tmp_path / ".env"
+    assert not env.exists()
+
+    fsynced_dir = {"hit": False}
+    real_fsync = os.fsync
+
+    def _rec_fsync(fd):  # noqa: ANN001
+        try:
+            st = os.fstat(fd)
+            if _stat.S_ISDIR(st.st_mode):
+                fsynced_dir["hit"] = True
+        except OSError:
+            pass
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", _rec_fsync)
+
+    add_or_rewrite_env_key(env, "KEY", "value")
+
+    assert env.read_bytes() == b"KEY=value\n"
+    assert fsynced_dir["hit"], (
+        "parent directory was never fsynced on create — unclean shutdown "
+        "could lose the dirent and leave a 'ghost file' (reviewer B1)"
+    )

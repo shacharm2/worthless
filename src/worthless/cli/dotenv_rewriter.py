@@ -19,6 +19,7 @@ lines, ordering, export prefixes, and BOM/CRLF formatting.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import os
 import re
@@ -37,6 +38,9 @@ from worthless.cli.safe_rewrite import _MAX_BYTES, safe_rewrite
 
 if TYPE_CHECKING:
     from worthless.storage.repository import EnrollmentRecord
+
+
+_log = logging.getLogger("worthless.dotenv_rewriter")
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +531,13 @@ def _create_new_env_file(env_path: Path, var_name: str, value: str) -> None:
     ``O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC`` with mode ``0o600`` so a
     racing symlink or pre-existing file aborts the write rather than
     silently dereferencing or clobbering it.
+
+    Durability: we fsync the file fd AND the parent directory. Without
+    the parent-dir fsync, a crash between write and the next
+    ``safe_rewrite`` call could leave the file's data durable on disk
+    but its directory entry gone - the classic POSIX "ghost file"
+    durability gap. Matches ``safe_rewrite``'s rename path (which
+    fsyncs both sides for the same reason).
     """
     payload = _format_assignment(var_name, value, has_export=False, eol=b"\n")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -556,6 +567,39 @@ def _create_new_env_file(env_path: Path, var_name: str, value: str) -> None:
         raise UnsafeRewriteRefused(UnsafeReason.IO_ERROR) from exc
     else:
         os.close(fd)
+
+    # Directory entry fsync. Best-effort: if this fails, the file
+    # content is durable but the directory entry may not be. We don't
+    # raise (contract: file was created successfully) but we don't
+    # silently succeed either - log so operators see "durability
+    # unconfirmed" the same way safe_rewrite's post-rename path does.
+    try:
+        dir_fd = os.open(
+            str(env_path.parent),
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+        )
+    except OSError as exc:
+        _log.warning(
+            "newly-created %s: could not open parent dir for fsync "
+            "(errno=%s %s); directory entry durability unconfirmed",
+            env_path,
+            exc.errno,
+            exc.strerror,
+        )
+        return
+    try:
+        try:
+            os.fsync(dir_fd)
+        except OSError as exc:
+            _log.warning(
+                "newly-created %s: parent-dir fsync failed "
+                "(errno=%s %s); directory entry may revert on crash",
+                env_path,
+                exc.errno,
+                exc.strerror,
+            )
+    finally:
+        os.close(dir_fd)
 
 
 def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
