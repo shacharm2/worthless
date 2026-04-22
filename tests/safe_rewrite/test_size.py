@@ -60,7 +60,8 @@ def test_accepts_1_MiB_exact(tmp_path, make_env_file) -> None:
 def test_refuses_1_MiB_plus_one(tmp_path, make_env_file, sha256_of) -> None:
     """1 MiB + 1 byte is over the bound → refused."""
     prefix = b"A="
-    remainder = _ONE_MIB - len(prefix)  # leaves no room for newline → +1 over
+    # prefix + body fill exactly 1 MiB; the trailing newline pushes us 1 byte over.
+    remainder = _ONE_MIB - len(prefix)
     content = prefix + (b"x" * remainder) + b"\n"
     assert len(content) == _ONE_MIB + 1
     env = make_env_file(tmp_path / ".env", content)

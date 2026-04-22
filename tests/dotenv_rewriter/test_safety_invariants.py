@@ -161,33 +161,29 @@ def test_rewrite_to_fifo_refused(tmp_path: Path) -> None:
     assert list(tmp_path.glob(".env.tmp-*")) == []
 
 
-def test_add_to_path_outside_repo_with_default_settings_refused(
+def test_add_outside_repo_with_default_settings_succeeds(
     tmp_path: Path,
     make_env_file,
 ) -> None:
-    """When a ``repo_root`` is supplied and the target lives outside it, refuse.
+    """Default (no containment configured) → write lands even outside any repo.
 
-    The rewriter is a thin wrapper: callers that opt into containment by
-    passing ``repo_root`` must see the gate fire. The current sub-PR 2
-    contract does not pass ``repo_root`` from the public helpers, so this
-    test asserts the *path exists* through which a caller could enforce it.
-    If the public helpers grow a ``repo_root`` kwarg this test becomes the
-    contract check; otherwise it proves the default (no containment) is
-    preserved by calling with a path outside a repo and asserting no
-    implicit containment fires.
+    Sub-PR 2's public helpers do not forward ``repo_root``; this test pins
+    the contract that the default caller path has no implicit containment
+    gate. Making the happy path observable (by asserting the new key lands
+    on disk and the pre-existing key is preserved) ensures the test fails
+    loudly if the rewriter ever regresses to refusing outside-repo writes
+    under default settings — rather than vacuously passing because no
+    exception was raised.
     """
     env = make_env_file(tmp_path / "outside" / ".env", content=b"KEY=value\n")
 
-    # No containment configured → the call should not refuse on CONTAINMENT
-    # grounds. It may still succeed or refuse for unrelated reasons, but
-    # it must not raise a containment failure. We assert no exception
-    # containing CONTAINMENT in its reason.
-    try:
-        add_or_rewrite_env_key(env, "NEW_KEY", "new_value")
-    except UnsafeRewriteRefused as exc:
-        assert exc.reason != UnsafeReason.CONTAINMENT, (
-            "default caller settings must not trigger containment"
-        )
+    add_or_rewrite_env_key(env, "NEW_KEY", "new_value")
+
+    contents = env.read_bytes()
+    assert b"NEW_KEY=new_value" in contents, (
+        "default caller settings must permit writes outside any repo"
+    )
+    assert b"KEY=value" in contents, "pre-existing key must be preserved"
 
 
 def test_add_with_value_containing_newline_refused(

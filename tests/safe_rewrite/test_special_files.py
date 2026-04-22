@@ -92,17 +92,18 @@ def test_refuses_proc_self_environ(tmp_path) -> None:
     }
 
 
-def test_refuses_af_unix_socket(tmp_path) -> None:
+def test_refuses_af_unix_socket() -> None:
     """An AF_UNIX socket at the target path is refused.
 
     lstat reports ``S_IFSOCK``; our special-file gate must catch it.
 
     Note: AF_UNIX sun_path is capped at 104 bytes on macOS, which
     pytest-xdist worker tmp dirs routinely exceed. Bind the socket
-    inside a short-path /tmp directory so sock.bind() doesn't fail
-    before we ever reach safe_rewrite.
+    inside a short-path tmp directory (``tempfile.gettempdir()``
+    honors ``$TMPDIR`` and falls back to ``/tmp``) so ``sock.bind()``
+    doesn't fail before we ever reach ``safe_rewrite``.
     """
-    short_dir = tempfile.mkdtemp(prefix="sr-", dir="/tmp")
+    short_dir = tempfile.mkdtemp(prefix="sr-")
     sock_path = Path(short_dir) / ".env"
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:

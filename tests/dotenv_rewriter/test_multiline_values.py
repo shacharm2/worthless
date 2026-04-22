@@ -32,12 +32,14 @@ def test_rewrite_replaces_multiline_value_with_single_line(tmp_path: Path, make_
 
     rewrite_env_key(env, "KEY", "decoy")
 
+    # Byte-exact assertion: the quoted multiline span must collapse to a
+    # single-line double-quoted assignment, and the sibling ``OTHER=keep``
+    # must survive untouched. Substring-only checks would miss regressions
+    # like an orphaned closing quote, stray blank lines, or lost quoting.
     after = env.read_bytes()
-    # `OTHER=keep` must survive; `line2`/`line3` must be gone.
-    assert b"OTHER=keep" in after
-    assert b"line2" not in after
-    assert b"line3" not in after
-    assert b"decoy" in after
+    assert after == b'KEY="decoy"\nOTHER=keep\n', (
+        f"multiline rewrite produced unexpected bytes:\n  before={before!r}\n  after ={after!r}"
+    )
 
 
 def test_remove_drops_multiline_block_completely(tmp_path: Path, make_env_file) -> None:
