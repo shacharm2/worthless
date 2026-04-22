@@ -497,7 +497,7 @@ def test_refuse_symlink_does_not_invoke_safe_rewrite(
     with pytest.raises(UnsafeRewriteRefused) as exc_info:
         add_or_rewrite_env_key(env_path, "NEW", "v")
 
-    assert exc_info.value.reason in {UnsafeReason.SYMLINK, UnsafeReason.SPECIAL_FILE}
+    assert exc_info.value.reason == UnsafeReason.SYMLINK
 
 
 def test_refuse_fifo_does_not_invoke_safe_rewrite(
@@ -596,3 +596,90 @@ def test_refuse_open_error_does_not_invoke_safe_rewrite(
         add_or_rewrite_env_key(env_path, "NEW", "v")
 
     assert exc_info.value.reason == UnsafeReason.IO_ERROR
+
+
+def test_refuse_real_rename_race_between_lstat_and_open(
+    tmp_path: Path,
+    monkeypatch,
+    forbid_safe_rewrite,
+) -> None:
+    """A real ``rename(2)`` swap between ``lstat`` and ``os.open`` MUST refuse.
+
+    ``O_NOFOLLOW`` on the open blocks symlink-flips, but an attacker who
+    can atomically rename a different regular file over the path between
+    the ``lstat`` check and the ``os.open`` call would otherwise read a
+    file we never validated. Performs a genuine atomic rename of a
+    different regular file over the victim path, then runs unmocked
+    through ``lstat`` → ``os.open`` → ``os.fstat``. The real identity
+    check must detect the inode swap and raise
+    ``UnsafeRewriteRefused(TOCTOU)`` directly — no ``safe_rewrite`` call,
+    no data exposure.
+    """
+    victim = tmp_path / ".env"
+    victim.write_bytes(b"VICTIM_CONTENT=legitimate\n")
+
+    adversary_src = tmp_path / "adversary_source.env"
+    adversary_src.write_bytes(b"ADVERSARY_CONTENT=should_never_be_read\n")
+
+    real_lstat = os.lstat
+    swap_done = {"did": False}
+
+    def _racing_lstat(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        result = real_lstat(path, *args, **kwargs)
+        if str(path) == str(victim) and not swap_done["did"]:
+            adversary_src.rename(victim)
+            swap_done["did"] = True
+        return result
+
+    monkeypatch.setattr(os, "lstat", _racing_lstat)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(victim, "NEW", "v")
+
+    assert exc_info.value.reason == UnsafeReason.TOCTOU
+    # Post-swap, the path points at adversary_src's inode. Its bytes must
+    # never have been read, hashed, or written back.
+    assert victim.read_bytes() == b"ADVERSARY_CONTENT=should_never_be_read\n"
+
+
+def test_allow_matching_fstat_after_open(
+    tmp_path: Path,
+    make_env_file,
+) -> None:
+    """Negative control: matching ``fstat`` identity must NOT refuse.
+
+    Guards against an over-broad TOCTOU check that rejects the happy
+    path. A normal regular file whose inode/dev don't change between
+    ``lstat`` and ``fstat`` must succeed, AND the pre-existing line
+    must be preserved — proving the read baseline came from the real
+    file, not a swapped-in one.
+    """
+    env_path = make_env_file(tmp_path / ".env", content=b"EXISTING=old\n")
+
+    add_or_rewrite_env_key(env_path, "NEW", "fresh")
+
+    assert env_path.read_bytes() == b"EXISTING=old\nNEW=fresh\n"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        pytest.param(lambda p: rewrite_env_key(p, "KEY", "newvalue"), id="rewrite_env_key"),
+        pytest.param(lambda p: remove_env_key(p, "KEY"), id="remove_env_key"),
+    ],
+)
+def test_refuse_symlink_via_sister_apis(
+    tmp_path: Path,
+    make_env_file,
+    forbid_safe_rewrite,
+    operation,
+) -> None:
+    """Sister APIs on a symlink MUST refuse directly (trip-wire for direct-raise dispatch)."""
+    target = make_env_file(tmp_path / "real.env", content=b"KEY=value\n")
+    env_path = tmp_path / ".env"
+    env_path.symlink_to(target)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        operation(env_path)
+
+    assert exc_info.value.reason == UnsafeReason.SYMLINK

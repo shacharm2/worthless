@@ -417,6 +417,9 @@ def _validate_value(value: str) -> None:
         raise ValueError("dotenv value must not contain newlines")
     if "\x00" in value:
         raise ValueError("dotenv value must not contain NUL bytes")
+    # Checked before the whitespace guard below: inline-comment truncation
+    # is the more surprising hazard, so it wins the diagnostic for values
+    # like "\t#foo" that trip both checks.
     if " #" in value or "\t#" in value:
         raise ValueError(
             "dotenv value contains whitespace+'#' (inline comment; truncates on read-back)"
@@ -437,7 +440,8 @@ def _safe_read_existing_bytes(path: Path) -> bytes:
     Returns an empty byte string if the path does not exist. Raises
     :class:`UnsafeRewriteRefused` directly for every hostile shape
     (symlink, FIFO, socket, directory, char/block device, oversized
-    file, ``lstat``/``os.open`` failures). We do *not* route refusals
+    file, ``lstat``/``os.open`` failures, inode/dev mismatch between
+    ``lstat`` and the post-open ``fstat``). We do *not* route refusals
     through :func:`safe_rewrite` with an empty payload: under a race
     where the hostile condition clears (oversized file truncated,
     symlink swapped for regular file, EPERM cleared) between our check
@@ -465,7 +469,19 @@ def _safe_read_existing_bytes(path: Path) -> bytes:
     except OSError as exc:
         raise UnsafeRewriteRefused(UnsafeReason.IO_ERROR) from exc
     try:
-        size = lst.st_size
+        # O_NOFOLLOW blocks a symlink-flip but not an atomic rename
+        # that swaps a different regular file over the path. Matching
+        # (st_ino, st_dev) against the lstat result proves fd refers
+        # to the file we validated.
+        try:
+            post = os.fstat(fd)
+        except OSError as exc:
+            raise UnsafeRewriteRefused(UnsafeReason.IO_ERROR) from exc
+        if post.st_ino != lst.st_ino or post.st_dev != lst.st_dev:
+            raise UnsafeRewriteRefused(UnsafeReason.TOCTOU)
+        size = post.st_size
+        if size > _MAX_BYTES:
+            raise UnsafeRewriteRefused(UnsafeReason.SIZE)
         if size <= 0:
             return b""
         chunks: list[bytes] = []
