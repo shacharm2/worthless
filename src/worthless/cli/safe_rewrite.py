@@ -310,9 +310,17 @@ def _check_containment(target: Path, repo_root: Path | None, allow_outside_repo:
     except (OSError, ValueError) as exc:
         raise _refuse(UnsafeReason.CONTAINMENT, target) from exc
 
-    # Containment: target must be a direct child of repo_root after
-    # realpath resolution. Anything in a subdirectory or above the
-    # repo root is refused.
+    # Containment: target must be a DIRECT CHILD of repo_root after
+    # realpath resolution. Anything in a subdirectory (e.g.
+    # ``repo/packages/api/.env``) or above the repo root is refused.
+    #
+    # DESIGN NOTE (pinned in ``docs/planning/wor-252-sub-pr-1-safe-rewrite.md``):
+    # direct-child-only is deliberate. Monorepo / subpackage ``.env``
+    # files must pass the subpackage path as ``repo_root``, not the
+    # outer repo. Relaxing to descendant-level would let any
+    # attacker-controlled nested directory (e.g. a vendored checkout)
+    # pose as in-repo. Do NOT relax without first reverting the
+    # planning-doc clarification.
     if target_resolved.parent != repo_resolved:
         raise _refuse(UnsafeReason.CONTAINMENT, target)
 
@@ -738,11 +746,25 @@ def safe_rewrite(
         staging_path = None
 
         # -- 17. Final fsync of parent directory. --------------------------
-        # Post-rename fsync failures do not roll back - the rename
-        # already landed. We surface as IO_ERROR for visibility, but
-        # the target is already updated; callers typically treat this
-        # as "likely durable, re-verify".
-        _fsync_dir(dir_fd, target)
+        # Post-rename fsync failures do NOT roll back - the rename
+        # already committed. Raising ``UnsafeRewriteRefused`` here would
+        # be a contract lie (the message is literally "unsafe rewrite
+        # refused") and would cause idempotent retry callers to
+        # double-write on top of baseline-sha checks. Inline the fsync
+        # instead and log + continue on OSError. Durability is "likely"
+        # but unconfirmed; the rewrite itself succeeded.
+        try:
+            os.fsync(dir_fd)
+        except OSError as exc:
+            _log.warning(
+                "post-rename parent-dir fsync failed for %s: errno=%s %s; "
+                "rewrite committed, durability unconfirmed",
+                target,
+                exc.errno,
+                exc.strerror,
+            )
+        else:
+            _fullfsync(dir_fd)
 
     except UnsafeRewriteRefused:
         if tmp_path is not None:

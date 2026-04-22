@@ -432,6 +432,18 @@ def _validate_value(value: str) -> None:
         raise ValueError(
             "dotenv value must not have leading or trailing whitespace (stripped on read-back)"
         )
+    # Embedded quotes: if the current on-disk line happens to be quoted
+    # (``KEY="old"``), ``_rebuild_assignment_preserving_format`` wraps
+    # *new_value* in the preserved quote char. A value of ``abc"def``
+    # then produces ``KEY="abc"def"`` which python-dotenv flags as
+    # unparsable. We cannot know the on-disk quote style from here, so
+    # we refuse both quote chars defensively. Matches the "refuse, don't
+    # mangle" posture of the other validators above.
+    if '"' in value or "'" in value:
+        raise ValueError(
+            "dotenv value must not contain embedded quote characters "
+            "(would corrupt a rewrite into a pre-existing quoted line)"
+        )
 
 
 def _safe_read_existing_bytes(path: Path) -> bytes:
@@ -505,19 +517,66 @@ def _safe_read_existing_bytes(path: Path) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+def _create_new_env_file(env_path: Path, var_name: str, value: str) -> None:
+    """Atomic exclusive create for the missing-file path.
+
+    ``safe_rewrite`` refuses missing targets by contract (see
+    ``tests/safe_rewrite/test_atomic.py::test_target_missing_refused``).
+    To honour ``add_or_rewrite_env_key``'s "creating or updating"
+    docstring, the first-write path goes through this helper instead:
+    ``O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC`` with mode ``0o600`` so a
+    racing symlink or pre-existing file aborts the write rather than
+    silently dereferencing or clobbering it.
+    """
+    payload = _format_assignment(var_name, value, has_export=False, eol=b"\n")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        fd = os.open(str(env_path), flags, 0o600)
+    except FileExistsError as exc:
+        raise UnsafeRewriteRefused(UnsafeReason.TOCTOU) from exc
+    except OSError as exc:
+        raise UnsafeRewriteRefused(UnsafeReason.IO_ERROR) from exc
+    try:
+        written = 0
+        mv = memoryview(payload)
+        while written < len(payload):
+            n = os.write(fd, mv[written:])
+            if n <= 0:  # pragma: no cover - defensive
+                raise UnsafeRewriteRefused(UnsafeReason.IO_ERROR)
+            written += n
+        os.fsync(fd)
+    except OSError as exc:
+        try:
+            os.close(fd)
+        finally:
+            try:
+                env_path.unlink()
+            except OSError:
+                pass
+        raise UnsafeRewriteRefused(UnsafeReason.IO_ERROR) from exc
+    else:
+        os.close(fd)
+
+
 def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
     """Set *var_name* to *value* in *env_path*, creating or updating.
 
-    If *var_name* already exists, its value is replaced on the same
-    logical line (preserving any ``export`` prefix and surrounding
-    formatting). If not, a new ``KEY=VALUE`` line is appended.
+    If *env_path* does not yet exist, a new file is created atomically
+    (``O_CREAT|O_EXCL|O_NOFOLLOW``, mode ``0o600``) containing a single
+    ``KEY=VALUE`` line. If it exists and *var_name* is present, its
+    value is replaced on the same logical line (preserving any
+    ``export`` prefix and surrounding formatting). Otherwise a new
+    ``KEY=VALUE`` line is appended.
 
-    All writes route through :func:`safe_rewrite`; invariant violations
-    raise :class:`UnsafeRewriteRefused` with the original file
-    byte-identical.
+    Updates to an existing file route through :func:`safe_rewrite`;
+    invariant violations raise :class:`UnsafeRewriteRefused` with the
+    original file byte-identical.
     """
     _validate_var_name(var_name)
     _validate_value(value)
+    if not env_path.exists() and not env_path.is_symlink():
+        _create_new_env_file(env_path, var_name, value)
+        return
     existing = _safe_read_existing_bytes(env_path)
     stripped, had_bom = _strip_bom(existing)
     eol = _detect_eol(stripped)
