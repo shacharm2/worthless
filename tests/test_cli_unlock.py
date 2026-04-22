@@ -427,7 +427,7 @@ class TestUnlockScopedToEnv:
 
         # env_b should still be locked (NOT restored)
         assert _TEST_KEY_2 not in env_b.read_text(), (
-            "unlock --env a.env should NOT have touched b.env"
+            "unlock --env a/.env should NOT have touched b/.env"
         )
 
         # DB should still have the anthropic key enrolled
