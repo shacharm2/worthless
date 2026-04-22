@@ -111,9 +111,17 @@ def test_python_dotenv_set_key_is_not_imported() -> None:
             imported = {alias.name for alias in node.names}
             leaked = imported & banned
             assert not leaked, f"banned dotenv imports: {sorted(leaked)}"
-        # ``dotenv.set_key(...)`` attribute-access style
-        if isinstance(node, ast.Attribute) and node.attr in banned:
-            raise AssertionError(f"banned attribute access: .{node.attr}")
+        # ``dotenv.set_key(...)`` attribute-access style — only flag when
+        # the receiver is literally the ``dotenv`` module name, so that an
+        # unrelated future helper exposing a ``.set_key(...)`` method does
+        # not trip this guard with a misleading diagnostic.
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in banned
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "dotenv"
+        ):
+            raise AssertionError(f"banned attribute access: dotenv.{node.attr}")
         # ``set_key(...)`` / ``unset_key(...)`` direct call after aliased import
         if (
             isinstance(node, ast.Call)

@@ -92,7 +92,7 @@ def test_refuses_proc_self_environ(tmp_path) -> None:
     }
 
 
-def test_refuses_af_unix_socket(tmp_path) -> None:
+def test_refuses_af_unix_socket() -> None:
     """An AF_UNIX socket at the target path is refused.
 
     lstat reports ``S_IFSOCK``; our special-file gate must catch it.
