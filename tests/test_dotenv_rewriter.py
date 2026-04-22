@@ -267,18 +267,22 @@ class TestCrashSafety:
         original = "KEY=old\nOTHER=keep\n"
         real.write_text(original)
         link = tmp_path / ".env"
-        os.symlink(real, link)
+        link.symlink_to(real)
         with pytest.raises(OSError):
             rewrite_env_key(link, "KEY", "new")
         assert real.read_text() == original
 
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="hardlinks not supported on this platform")
     def test_rewrite_rejects_hardlink(self, tmp_path: Path):
         from worthless.cli.dotenv_rewriter import rewrite_env_key
 
         env_file = tmp_path / ".env"
         env_file.write_text("KEY=old\n")
         hard = tmp_path / "hardlink.env"
-        os.link(env_file, hard)
+        try:
+            os.link(env_file, hard)
+        except (OSError, NotImplementedError) as e:
+            pytest.skip(f"filesystem does not support hardlinks: {e}")
         assert env_file.stat().st_nlink == 2
         with pytest.raises(OSError):
             rewrite_env_key(env_file, "KEY", "new")
@@ -333,7 +337,7 @@ class TestCrashSafety:
         original = "OTHER=keep\n"
         real.write_text(original)
         link = tmp_path / ".env"
-        os.symlink(real, link)
+        link.symlink_to(real)
         with pytest.raises(OSError):
             add_or_rewrite_env_key(link, "NEW_KEY", "value")
         assert real.read_text() == original

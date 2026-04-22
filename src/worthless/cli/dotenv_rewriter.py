@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import stat
+import sys
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
@@ -86,27 +87,27 @@ def _check_env_path_safe(path: Path) -> None:
 
 
 def _fsync_path(path: Path) -> None:
-    """fsync the file at *path*; swallow OSError."""
+    """fsync the file at *path*. Propagates OSError — durability requires it."""
+    fd = os.open(str(path), os.O_RDONLY)
     try:
-        fd = os.open(str(path), os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-    except OSError:
-        pass
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _fsync_dir(path: Path) -> None:
-    """fsync the parent directory of *path*; swallow OSError (Windows)."""
+    """fsync the parent directory of *path* (POSIX rename durability).
+
+    No-op on Windows, where directory fsync is unsupported. On POSIX,
+    propagates OSError — real I/O failures should surface, not be swallowed.
+    """
+    if sys.platform == "win32":
+        return
+    fd = os.open(str(path.parent), os.O_RDONLY)
     try:
-        fd = os.open(str(path.parent), os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-    except OSError:
-        pass
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
