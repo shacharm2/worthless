@@ -28,7 +28,8 @@
   },
   "files": [
     "index.js",
-    "package.json"
+    "package.json",
+    "README.md"
   ],
   "publishConfig": {
     "access": "public",

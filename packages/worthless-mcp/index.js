@@ -124,6 +124,27 @@ function log(msg) {
 // ---------------------------------------------------------------------------
 
 function main() {
+  const arg = process.argv[2];
+  if (arg === '--version' || arg === '-v') {
+    process.stdout.write(PKG_VERSION + '\n');
+    process.exit(0);
+  }
+  if (arg === '--help' || arg === '-h') {
+    process.stdout.write(
+      'worthless-mcp ' + PKG_VERSION + '\n' +
+      '\n' +
+      'Thin npm wrapper that launches the Worthless MCP server.\n' +
+      'Intended to be invoked by editors via .mcp.json:\n' +
+      '\n' +
+      '  { "command": "npx", "args": ["-y", "worthless-mcp"] }\n' +
+      '\n' +
+      'Flags:\n' +
+      '  -v, --version   Print wrapper version (matches the pinned Python package)\n' +
+      '  -h, --help      Show this message\n'
+    );
+    process.exit(0);
+  }
+
   let uvx = findUvx();
 
   if (!uvx) {
