@@ -88,20 +88,36 @@ def test_remove_noop_does_not_call_safe_rewrite(
 
 
 def test_python_dotenv_set_key_is_not_imported() -> None:
-    """The unsafe ``set_key`` / ``unset_key`` symbols MUST NOT live in the module.
+    """The unsafe ``set_key`` / ``unset_key`` symbols MUST NOT be imported or called.
 
-    Module-source assertion: the implementation must route every
+    Module-source AST assertion: the implementation must route every
     destructive write through ``safe_rewrite`` rather than calling
     python-dotenv's ``set_key``/``unset_key`` (which bypass the gate).
+
+    AST-based rather than substring-based so that a future maintainer
+    writing a comment explaining *why* these symbols are forbidden
+    (e.g. ``# we deliberately avoid python-dotenv's set_key``) does not
+    trip the guard. We match only real import statements and call sites.
     """
+    import ast
+
     from worthless.cli import dotenv_rewriter as rewriter_mod
 
-    source = inspect.getsource(rewriter_mod)
-    # Strip docstring/comment noise: we only care about real call sites.
-    # Both the import and the call-site use would contain these tokens.
-    assert "set_key" not in source, (
-        "dotenv_rewriter must not import or call python-dotenv's set_key"
-    )
-    assert "unset_key" not in source, (
-        "dotenv_rewriter must not import or call python-dotenv's unset_key"
-    )
+    tree = ast.parse(inspect.getsource(rewriter_mod))
+    banned = {"set_key", "unset_key"}
+    for node in ast.walk(tree):
+        # ``from dotenv import set_key`` / ``from dotenv.main import unset_key``
+        if isinstance(node, ast.ImportFrom) and node.module in {"dotenv", "dotenv.main"}:
+            imported = {alias.name for alias in node.names}
+            leaked = imported & banned
+            assert not leaked, f"banned dotenv imports: {sorted(leaked)}"
+        # ``dotenv.set_key(...)`` attribute-access style
+        if isinstance(node, ast.Attribute) and node.attr in banned:
+            raise AssertionError(f"banned attribute access: .{node.attr}")
+        # ``set_key(...)`` / ``unset_key(...)`` direct call after aliased import
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in banned
+        ):
+            raise AssertionError(f"banned direct call: {node.func.id}(...)")
