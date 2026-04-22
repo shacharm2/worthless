@@ -90,7 +90,6 @@ fuzz = [
 [dependency-groups]
 dev = [
     {include-group = "test"},
-    "cyclonedx-bom>=7.3.0",
     "deptry>=0.22",
     "pip-audit>=2.8",
     "pip-licenses>=5.5.5",
