@@ -670,20 +670,21 @@ def test_fullfsync_runs_even_when_post_rename_fsync_raises_on_darwin(
         safe_rewrite(env, new_content, original_user_arg=env)
 
     assert env.read_bytes() == new_content
-    # _fullfsync is called on both tmp_fd (pre-rename) and dir_fd
-    # (post-rename). The post-rename one is the load-bearing assertion:
-    # even though os.fsync raised, fcntl.fcntl must still have been
-    # called afterwards. We can't trivially distinguish which fd each
-    # call was for without more patching, but we CAN assert that
-    # _fullfsync fired at least twice (tmp + dir). The pre-rename call
-    # happens before the ENOSPC fsync; the post-rename one happens
-    # AFTER. If the impl short-circuited on os.fsync failure, we'd see
-    # only one call.
-    assert len(fcntl_cmds) >= 2, (
-        f"expected ≥2 fcntl.fcntl calls (tmp_fd + dir_fd F_FULLFSYNC); "
-        f"got {len(fcntl_cmds)}: {fcntl_cmds}. If this is 1, the impl "
-        f"regressed to gating _fullfsync on os.fsync success — which "
-        f"silently skips the only real durability barrier on APFS."
+    # _fullfsync is called at THREE sites: tmp_fd (inside _fsync_tmp),
+    # pre-rename dir_fd (inside _fsync_dir), and post-rename dir_fd
+    # (inline, after the ENOSPC-raising os.fsync). The post-rename
+    # call is the load-bearing one: if a regression gated _fullfsync
+    # on os.fsync success, we'd still see two calls (tmp + pre-rename)
+    # and a ">= 2" assertion would pass silently — exactly the blind
+    # spot flagged in PR #86 discussion_r3129175668. Asserting ">= 3"
+    # forces coverage of the post-rename path, where the durability
+    # barrier actually matters on APFS.
+    assert len(fcntl_cmds) >= 3, (
+        f"expected ≥3 fcntl.fcntl calls (tmp_fd + pre-rename dir_fd + "
+        f"post-rename dir_fd F_FULLFSYNC); got {len(fcntl_cmds)}: "
+        f"{fcntl_cmds}. If this is 2, the impl regressed to skipping "
+        f"_fullfsync after os.fsync raises post-rename — which silently "
+        f"skips the only real durability barrier on APFS."
     )
     # Sanity: the warning must still fire so operators see the risk.
     assert any("rewrite may revert on crash" in rec.getMessage() for rec in caplog.records), (
