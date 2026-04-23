@@ -36,19 +36,7 @@ INSTALL_MATRIX = [
     ("ubuntu-2204-bare", "supported"),  # 22.04 LTS — still the prod majority
     ("ubuntu-with-uv", "supported"),  # 24.04 + pre-installed uv (reuse path)
     ("debian-12-bare", "supported"),  # second glibc distro
-    pytest.param(
-        "alpine-bare",
-        "experimental",
-        marks=[
-            pytest.mark.experimental,
-            # PBS ships no musl Python builds today. When it does, flip strict=True
-            # (or drop xfail entirely) to enforce Alpine as Supported.
-            pytest.mark.xfail(
-                strict=False,
-                reason="python-build-standalone has no musl builds; uv install fails on Alpine",
-            ),
-        ],
-    ),
+    ("alpine-bare", "supported"),  # musl — uv fetches musl-compatible Python via PBS
 ]
 
 BUILD_PLATFORM = "linux/amd64"

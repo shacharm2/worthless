@@ -36,7 +36,7 @@ The `install.sh` this Worker serves is validated on the hosts below via
 | Ubuntu 24.04 (bare / +uv) | Supported |
 | Ubuntu 22.04 (bare) | Supported |
 | Debian 12 (bare) | Supported |
-| Alpine / musl | Experimental (expected to fail until PBS ships musl) |
+| Alpine / musl | Supported |
 | macOS | Supported (manual) |
 | Native Windows | Not supported |
 

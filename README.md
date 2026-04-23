@@ -117,17 +117,16 @@ on the target host. Coverage (run via `pytest -m docker`):
 | Ubuntu 22.04 (bare) | Supported | still the LTS most prod/CI boxes run |
 | Ubuntu 24.04 + pre-installed `uv` | Supported | asserts uv is reused, not reinstalled (sha256 check) |
 | Debian 12 (bare) | Supported | second glibc distro |
-| Alpine / musl | Experimental — **expected to fail today** | python-build-standalone ships no musl builds; test kept so we notice when upstream ships musl support |
+| Alpine / musl | Supported | uv fetches musl-compatible Python via PBS; `zstd` required for modern tarballs |
 | macOS (Intel / ARM) | Supported | manual test on dev boxes |
 | Fedora / RHEL | Untested | — |
 | Windows + WSL | Untested (expected to work) | — |
 | Native Windows | Not supported | see Platforms section |
 
-Experimental means the test runs in CI but a failure is informational, not
-blocking. All distros are pinned to `linux/amd64` so arm64 hosts still exercise
-amd64 coverage. Per-distro verification runs `verify_install.sh` — checks
-resolved binary path, `--version`, `--help` (exercises lazy imports), and
-scans stderr for `Traceback`/`ModuleNotFoundError`.
+All distros are pinned to `linux/amd64` so arm64 hosts still exercise amd64
+coverage. Per-distro verification runs `verify_install.sh` — checks resolved
+binary path, `--version`, `--help` (exercises lazy imports), and scans stderr
+for `Traceback` / `ModuleNotFoundError`.
 
 ## Undo everything
 

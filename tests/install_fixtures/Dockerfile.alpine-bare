@@ -1,11 +1,8 @@
 # Bare Alpine image — NO python3, NO uv. Uses musl libc (not glibc).
-#
-# EXPECTED TO FAIL today: python-build-standalone (what uv fetches) does not
-# ship musl builds. Until PBS adds musl, uv on Alpine either refuses with
-# "no compatible Python build" or downloads a glibc binary that segfaults.
-# We keep this test in the matrix to surface a green day when PBS/uv ships
-# musl support — that's the signal. Marked `experimental` so failures are
-# non-blocking in CI.
+# Verified working: uv fetches a musl-compatible Python via PBS, install
+# completes, `worthless --help` loads cleanly (no segfault, no Traceback).
+# Watch zstd below — busybox tar can't unzstd, which silently breaks
+# modern PBS tarballs (.tar.zst).
 FROM alpine:3.20
 
 # install.sh needs:
