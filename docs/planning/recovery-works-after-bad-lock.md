@@ -20,7 +20,7 @@ Without backups, the gate makes the failure mode better (refuse instead of corru
 - Dropbox / iCloud / OneDrive silently syncing secrets to the cloud
 - GitHub Actions `actions/upload-artifact` catching them
 
-SHA256 of the repo absolute path is the directory name because (a) it's stable across sessions, (b) it doesn't leak the repo name into `/proc/*/cmdline` or process listings, (c) multiple checkouts of the same repo (worktrees, symlinks) get distinct buckets.
+SHA256 of the repo absolute path is the directory name because (a) it's stable across sessions, (b) it doesn't leak the repo name into `/proc/*/cmdline` or process listings, (c) separate checkouts of the same repo (worktrees, bind-mounts) land in distinct buckets because their `.resolve()` absolute paths differ. Symlinks pointing at the same repo *do* resolve to the same bucket — that's correct, because it's the same underlying repo.
 
 ## Three sub-features, one PR
 
@@ -29,8 +29,10 @@ SHA256 of the repo absolute path is the directory name because (a) it's stable a
 Every call that reaches `safe_rewrite()` creates a byte-identical copy of the pre-write content at:
 
 ```text
-$XDG_DATA_HOME/worthless/backups/<sha256(repo_root)>/<basename>.<ISO8601>.<pid>.bak
+$XDG_DATA_HOME/worthless/backups/<sha256(repo_root)>/<basename>.<ISO8601_ns>.<pid>.<counter>.bak
 ```
+
+The timestamp is nanosecond-precision (`time.time_ns()` rendered as `YYYY-MM-DDTHH:MM:SS.nnnnnnnnn`) and the `<counter>` is a monotonically incrementing per-process integer. `<pid>` alone doesn't protect against in-process collisions (two rewrites of the same target by the same process in the same nanosecond on coarse-resolution clocks); `<counter>` does. Inter-process collisions are covered by `<pid>`. The atomic-via-tmp-rename step additionally uses `O_EXCL` so a race that *did* produce the same name would surface as `EEXIST` rather than silent clobber.
 
 - **Hook point:** `_hook_before_replace` already exists in `safe_rewrite()`. Backup goes there — inside the flock, after fsync of the staging tmp, before the atomic rename. Guarantees the backup exists before the window where the user file could be replaced.
 - **Durability:** fsync backup file + fsync backup-dir fd before returning.
@@ -69,7 +71,7 @@ Restore writes via `safe_rewrite()` itself — the gate checks the restore targe
 
 1. `test_backup_written_on_successful_rewrite` — backup file exists after `safe_rewrite()` returns, content == original bytes.
 2. `test_backup_path_is_sha256_of_repo_root` — directory name matches `sha256(str(repo_root.resolve())).hexdigest()`.
-3. `test_backup_filename_format` — `<basename>.<iso8601>.<pid>.bak`, all three components required.
+3. `test_backup_filename_format` — `<basename>.<iso8601_ns>.<pid>.<counter>.bak`, all four components required. Nanosecond-precision timestamp + per-process counter eliminates in-process collisions on coarse clocks.
 4. `test_backup_mode_0600` — backup file is user-read-write only.
 5. `test_backup_parent_dir_mode_0700` — bucket dir is user-only.
 6. `test_backup_refuses_if_bucket_has_wrong_mode` — pre-existing world-readable bucket refuses with `UnsafeReason.BACKUP`.
@@ -107,7 +109,7 @@ Restore writes via `safe_rewrite()` itself — the gate checks the restore targe
 
 30. `test_sigkill_between_backup_write_and_rename_leaves_no_ghost_tmp` — crash-consistency across the backup window.
 31. `test_sigkill_between_backup_rename_and_target_rename_leaves_backup_intact` — if the target rename never happens, the backup survives (recovery possible).
-32. `test_concurrent_rewrites_do_not_collide_on_backup_filename` — two processes writing same target at same second produce two distinct backups (the `.<pid>.` component is why).
+32. `test_concurrent_rewrites_do_not_collide_on_backup_filename` — (a) two processes writing the same target at the same nanosecond produce two distinct backups (the `.<pid>.` component). (b) The **same** process doing two back-to-back rewrites of the same target inside the same nanosecond clock tick (simulated by monkeypatching `time.time_ns`) also produces two distinct backups (the `.<counter>.` component). `O_EXCL` on the tmp write asserts no silent clobber if the collision-avoidance ever fails.
 
 ### Tests — integration / e2e (tests/test_e2e_recovery.py)
 

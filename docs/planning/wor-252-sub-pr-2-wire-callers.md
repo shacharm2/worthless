@@ -54,7 +54,7 @@ def _strip_bom(buf: bytes) -> tuple[bytes, bool]: ...   # returns (stripped, had
 def _restore_bom(buf: bytes, had_bom: bool) -> bytes: ...
 def _split_logical_lines(buf: bytes) -> list[_LogicalLine]: ...
 def _serialize_lines(lines: list[_LogicalLine]) -> bytes: ...
-def _format_assignment(key: str, value: str, *, has_export: bool, eol: bytes) -> bytes: ...
+def _rebuild_assignment_preserving_format(key: str, value: str, *, has_export: bool, eol: bytes) -> bytes: ...
 def _validate_value(value: str) -> None: ...    # rejects newlines, NUL, control chars
 def _read_file_bytes_or_empty(path: Path) -> bytes: ...
 ```
@@ -69,7 +69,7 @@ def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
     eol = _detect_eol(stripped) or b"\n"
     lines = _split_logical_lines(stripped)
     new_line = _LogicalLine(
-        raw=_format_assignment(var_name, value, has_export=False, eol=eol),
+        raw=_rebuild_assignment_preserving_format(var_name, value, has_export=False, eol=eol),
         key=var_name,
         has_export=False,
     )
@@ -77,7 +77,7 @@ def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
     for i, line in enumerate(lines):
         if line.key == var_name:
             lines[i] = _LogicalLine(
-                raw=_format_assignment(var_name, value, has_export=line.has_export, eol=eol),
+                raw=_rebuild_assignment_preserving_format(var_name, value, has_export=line.has_export, eol=eol),
                 key=var_name,
                 has_export=line.has_export,
             )
