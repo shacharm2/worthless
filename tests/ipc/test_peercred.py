@@ -18,7 +18,6 @@ from worthless.ipc.peercred import (
     PeerCredentials,
     PeerCredError,
     UnauthorizedPeerError,
-    UnsupportedPlatformError,
     get_peer_credentials,
     require_peer_uid,
 )
@@ -49,17 +48,15 @@ class TestGetPeerCredentials:
         assert creds.uid == os.getuid()
         assert creds.gid == os.getgid()
 
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux-specific — pid is None on macOS")
     def test_pid_populated_on_linux(self, sock_pair) -> None:
-        if sys.platform != "linux":
-            pytest.skip("Linux-specific — pid is None on macOS")
         a, _b = sock_pair
         creds = get_peer_credentials(a)
         # Socket pair: both ends are this process.
         assert creds.pid == os.getpid()
 
+    @pytest.mark.skipif(sys.platform != "darwin", reason="macOS-specific — pid populated on Linux")
     def test_pid_is_none_on_macos(self, sock_pair) -> None:
-        if sys.platform != "darwin":
-            pytest.skip("macOS-specific — pid is populated on Linux")
         a, _b = sock_pair
         creds = get_peer_credentials(a)
         # getpeereid returns only uid+gid; pid requires a separate syscall
@@ -101,15 +98,3 @@ class TestRequirePeerUid:
         a, _b = sock_pair
         creds = require_peer_uid(a, allowed_uids=[0, os.getuid()])
         assert creds.uid == os.getuid()
-
-
-class TestPlatformDispatch:
-    def test_supported_platforms_do_not_raise_import(self) -> None:
-        # Just reaching this test means `from worthless.ipc.peercred import ...`
-        # succeeded on this platform. Sanity check.
-        assert sys.platform in ("linux", "darwin")
-
-    def test_unsupported_platform_error_class_exists(self) -> None:
-        # The error type exists even on supported platforms so callers can
-        # handle it defensively.
-        assert issubclass(UnsupportedPlatformError, PeerCredError)

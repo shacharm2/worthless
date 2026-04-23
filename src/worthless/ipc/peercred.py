@@ -95,13 +95,16 @@ def _get_peer_credentials_linux(sock: socket.socket) -> PeerCredentials:
 
 
 def _bind_getpeereid() -> ctypes.CDLL | None:
-    """Load libc and bind getpeereid. Returns None if unavailable."""
+    """Load libc and bind getpeereid. Returns None if libc is unreachable.
+
+    getpeereid itself has shipped in Darwin libc since 10.4 (2005); we
+    don't guard against its absence — if it's missing, the system is
+    broken and failing at import is the honest behavior.
+    """
     libc_path = ctypes.util.find_library("c")
     if libc_path is None:
         return None
     libc = ctypes.CDLL(libc_path, use_errno=True)
-    if not hasattr(libc, "getpeereid"):
-        return None
     # int getpeereid(int s, uid_t *euid, gid_t *egid);
     libc.getpeereid.argtypes = [
         ctypes.c_int,
