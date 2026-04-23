@@ -18,7 +18,9 @@ lines, ordering, export prefixes, and BOM/CRLF formatting.
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import logging
 import math
 import os
 import re
@@ -33,10 +35,13 @@ from dotenv import dotenv_values
 
 from worthless.cli.errors import UnsafeReason, UnsafeRewriteRefused
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
-from worthless.cli.safe_rewrite import _MAX_BYTES, safe_rewrite
+from worthless.cli.safe_rewrite import _MAX_BYTES, _check_basename, safe_rewrite
 
 if TYPE_CHECKING:
     from worthless.storage.repository import EnrollmentRecord
+
+
+_log = logging.getLogger("worthless.dotenv_rewriter")
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +437,18 @@ def _validate_value(value: str) -> None:
         raise ValueError(
             "dotenv value must not have leading or trailing whitespace (stripped on read-back)"
         )
+    # Embedded quotes: if the current on-disk line happens to be quoted
+    # (``KEY="old"``), ``_rebuild_assignment_preserving_format`` wraps
+    # *new_value* in the preserved quote char. A value of ``abc"def``
+    # then produces ``KEY="abc"def"`` which python-dotenv flags as
+    # unparsable. We cannot know the on-disk quote style from here, so
+    # we refuse both quote chars defensively. Matches the "refuse, don't
+    # mangle" posture of the other validators above.
+    if '"' in value or "'" in value:
+        raise ValueError(
+            "dotenv value must not contain embedded quote characters "
+            "(would corrupt a rewrite into a pre-existing quoted line)"
+        )
 
 
 def _safe_read_existing_bytes(path: Path) -> bytes:
@@ -505,19 +522,118 @@ def _safe_read_existing_bytes(path: Path) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+def _create_new_env_file(env_path: Path, var_name: str, value: str) -> None:
+    """Atomic exclusive create for the missing-file path.
+
+    ``safe_rewrite`` refuses missing targets by contract (see
+    ``tests/safe_rewrite/test_atomic.py::test_target_missing_refused``).
+    To honour ``add_or_rewrite_env_key``'s "creating or updating"
+    docstring, the first-write path goes through this helper instead:
+    ``O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC`` with mode ``0o600`` so a
+    racing symlink or pre-existing file aborts the write rather than
+    silently dereferencing or clobbering it.
+
+    Durability: we fsync the file fd AND the parent directory. Without
+    the parent-dir fsync, a crash between write and the next
+    ``safe_rewrite`` call could leave the file's data durable on disk
+    but its directory entry gone - the classic POSIX "ghost file"
+    durability gap. Matches ``safe_rewrite``'s rename path (which
+    fsyncs both sides for the same reason).
+    """
+    payload = _format_assignment(var_name, value, has_export=False, eol=b"\n")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        fd = os.open(str(env_path), flags, 0o600)
+    except FileExistsError as exc:
+        raise UnsafeRewriteRefused(UnsafeReason.TOCTOU) from exc
+    except OSError as exc:
+        raise UnsafeRewriteRefused(UnsafeReason.IO_ERROR) from exc
+    try:
+        written = 0
+        mv = memoryview(payload)
+        while written < len(payload):
+            n = os.write(fd, mv[written:])
+            if n <= 0:
+                # Raise OSError (not UnsafeRewriteRefused) so the outer
+                # ``except OSError`` cleanup branch runs — otherwise the
+                # fd stays open and a partially-written file survives on
+                # disk. Cleanup re-wraps as UnsafeRewriteRefused for the
+                # caller.
+                raise OSError(errno.EIO, "short write")
+            written += n
+        os.fsync(fd)
+    except OSError as exc:
+        try:
+            os.close(fd)
+        finally:
+            try:
+                env_path.unlink()
+            except OSError:
+                pass
+        raise UnsafeRewriteRefused(UnsafeReason.IO_ERROR) from exc
+    else:
+        os.close(fd)
+
+    # Directory entry fsync. Best-effort: if this fails, the file
+    # content is durable but the directory entry may not be. We don't
+    # raise (contract: file was created successfully) but we don't
+    # silently succeed either - log so operators see "durability
+    # unconfirmed" the same way safe_rewrite's post-rename path does.
+    try:
+        dir_fd = os.open(
+            str(env_path.parent),
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+        )
+    except OSError as exc:
+        _log.warning(
+            "newly-created %s: could not open parent dir for fsync "
+            "(errno=%s %s); directory entry durability unconfirmed",
+            env_path,
+            exc.errno,
+            exc.strerror,
+        )
+        return
+    try:
+        try:
+            os.fsync(dir_fd)
+        except OSError as exc:
+            _log.warning(
+                "newly-created %s: parent-dir fsync failed "
+                "(errno=%s %s); directory entry may revert on crash",
+                env_path,
+                exc.errno,
+                exc.strerror,
+            )
+    finally:
+        os.close(dir_fd)
+
+
 def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
     """Set *var_name* to *value* in *env_path*, creating or updating.
 
-    If *var_name* already exists, its value is replaced on the same
-    logical line (preserving any ``export`` prefix and surrounding
-    formatting). If not, a new ``KEY=VALUE`` line is appended.
+    If *env_path* does not yet exist, a new file is created atomically
+    (``O_CREAT|O_EXCL|O_NOFOLLOW``, mode ``0o600``) containing a single
+    ``KEY=VALUE`` line. If it exists and *var_name* is present, its
+    value is replaced on the same logical line (preserving any
+    ``export`` prefix and surrounding formatting). Otherwise a new
+    ``KEY=VALUE`` line is appended.
 
-    All writes route through :func:`safe_rewrite`; invariant violations
-    raise :class:`UnsafeRewriteRefused` with the original file
-    byte-identical.
+    Updates to an existing file route through :func:`safe_rewrite`;
+    invariant violations raise :class:`UnsafeRewriteRefused` with the
+    original file byte-identical.
     """
     _validate_var_name(var_name)
     _validate_value(value)
+    if not env_path.exists() and not env_path.is_symlink():
+        # Route the missing-file create path through the same basename
+        # gate ``safe_rewrite`` enforces on the rewrite branch. Without
+        # this, ``add_or_rewrite_env_key(Path("~/.bashrc"), "PATH", "/x")``
+        # on a host with no ``.bashrc`` would happily create one with
+        # attacker-controlled content — the exact "zshrc-lock" class
+        # WOR-252 is designed to make structurally impossible.
+        _check_basename(env_path)
+        _create_new_env_file(env_path, var_name, value)
+        return
     existing = _safe_read_existing_bytes(env_path)
     stripped, had_bom = _strip_bom(existing)
     eol = _detect_eol(stripped)

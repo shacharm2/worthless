@@ -21,6 +21,37 @@ from worthless.cli.errors import UnsafeReason, UnsafeRewriteRefused
 from worthless.cli.safe_rewrite import safe_rewrite
 
 
+def test_refuses_env_in_repo_subdirectory(in_fake_repo, make_env_file, sha256_of) -> None:
+    """A subdirectory ``.env`` (``repo/packages/api/.env``) is refused.
+
+    Containment is deliberately **direct-child-only**: ``safe_rewrite``
+    targets ``<repo_root>/.env`` (and the explicit allow-list), never a
+    nested package ``.env``. The comment in ``safe_rewrite.py`` documents
+    this as a pinned design decision — see
+    ``docs/planning/recovery-works-after-bad-lock.md`` for rationale.
+
+    Regression guard: any future "look through nested directories for
+    anything called ``.env``" change must trip this test.
+    """
+    sub_env = make_env_file(in_fake_repo / "packages" / "api" / ".env", b"KEY=v\n")
+    baseline = sha256_of(sub_env)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(
+            sub_env,
+            b"A=1\n",
+            original_user_arg=sub_env,
+            repo_root=in_fake_repo,
+        )
+
+    # Subdirectory is inside the repo tree but not a direct child of
+    # repo_root; containment gate must refuse. Pin to CONTAINMENT so a
+    # regression that routed it through some other reason (e.g.
+    # PATH_IDENTITY) would fail loudly.
+    assert exc_info.value.reason == UnsafeReason.CONTAINMENT
+    assert sha256_of(sub_env) == baseline
+
+
 def test_refuses_env_outside_repo(tmp_path, in_fake_repo, make_env_file, sha256_of) -> None:
     """An ``.env`` located outside ``repo_root`` is refused by default."""
     outside = make_env_file(tmp_path / "outside" / ".env", b"KEY=v\n")

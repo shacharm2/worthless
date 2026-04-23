@@ -47,8 +47,8 @@ Four flags, one command:
 |---|---|
 | `worthless restore` | Interactive: list backups for the current repo, number them, let user pick. Exit 0 if empty. |
 | `worthless restore --list` | Non-interactive: print `<timestamp>  <size>  <target>` one per line, newest first. Exit 0 always. |
-| `worthless restore <target>` | Restore most recent backup of `<target>`. Refuses if target mtime/sha256 changed since the most recent backup — won't silently clobber new edits. |
-| `worthless restore <target> --force` | Bypass the mtime check. Still uses `safe_rewrite()` to write, so gate invariants apply. |
+| `worthless restore <target>` | Restore most recent backup of `<target>`. If the target's current bytes differ from the most recent backup, prompt on stderr (`overwrite <target>? [y/N]`) and read the answer from stdin before proceeding. Non-TTY stdin with no `--force` → refuse with exit 2 (won't silently clobber new edits, won't hang CI). |
+| `worthless restore <target> --force` | Bypass the interactive confirmation. Still uses `safe_rewrite()` to write, so gate invariants apply. |
 | `worthless restore --all-repos` | List backups across every repo bucket (for "which repo was that in?" recovery). |
 
 Restore writes via `safe_rewrite()` itself — the gate checks the restore target exactly like any other write. This is the same code path, not a bypass.
@@ -87,8 +87,8 @@ Restore writes via `safe_rewrite()` itself — the gate checks the restore targe
 15. `test_restore_list_empty_exits_zero` — fresh repo, `worthless restore --list` prints nothing, exit 0.
 16. `test_restore_list_newest_first` — 3 backups → listed in descending timestamp order.
 17. `test_restore_file_writes_via_safe_rewrite` — instrument `safe_rewrite` → restore invokes it with the backup content.
-18. `test_restore_refuses_if_target_changed_since_backup` — backup made, target edited post-backup, `restore` refuses without `--force`.
-19. `test_restore_force_bypasses_mtime_check` — `--force` still passes the gate; only the mtime check is bypassed.
+18. `test_restore_prompts_if_target_changed_since_backup` — backup made, target edited post-backup; `restore` with stdin=`n\n` aborts (exit 1, target untouched); stdin=`y\n` proceeds; non-TTY stdin without `--force` refuses with exit 2.
+19. `test_restore_force_bypasses_confirmation_prompt` — `--force` still passes the gate; only the interactive confirmation is bypassed.
 20. `test_restore_all_repos_across_buckets` — two bucket dirs → both listed, grouped by bucket.
 21. `test_restore_interactive_picker` — stdin=`1\n`, picks first backup, restores it. Stdin=`q\n` exits clean.
 22. `test_restore_refuses_symlinked_backup` — backup dir replaced with symlink → refuse (same invariants).
@@ -111,7 +111,7 @@ Restore writes via `safe_rewrite()` itself — the gate checks the restore targe
 
 ### Tests — integration / e2e (tests/test_e2e_recovery.py)
 
-33. `test_lock_then_restore_round_trip` — E2E: `worthless lock`, corrupt the `.env`, `worthless restore`, assert content == pre-lock original.
+33. `test_lock_then_restore_round_trip` — E2E: `worthless lock`, corrupt the `.env`, `worthless restore <target>` with stdin=`y\n` (confirms the overwrite-on-divergence prompt), assert content == pre-lock original. A `--force` variant asserts the same outcome without a prompt.
 34. `test_restore_preserves_bom_crlf_and_export` — round-trip a file with BOM + CRLF + `export KEY=val`, restore, assert byte-identical.
 35. `test_restore_after_failed_write_still_works` — simulate a rewrite that refuses mid-way; assert backup was never created (nothing to restore), no ghost backup dir.
 

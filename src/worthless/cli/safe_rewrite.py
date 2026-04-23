@@ -310,9 +310,17 @@ def _check_containment(target: Path, repo_root: Path | None, allow_outside_repo:
     except (OSError, ValueError) as exc:
         raise _refuse(UnsafeReason.CONTAINMENT, target) from exc
 
-    # Containment: target must be a direct child of repo_root after
-    # realpath resolution. Anything in a subdirectory or above the
-    # repo root is refused.
+    # Containment: target must be a DIRECT CHILD of repo_root after
+    # realpath resolution. Anything in a subdirectory (e.g.
+    # ``repo/packages/api/.env``) or above the repo root is refused.
+    #
+    # DESIGN NOTE (pinned in ``docs/planning/wor-252-sub-pr-1-safe-rewrite.md``):
+    # direct-child-only is deliberate. Monorepo / subpackage ``.env``
+    # files must pass the subpackage path as ``repo_root``, not the
+    # outer repo. Relaxing to descendant-level would let any
+    # attacker-controlled nested directory (e.g. a vendored checkout)
+    # pose as in-repo. Do NOT relax without first reverting the
+    # planning-doc clarification.
     if target_resolved.parent != repo_resolved:
         raise _refuse(UnsafeReason.CONTAINMENT, target)
 
@@ -738,11 +746,38 @@ def safe_rewrite(
         staging_path = None
 
         # -- 17. Final fsync of parent directory. --------------------------
-        # Post-rename fsync failures do not roll back - the rename
-        # already landed. We surface as IO_ERROR for visibility, but
-        # the target is already updated; callers typically treat this
-        # as "likely durable, re-verify".
-        _fsync_dir(dir_fd, target)
+        # Post-rename fsync failures do NOT roll back - the rename
+        # already committed. Raising ``UnsafeRewriteRefused`` here would
+        # be a contract lie (the message is literally "unsafe rewrite
+        # refused") and would cause idempotent retry callers to
+        # double-write on top of baseline-sha checks. Inline the fsync
+        # instead and log + continue on OSError.
+        #
+        # IMPORTANT: ``_fullfsync(dir_fd)`` must run EVEN IF ``os.fsync``
+        # raises. On Darwin/APFS, plain ``os.fsync`` is effectively a
+        # no-op for durability - ``F_FULLFSYNC`` is the only barrier
+        # that actually flushes the drive cache. If we gated
+        # ``_fullfsync`` on ``os.fsync`` success, an ENOSPC on macOS
+        # would skip the only call that matters and the rewrite really
+        # could revert on crash. ``_fullfsync`` swallows its own
+        # ``OSError`` (see its docstring), so calling it unconditionally
+        # is safe.
+        fsync_exc: OSError | None = None
+        try:
+            os.fsync(dir_fd)
+        except OSError as exc:
+            fsync_exc = exc
+        _fullfsync(dir_fd)
+        if fsync_exc is not None:
+            _log.warning(
+                "post-rename parent-dir fsync failed for %s: errno=%s %s; "
+                "rewrite may revert on crash (durability barrier unconfirmed); "
+                "callers relying on baseline-sha idempotency should treat "
+                "this as a successful write",
+                target,
+                fsync_exc.errno,
+                fsync_exc.strerror,
+            )
 
     except UnsafeRewriteRefused:
         if tmp_path is not None:

@@ -13,6 +13,7 @@ shell config.
 from __future__ import annotations
 
 import os
+import stat as _stat
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from worthless.cli.dotenv_rewriter import (
     rewrite_env_key,
 )
 from worthless.cli.errors import UnsafeReason, UnsafeRewriteRefused
+from worthless.cli.safe_rewrite import _BASENAME_DENYLIST
 
 
 @pytest.fixture
@@ -455,16 +457,13 @@ def test_add_with_hash_not_preceded_by_space_allowed(
     assert b"API_KEY=sk-abc#tag\n" in env.read_bytes()
 
 
-def test_add_with_internal_quote_allowed(
-    tmp_path: Path,
-    make_env_file,
-) -> None:
-    """``sk-ab"cd`` (quote mid-value) is legal; only leading quote is rejected."""
-    env = make_env_file(tmp_path / ".env", content=b"KEY=value\n")
-
-    add_or_rewrite_env_key(env, "API_KEY", 'sk-ab"cd')
-
-    assert b'API_KEY=sk-ab"cd\n' in env.read_bytes()
+# NOTE: a predecessor test here asserted "quote mid-value is allowed".
+# Finding 1 from CR on PR #86 tightened that contract: embedded ``"``
+# or ``'`` in a value is now refused globally (python-dotenv mis-parses
+# ``KEY="abc"def"`` as a syntax error the next time it reads the file,
+# so "refuse, don't mangle" applies). See
+# ``test_rewrite_refuses_values_with_embedded_quotes`` below for the
+# positive-space coverage of the new contract.
 
 
 # ---------------------------------------------------------------------------
@@ -679,3 +678,222 @@ def test_refuse_symlink_via_sister_apis(
         operation(env_path)
 
     assert exc_info.value.reason == UnsafeReason.SYMLINK
+
+
+# ---------------------------------------------------------------------------
+# CR PR #86 / sub-PR-4 — embedded-quote and missing-file coverage.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        pytest.param('abc"def', id="embedded-double-quote"),
+        pytest.param("abc'def", id="embedded-single-quote"),
+        # Deliberately no leading quote: a value that STARTS with `"`
+        # would trip the leading-quote check first, short-circuiting the
+        # embedded-quote path we actually want to exercise.
+        pytest.param('foo"bar"baz', id="trailing-doubles"),
+        pytest.param("has'single'", id="embedded-singles"),
+    ],
+)
+def test_rewrite_refuses_values_with_embedded_quotes(
+    tmp_path: Path, make_env_file, sha256_of, bad_value
+) -> None:
+    """Values with embedded quotes must be refused.
+
+    Rewriting ``KEY="old"`` with such a value would produce a line
+    whose embedded quote closes the surrounding quote and leaves the
+    rest as noise, mis-parsed on read-back (python-dotenv flags the
+    line as unparsable). ``_validate_value`` refuses the value before
+    any rewrite can emit it.
+    """
+    env = make_env_file(tmp_path / ".env", content=b'KEY="old"\n')
+    baseline = sha256_of(env)
+
+    with pytest.raises(ValueError):
+        rewrite_env_key(env, "KEY", bad_value)
+
+    assert sha256_of(env) == baseline
+
+
+def test_add_or_rewrite_refuses_embedded_double_quote(
+    tmp_path: Path, make_env_file, sha256_of
+) -> None:
+    """``add_or_rewrite_env_key`` also refuses embedded-quote values."""
+    env = make_env_file(tmp_path / ".env", content=b'KEY="old"\n')
+    baseline = sha256_of(env)
+
+    with pytest.raises(ValueError):
+        add_or_rewrite_env_key(env, "KEY", 'abc"def')
+
+    assert sha256_of(env) == baseline
+
+
+def test_add_or_rewrite_creates_missing_env_file(tmp_path: Path) -> None:
+    """Missing ``.env`` MUST be created atomically with mode 0600.
+
+    ``safe_rewrite`` refuses missing targets by contract, so the
+    ``add_or_rewrite_env_key`` public docstring's "creating or updating"
+    promise requires a separate atomic-create path
+    (``O_CREAT|O_EXCL|O_NOFOLLOW`` + ``fsync``).
+    """
+    env = tmp_path / ".env"
+    assert not env.exists()
+
+    add_or_rewrite_env_key(env, "KEY", "value")
+
+    assert env.read_bytes() == b"KEY=value\n"
+    assert _stat.S_IMODE(env.stat().st_mode) == 0o600
+
+
+def test_add_or_rewrite_create_refuses_symlink_race(tmp_path: Path) -> None:
+    """A symlink at the target path must not be dereferenced on create.
+
+    ``O_NOFOLLOW`` ensures that if a racing symlink appears between the
+    "does ``.env`` exist?" check and the ``os.open`` call, the open
+    fails rather than silently writing through to the decoy.
+    """
+    decoy = tmp_path / "decoy"
+    decoy.write_text("")
+    link = tmp_path / ".env"
+    link.symlink_to(decoy)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(link, "KEY", "value")
+
+    # Reason breakdown: with the decoy created *before* the symlink,
+    # ``add_or_rewrite_env_key``'s ``env_path.exists()`` check sees an
+    # existing target and routes to ``_safe_read_existing_bytes``, which
+    # refuses with ``UnsafeReason.SYMLINK`` via ``safe_rewrite``'s
+    # symlink gate. A truly interleaved TOCTOU (symlink appears AFTER
+    # the exists check but BEFORE the ``os.open`` in
+    # ``_create_new_env_file``) would route to the create branch and
+    # refuse with ``TOCTOU`` via ``O_NOFOLLOW``. Both are accepted here
+    # so the test remains green if we later harden the ordering or add
+    # an explicit TOCTOU probe.
+    assert exc_info.value.reason in {
+        UnsafeReason.SYMLINK,
+        UnsafeReason.TOCTOU,
+    }
+    # Decoy must be untouched.
+    assert decoy.read_text() == ""
+
+
+def test_add_or_rewrite_create_fsyncs_parent_directory(tmp_path: Path, monkeypatch) -> None:
+    """Create path MUST fsync the parent directory so the dirent is durable.
+
+    POSIX: a rename or a newly-created file enters a parent directory
+    whose entry isn't on disk until the parent dir is fsynced. Without
+    this, a power-loss between create+fsync(file) and dir-fsync can
+    leave a "ghost file" — the inode exists but the directory entry is
+    gone, so the file effectively disappeared.
+
+    Regression guard for reviewer finding B1: originally,
+    ``_create_new_env_file`` fsynced the file contents but skipped the
+    parent-dir fsync, leaving a durability gap on unclean shutdown.
+
+    We assert the parent directory fd was passed to ``os.fsync`` at
+    least once by wrapping ``os.fsync`` and checking ``os.fstat`` for
+    ``S_ISDIR``.
+    """
+    env = tmp_path / ".env"
+    assert not env.exists()
+
+    fsynced_dir = {"hit": False}
+    real_fsync = os.fsync
+
+    def _rec_fsync(fd):  # noqa: ANN001
+        try:
+            st = os.fstat(fd)
+            if _stat.S_ISDIR(st.st_mode):
+                fsynced_dir["hit"] = True
+        except OSError:
+            pass
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", _rec_fsync)
+
+    add_or_rewrite_env_key(env, "KEY", "value")
+
+    assert env.read_bytes() == b"KEY=value\n"
+    assert fsynced_dir["hit"], (
+        "parent directory was never fsynced on create — unclean shutdown "
+        "could lose the dirent and leave a 'ghost file' (reviewer B1)"
+    )
+
+
+@pytest.mark.parametrize("denylisted_basename", sorted(_BASENAME_DENYLIST))
+def test_add_or_rewrite_refuses_to_create_denylisted_basename(
+    tmp_path: Path, denylisted_basename: str
+) -> None:
+    """``add_or_rewrite_env_key`` on a non-existent denylisted path MUST refuse.
+
+    The original ``add_or_rewrite_env_key`` funnelled every destructive
+    write through ``safe_rewrite``, whose basename gate refuses non-
+    allowlisted targets. The sub-PR-4 create path added a direct
+    ``_create_new_env_file`` call that *skipped* the gate, meaning
+    ``add_or_rewrite_env_key(Path("~/.bashrc"), "PATH", "/attacker/bin")``
+    on a host with no ``.bashrc`` would happily create one with
+    attacker-controlled content.
+
+    Parametrizing over the live ``_BASENAME_DENYLIST`` frozenset (not a
+    hardcoded copy) means any future addition to the source denylist
+    automatically grows test coverage — and prevents silent drift
+    where the test's mirror and the source disagree.
+    """
+    target = tmp_path / denylisted_basename
+    assert not target.exists(), "precondition: denylisted target must not exist"
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(target, "PATH", "/attacker/bin")
+
+    assert exc_info.value.reason == UnsafeReason.BASENAME, (
+        f"expected BASENAME refusal for missing-file create of "
+        f"{denylisted_basename!r}, got {exc_info.value.reason!r}; "
+        f"the basename gate was bypassed on the create path (zshrc-lock regression)"
+    )
+    # File MUST NOT have been created.
+    assert not target.exists(), (
+        f"denylisted target {target} was created despite basename gate — "
+        f"this is the exact zshrc-lock bug reintroduced"
+    )
+
+
+def test_create_path_cleans_up_on_short_write(tmp_path: Path, monkeypatch) -> None:
+    """Short ``os.write`` (n<=0) on create MUST unlink the partial file.
+
+    We monkey-patch ``os.write`` to return 0 on the first call for any
+    fd opened inside ``_create_new_env_file``. The contract:
+
+    1. ``add_or_rewrite_env_key`` raises ``UnsafeRewriteRefused`` with
+       reason ``IO_ERROR``.
+    2. The partial file is unlinked — ``env_path.exists()`` is False
+       after the refusal. A leaked partial file would confuse the next
+       run (``env_path.exists()`` would return True and route to the
+       rewrite path, preserving the zero-byte garbage).
+    """
+    env = tmp_path / ".env"
+    assert not env.exists()
+
+    real_write = os.write
+    first_write_done = {"done": False}
+
+    def _short_write(fd, data):  # noqa: ANN001
+        # Return 0 on the FIRST write only — subsequent writes (e.g.
+        # from other test infrastructure) behave normally.
+        if not first_write_done["done"]:
+            first_write_done["done"] = True
+            return 0
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", _short_write)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(env, "KEY", "value")
+
+    assert exc_info.value.reason == UnsafeReason.IO_ERROR
+    assert not env.exists(), (
+        "partial .env survived a short-write failure — next run would "
+        "route to the rewrite path on corrupt zero-byte content"
+    )
