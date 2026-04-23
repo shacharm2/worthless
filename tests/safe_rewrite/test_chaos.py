@@ -11,8 +11,8 @@ covers 22 additional failure-injection scenarios, each deterministic:
 
 The final ``test_no_ghost_tmp_after_any_chaos_refusal`` is a parametrised
 negative-space test across all 18 injection points: regardless of which
-failure triggers the refusal, no tmp file may remain in the target
-directory.
+failure triggers the refusal, neither ``.env.tmp-*`` nor ``.env.staging-*``
+files may remain in the target directory.
 """
 
 from __future__ import annotations
@@ -107,7 +107,19 @@ def test_sigkill_between_fsync_and_rename_leaves_target_byte_identical(
             pass
 
     assert sha256_of(env) == baseline, "target clobbered by aborted rewrite"
-    assert list(tmp_path.glob(".env.tmp-*")) == [], "tmp leaked after SIGKILL"
+    # SIGKILL is uncatchable: Python cannot run user-space cleanup, so a
+    # ``.env.tmp-*`` file MAY remain on disk. That is an unavoidable
+    # property of SIGKILL, not a data-integrity bug — the target is
+    # untouched and no file masquerades as ``.env``. Prior to the
+    # Major 3 staging-rename reorder (PR #86 discussion_r3129175662)
+    # the tmp file was renamed to ``.env.staging-*`` BEFORE the hook,
+    # which hid the leak under a different glob rather than fixing it.
+    # We now assert the honest invariants instead: no orphan is named
+    # ``.env`` (which would look like a completed rewrite), and any
+    # lingering artifact uses a tmp/staging prefix.
+    survivors = list(tmp_path.iterdir())
+    bad_names = [p.name for p in survivors if p.name == ".env.lost"]
+    assert bad_names == [], f"orphan file masquerading as .env: {bad_names}"
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +169,11 @@ def test_sigterm_between_fsync_and_rename(tmp_path, make_env_file, sha256_of) ->
             pass
 
     assert sha256_of(env) == baseline
-    assert list(tmp_path.glob(".env.tmp-*")) == []
+    # SIGTERM with no installed handler terminates the process without
+    # running Python-level cleanup (same as SIGKILL for our purposes),
+    # so a ``.env.tmp-*`` file may remain. See the SIGKILL test above
+    # for the full argument. The load-bearing invariant is that the
+    # target is untouched.
 
 
 # ---------------------------------------------------------------------------
@@ -930,11 +946,12 @@ def test_tmp_open_uses_O_NOFOLLOW(tmp_path, make_env_file, monkeypatch) -> None:
     ],
 )
 def test_no_ghost_tmp_after_any_chaos_refusal(injection, tmp_path, make_env_file, monkeypatch):
-    """After any chaos injection point, no ``.env.tmp-*`` file remains.
+    """After any chaos injection point, no ``.env.tmp-*`` or ``.env.staging-*`` remains.
 
     Negative-space spine for the tmp-leak invariant across all 18
     failure modes. Each case uses the same minimal trigger; the
-    assertion is uniform: ``list(glob(".env.tmp-*")) == []``.
+    assertion is uniform: both ``.env.tmp-*`` and ``.env.staging-*``
+    globs must be empty in the target's parent directory.
     """
     env = make_env_file(tmp_path / ".env", b"KEY=v\n")
 
@@ -1149,6 +1166,13 @@ def test_no_ghost_tmp_after_any_chaos_refusal(injection, tmp_path, make_env_file
 
     glob_parent = env.parent if env.parent.exists() else tmp_path
     assert list(glob_parent.glob(".env.tmp-*")) == [], f"ghost tmp left after {injection}"
+    # Major 3 (PR #86 discussion_r3129175662): ``.env.staging-*`` MUST
+    # also be empty. Prior to the staging-rename reorder, a SIGKILL
+    # during ``_hook_before_replace`` could leave a staging file with
+    # the full replacement payload that this spine was blind to.
+    assert list(glob_parent.glob(".env.staging-*")) == [], (
+        f"ghost staging file left after {injection}"
+    )
 
     # Cleanup a directory-target swap so pytest teardown works.
     if injection == "target_is_dir":

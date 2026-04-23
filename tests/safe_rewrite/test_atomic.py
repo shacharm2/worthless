@@ -297,3 +297,70 @@ def test_tmp_open_flags_include_nofollow_cloexec(tmp_path, make_env_file, monkey
     required = os.O_NOFOLLOW | os.O_CLOEXEC | os.O_EXCL | os.O_CREAT | os.O_WRONLY
     for flags in recorded_flags:
         assert (flags & required) == required, f"tmp-open missing required flags: got {oct(flags)}"
+
+
+# ---------------------------------------------------------------------------
+# Staging-rename ordering — Major 3 (CR thread on PR #86, discussion_r3129175662).
+#
+# Before this fix, ``_stage_tmp`` ran BEFORE ``_hook_before_replace``. A
+# SIGKILL/SIGTERM during the hook thus left a ``.env.staging-*`` file on
+# disk with the full replacement payload — an uncatchable-signal leak
+# that the existing ``.env.tmp-*`` glob asserts could not see.
+#
+# The fix is to keep the tmp file named ``.env.tmp-*`` while the hook
+# runs, so the existing ghost-tmp spine covers that window, and only
+# rename to the staging path immediately before the atomic replace.
+# Both tests below lock the new ordering contract.
+# ---------------------------------------------------------------------------
+
+
+def test_hook_runs_before_staging_rename(tmp_path, make_env_file) -> None:
+    """While the hook runs, no ``.env.staging-*`` file exists yet.
+
+    This is the load-bearing structural assertion for Major 3: the hook
+    must execute against the on-disk state where only ``.env.tmp-*``
+    exists. If the staging rename leaks into the hook window, a SIGKILL
+    during the hook leaves a ``.env.staging-*`` artifact that the
+    existing ghost-tmp spine cannot see.
+    """
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    observed: dict[str, list[str]] = {"staging": [], "tmp": []}
+
+    def _hook() -> None:
+        observed["staging"] = [p.name for p in tmp_path.glob(".env.staging-*")]
+        observed["tmp"] = [p.name for p in tmp_path.glob(".env.tmp-*")]
+
+    safe_rewrite(env, b"KEY=new\n", original_user_arg=env, _hook_before_replace=_hook)
+
+    assert observed["staging"] == [], (
+        f"staging file existed during hook execution: {observed['staging']}. "
+        "Staging rename must occur AFTER the hook so the existing "
+        "ghost-tmp spine covers the hook-kill window."
+    )
+    # Sanity check: the hook must have actually run against a pre-rename
+    # on-disk state — i.e. a .env.tmp-* file existed at hook time.
+    assert observed["tmp"], (
+        "hook ran but no .env.tmp-* was present; the write path may "
+        "have skipped the staging step entirely"
+    )
+
+
+def test_hook_raising_leaves_no_staging_or_tmp(tmp_path, make_env_file, sha256_of) -> None:
+    """Hook raises → no ``.env.staging-*`` AND no ``.env.tmp-*`` survive.
+
+    Complements the existing ``.env.tmp-*`` cleanup test; explicit
+    coverage of the ``.env.staging-*`` glob closes the blind spot
+    flagged in the CR thread.
+    """
+    env = make_env_file(tmp_path / ".env", b"KEY=original\n")
+    baseline = sha256_of(env)
+
+    def _boom() -> None:
+        raise RuntimeError("synthetic hook crash")
+
+    with pytest.raises((RuntimeError, UnsafeRewriteRefused)):
+        safe_rewrite(env, b"KEY=replacement\n", original_user_arg=env, _hook_before_replace=_boom)
+
+    assert sha256_of(env) == baseline
+    assert list(tmp_path.glob(".env.tmp-*")) == [], "tmp leaked after hook raise"
+    assert list(tmp_path.glob(".env.staging-*")) == [], "staging leaked after hook raise"

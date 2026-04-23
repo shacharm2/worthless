@@ -739,15 +739,25 @@ def safe_rewrite(
 
         _fsync_dir(dir_fd, target)
 
-        # Stage tmp under a non-".env.tmp-*" name (chaos-suite leak signature).
-        staging_path = _stage_tmp(tmp_path, parent, target)
-        tmp_path = None
-
         # -- 14. Caller hook (e.g. shard-write ordering in sub-PR 2). ------
+        # Hook runs while the file is still named ``.env.tmp-*`` so any
+        # uncatchable signal (SIGKILL/SIGTERM) during the hook leaves an
+        # artifact that the existing ``.env.tmp-*`` ghost-tmp spine can
+        # see. Staging under ``.env.staging-*`` is deferred to the
+        # narrow window immediately before the atomic rename.
         if _hook_before_replace is not None:
             _hook_before_replace()
 
         _recheck_target(target, baseline_fstat)
+
+        # Stage tmp under a non-".env.tmp-*" name. This happens AFTER
+        # the hook so the hook-kill window is covered by the existing
+        # ``.env.tmp-*`` leak assertions; the staging-named window is
+        # now reduced to ``_recheck_target``-to-``_atomic_replace`` and
+        # is additionally covered by ``.env.staging-*`` glob checks in
+        # the chaos spine.
+        staging_path = _stage_tmp(tmp_path, parent, target)
+        tmp_path = None
         _atomic_replace_with_fallback(staging_path, target, baseline_fstat)
         # Staging has been consumed by the rename - forget its path so the
         # cleanup handler doesn't try to unlink the live target.
