@@ -21,39 +21,66 @@ from worthless.cli.errors import UnsafeReason, UnsafeRewriteRefused
 from worthless.cli.safe_rewrite import safe_rewrite
 
 
-def test_refuses_env_in_repo_subdirectory(in_fake_repo, make_env_file, sha256_of) -> None:
-    """A subdirectory ``.env`` (``repo/packages/api/.env``) is refused.
+def test_accepts_env_in_repo_subdirectory(in_fake_repo, make_env_file) -> None:
+    """A subdirectory ``.env`` (``repo/packages/api/.env``) is accepted.
 
-    Containment is deliberately **direct-child-only**: ``safe_rewrite``
-    targets ``<repo_root>/.env`` (and the explicit allow-list), never a
-    nested package ``.env``. The comment in ``safe_rewrite.py`` documents
-    this as a pinned design decision — see
-    ``docs/planning/recovery-works-after-bad-lock.md`` for rationale.
-
-    Regression guard: any future "look through nested directories for
-    anything called ``.env``" change must trip this test.
+    Containment means *descendant of ``repo_root``*, not *direct child
+    only*. Monorepos and subpackage layouts routinely keep ``.env`` inside
+    a subpackage; a strict direct-child-only gate would force callers
+    into awkward "cd into subpackage" workarounds without adding any real
+    defense beyond what basename allowlist + realpath + fsid already
+    provide.
     """
     sub_env = make_env_file(in_fake_repo / "packages" / "api" / ".env", b"KEY=v\n")
-    baseline = sha256_of(sub_env)
 
-    with pytest.raises(UnsafeRewriteRefused) as exc_info:
-        safe_rewrite(
-            sub_env,
-            b"A=1\n",
-            original_user_arg=sub_env,
-            repo_root=in_fake_repo,
-        )
+    safe_rewrite(
+        sub_env,
+        b"KEY=new\n",
+        original_user_arg=sub_env,
+        repo_root=in_fake_repo,
+    )
 
-    # Subdirectory is inside the repo tree but not a direct child of
-    # repo_root; containment gate must refuse. Pin to CONTAINMENT so a
-    # regression that routed it through some other reason (e.g.
-    # PATH_IDENTITY) would fail loudly.
-    assert exc_info.value.reason == UnsafeReason.CONTAINMENT
-    assert sha256_of(sub_env) == baseline
+    assert sub_env.read_bytes() == b"KEY=new\n"
 
 
-def test_refuses_env_outside_repo(tmp_path, in_fake_repo, make_env_file, sha256_of) -> None:
-    """An ``.env`` located outside ``repo_root`` is refused by default."""
+def test_accepts_deeply_nested_descendant(in_fake_repo, make_env_file) -> None:
+    """A ``.env`` four levels deep under ``repo_root`` is accepted."""
+    deep = make_env_file(
+        in_fake_repo / "a" / "b" / "c" / "d" / ".env",
+        b"KEY=v\n",
+    )
+
+    safe_rewrite(
+        deep,
+        b"KEY=new\n",
+        original_user_arg=deep,
+        repo_root=in_fake_repo,
+    )
+
+    assert deep.read_bytes() == b"KEY=new\n"
+
+
+def test_accepts_direct_child_env(in_fake_repo, make_env_file) -> None:
+    """Regression guard: ``repo/.env`` (direct child) still works."""
+    env = make_env_file(in_fake_repo / ".env", b"KEY=v\n")
+
+    safe_rewrite(
+        env,
+        b"KEY=new\n",
+        original_user_arg=env,
+        repo_root=in_fake_repo,
+    )
+
+    assert env.read_bytes() == b"KEY=new\n"
+
+
+def test_refuses_env_outside_repo(tmp_path, make_env_file, sha256_of) -> None:
+    """An ``.env`` located outside ``repo_root`` (sibling directory) is refused."""
+    # repo_root and outside must be genuine siblings — if outside is a
+    # descendant of repo_root, the containment gate legitimately accepts it.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
     outside = make_env_file(tmp_path / "outside" / ".env", b"KEY=v\n")
     baseline = sha256_of(outside)
 
@@ -62,7 +89,7 @@ def test_refuses_env_outside_repo(tmp_path, in_fake_repo, make_env_file, sha256_
             outside,
             b"A=1\n",
             original_user_arg=outside,
-            repo_root=in_fake_repo,
+            repo_root=repo,
         )
 
     assert exc_info.value.reason == UnsafeReason.CONTAINMENT
@@ -102,19 +129,25 @@ def test_skips_containment_when_repo_root_is_none(tmp_path, make_env_file) -> No
 
 
 def test_refuses_realpath_escape_via_symlinked_directory(
-    tmp_path, in_fake_repo, make_env_file, sha256_of
+    tmp_path, make_env_file, sha256_of
 ) -> None:
-    """A ``repo/inner`` symlinked to ``/outside`` → ``inner/.env`` escapes → refused.
+    """A ``repo/inner`` symlinked to a sibling directory → ``.env`` escapes → refused.
 
     The ``.env`` under the symlinked-directory resolves (via realpath)
-    to outside the repo root. Containment must refuse.
+    to outside the repo root. With descendant-level containment, escape
+    only "works" if the symlink target is genuinely outside repo_root;
+    construct ``repo`` and ``outside`` as siblings so the realpath lands
+    truly outside.
     """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
     real_env = make_env_file(outside / ".env", b"KEY=v\n")
     baseline = sha256_of(real_env)
 
-    inner_link = in_fake_repo / "inner"
+    inner_link = repo / "inner"
     inner_link.symlink_to(outside)
 
     env_via_link = inner_link / ".env"
@@ -124,7 +157,7 @@ def test_refuses_realpath_escape_via_symlinked_directory(
             env_via_link,
             b"A=1\n",
             original_user_arg=env_via_link,
-            repo_root=in_fake_repo,
+            repo_root=repo,
         )
 
     assert exc_info.value.reason in {

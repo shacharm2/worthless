@@ -310,19 +310,17 @@ def _check_containment(target: Path, repo_root: Path | None, allow_outside_repo:
     except (OSError, ValueError) as exc:
         raise _refuse(UnsafeReason.CONTAINMENT, target) from exc
 
-    # Containment: target must be a DIRECT CHILD of repo_root after
-    # realpath resolution. Anything in a subdirectory (e.g.
-    # ``repo/packages/api/.env``) or above the repo root is refused.
-    #
-    # DESIGN NOTE (pinned in ``docs/planning/wor-252-sub-pr-1-safe-rewrite.md``):
-    # direct-child-only is deliberate. Monorepo / subpackage ``.env``
-    # files must pass the subpackage path as ``repo_root``, not the
-    # outer repo. Relaxing to descendant-level would let any
-    # attacker-controlled nested directory (e.g. a vendored checkout)
-    # pose as in-repo. Do NOT relax without first reverting the
-    # planning-doc clarification.
-    if target_resolved.parent != repo_resolved:
-        raise _refuse(UnsafeReason.CONTAINMENT, target)
+    # Containment: target's realpath must be a *descendant* of repo_root's
+    # realpath. Defense-in-depth is provided by three layers already —
+    # basename allowlist/denylist (:func:`_check_basename`), realpath
+    # resolution (above), and fsid equality (below). Those three layers
+    # catch symlink escapes, bind-mount escapes, and non-dotenv targets;
+    # an additional "direct-child-only" rule would add no bar against any
+    # concrete threat and would refuse valid monorepo layouts.
+    try:
+        target_resolved.relative_to(repo_resolved)
+    except ValueError as exc:
+        raise _refuse(UnsafeReason.CONTAINMENT, target) from exc
 
     # Mount-ID / filesystem ID check: if repo and target live on
     # different filesystems (bind-mount, overlay, cross-device), refuse.

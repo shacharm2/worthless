@@ -69,7 +69,7 @@ Also rolled in: literal `.env` basename equality (user mandate), full-file doten
 6. `fstat(fd)` → `st_size`, `st_mode`, `st_dev`, `st_ino`. Anchor for TOCTOU.
 7. **`fcntl.flock(fd, LOCK_EX | LOCK_NB)`** — concurrent-lock defense.
 8. Path identity: `realpath(user_arg) == realpath(target)`.
-9. Repo containment + mount-ID check (`os.statvfs(fd).f_fsid` == repo fsid). Defeats bind-mount escapes. **Semantics**: "contained" means *direct child of `repo_root`* — a subdirectory `.env` is **not** contained. Downstream callers (backup / restore) must not assume descendant-level containment.
+9. Repo containment + mount-ID check (`os.statvfs(fd).f_fsid` == repo fsid). Defeats bind-mount escapes. **Semantics**: "contained" means *descendant of `repo_root`* — monorepo / subpackage `.env` files (e.g. `repo/packages/api/.env`) are accepted. Defense-in-depth against nested-checkout attacks is provided by the basename allowlist + realpath resolution + fsid equality; an additional direct-child-only rule would add no bar against any concrete threat.
 10. Size bound (≤1 MiB, ≤500 lines, read-up-to-1-MiB from fd).
 11. Dotenv-parse full file (whole buffer, not 4 KiB sniff).
 12. Delta shape — `len(new_content)` in `[0.25 × st_size, 4 × st_size]` or file was empty.
