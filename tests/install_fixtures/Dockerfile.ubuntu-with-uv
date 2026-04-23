@@ -16,20 +16,15 @@ RUN apt-get update \
 RUN sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' \
     && test -x "$HOME/.local/bin/uv"
 
-# Sanity: uv present at expected path, python3 absent.
 RUN ! command -v python3 \
+    && ! command -v python \
+    && ! command -v pipx \
     && test -x /root/.local/bin/uv
 
 WORKDIR /work
 COPY install.sh /work/install.sh
 COPY tests/install_fixtures/verify_install.sh /work/verify_install.sh
-RUN chmod +x /work/install.sh /work/verify_install.sh
+COPY tests/install_fixtures/verify_uv_reuse.sh /work/verify_uv_reuse.sh
+RUN chmod +x /work/install.sh /work/verify_install.sh /work/verify_uv_reuse.sh
 
-# Hash uv before install, verify byte-identical after (proves reuse, not
-# reinstall). Stronger than mtime: immune to `touch`, 1-second races, and
-# same-content re-downloads that change the inode.
-CMD ["/bin/sh", "-c", "UV_BEFORE=$(sha256sum /root/.local/bin/uv | cut -d' ' -f1) \
-    && sh /work/install.sh \
-    && UV_AFTER=$(sha256sum /root/.local/bin/uv | cut -d' ' -f1) \
-    && [ \"$UV_BEFORE\" = \"$UV_AFTER\" ] || { echo 'FAIL: uv was reinstalled (hash changed)'; exit 1; } \
-    && sh /work/verify_install.sh"]
+CMD ["/bin/sh", "/work/verify_uv_reuse.sh"]

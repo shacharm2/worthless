@@ -47,8 +47,9 @@ jobs:
       - name: Run docker-marked integration tests in parallel
         env:
           UV_CACHE_DIR: /tmp/uv-cache
-        # -n auto = xdist parallel across runner CPUs. Matrix has 7 docker tests
-        # (~2-3 min each); sequential would exceed the 15-min default.
+        # -n 2 parallelism: 7 docker tests each build an image and pull PBS
+        # Python. Docker daemon serializes layer commits anyway; more than 2
+        # concurrent builds thrash disk I/O without speedup.
         run: |
           uv sync --extra test
-          uv run pytest -m docker -q -n auto --dist loadscope tests/test_install_docker.py
+          uv run pytest -m docker -q -n 2 --dist loadscope tests/test_install_docker.py

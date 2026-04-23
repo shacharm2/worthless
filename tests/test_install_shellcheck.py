@@ -12,16 +12,20 @@ import pytest
 
 from tests._install_helpers import INSTALL_FIXTURES, INSTALL_SH
 
-VERIFY_INSTALL_SH = INSTALL_FIXTURES / "verify_install.sh"
+SHELL_SCRIPTS = [
+    INSTALL_SH,
+    INSTALL_FIXTURES / "verify_install.sh",
+    INSTALL_FIXTURES / "verify_uv_reuse.sh",
+]
 
 
 @pytest.mark.skipif(
     shutil.which("shellcheck") is None,
     reason="shellcheck not installed; install via 'brew install shellcheck' or apt",
 )
-@pytest.mark.parametrize("script", [INSTALL_SH, VERIFY_INSTALL_SH], ids=lambda p: p.name)
+@pytest.mark.parametrize("script", SHELL_SCRIPTS, ids=lambda p: p.name)
 def test_install_scripts_pass_shellcheck(script) -> None:
-    """install.sh and verify_install.sh must pass shellcheck cleanly."""
+    """Every shell script in the install flow must pass shellcheck cleanly."""
     assert script.is_file(), f"missing script: {script}"
     result = subprocess.run(  # noqa: S603
         ["shellcheck", "--shell=sh", "--severity=warning", str(script)],  # noqa: S607

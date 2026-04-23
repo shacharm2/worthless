@@ -28,17 +28,9 @@ All tests should be RED until the Worker is implemented in WOR-300.
 
 ## Host support matrix
 
-The `install.sh` this Worker serves is validated on the hosts below via
-`pytest -m docker` (see the root [README](../../README.md#installsh--worthlesssh-support-matrix)).
-
-| Host | Status |
-|---|---|
-| Ubuntu 24.04 (bare / +uv) | Supported |
-| Ubuntu 22.04 (bare) | Supported |
-| Debian 12 (bare) | Supported |
-| Alpine / musl | Supported |
-| macOS | Supported (manual) |
-| Native Windows | Not supported |
+The `install.sh` this Worker serves is validated across Ubuntu 22.04/24.04,
+Debian 12, Alpine, and macOS. Full table + test invocation:
+[README — support matrix](../../README.md#installsh--worthlesssh-support-matrix).
 
 ## Tickets
 

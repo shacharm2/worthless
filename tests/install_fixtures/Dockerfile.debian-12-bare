@@ -13,6 +13,7 @@ RUN apt-get update \
 
 RUN ! command -v python3 \
     && ! command -v python \
+    && ! command -v pipx \
     && ! command -v uv
 
 WORKDIR /work
