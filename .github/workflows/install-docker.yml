@@ -31,10 +31,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  bare-ubuntu:
-    name: install.sh on bare ubuntu:24.04 (no python/pipx/uv)
+  install-matrix:
+    name: install.sh host matrix (Ubuntu/Debian/Alpine, lock lifecycle)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -44,9 +44,11 @@ jobs:
       - name: Set up uv + Python (pytest harness only; not used inside container)
         uses: ./.github/actions/setup-uv-python
 
-      - name: Run docker-marked integration test
+      - name: Run docker-marked integration tests in parallel
         env:
           UV_CACHE_DIR: /tmp/uv-cache
+        # -n auto = xdist parallel across runner CPUs. Matrix has 7 docker tests
+        # (~2-3 min each); sequential would exceed the 15-min default.
         run: |
           uv sync --extra test
-          uv run pytest -m docker -q tests/test_install_docker.py
+          uv run pytest -m docker -q -n auto --dist loadscope tests/test_install_docker.py
