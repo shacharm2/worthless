@@ -19,6 +19,7 @@ import hmac
 import io
 import logging
 import os
+import re
 import secrets
 import stat as _stat
 import sys
@@ -95,10 +96,18 @@ _SHELL_PREFIXES: tuple[str, ...] = (
     "eval ",
     "eval\t",
 )
-# "export KEY=value" is valid dotenv syntax (python-dotenv reads it; our own
-# rewriter must preserve it). Actual shell rc files (.zshrc, .bashrc, .profile)
-# are already blocked by the basename denylist before sniff ever runs.
-_SHELL_INFIX_MARKERS: tuple[str, ...] = ("<<",)
+# Heredoc detector (PR #86 discussion_r3124934951). A true shell
+# heredoc opener has the form ``cmd <<WORD`` or ``cmd <<-WORD`` on an
+# assignment-free line where WORD starts with an identifier character
+# or a quote. The previous loose ``"<<" in line`` check was too broad
+# and refused legitimate dotenv values like ``TOKEN=abc<<def`` or
+# ``URL=https://x?q=a<<b``, turning any ``.env`` containing them into
+# a permanently un-rewritable file. ``^[^=]*\s<<-?\s*["']?\w`` anchors
+# on the start of the (stripped) line, rejects any line with ``=``
+# before the ``<<`` (i.e. ``KEY=value`` lines can't trip it), and
+# requires a WORD-like token after the ``<<``. Actual shell rc files
+# are already blocked by the basename denylist before sniff runs.
+_HEREDOC_RE = re.compile(r"^[^=]*\s<<-?\s*[\"']?\w")
 
 # Darwin's F_FULLFSYNC command constant. We don't rely on fcntl exporting
 # it (Linux fcntl has no such constant) and fall back to plain fsync if
@@ -168,9 +177,8 @@ def _shell_marker_scan(text: str) -> bool:
         for prefix in _SHELL_PREFIXES:
             if line.startswith(prefix):
                 return True
-        for marker in _SHELL_INFIX_MARKERS:
-            if marker in line:
-                return True
+        if _HEREDOC_RE.match(line):
+            return True
     return False
 
 

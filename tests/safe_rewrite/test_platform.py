@@ -1,8 +1,13 @@
-"""Platform-gate invariants: Windows refused, Darwin uses ``F_FULLFSYNC``."""
+"""Platform-gate invariants: Windows refused, Darwin uses ``F_FULLFSYNC``.
+
+``fcntl`` is Unix-only and does not exist on Windows. Importing it at
+module scope would break ``test_refuses_on_windows`` collection on a
+real Windows host, so the import is deferred into
+``test_fsync_uses_f_fullfsync_on_darwin`` via ``pytest.importorskip``
+(see PR #86 discussion_r3124934998).
+"""
 
 from __future__ import annotations
-
-import fcntl as _fcntl
 
 import pytest
 
@@ -32,6 +37,11 @@ def test_fsync_uses_f_fullfsync_on_darwin(
     for durability, call ``fcntl.fcntl(fd, F_FULLFSYNC)`` on the tmp fd
     (and the dir fd). On other platforms, plain ``os.fsync`` suffices.
     """
+    # Deferred until test body — ``fcntl`` is Unix-only; importing at
+    # module scope would break collection of ``test_refuses_on_windows``
+    # on a real Windows host (PR #86 discussion_r3124934998).
+    _fcntl = pytest.importorskip("fcntl")
+
     env = make_env_file(tmp_path / ".env", b"KEY=v\n")
 
     # F_FULLFSYNC's integer constant on Darwin is 51. We don't hardcode

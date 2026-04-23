@@ -137,7 +137,13 @@ def test_sha256_preserved_across_all_refusal_reasons(
         assert before == after
 
     elif trigger == "size":
-        content = b"A=" + b"x" * ((1 << 20) - 1) + b"\n"  # 1 MiB + 1
+        # Exactly ``_MAX_SIZE + 1`` bytes: 2 ("A=") + (1 MiB - 2) + 1 ("\n").
+        # The prior literal ``(1 << 20) - 1`` produced 1 MiB + 2, a latent
+        # off-by-one that made the test less precise than its comment claimed
+        # (PR #86 discussion).
+        one_mib = 1 << 20
+        content = b"A=" + b"x" * (one_mib - 2) + b"\n"
+        assert len(content) == one_mib + 1
         target = make_env_file(tmp_path / ".env", content)
         baseline = sha256_of(target)
         with pytest.raises(UnsafeRewriteRefused):

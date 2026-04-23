@@ -943,6 +943,7 @@ def test_tmp_open_uses_O_NOFOLLOW(tmp_path, make_env_file, monkeypatch) -> None:
         "concurrent_flock",
         "enospc_dir_fsync",
         "emfile_dir_fd",
+        "renameat2_enosys",
         "hook_raises",
     ],
 )
@@ -1117,17 +1118,22 @@ def test_no_ghost_tmp_after_any_chaos_refusal(injection, tmp_path, make_env_file
         monkeypatch.setattr(os, "open", _o)
 
     elif injection == "renameat2_enosys":
-        try:
-            from worthless.cli import safe_rewrite as _sr
+        # renameat2 ENOSYS triggers a successful fstatat-recheck + os.replace
+        # fallback (see _atomic_replace_with_fallback), so this case does NOT
+        # raise — it completes normally. The spine invariants are still the
+        # same: target updated, no ghost tmp/staging. Handle inline like the
+        # other no-raise cases (enospc_dir_fsync).
+        from worthless.cli import safe_rewrite as _sr
 
-            if hasattr(_sr, "_renameat2"):
+        def _enosys(*a, **kw):  # noqa: ANN002, ANN003
+            raise OSError(errno.ENOSYS, "nosys")
 
-                def _enosys(*a, **kw):  # noqa: ANN002, ANN003
-                    raise OSError(errno.ENOSYS, "nosys")
-
-                monkeypatch.setattr(_sr, "_renameat2", _enosys)
-        except ImportError:
-            pass
+        monkeypatch.setattr(_sr, "_renameat2", _enosys)
+        safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+        assert env.read_bytes() == b"KEY=new\n"
+        assert list(tmp_path.glob(".env.tmp-*")) == []
+        assert list(tmp_path.glob(".env.staging-*")) == []
+        return
 
     elif injection == "hook_raises":
 

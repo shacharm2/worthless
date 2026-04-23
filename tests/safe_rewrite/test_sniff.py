@@ -106,6 +106,27 @@ def test_refuses_heredoc(tmp_path, make_env_file, sha256_of) -> None:
     assert sha256_of(p) == baseline
 
 
+def test_accepts_dotenv_value_containing_double_angle(tmp_path, make_env_file) -> None:
+    """Values containing ``<<`` inside an assignment are legitimate dotenv.
+
+    CR thread on PR #86 (discussion_r3124934951) pointed out that the
+    previous ``_SHELL_INFIX_MARKERS = ("<<",)`` infix check was far too
+    broad: any dotenv line whose value happened to contain ``<<`` (e.g.
+    a URL with a double-encoded ``<`` or a token with ``<<``) would be
+    refused forever. The sniff must only flag **real** heredocs
+    (``<<WORD`` / ``<<-WORD`` on an assignment-free line), not ``<<``
+    appearing inside a ``KEY=value`` payload.
+    """
+    # Two legitimate dotenv values that happen to contain "<<".
+    content = b"TOKEN=abc<<def\nURL=https://example.com/?q=a<<b\n"
+    env = make_env_file(tmp_path / ".env", content)
+
+    new_content = b"TOKEN=rotated<<value\nURL=https://example.com/?q=a<<b\n"
+    safe_rewrite(env, new_content, original_user_arg=env)
+
+    assert env.read_bytes() == new_content
+
+
 def test_refuses_eval_chain(tmp_path, make_env_file, sha256_of) -> None:
     """``eval "$(...)"`` is shell — refuse."""
     p = make_env_file(tmp_path / ".env", b'eval "$(command)"\n')
