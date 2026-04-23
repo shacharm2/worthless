@@ -1,0 +1,13 @@
+name = "worthless-sh"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/shacharm2/worthless/main/install.sh"
+REDIRECT_URL = "https://wless.io"
+
+# Production route — wired in WOR-300 when DNS is live
+# [[routes]]
+# pattern = "worthless.sh/*"
+# zone_name = "worthless.sh"
