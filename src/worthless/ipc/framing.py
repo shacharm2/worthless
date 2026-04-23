@@ -116,9 +116,26 @@ async def read_frame(reader: asyncio.StreamReader) -> dict[str, Any]:
         ) from exc
 
     # --- decode
+    # Hard caps on every nested msgpack allocation. Without these, a hostile peer
+    # could declare a 1 MiB frame whose body is a map with 10M keys, or an ext
+    # type claiming multi-GiB length — msgpack-python would happily try to allocate
+    # before we see the payload. 65k array/map entries is generous for any sane
+    # envelope (our bodies have <10 keys).
     try:
-        decoded = msgpack.unpackb(payload, raw=False)
-    except Exception as exc:  # msgpack raises several error types; treat all as malformed
+        decoded = msgpack.unpackb(
+            payload,
+            raw=False,
+            max_str_len=MAX_FRAME_SIZE,
+            max_bin_len=MAX_FRAME_SIZE,
+            max_ext_len=MAX_FRAME_SIZE,
+            max_array_len=65536,
+            max_map_len=65536,
+        )
+    except (msgpack.UnpackException, ValueError) as exc:
+        # msgpack.UnpackException covers format errors and our size-cap breaches
+        # (ExtraData, FormatError, StackError, UnpackValueError). ValueError
+        # catches the rare stdlib-style errors msgpack raises for bad UTF-8 in
+        # str keys. Anything else (MemoryError, KeyboardInterrupt) propagates.
         raise MalformedFrameError(f"invalid msgpack payload: {exc}") from exc
 
     if not isinstance(decoded, dict):

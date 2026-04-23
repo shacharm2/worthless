@@ -81,8 +81,14 @@ class TestRequirePeerUid:
 
     def test_disallowed_uid_raises(self, sock_pair) -> None:
         a, _b = sock_pair
-        # Pick a uid we are definitely NOT running as.
-        bogus = os.getuid() + 99999
+        # Pick a uid that cannot be us. `os.getuid() + 99999` is NOT safe on
+        # AD/IdM-joined hosts where directory-sourced uids run into the
+        # billions and adjacent uids are real users. 2**31-1 sits above
+        # UID_MAX on every sane config; guard against the astronomical
+        # chance we happen to BE that uid.
+        bogus = 2**31 - 1
+        if os.getuid() == bogus:
+            pytest.skip("running as the sentinel uid — test cannot distinguish")
         with pytest.raises(UnauthorizedPeerError) as exc_info:
             require_peer_uid(a, allowed_uids=[bogus])
         # Error message should include observed uid for debugging.

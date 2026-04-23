@@ -12,7 +12,7 @@ Shape is modelled after [Google Tink's `Aead`](https://developers.google.com/tin
 
 ## Transport
 
-- **Socket:** Unix domain stream socket (`SOCK_STREAM`), path `/var/run/worthless/sidecar.sock` (configurable).
+- **Socket:** Unix domain stream socket (`SOCK_STREAM`), path `/var/run/worthless/sidecar.sock` (configurable). **Pathname sockets only** — Linux abstract namespace (`\0name`) is forbidden: it bypasses filesystem ACLs and breaks the install-time permission model.
 - **Auth:** peer-uid check via `SO_PEERCRED` (Linux) / `getpeereid()` (macOS). Sidecar rejects if peer uid ∉ allowlist.
 - **Framing:** length-prefixed binary frames.
 
@@ -32,13 +32,16 @@ Shape is modelled after [Google Tink's `Aead`](https://developers.google.com/tin
 
 ```
 {
-  "v":    1,                                   // protocol version (uint)
-  "id":   <uint64>,                            // request id; response echoes
-  "kind": "req" | "resp" | "err",
-  "op":   "hello" | "seal" | "open" | "attest",
-  "body": { ... op-specific ... }
+  "v":          1,                             // protocol version (uint)
+  "id":         <uint64>,                      // request id; response echoes
+  "kind":       "req" | "resp" | "err",
+  "op":         "hello" | "seal" | "open" | "attest",
+  "deadline_ms": <uint32|null>,                // client-side deadline budget; server MAY abort earlier
+  "body":       { ... op-specific ... }
 }
 ```
+
+`deadline_ms` is advisory end-to-end budget in milliseconds. A proxy with a 30 s TCP RST timeout should pass e.g. `25000` so the sidecar can return `TIMEOUT` cleanly before the proxy gives up. `null` means "no deadline" (the sidecar still enforces its own op-level timeouts). This exists so MPC backends — where a round can take seconds — can abandon work when the client no longer cares.
 
 ## Handshake (once per connection)
 
@@ -66,17 +69,19 @@ Resp body: `{ "ciphertext": <bytes> }`
 
 ### `open` — recover plaintext
 
-Req body: `{ "ciphertext": <bytes>, "context": <bytes|null> }`
+Req body: `{ "ciphertext": <bytes>, "context": <bytes|null>, "key_id": <bytes|null> }`
 Resp body: `{ "plaintext": <bytes> }`
 
 - `context` MUST match the value passed to `seal` or open fails with `BACKEND` error.
+- `key_id` selects the key when the backend manages multiple. Fernet: `null` (key is derived from shares, single-key per sidecar). KMS/MPC: opaque identifier the backend emitted during `seal` (e.g. as part of `ciphertext` header) — proxy forwards without interpretation. Unknown `key_id` → `BACKEND` error.
 
 ### `attest` — prove liveness & identity
 
-Req body: `{ "nonce": <bytes> }`
+Req body: `{ "nonce": <bytes>, "purpose": <str|null> }`
 Resp body: `{ "evidence": <bytes> }`
 
 - `evidence` is opaque: Fernet = HMAC(nonce, key-derived-secret); KMS = signed blob; MPC = share-commitment proof.
+- `purpose` scopes what the evidence proves. `null` or `"liveness"` = "I am alive and hold shares". `"decrypt"` = "I can decrypt customer keys right now" (backend MAY require a short HSM/MPC round before responding). An attacker replaying liveness evidence cannot pass a `decrypt`-purpose check.
 - Proxy verifies via backend-specific verifier (lives in proxy, one per backend).
 
 ## Errors
@@ -88,7 +93,9 @@ Err body: `{ "code": <str>, "message": <str> }`
 | `AUTH`    | Peer uid not in allowlist. Connection closed.             |
 | `PROTO`   | Frame too large, malformed msgpack, unknown op/kind.      |
 | `BACKEND` | Crypto operation failed (bad ciphertext, context mismatch). |
-| `TIMEOUT` | Op exceeded server-side deadline.                         |
+| `TIMEOUT` | Op exceeded deadline (`envelope.deadline_ms` or server default). |
+
+**Wire-level error hygiene:** `message` MUST NOT echo peer credentials (observed uid/pid/allowlist), key material, plaintext, or ciphertext bytes. Rich diagnostics go to the sidecar log, never across the wire — the proxy runs untrusted-adjacent and should not be able to enumerate sidecar internals via error strings.
 
 ## No-fallback rule
 

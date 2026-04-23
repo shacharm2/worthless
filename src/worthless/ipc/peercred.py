@@ -125,6 +125,11 @@ def _get_peer_credentials_macos(sock: socket.socket) -> PeerCredentials:
     gid = ctypes.c_uint32(0)
     rc = _LIBC_MACOS.getpeereid(sock.fileno(), ctypes.byref(uid), ctypes.byref(gid))
     if rc != 0:
+        # ctypes.get_errno() reads the per-thread errno maintained by the
+        # `use_errno=True` libc binding. This is safe across threads — ctypes
+        # snapshots errno immediately after the call returns, before the GIL
+        # can hand off. Do NOT replace with `os.strerror(ctypes.get_errno())`
+        # at the call site: that would cross another libc call and clobber it.
         errno = ctypes.get_errno()
         raise PeerCredError(
             f"getpeereid failed: errno={errno} ({os.strerror(errno)}) "
