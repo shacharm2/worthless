@@ -475,14 +475,24 @@ def _check_size_sniff_delta(
     if line_count > _MAX_LINES:
         raise _refuse(UnsafeReason.SIZE, target)
 
-    # Full-file sniff.
+    # Full-file sniff for existing content.
     if existing_buf:
         _check_dotenv_content(existing_buf)
 
-    # Delta gate.
+    # new_content invariants: size, line-count, and dotenv sniff must all
+    # apply symmetrically with existing content. Skipping these would let
+    # a caller replace a clean .env with shell-like content as long as the
+    # delta gate passed. Sniff MUST precede _check_delta so the refusal
+    # reason is SNIFF (not DELTA) when shell syntax is present.
     new_size = len(new_content)
     if new_size > _MAX_BYTES:
         raise _refuse(UnsafeReason.SIZE, target)
+    if _line_count(new_content) > _MAX_LINES:
+        raise _refuse(UnsafeReason.SIZE, target)
+    if new_content:
+        _check_dotenv_content(new_content)
+
+    # Delta gate.
     _check_delta(new_size, old_size, line_count, target)
 
 

