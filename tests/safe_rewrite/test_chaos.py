@@ -535,8 +535,15 @@ def test_concurrent_flock_sibling_blocks(tmp_path, make_env_file, sha256_of, bar
 # ---------------------------------------------------------------------------
 
 
-def _inject_enospc_on_nth_fsync(monkeypatch, n: int) -> None:
-    """Monkey-patch ``os.fsync`` to raise ENOSPC on the *n*-th call only."""
+def _inject_enospc_on_nth_fsync(monkeypatch, n: int) -> dict[str, int]:
+    """Monkey-patch ``os.fsync`` to raise ENOSPC on the *n*-th call only.
+
+    Returns the shared ``seen`` counter dict so callers can assert the
+    actual number of ``os.fsync`` calls matched their expectation. This
+    is important because the test's choice of ``n`` is coupled to the
+    implementation's exact fsync ordering — if the impl ever adds a new
+    fsync call, a silent test drift would let a real regression pass.
+    """
     real_fsync = os.fsync
     seen = {"n": 0}
 
@@ -547,6 +554,7 @@ def _inject_enospc_on_nth_fsync(monkeypatch, n: int) -> None:
         return real_fsync(fd)
 
     monkeypatch.setattr(os, "fsync", _fsync)
+    return seen
 
 
 def test_enospc_on_fsync_dir_fd_post_rename(tmp_path, make_env_file, monkeypatch, caplog) -> None:
@@ -569,7 +577,7 @@ def test_enospc_on_fsync_dir_fd_post_rename(tmp_path, make_env_file, monkeypatch
     env = make_env_file(tmp_path / ".env", b"KEY=v\n")
     new_content = b"KEY=new\n"
 
-    _inject_enospc_on_nth_fsync(monkeypatch, n=3)
+    seen = _inject_enospc_on_nth_fsync(monkeypatch, n=3)
 
     with caplog.at_level("WARNING", logger="worthless.safe_rewrite"):
         safe_rewrite(env, new_content, original_user_arg=env)
@@ -577,6 +585,15 @@ def test_enospc_on_fsync_dir_fd_post_rename(tmp_path, make_env_file, monkeypatch
     assert env.read_bytes() == new_content
     assert list(tmp_path.glob(".env.tmp-*")) == []
     assert list(tmp_path.glob(".env.staging-*")) == []
+    # n=3 is coupled to safe_rewrite's exact fsync ordering
+    # (_fsync_tmp → _fsync_dir pre-rename → inline post-rename). If a
+    # future change adds or reorders fsync calls, this catches the
+    # drift loudly rather than letting the test silently exercise the
+    # wrong call.
+    assert seen["n"] == 3, (
+        f"expected exactly 3 os.fsync calls, saw {seen['n']}; "
+        f"safe_rewrite's fsync ordering may have drifted"
+    )
     # Warning text is load-bearing: it's the ONLY user-visible signal
     # that the rewrite may revert on an unclean shutdown. Pin the
     # strong phrasing rather than a softer "durability unconfirmed" so

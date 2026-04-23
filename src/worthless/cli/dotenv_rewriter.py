@@ -18,6 +18,7 @@ lines, ordering, export prefixes, and BOM/CRLF formatting.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
 import math
@@ -34,7 +35,7 @@ from dotenv import dotenv_values
 
 from worthless.cli.errors import UnsafeReason, UnsafeRewriteRefused
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
-from worthless.cli.safe_rewrite import _MAX_BYTES, safe_rewrite
+from worthless.cli.safe_rewrite import _MAX_BYTES, _check_basename, safe_rewrite
 
 if TYPE_CHECKING:
     from worthless.storage.repository import EnrollmentRecord
@@ -552,8 +553,13 @@ def _create_new_env_file(env_path: Path, var_name: str, value: str) -> None:
         mv = memoryview(payload)
         while written < len(payload):
             n = os.write(fd, mv[written:])
-            if n <= 0:  # pragma: no cover - defensive
-                raise UnsafeRewriteRefused(UnsafeReason.IO_ERROR)
+            if n <= 0:
+                # Raise OSError (not UnsafeRewriteRefused) so the outer
+                # ``except OSError`` cleanup branch runs — otherwise the
+                # fd stays open and a partially-written file survives on
+                # disk. Cleanup re-wraps as UnsafeRewriteRefused for the
+                # caller.
+                raise OSError(errno.EIO, "short write")
             written += n
         os.fsync(fd)
     except OSError as exc:
@@ -619,6 +625,13 @@ def add_or_rewrite_env_key(env_path: Path, var_name: str, value: str) -> None:
     _validate_var_name(var_name)
     _validate_value(value)
     if not env_path.exists() and not env_path.is_symlink():
+        # Route the missing-file create path through the same basename
+        # gate ``safe_rewrite`` enforces on the rewrite branch. Without
+        # this, ``add_or_rewrite_env_key(Path("~/.bashrc"), "PATH", "/x")``
+        # on a host with no ``.bashrc`` would happily create one with
+        # attacker-controlled content — the exact "zshrc-lock" class
+        # WOR-252 is designed to make structurally impossible.
+        _check_basename(env_path)
         _create_new_env_file(env_path, var_name, value)
         return
     existing = _safe_read_existing_bytes(env_path)

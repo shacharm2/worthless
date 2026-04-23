@@ -25,6 +25,7 @@ from worthless.cli.dotenv_rewriter import (
     rewrite_env_key,
 )
 from worthless.cli.errors import UnsafeReason, UnsafeRewriteRefused
+from worthless.cli.safe_rewrite import _BASENAME_DENYLIST
 
 
 @pytest.fixture
@@ -689,7 +690,10 @@ def test_refuse_symlink_via_sister_apis(
     [
         pytest.param('abc"def', id="embedded-double-quote"),
         pytest.param("abc'def", id="embedded-single-quote"),
-        pytest.param('"has-double"', id="surrounding-doubles"),
+        # Deliberately no leading quote: a value that STARTS with `"`
+        # would trip the leading-quote check first, short-circuiting the
+        # embedded-quote path we actually want to exercise.
+        pytest.param('foo"bar"baz', id="trailing-doubles"),
         pytest.param("has'single'", id="embedded-singles"),
     ],
 )
@@ -758,6 +762,16 @@ def test_add_or_rewrite_create_refuses_symlink_race(tmp_path: Path) -> None:
     with pytest.raises(UnsafeRewriteRefused) as exc_info:
         add_or_rewrite_env_key(link, "KEY", "value")
 
+    # Reason breakdown: with the decoy created *before* the symlink,
+    # ``add_or_rewrite_env_key``'s ``env_path.exists()`` check sees an
+    # existing target and routes to ``_safe_read_existing_bytes``, which
+    # refuses with ``UnsafeReason.SYMLINK`` via ``safe_rewrite``'s
+    # symlink gate. A truly interleaved TOCTOU (symlink appears AFTER
+    # the exists check but BEFORE the ``os.open`` in
+    # ``_create_new_env_file``) would route to the create branch and
+    # refuse with ``TOCTOU`` via ``O_NOFOLLOW``. Both are accepted here
+    # so the test remains green if we later harden the ordering or add
+    # an explicit TOCTOU probe.
     assert exc_info.value.reason in {
         UnsafeReason.SYMLINK,
         UnsafeReason.TOCTOU,
@@ -806,4 +820,80 @@ def test_add_or_rewrite_create_fsyncs_parent_directory(tmp_path: Path, monkeypat
     assert fsynced_dir["hit"], (
         "parent directory was never fsynced on create — unclean shutdown "
         "could lose the dirent and leave a 'ghost file' (reviewer B1)"
+    )
+
+
+@pytest.mark.parametrize("denylisted_basename", sorted(_BASENAME_DENYLIST))
+def test_add_or_rewrite_refuses_to_create_denylisted_basename(
+    tmp_path: Path, denylisted_basename: str
+) -> None:
+    """``add_or_rewrite_env_key`` on a non-existent denylisted path MUST refuse.
+
+    The original ``add_or_rewrite_env_key`` funnelled every destructive
+    write through ``safe_rewrite``, whose basename gate refuses non-
+    allowlisted targets. The sub-PR-4 create path added a direct
+    ``_create_new_env_file`` call that *skipped* the gate, meaning
+    ``add_or_rewrite_env_key(Path("~/.bashrc"), "PATH", "/attacker/bin")``
+    on a host with no ``.bashrc`` would happily create one with
+    attacker-controlled content.
+
+    Parametrizing over the live ``_BASENAME_DENYLIST`` frozenset (not a
+    hardcoded copy) means any future addition to the source denylist
+    automatically grows test coverage — and prevents silent drift
+    where the test's mirror and the source disagree.
+    """
+    target = tmp_path / denylisted_basename
+    assert not target.exists(), "precondition: denylisted target must not exist"
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(target, "PATH", "/attacker/bin")
+
+    assert exc_info.value.reason == UnsafeReason.BASENAME, (
+        f"expected BASENAME refusal for missing-file create of "
+        f"{denylisted_basename!r}, got {exc_info.value.reason!r}; "
+        f"the basename gate was bypassed on the create path (zshrc-lock regression)"
+    )
+    # File MUST NOT have been created.
+    assert not target.exists(), (
+        f"denylisted target {target} was created despite basename gate — "
+        f"this is the exact zshrc-lock bug reintroduced"
+    )
+
+
+def test_create_path_cleans_up_on_short_write(tmp_path: Path, monkeypatch) -> None:
+    """Short ``os.write`` (n<=0) on create MUST unlink the partial file.
+
+    We monkey-patch ``os.write`` to return 0 on the first call for any
+    fd opened inside ``_create_new_env_file``. The contract:
+
+    1. ``add_or_rewrite_env_key`` raises ``UnsafeRewriteRefused`` with
+       reason ``IO_ERROR``.
+    2. The partial file is unlinked — ``env_path.exists()`` is False
+       after the refusal. A leaked partial file would confuse the next
+       run (``env_path.exists()`` would return True and route to the
+       rewrite path, preserving the zero-byte garbage).
+    """
+    env = tmp_path / ".env"
+    assert not env.exists()
+
+    real_write = os.write
+    first_write_done = {"done": False}
+
+    def _short_write(fd, data):  # noqa: ANN001
+        # Return 0 on the FIRST write only — subsequent writes (e.g.
+        # from other test infrastructure) behave normally.
+        if not first_write_done["done"]:
+            first_write_done["done"] = True
+            return 0
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", _short_write)
+
+    with pytest.raises(UnsafeRewriteRefused) as exc_info:
+        add_or_rewrite_env_key(env, "KEY", "value")
+
+    assert exc_info.value.reason == UnsafeReason.IO_ERROR
+    assert not env.exists(), (
+        "partial .env survived a short-write failure — next run would "
+        "route to the rewrite path on corrupt zero-byte content"
     )
