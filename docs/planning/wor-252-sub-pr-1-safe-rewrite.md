@@ -88,7 +88,7 @@ Steps 2, 5, 13 are three layers of symlink defense. Steps 6 + 13-recheck pincer 
 
 ## Module structure
 
-```
+```text
 safe_rewrite.py
 ├── class UnsafeRewriteRefused(WorthlessError)     # single public error
 │   └── .reason: UnsafeReason enum (9 internal values)
@@ -129,7 +129,7 @@ Group 0 (`test_module_importable`) **deleted** — tautology; first real test im
 
 ### File-by-file breakdown
 
-`test_basename.py` — 15 tests: `.zshrc`, `.bashrc`, `.profile`, `.netrc`, `id_rsa`, `id_ed25519`, `credentials`, `config`, `authorized_keys`, `known_hosts`, `.env.local` (refused), `.env.production` (refused), `.env.example` (refused), `.env.bak` (refused), `.ENV` (refused), `.env` (accepted), `notes.txt`, `..env`, `.env/`, `.env ` trailing-space, NUL-byte in path.
+`test_basename.py` — 21 tests: `.zshrc`, `.bashrc`, `.profile`, `.netrc`, `id_rsa`, `id_ed25519`, `credentials`, `config`, `authorized_keys`, `known_hosts`, `.env.local` (refused), `.env.production` (refused), `.env.example` (refused), `.env.bak` (refused), `.ENV` (refused), `.env` (accepted), `notes.txt`, `..env`, `.env/`, `.env` + trailing U+0020 space, NUL-byte in path.
 
 `test_path_identity.py` — 8 tests: symlink-to-zshrc (**first red test**), symlink-to-other-env, original-arg-mismatch, regular-file, `//` in path, `../.env`, trailing-slash, hardlink-to-denylisted-inode.
 
@@ -137,7 +137,7 @@ Group 0 (`test_module_importable`) **deleted** — tautology; first real test im
 
 `test_containment.py` — 6 tests: outside-repo refused, override accepts, `repo_root=None` skips, realpath-escape, bind-mount-escape (`unshare --mount`), mount-ID mismatch.
 
-`test_size.py` — 7 tests: 0 bytes (accept), 1 byte, 1 MiB exact, 1 MiB + 1 (refuse), 499 lines, 500 lines, 501 lines, 500-line no-trailing-newline boundary.
+`test_size.py` — 8 tests: 0 bytes (accept), 1 byte, 1 MiB exact, 1 MiB + 1 (refuse), 499 lines, 500 lines, 501 lines, 500-line no-trailing-newline boundary.
 
 `test_sniff.py` — 9 tests: shebang, alias, export, function, source, if/case, heredoc, eval-chain, comments+blanks accept, quoted values accept, bypass-attempt-first-4KiB-clean-then-shellcode (v1-regression test, proves we scan full file).
 
