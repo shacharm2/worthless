@@ -270,10 +270,19 @@ class TestUnlockMultiEnrollment:
 
     @pytest.fixture()
     def two_env_files(self, tmp_path: Path) -> tuple[Path, Path]:
-        """Create two .env files with the same key."""
-        env_a = tmp_path / "a.env"
+        """Create two .env files (in distinct subdirs) with the same key.
+
+        The safe-rewrite gate requires the literal basename ``.env`` - so
+        distinct fixtures live under ``a/`` and ``b/`` rather than as
+        ``a.env``/``b.env`` at tmp_path root.
+        """
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        env_a = dir_a / ".env"
         env_a.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
-        env_b = tmp_path / "b.env"
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        env_b = dir_b / ".env"
         env_b.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
         return env_a, env_b
 
@@ -392,8 +401,12 @@ class TestUnlockScopedToEnv:
         self, home_dir: WorthlessHome, tmp_path: Path
     ) -> None:
         """Lock keys in two different .env files. Unlock one. Other stays locked."""
-        env_a = tmp_path / "a.env"
-        env_b = tmp_path / "b.env"
+        dir_a = tmp_path / "a"
+        dir_a.mkdir()
+        env_a = dir_a / ".env"
+        dir_b = tmp_path / "b"
+        dir_b.mkdir()
+        env_b = dir_b / ".env"
         env_a.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
         env_b.write_text(f"ANTHROPIC_API_KEY={_TEST_KEY_2}\n")
 
@@ -414,7 +427,7 @@ class TestUnlockScopedToEnv:
 
         # env_b should still be locked (NOT restored)
         assert _TEST_KEY_2 not in env_b.read_text(), (
-            "unlock --env a.env should NOT have touched b.env"
+            "unlock --env a/.env should NOT have touched b/.env"
         )
 
         # DB should still have the anthropic key enrolled

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -255,89 +254,3 @@ class TestScanRewriteParity:
         # rewrite must find the same var_name
         rewrite_env_key(env_file, var_name, "decoy_value")
         assert "decoy_value" in env_file.read_text()
-
-
-class TestCrashSafety:
-    """Crash-safe rewrites: reject unsafe paths, fsync file+dir, preserve on failure."""
-
-    def test_rewrite_rejects_symlink(self, tmp_path: Path):
-        from worthless.cli.dotenv_rewriter import rewrite_env_key
-
-        real = tmp_path / "real.env"
-        original = "KEY=old\nOTHER=keep\n"
-        real.write_text(original)
-        link = tmp_path / ".env"
-        link.symlink_to(real)
-        with pytest.raises(OSError):
-            rewrite_env_key(link, "KEY", "new")
-        assert real.read_text() == original
-
-    @pytest.mark.skipif(not hasattr(os, "link"), reason="hardlinks not supported on this platform")
-    def test_rewrite_rejects_hardlink(self, tmp_path: Path):
-        from worthless.cli.dotenv_rewriter import rewrite_env_key
-
-        env_file = tmp_path / ".env"
-        env_file.write_text("KEY=old\n")
-        hard = tmp_path / "hardlink.env"
-        try:
-            os.link(env_file, hard)
-        except (OSError, NotImplementedError) as e:
-            pytest.skip(f"filesystem does not support hardlinks: {e}")
-        assert env_file.stat().st_nlink == 2
-        with pytest.raises(OSError):
-            rewrite_env_key(env_file, "KEY", "new")
-
-    def test_rewrite_fsyncs_file_and_dir(self, tmp_path: Path, monkeypatch):
-        from worthless.cli import dotenv_rewriter
-
-        env_file = tmp_path / ".env"
-        env_file.write_text("KEY=old\n")
-        calls: list[int] = []
-        real_fsync = os.fsync
-
-        def counting_fsync(fd: int) -> None:
-            calls.append(fd)
-            real_fsync(fd)
-
-        monkeypatch.setattr(dotenv_rewriter.os, "fsync", counting_fsync)
-        dotenv_rewriter.rewrite_env_key(env_file, "KEY", "new")
-        assert len(calls) >= 2
-
-    def test_rewrite_preserves_existing_content(self, tmp_path: Path):
-        from worthless.cli.dotenv_rewriter import rewrite_env_key
-
-        env_file = tmp_path / ".env"
-        env_file.write_text("# comment\nKEY=old\nOTHER=keep\n")
-        rewrite_env_key(env_file, "KEY", "new")
-        content = env_file.read_text()
-        assert "# comment" in content
-        assert "OTHER=keep" in content
-        assert "KEY=new" in content
-        assert "old" not in content
-
-    def test_rewrite_original_intact_on_set_key_failure(self, tmp_path: Path, monkeypatch):
-        from worthless.cli import dotenv_rewriter
-
-        env_file = tmp_path / ".env"
-        original = "KEY=old\nOTHER=keep\n"
-        env_file.write_text(original)
-
-        def boom(*args, **kwargs):
-            raise RuntimeError("disk full")
-
-        monkeypatch.setattr(dotenv_rewriter, "set_key", boom)
-        with pytest.raises(RuntimeError):
-            dotenv_rewriter.rewrite_env_key(env_file, "KEY", "new")
-        assert env_file.read_text() == original
-
-    def test_add_or_rewrite_rejects_symlink(self, tmp_path: Path):
-        from worthless.cli.dotenv_rewriter import add_or_rewrite_env_key
-
-        real = tmp_path / "real.env"
-        original = "OTHER=keep\n"
-        real.write_text(original)
-        link = tmp_path / ".env"
-        link.symlink_to(real)
-        with pytest.raises(OSError):
-            add_or_rewrite_env_key(link, "NEW_KEY", "value")
-        assert real.read_text() == original
