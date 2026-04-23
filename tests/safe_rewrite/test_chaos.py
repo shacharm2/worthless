@@ -107,19 +107,29 @@ def test_sigkill_between_fsync_and_rename_leaves_target_byte_identical(
             pass
 
     assert sha256_of(env) == baseline, "target clobbered by aborted rewrite"
-    # SIGKILL is uncatchable: Python cannot run user-space cleanup, so a
-    # ``.env.tmp-*`` file MAY remain on disk. That is an unavoidable
-    # property of SIGKILL, not a data-integrity bug — the target is
-    # untouched and no file masquerades as ``.env``. Prior to the
-    # Major 3 staging-rename reorder (PR #86 discussion_r3129175662)
-    # the tmp file was renamed to ``.env.staging-*`` BEFORE the hook,
-    # which hid the leak under a different glob rather than fixing it.
-    # We now assert the honest invariants instead: no orphan is named
-    # ``.env`` (which would look like a completed rewrite), and any
-    # lingering artifact uses a tmp/staging prefix.
+    # SIGKILL is uncatchable: Python cannot run user-space cleanup, so
+    # ``.env.tmp-*`` or ``.env.staging-*`` files MAY remain on disk.
+    # That is an unavoidable property of SIGKILL, not a data-integrity
+    # bug. Prior to the Major 3 staging-rename reorder (PR #86
+    # discussion_r3129175662) the tmp file was renamed to
+    # ``.env.staging-*`` BEFORE the hook, which hid the leak under a
+    # different glob rather than fixing it.
+    #
+    # We assert the honest invariants via an *allowlist*: the only
+    # survivors permitted are ``.env`` (byte-identical, already
+    # asserted), the child's ``marker`` file, and tmp/staging artifacts.
+    # Any other name — including a file masquerading as ``.env`` or a
+    # staging leak under an unexpected prefix — fails the test. CR
+    # thread on PR #86 (discussion_r3131811612) flagged that the prior
+    # ``== ".env.lost"`` spot-check would miss real regressions.
     survivors = list(tmp_path.iterdir())
-    bad_names = [p.name for p in survivors if p.name == ".env.lost"]
-    assert bad_names == [], f"orphan file masquerading as .env: {bad_names}"
+    allowed_names = {".env", marker.name}
+    unexpected = [
+        p.name
+        for p in survivors
+        if p.name not in allowed_names and not p.name.startswith((".env.tmp-", ".env.staging-"))
+    ]
+    assert unexpected == [], f"unexpected orphan survivor(s) after SIGKILL: {unexpected}"
 
 
 # ---------------------------------------------------------------------------

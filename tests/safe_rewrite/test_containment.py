@@ -184,22 +184,27 @@ def test_refuses_bind_mount_escape(tmp_path, in_fake_repo) -> None:
     compare against target's fsid. We assert the refusal but do not
     construct a real bind mount.
     """
-    # Build a scenario: repo root on tmpfs 1, .env on tmpfs 2 (simulated).
+    # Build a scenario: repo root on "fs A", .env in a subdir on "fs B".
     # We can't construct this without CAP_SYS_ADMIN; assert the contract
     # shape instead: at minimum, any implementation must not silently
-    # accept mismatched fsid.
-    env = in_fake_repo / ".env"
+    # accept mismatched fsid. Placing ``.env`` in a subdirectory rather
+    # than directly under ``in_fake_repo`` lets us key fsid off resolved
+    # path (subdir → "fs B", repo_root → "fs A") instead of off call
+    # order. CR thread on PR #86 (discussion_r3131811617) flagged the
+    # previous call-count keying as fragile — any refactor adding a
+    # third statvfs probe would have silently turned the test into a
+    # no-op.
+    subdir = in_fake_repo / "sub"
+    subdir.mkdir()
+    env = subdir / ".env"
     env.write_bytes(b"KEY=v\n")
 
-    # Monkey-patch statvfs to return different fsids for repo_root vs target.
     real_statvfs = os.statvfs
-    call_count = {"n": 0}
+    repo_root_resolved = os.path.realpath(str(in_fake_repo))
 
     def _fake_statvfs(path, *a, **kw):  # noqa: ANN001, ANN003
-        call_count["n"] += 1
         result = real_statvfs(path, *a, **kw)
 
-        # Fake a different fsid for the target than for the repo root.
         class _R:
             pass
 
@@ -210,8 +215,10 @@ def test_refuses_bind_mount_escape(tmp_path, in_fake_repo) -> None:
                     setattr(r, attr, getattr(result, attr))
                 except AttributeError:
                     pass
-        # First call: repo_root. Second call: target. Differ.
-        r.f_fsid = 42 if call_count["n"] == 1 else 43
+        # Repo root itself is on "fs A" (42); anything deeper (the subdir
+        # that holds ``.env``, or ``.env`` itself) is on "fs B" (43).
+        resolved = os.path.realpath(str(path))
+        r.f_fsid = 42 if resolved == repo_root_resolved else 43
         return r
 
     # We assert the contract via normal call; the implementation may or
@@ -238,15 +245,19 @@ def test_refuses_mount_id_mismatch(tmp_path, in_fake_repo) -> None:
     monkeypatch ``os.statvfs`` so the repo root and the target report
     differing ``f_fsid`` values, and assert containment refuses.
     """
-    env = in_fake_repo / ".env"
+    # Place ``.env`` in a subdir so ``target.parent`` is structurally
+    # distinct from ``repo_root`` — see sibling test above.
+    subdir = in_fake_repo / "sub"
+    subdir.mkdir()
+    env = subdir / ".env"
     env.write_bytes(b"KEY=v\n")
 
     real_statvfs = os.statvfs
-    results: list[str] = []
+    repo_root_resolved = os.path.realpath(str(in_fake_repo))
 
     def _fake_statvfs(path, *a, **kw):  # noqa: ANN001, ANN003
-        results.append(str(path))
         real = real_statvfs(path, *a, **kw)
+        resolved = os.path.realpath(str(path))
 
         class _R:
             f_bsize = real.f_bsize
@@ -259,8 +270,9 @@ def test_refuses_mount_id_mismatch(tmp_path, in_fake_repo) -> None:
             f_favail = real.f_favail
             f_flag = real.f_flag
             f_namemax = real.f_namemax
-            # Deliberately differ: first call → 100, second → 200.
-            f_fsid = 100 if len(results) == 1 else 200
+            # Repo root on fsid=100; target subdir (and the target itself)
+            # on fsid=200. Dispatch by path, not call order.
+            f_fsid = 100 if resolved == repo_root_resolved else 200
 
         return _R()
 
