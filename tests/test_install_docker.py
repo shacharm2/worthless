@@ -54,46 +54,57 @@ pytestmark = [
 def test_install_succeeds_on_distro(fixture: str) -> None:
     """Build image, run install.sh + verify_install.sh, assert both succeed."""
     dockerfile = INSTALL_FIXTURES / f"Dockerfile.{fixture}"
-    image_tag = f"worthless-install-test:{fixture}"
+    # uuid suffix: xdist workers running retries or sibling jobs on the same
+    # daemon must not race on a shared image tag.
+    image_tag = f"worthless-install-test:{fixture}-{uuid.uuid4().hex[:8]}"
     assert dockerfile.is_file(), f"missing fixture: {dockerfile}"
 
-    build = subprocess.run(  # noqa: S603
-        [  # noqa: S607
-            "docker",
-            "build",
-            "--platform",
-            BUILD_PLATFORM,
-            "--file",
-            str(dockerfile),
-            "--tag",
-            image_tag,
-            str(REPO_ROOT),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=240,
-        check=False,
-    )
-    assert build.returncode == 0, (
-        f"docker build failed for {fixture}:\nstdout:\n{build.stdout}\nstderr:\n{build.stderr}"
-    )
+    try:
+        build = subprocess.run(  # noqa: S603
+            [  # noqa: S607
+                "docker",
+                "build",
+                "--platform",
+                BUILD_PLATFORM,
+                "--file",
+                str(dockerfile),
+                "--tag",
+                image_tag,
+                str(REPO_ROOT),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=240,
+            check=False,
+        )
+        assert build.returncode == 0, (
+            f"docker build failed for {fixture}:\nstdout:\n{build.stdout}\nstderr:\n{build.stderr}"
+        )
 
-    run = subprocess.run(  # noqa: S603
-        ["docker", "run", "--rm", "--platform", BUILD_PLATFORM, image_tag],  # noqa: S607
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
-    )
-    assert run.returncode == 0, (
-        f"install + verify failed inside {fixture} container:\n"
-        f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
-    )
-    # verify_install.sh prints 'OK: install verified at ...' on success.
-    assert "OK: install verified" in run.stdout, (
-        f"verify_install.sh did not complete successfully in {fixture}:\n"
-        f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
-    )
+        run = subprocess.run(  # noqa: S603
+            ["docker", "run", "--rm", "--platform", BUILD_PLATFORM, image_tag],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        assert run.returncode == 0, (
+            f"install + verify failed inside {fixture} container:\n"
+            f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
+        )
+        # verify_install.sh prints 'OK: install verified at ...' on success.
+        assert "OK: install verified" in run.stdout, (
+            f"verify_install.sh did not complete successfully in {fixture}:\n"
+            f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
+        )
+    finally:
+        subprocess.run(  # noqa: S603
+            ["docker", "rmi", "-f", image_tag],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
 
 
 @pytest.mark.timeout(360)
@@ -119,33 +130,47 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
         "-p",
         project,
     ]
-    env = {**os.environ, "LOCK_E2E_DOCKERFILE": dockerfile_name}
+    # Minimal env — avoid leaking arbitrary WORTHLESS_* / provider keys from
+    # the host into the compose build context and service env. Compose needs
+    # HOME to locate its context cache; fall back to the runner's real HOME.
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ["HOME"],
+        "LOCK_E2E_DOCKERFILE": dockerfile_name,
+    }
 
+    up_stdout, up_stderr, up_rc = "", "", None
+    logs_text = ""
     try:
-        up = subprocess.run(  # noqa: S603
-            [  # noqa: S607
-                *compose_base,
-                "up",
-                "--build",
-                "--abort-on-container-exit",
-                "--exit-code-from",
-                LOCK_E2E_SERVICE,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=360,
-            check=False,
-            env=env,
-        )
-
-        logs = subprocess.run(  # noqa: S603
-            [*compose_base, "logs", "--no-color"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-            env=env,
-        )
+        try:
+            up = subprocess.run(  # noqa: S603
+                [  # noqa: S607
+                    *compose_base,
+                    "up",
+                    "--build",
+                    "--abort-on-container-exit",
+                    "--exit-code-from",
+                    LOCK_E2E_SERVICE,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=360,
+                check=False,
+                env=env,
+            )
+            up_stdout, up_stderr, up_rc = up.stdout, up.stderr, up.returncode
+        finally:
+            # Always pull logs — especially on timeout, when `up` never finished
+            # and the captured stdout is empty or partial.
+            logs = subprocess.run(  # noqa: S603
+                [*compose_base, "logs", "--no-color"],  # noqa: S607
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                env=env,
+            )
+            logs_text = f"{logs.stdout}\n{logs.stderr}"
     finally:
         subprocess.run(  # noqa: S603
             [*compose_base, "down", "-v", "--remove-orphans"],  # noqa: S607
@@ -156,9 +181,9 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
             env=env,
         )
 
-    assert up.returncode == 0, (
-        f"{LOCK_E2E_SERVICE} ({distro}) exited {up.returncode}.\n"
-        f"--- compose up stdout ---\n{up.stdout}\n"
-        f"--- compose up stderr ---\n{up.stderr}\n"
-        f"--- service logs ---\n{logs.stdout}\n{logs.stderr}"
+    assert up_rc == 0, (
+        f"{LOCK_E2E_SERVICE} ({distro}) exited {up_rc}.\n"
+        f"--- compose up stdout ---\n{up_stdout}\n"
+        f"--- compose up stderr ---\n{up_stderr}\n"
+        f"--- service logs ---\n{logs_text}"
     )
