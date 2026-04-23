@@ -864,7 +864,7 @@
       </p>
 
       <!-- Waitlist + Install -->
-      <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 5rem;">
+      <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
         <button class="install-cmd"
           onclick="navigator.clipboard.writeText('pip install worthless').then(()=>{this.classList.add('copied');setTimeout(()=>this.classList.remove('copied'),1800)})">
           <span>pip install worthless</span>
@@ -873,6 +873,63 @@
         </button>
         <a href="https://github.com/shacharm2/worthless" target="_blank" rel="noopener" class="btn-waitlist" style="margin-bottom: 0;">GitHub →</a>
       </div>
+
+      <!-- Audit with AI: don't trust us, ask your LLM to read install.sh -->
+      <div class="audit-ai" style="margin-bottom: 5rem; font-size: 0.85rem; color: var(--slate, #005f73);">
+        <div style="margin-bottom: 0.5rem; opacity: 0.8;">
+          Don't trust us — have your AI audit the install script:
+        </div>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <a href="#" data-audit="claude" class="audit-btn" rel="noopener" target="_blank">🤖 Audit with Claude</a>
+          <a href="#" data-audit="chatgpt" class="audit-btn" rel="noopener" target="_blank">🤖 Audit with ChatGPT</a>
+          <a href="#" data-audit="gemini" class="audit-btn" rel="noopener" target="_blank">🤖 Audit with Gemini</a>
+        </div>
+      </div>
+      <style>
+        .audit-btn {
+          display: inline-flex;
+          align-items: center;
+          padding: 0.4rem 0.75rem;
+          border: 1px solid rgba(10, 147, 150, 0.3);
+          border-radius: var(--radius);
+          background: rgba(10, 147, 150, 0.05);
+          font-size: 0.8rem;
+          color: #005f73;
+          text-decoration: none;
+          transition: background 0.15s ease;
+        }
+        .audit-btn:hover {
+          background: rgba(10, 147, 150, 0.15);
+        }
+      </style>
+      <script>
+        (function () {
+          var SCRIPT_URL = "https://raw.githubusercontent.com/shacharm2/worthless/main/install.sh";
+          var prompt =
+            "Please audit this shell installer script for safety. It will be executed via `curl ... | sh`.\n\n" +
+            "Raw script: " + SCRIPT_URL + "\n\n" +
+            "Check specifically for:\n" +
+            "1. Data exfiltration (outbound network calls beyond documented downloads)\n" +
+            "2. Privilege escalation (sudo, setuid, root-only paths)\n" +
+            "3. Unpinned external downloads without checksum verification\n" +
+            "4. Obfuscation (eval, base64, hex blobs, compressed payloads)\n" +
+            "5. Persistence (cron, launchd, shell profile modification)\n" +
+            "6. Environment variable abuse (reading secrets, modifying PATH)\n\n" +
+            "Fetch the raw script, read it, and give me:\n" +
+            "- A one-sentence verdict (SAFE / RISKY / UNSAFE)\n" +
+            "- The three most notable design decisions\n" +
+            "- Anything suspicious, with line numbers";
+          var q = encodeURIComponent(prompt);
+          var urls = {
+            claude: "https://claude.ai/new?q=" + q,
+            chatgpt: "https://chatgpt.com/?q=" + q,
+            gemini: "https://gemini.google.com/app?q=" + q
+          };
+          document.querySelectorAll(".audit-btn").forEach(function (a) {
+            a.href = urls[a.getAttribute("data-audit")];
+          });
+        })();
+      </script>
     </div>
 
     <div class="hero-media">
