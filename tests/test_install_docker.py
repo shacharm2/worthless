@@ -19,11 +19,27 @@ import pytest
 from tests._docker_helpers import docker_available
 from tests._install_helpers import INSTALL_FIXTURES, REPO_ROOT
 
-DOCKERFILE = INSTALL_FIXTURES / "Dockerfile.ubuntu-bare"
-IMAGE_TAG = "worthless-install-test:ubuntu-bare"
-
-COMPOSE_LOCK_E2E = INSTALL_FIXTURES / "docker-compose.lock-e2e.yml"
 LOCK_E2E_SERVICE = "worthless-installed"
+
+# Lock-lifecycle matrix: each entry is (distro_label, compose_file).
+# Debian added so "Supported" isn't Ubuntu-only for the actual product feature.
+LOCK_E2E_MATRIX = [
+    ("ubuntu-bare", INSTALL_FIXTURES / "docker-compose.lock-e2e.yml"),
+    ("debian-12", INSTALL_FIXTURES / "docker-compose.lock-e2e-debian.yml"),
+]
+
+# (fixture_name, tier). Tier is informational; all `supported` variants must
+# pass. `experimental` variants are non-blocking (see install.sh README).
+# Pinned to linux/amd64 so arm64 Macs don't silently skip amd64 coverage.
+INSTALL_MATRIX = [
+    ("ubuntu-bare", "supported"),  # 24.04, no python, no uv
+    ("ubuntu-2204-bare", "supported"),  # 22.04 LTS — still the prod majority
+    ("ubuntu-with-uv", "supported"),  # 24.04 + pre-installed uv (reuse path)
+    ("debian-12-bare", "supported"),  # second glibc distro
+    pytest.param("alpine-bare", "experimental", marks=pytest.mark.experimental),  # musl — PBS gap
+]
+
+BUILD_PLATFORM = "linux/amd64"
 
 
 pytestmark = [
@@ -33,50 +49,60 @@ pytestmark = [
 ]
 
 
-def test_bare_ubuntu_install_succeeds() -> None:
-    """Build bare-Ubuntu image, run install.sh, assert `worthless --version` works.
+@pytest.mark.parametrize(("fixture", "tier"), INSTALL_MATRIX)
+def test_install_succeeds_on_distro(fixture: str, tier: str) -> None:
+    """Build image per fixture, run install.sh, assert `worthless --version` works.
 
-    This is the AC test. Slow (~60-120s including image build + uv + Python download).
+    Covers the support matrix: bare Ubuntu, Ubuntu+python, Ubuntu+uv,
+    Debian 12, Alpine (musl). Slow per-case (~60-120s incl. build + Python fetch).
     """
-    assert DOCKERFILE.is_file(), f"missing fixture: {DOCKERFILE}"
+    dockerfile = INSTALL_FIXTURES / f"Dockerfile.{fixture}"
+    image_tag = f"worthless-install-test:{fixture}"
+    assert dockerfile.is_file(), f"missing fixture: {dockerfile}"
 
     build = subprocess.run(  # noqa: S603
         [  # noqa: S607
             "docker",
             "build",
+            "--platform",
+            BUILD_PLATFORM,
             "--file",
-            str(DOCKERFILE),
+            str(dockerfile),
             "--tag",
-            IMAGE_TAG,
+            image_tag,
             str(REPO_ROOT),
         ],
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=240,
         check=False,
     )
     assert build.returncode == 0, (
-        f"docker build failed:\nstdout:\n{build.stdout}\nstderr:\n{build.stderr}"
+        f"docker build failed for {fixture} ({tier}):\n"
+        f"stdout:\n{build.stdout}\nstderr:\n{build.stderr}"
     )
 
     run = subprocess.run(  # noqa: S603
-        ["docker", "run", "--rm", IMAGE_TAG],  # noqa: S607
+        ["docker", "run", "--rm", "--platform", BUILD_PLATFORM, image_tag],  # noqa: S607
         capture_output=True,
         text=True,
         timeout=180,
         check=False,
     )
     assert run.returncode == 0, (
-        f"install.sh failed inside bare-Ubuntu container:\n"
+        f"install + verify failed inside {fixture} ({tier}) container:\n"
         f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
     )
-    assert "worthless" in run.stdout.lower(), (
-        f"`worthless --version` did not produce expected output:\n{run.stdout}"
+    # verify_install.sh prints 'OK: install verified at ...' on success.
+    assert "OK: install verified" in run.stdout, (
+        f"verify_install.sh did not complete successfully in {fixture}:\n"
+        f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
     )
 
 
 @pytest.mark.timeout(360)
-def test_bare_ubuntu_lock_lifecycle_end_to_end() -> None:
+@pytest.mark.parametrize(("distro", "compose_file"), LOCK_E2E_MATRIX)
+def test_lock_lifecycle_end_to_end(distro: str, compose_file) -> None:
     """Post-install: `worthless lock` + proxied request → real key at upstream.
 
     Closes the WOR-235 AC gap: the fresh-install test above only proves
@@ -84,15 +110,17 @@ def test_bare_ubuntu_lock_lifecycle_end_to_end() -> None:
     This chains install → lock → `worthless up` → request via proxy →
     verify mock-upstream saw the reconstructed real key. The stack is
     torn down via ``docker compose down -v`` in every exit path.
-    """
-    assert COMPOSE_LOCK_E2E.is_file(), f"missing fixture: {COMPOSE_LOCK_E2E}"
 
-    project = f"worthless-lock-e2e-{os.getpid()}"
+    Parametrized across Ubuntu + Debian to catch glibc-version drift.
+    """
+    assert compose_file.is_file(), f"missing fixture: {compose_file}"
+
+    project = f"worthless-lock-e2e-{distro}-{os.getpid()}"
     compose_base = [
         "docker",
         "compose",
         "-f",
-        str(COMPOSE_LOCK_E2E),
+        str(compose_file),
         "-p",
         project,
     ]
@@ -131,7 +159,7 @@ def test_bare_ubuntu_lock_lifecycle_end_to_end() -> None:
         )
 
     assert up.returncode == 0, (
-        f"{LOCK_E2E_SERVICE} exited {up.returncode}.\n"
+        f"{LOCK_E2E_SERVICE} ({distro}) exited {up.returncode}.\n"
         f"--- compose up stdout ---\n{up.stdout}\n"
         f"--- compose up stderr ---\n{up.stderr}\n"
         f"--- service logs ---\n{logs.stdout}\n{logs.stderr}"

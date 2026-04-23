@@ -26,6 +26,20 @@ npm test
 
 All tests should be RED until the Worker is implemented in WOR-300.
 
+## Host support matrix
+
+The `install.sh` this Worker serves is validated on the hosts below via
+`pytest -m docker` (see the root [README](../../README.md#installsh--worthlesssh-support-matrix)).
+
+| Host | Status |
+|---|---|
+| Ubuntu 24.04 (bare / +uv) | Supported |
+| Ubuntu 22.04 (bare) | Supported |
+| Debian 12 (bare) | Supported |
+| Alpine / musl | Experimental (expected to fail until PBS ships musl) |
+| macOS | Supported (manual) |
+| Native Windows | Not supported |
+
 ## Tickets
 
 - WOR-305 — this test suite

@@ -140,6 +140,7 @@ markers = [
     "live: tests hitting real LLM providers (requires API keys, costs money)",
     "adversarial: security-focused tests — race conditions, PID reuse, injection, fuzz",
     "docker: Docker container end-to-end tests (requires running Docker daemon)",
+    "experimental: experimental-tier tests — failures are informational, not blocking (e.g. musl/Alpine)",
     "e2e: end-to-end smoke tests — full lifecycle (lock, proxy, healthz)",
     "openclaw: OpenClaw integration tests (requires Docker + network pull)",
 ]
