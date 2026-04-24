@@ -41,6 +41,7 @@ from worthless.ipc.framing import (
 )
 
 __all__ = [
+    "DEFAULT_TIMEOUT_S",
     "IPCAuthError",
     "IPCBackendError",
     "IPCClient",
@@ -50,6 +51,11 @@ __all__ = [
 ]
 
 _PROTOCOL_VERSION = 1
+
+#: Hard cap on any single round-trip (WOR-306 row 7). 2 s matches the proxy's
+#: per-request budget from WOR-309. Overridable per-client for tests and for
+#: MPC backends in v2.0 that need longer. ``None`` disables (not recommended).
+DEFAULT_TIMEOUT_S: float = 2.0
 
 
 class IPCError(Exception):
@@ -114,8 +120,14 @@ class IPCClient:
     correctness; pipelining is a v1.2 nice-to-have.
     """
 
-    def __init__(self, socket_path: Path | str) -> None:
+    def __init__(
+        self,
+        socket_path: Path | str,
+        *,
+        timeout: float | None = DEFAULT_TIMEOUT_S,
+    ) -> None:
         self._socket_path = str(socket_path)
+        self._timeout = timeout
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._lock = asyncio.Lock()
@@ -223,7 +235,7 @@ class IPCClient:
             "id": self._allocate_id(),
             "kind": "req",
             "op": "hello",
-            "deadline_ms": None,
+            "deadline_ms": self._deadline_ms(),
             "body": {"client_versions": [_PROTOCOL_VERSION]},
         }
         # Handshake runs before any user-visible call; no contention, but
@@ -254,7 +266,7 @@ class IPCClient:
             "id": req_id,
             "kind": "req",
             "op": op,
-            "deadline_ms": None,
+            "deadline_ms": self._deadline_ms(),
             "body": body,
         }
         async with self._lock:
@@ -286,7 +298,14 @@ class IPCClient:
         except (ConnectionResetError, BrokenPipeError, ConnectionError, OSError) as exc:
             raise IPCProtocolError(f"sidecar connection lost during write: {exc}") from exc
         try:
-            return await read_frame(reader)
+            if self._timeout is None:
+                return await read_frame(reader)
+            return await asyncio.wait_for(read_frame(reader), timeout=self._timeout)
+        except asyncio.TimeoutError as exc:
+            # Timed out waiting for the sidecar's reply. The contract's
+            # no-fallback rule is enforced above us (proxy layer surfaces
+            # this as HTTP 503); we just translate to a typed error.
+            raise IPCTimeoutError(f"TIMEOUT: no reply within {self._timeout:.3f}s") from exc
         except FrameTruncatedError as exc:
             raise IPCProtocolError(f"sidecar connection lost: {exc}") from exc
         except FrameError as exc:
@@ -296,3 +315,11 @@ class IPCClient:
         rid = self._next_id
         self._next_id += 1
         return rid
+
+    def _deadline_ms(self) -> int | None:
+        """Advisory deadline we send in each envelope so the server can
+        abort long ops early. ``None`` when the client has no timeout.
+        """
+        if self._timeout is None:
+            return None
+        return int(self._timeout * 1000)

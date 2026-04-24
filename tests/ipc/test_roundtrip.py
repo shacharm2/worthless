@@ -41,8 +41,9 @@ import pytest_asyncio
 # at top-of-file per project style; tests fail at collection with
 # ModuleNotFoundError until backend-developer lands the implementation.
 from worthless.sidecar.server import start_sidecar  # noqa: E402
+from worthless.sidecar.backends.base import Backend  # noqa: E402
 from worthless.sidecar.backends.fernet import FernetBackend  # noqa: E402
-from worthless.ipc.client import IPCClient  # noqa: E402
+from worthless.ipc.client import IPCClient, IPCTimeoutError  # noqa: E402
 
 if TYPE_CHECKING:  # pragma: no cover
     pass
@@ -278,3 +279,75 @@ async def test_socket_is_cleaned_up_after_server_closes(
             writer.close()
             await writer.wait_closed()
             del reader
+
+
+# ---------------------------------------------------------------------------
+# Timeout enforcement (row 7 of the WOR-306 decision matrix)
+# ---------------------------------------------------------------------------
+
+
+class _StallingBackend(Backend):
+    """Backend that hangs forever on seal; used to prove the client's
+    2-second timeout cap is actually enforced, not just a parameter.
+
+    ``attest`` and ``open`` delegate to a real Fernet so the handshake
+    path still works if the test ever needs them.
+    """
+
+    def __init__(self, inner: FernetBackend) -> None:
+        self._inner = inner
+
+    async def seal(self, plaintext: bytes, context: bytes | None = None) -> bytes:
+        # Deliberately longer than any sane test timeout; cancelled on teardown.
+        await asyncio.sleep(60)
+        return b""  # unreachable
+
+    async def open(
+        self,
+        ciphertext: bytes,
+        context: bytes | None = None,
+        key_id: bytes | None = None,
+    ) -> bytes:
+        return await self._inner.open(ciphertext, context, key_id)
+
+    async def attest(self, nonce: bytes, purpose: str | None = None) -> bytes:
+        return await self._inner.attest(nonce, purpose)
+
+
+async def test_client_timeout_raises_ipc_timeout_error_fast(
+    sidecar_socket_path: Path, fernet_backend: FernetBackend
+) -> None:
+    """A stalled backend must trip ``IPCClient``'s hard timeout cap.
+
+    Proves row 7 of the decision matrix: the 2 s default is real, not
+    advisory. We override to 0.2 s so the test stays fast; the envelope's
+    ``deadline_ms`` also carries that value so future MPC backends can
+    self-abort before the client gives up.
+    """
+    server = await start_sidecar(
+        socket_path=sidecar_socket_path,
+        backend=_StallingBackend(fernet_backend),
+        allowed_uids=[os.getuid()],
+    )
+    try:
+        async with IPCClient(sidecar_socket_path, timeout=0.2) as client:
+            # Handshake succeeded (it doesn't touch the stalling path);
+            # now prove the operational call trips the timeout.
+            loop = asyncio.get_event_loop()
+            started = loop.time()
+            with pytest.raises(IPCTimeoutError) as exc_info:
+                await client.seal(b"payload")
+            elapsed = loop.time() - started
+
+        assert elapsed < 1.0, (
+            f"timeout must fire within ~0.2s, took {elapsed:.3f}s (is asyncio.wait_for wired in?)"
+        )
+        assert "TIMEOUT" in str(exc_info.value).upper(), (
+            f"error string must carry TIMEOUT code for no-fallback mapping: {exc_info.value!r}"
+        )
+    finally:
+        server.close()
+        try:
+            await server.wait_closed()
+        except Exception:
+            pass
