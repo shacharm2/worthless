@@ -522,23 +522,14 @@ async def test_record_spend_survives_closed_redis_during_shutdown(sqlite_db):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known unbounded growth: SpendCapRule._reserved keeps a zero entry for "
-        "every alias seen. A long-lived proxy with many unique aliases leaks "
-        "memory over time. Fix tracked in beads: "
-        '"metering: bound SpendCapRule._reserved with LRU/TTL cleanup".'
-    ),
-)
 @pytest.mark.asyncio
-async def test_reserved_dict_bounded_size_after_many_unique_aliases(sqlite_db):
-    """_reserved must not grow unboundedly with unique aliases.
+async def test_reserved_dict_bounded_after_release_spendcap(sqlite_db):
+    """SpendCapRule._reserved must drop zero-valued entries on release.
 
-    Seeds 500 unique aliases, each goes through evaluate → release. With
-    a bounded LRU the dict stays under some cap. Without one, it grows to
-    500 entries. We assert ``len(_reserved) <= 128`` as a reasonable
-    bound; the test will PASS once an LRU is in place.
+    Bug worthless-pymy: prior to the fix, release_reservation set
+    _reserved[alias] = 0 but kept the key, leaking one dict entry per
+    alias ever seen. This test walks 500 unique aliases through
+    evaluate → release and asserts no dead entries remain.
     """
     db, _ = sqlite_db
     r = _FakeRedis()
@@ -551,10 +542,52 @@ async def test_reserved_dict_bounded_size_after_many_unique_aliases(sqlite_db):
         assert await rule.evaluate(alias, object(), provider="openai", body=body) is None
         await rule.release_reservation(alias, 10)
 
-    # The intended bound is somewhere around O(active aliases). 128 is a
-    # deliberately generous target: any reasonable LRU / cleanup policy
-    # comfortably fits below it for 500 unique aliases with no active
-    # reservations.
-    assert len(rule._reserved) <= 128, (
-        f"_reserved grew to {len(rule._reserved)} entries with no bound enforcement."
+    assert len(rule._reserved) == 0, (
+        f"_reserved has {len(rule._reserved)} dead entries after full releases."
     )
+
+
+@pytest.mark.asyncio
+async def test_reserved_dict_bounded_after_release_tokenbudget(sqlite_db):
+    """TokenBudgetRule._reserved must drop zero-valued entries on release.
+
+    Same bug as SpendCapRule — shares the release_reservation pattern.
+    """
+    db, _ = sqlite_db
+    rule = TokenBudgetRule(db=db)
+    body = b'{"model":"gpt-4","max_tokens":10}'
+
+    for i in range(500):
+        alias = f"alias-{i}"
+        await db.execute(
+            "INSERT INTO enrollment_config (key_alias, token_budget_daily) VALUES (?, ?)",
+            (alias, 10_000),
+        )
+        await db.commit()
+        assert await rule.evaluate(alias, object(), provider="openai", body=body) is None
+        await rule.release_reservation(alias, 10)
+
+    assert len(rule._reserved) == 0, (
+        f"_reserved has {len(rule._reserved)} dead entries after full releases."
+    )
+
+
+@pytest.mark.asyncio
+async def test_reserved_dict_keeps_entries_with_outstanding_reservation(sqlite_db):
+    """release_reservation must NOT drop entries that still have held tokens.
+
+    Guard against an overzealous fix that deletes every entry. Only
+    zero-valued entries should go.
+    """
+    db, _ = sqlite_db
+    r = _FakeRedis()
+    rule = SpendCapRule(db=db, redis=r)
+    body = b'{"model":"gpt-4","max_tokens":100}'
+
+    await _configure_cap(db, "alice", 1000.0)
+    assert await rule.evaluate("alice", object(), provider="openai", body=body) is None
+    # Partial release — 60 held, 40 returned. Entry must survive.
+    await rule.release_reservation("alice", 40)
+
+    assert "alice" in rule._reserved
+    assert rule._reserved["alice"] == 60

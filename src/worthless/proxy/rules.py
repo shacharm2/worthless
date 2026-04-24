@@ -252,7 +252,15 @@ class SpendCapRule:
                 logger.debug(
                     "release_reservation called for unreserved alias=%s amount=%d", alias, amount
                 )
-            self._reserved[alias] = max(0, held - amount)
+            remaining = max(0, held - amount)
+            # worthless-pymy: drop the key when fully released so the dict
+            # doesn't grow unboundedly across long-lived proxies handling many
+            # unique aliases. Callers read via .get(alias, 0) everywhere, so
+            # absent == zero is already the convention.
+            if remaining == 0:
+                self._reserved.pop(alias, None)
+            else:
+                self._reserved[alias] = remaining
 
 
 @dataclass
@@ -387,7 +395,15 @@ class TokenBudgetRule:
                 logger.debug(
                     "release_reservation called for unreserved alias=%s amount=%d", alias, amount
                 )
-            self._reserved[alias] = max(0, held - amount)
+            remaining = max(0, held - amount)
+            # worthless-pymy: drop the key when fully released so the dict
+            # doesn't grow unboundedly across long-lived proxies handling many
+            # unique aliases. Callers read via .get(alias, 0) everywhere, so
+            # absent == zero is already the convention.
+            if remaining == 0:
+                self._reserved.pop(alias, None)
+            else:
+                self._reserved[alias] = remaining
 
 
 @dataclass

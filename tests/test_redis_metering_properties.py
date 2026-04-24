@@ -334,17 +334,22 @@ async def test_spend_cap_cache_miss_rehydrates_from_sqlite(db_with_cap, tmp_path
 
 @pytest.mark.asyncio
 async def test_release_reservation_never_goes_negative(db_with_cap):
-    """``release_reservation`` is clamped at 0.
+    """``release_reservation`` is clamped at 0 and the key is dropped
+    once fully released (worthless-pymy).
 
-    Kills mutation ``max(0, held - amount)`` → ``held - amount``.
+    Kills mutation ``max(0, held - amount)`` → ``held - amount``, and
+    guards the absent-key == zero convention the rest of the code relies
+    on via ``.get(alias, 0)``.
     """
     db, _ = db_with_cap
     rule = SpendCapRule(db=db, redis=_FakeRedis())
     await rule.release_reservation("alice", 999_999)
-    assert rule._reserved["alice"] == 0
-    # And a subsequent release is still clamped.
+    assert rule._reserved.get("alice", 0) == 0
+    assert "alice" not in rule._reserved, "zero-valued entry must be dropped"
+    # A subsequent release on an absent alias is still clamped and safe.
     await rule.release_reservation("alice", 1)
-    assert rule._reserved["alice"] == 0
+    assert rule._reserved.get("alice", 0) == 0
+    assert "alice" not in rule._reserved
 
 
 # ---------------------------------------------------------------------------
