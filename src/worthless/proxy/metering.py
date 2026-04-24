@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -31,6 +33,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SPEND_KEY_PREFIX = "worthless:spend:"
+
+# Must match the _ALIAS_RE in app.py. Duplicated here as defense in depth —
+# spend_key() is a shared helper; every call site must get the same shape
+# regardless of whether the alias came from the URL gate, a reseed task, or
+# an admin API we haven't written yet.
+_ALIAS_RE = re.compile(r"[a-zA-Z0-9_-]+")
+
+# Hot-path counter values are at most ~20 bytes (uint64 max digit count).
+# Anything larger is tamper or a bug in the Redis client — reject before
+# int() parsing so we never buffer pathological payloads (worthless-35j1).
+_MAX_COUNTER_RAW_BYTES = 32
 
 # Only redis:// and rediss:// are accepted. unix:// and other schemes that
 # redis-py's from_url would otherwise honour could be used by a compromised
@@ -71,13 +84,34 @@ class SpendDirtyTracker:
     anyway.
     """
 
-    def __init__(self) -> None:
-        self._dirty: set[str] = set()
+    # Hard ceiling for the dirty set (worthless-5w32). Oldest entries drop
+    # when the cap is reached — FIFO, so the freshest drift signals (which
+    # are the most useful) survive eviction. Defaults sized for ~10k
+    # unique aliases per proxy process, well above ordinary traffic but
+    # bounded enough to fail-loud on pathological load (~100 KB memory at
+    # 10 KB ceiling with typical alias lengths).
+    _DEFAULT_MAX_ENTRIES = 10_000
+
+    def __init__(self, max_entries: int | None = None) -> None:
+        self._max_entries: int = (
+            max_entries if max_entries is not None else self._DEFAULT_MAX_ENTRIES
+        )
+        # OrderedDict gives us insertion-order iteration for FIFO eviction.
+        # We only use keys; values are all None.
+        self._dirty: OrderedDict[str, None] = OrderedDict()
         self._lock = asyncio.Lock()
 
     async def mark(self, alias: str) -> None:
         async with self._lock:
-            self._dirty.add(alias)
+            # move_to_end so a re-mark of an existing alias refreshes its
+            # position and doesn't get evicted ahead of older stale entries.
+            if alias in self._dirty:
+                self._dirty.move_to_end(alias)
+            else:
+                self._dirty[alias] = None
+                # Evict oldest until we're back under the ceiling.
+                while len(self._dirty) > self._max_entries:
+                    self._dirty.popitem(last=False)
 
     async def is_dirty(self, alias: str) -> bool:
         async with self._lock:
@@ -85,11 +119,24 @@ class SpendDirtyTracker:
 
     async def clear(self, alias: str) -> None:
         async with self._lock:
-            self._dirty.discard(alias)
+            self._dirty.pop(alias, None)
 
 
 def spend_key(alias: str) -> str:
-    """Return the Redis key that holds the hot-path spend counter for ``alias``."""
+    """Return the Redis key that holds the hot-path spend counter for ``alias``.
+
+    Validates alias internally (worthless-onqa) — the URL gate's regex
+    covers the HTTP path, but every other caller must also pass through
+    this helper, so the check goes here as defense in depth.
+    """
+    if not isinstance(alias, str):
+        raise TypeError(f"alias must be str, got {type(alias).__name__}")
+    if not _ALIAS_RE.fullmatch(alias):
+        raise ValueError(
+            f"alias {alias!r} does not match {_ALIAS_RE.pattern} — "
+            "reject-at-spend_key guards against Redis-key injection via "
+            "a caller that bypasses the URL gate."
+        )
     return f"{SPEND_KEY_PREFIX}{alias}"
 
 
@@ -131,13 +178,19 @@ async def get_spend_hot(redis: AsyncRedis | Any, alias: str) -> int | None:
 
     * ``None`` — key absent (cold start, evicted, restart, flushed).
     * ``int`` — the stored counter.
-    * Raises :class:`RedisValueError` — stored value is not an integer
-      (tampering or corruption). Callers must NOT treat this as 0.
+    * Raises :class:`RedisValueError` — stored value is not an integer,
+      or exceeds the sane byte size for a counter (tampering or
+      corruption — worthless-35j1). Callers must NOT treat this as 0.
     * Raises on any transport error — callers decide policy.
     """
     raw = await redis.get(spend_key(alias))
     if raw is None:
         return None
+    if isinstance(raw, bytes | bytearray) and len(raw) > _MAX_COUNTER_RAW_BYTES:
+        raise RedisValueError(
+            f"hot-path counter for alias={alias!r} is oversized "
+            f"({len(raw)} bytes > {_MAX_COUNTER_RAW_BYTES}); treating as tamper"
+        )
     try:
         return int(raw)
     except (TypeError, ValueError) as exc:
