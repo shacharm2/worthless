@@ -44,7 +44,7 @@ All three share the **same IPC contract**. Choice is operational, not protocol.
 
 ### 3.1 Single-container (demonstrated, blessed for v1.1)
 
-```
+```text
 ┌────────── container ─────────────────────────────┐
 │  tini (PID 1)                                    │
 │   └─ supervise.sh                                │
@@ -65,7 +65,7 @@ Two containers share `/var/run/worthless` as a volume. Peer-uid auth still works
 
 ### 3.3 systemd-managed (documented, optional)
 
-```
+```text
 systemd socket unit          binds /var/run/worthless/sidecar.sock
       │
       ├─ worthless-sidecar.service  User=worthless-crypto, socket-activated
