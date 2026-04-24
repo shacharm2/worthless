@@ -74,7 +74,11 @@ def safe_restore(target, backup_bytes):
 
 Two tests prove the contract: `test_safe_restore_bypasses_delta_only` (writes 10 KiB over a 10-byte file — would be rejected by `safe_rewrite` with `UnsafeReason.DELTA` but succeeds via `safe_restore`); `test_safe_restore_still_enforces_symlink_size_toctou` (replaces target with a symlink, a 2 GiB file, and a mid-flight inode swap — each raises the corresponding `UnsafeReason`).
 
-## 5. Test plan — 37 tests across 6 files
+## 5. Test plan — 37 core tests + 7 bonus across 6 files
+
+Core 37 are the acceptance surface. Bonus 7 (flagged B1–B7 in §5a) came out of the security / chaos / sre review pass and strengthen the existing RED without expanding scope.
+
+### Core tests
 
 ### `tests/backup/test_backup_writes.py` — 14 tests
 
@@ -88,7 +92,7 @@ Two tests prove the contract: `test_safe_restore_bypasses_delta_only` (writes 10
 8. `test_backup_file_fsync_before_rename` — instrument via `_hook_after_backup_fsync`.
 9. `test_backup_dir_fsync_before_return`.
 10. `test_backup_atomic_via_tmp_rename` — no `.bak.tmp-*` left post-success.
-11. `test_backup_rotation_keeps_last_20` — 25 sequential rewrites → exactly 20 `.bak` files, newest kept.
+11. `test_backup_rotation_keeps_last_50` — 55 sequential rewrites → exactly 50 `.bak` files, newest kept.
 12. `test_backup_rotation_failure_does_not_abort_write` — unlink raises; write succeeds; warning logged.
 13. `test_xdg_data_home_honoured_when_set` — `$XDG_DATA_HOME=/tmp/x` → `/tmp/x/worthless/backups/...`.
 14. `test_xdg_data_home_empty_falls_back_to_local_share` — per XDG spec unset *and* empty both fall back.
@@ -131,16 +135,33 @@ Two tests prove the contract: `test_safe_restore_bypasses_delta_only` (writes 10
 36. `test_safe_restore_bypasses_delta_only` — 10 KiB over 10-byte target succeeds via `safe_restore`, would fail via `safe_rewrite`.
 37. `test_safe_restore_still_enforces_symlink_size_toctou_containment` — parametrized over each gate.
 
+### 5a. Bonus tests — 7 from batch-A review (security / chaos / sre)
+
+Added strictly to strengthen the existing RED. None change the public surface; they close gaps in the attack / failure matrix the core 37 don't cover.
+
+**Security (3, land in `tests/backup/test_backup_writes.py`):**
+
+- B1. `test_refuses_if_bucket_dir_is_preexisting_symlink` — bucket path already a symlink to attacker-controlled dir → `UnsafeReason.BACKUP` before any write.
+- B2. `test_bucket_dir_opened_with_o_nofollow_o_directory` — spy on `os.open` of the bucket-dir fd; assert flags include `O_NOFOLLOW | O_DIRECTORY`.
+- B3. `test_ghost_bak_tmp_unlinked_on_write_failure` — simulate fsync failure mid-backup; `.bak.tmp-*` must be unlinked before `UnsafeReason.BACKUP` propagates (no orphan under `0o600` perms).
+
+**Chaos (4, land in `tests/safe_rewrite/test_chaos.py`):**
+
+- B4. `test_enospc_during_backup_tmp_write` — inject `OSError(ENOSPC)` on the tmp write; target untouched, no `.bak.tmp-*` left behind.
+- B5. `test_enospc_during_rotation_unlink` — errno-pin: rotation unlink raises `ENOSPC`; write still succeeds, rotation logs warning (rotation is best-effort).
+- B6. `test_rotation_self_heals_from_51_plus_files` — seed bucket with 60 pre-existing backups; next write prunes back to 50 without raising.
+- B7. `test_rotation_sort_survives_clock_anomalies` — parametrized over forward jump, zero-delta, and negative-delta `time_ns` sequences; `(ts_ns, counter)` sort keeps newest 50 correctly under each.
+
 ## 6. Commit sequence — 9 atomic commits, TDD-enforced
 
 Each commit: (a) red tests first, (b) implementation, (c) cumulative green count matches the table below. A commit that claims N green but the dashboard shows < N is backed out.
 
 | # | Commit message | Red tests added | Green after | Cumulative |
 |---|---|---|---|---|
-| 1 | `test(wor-276): red suite for backup write seam + UnsafeReason.BACKUP` | 1-14, 30-32 (tests/backup/test_backup_writes.py + chaos additions) | 0 green — all red, seam asserted by import-only | **0 / 37** |
+| 1 | `test(wor-276): red suite for backup write seam + UnsafeReason.BACKUP` | 1-14, 30-32, B1–B7 (tests/backup/test_backup_writes.py + chaos additions + bonus) | 0 green — all red, seam asserted by import-only | **0 / 37** |
 | 2 | `feat(wor-276): add UnsafeReason.BACKUP + backup.py with write_backup + bucket path` | — | 1-6, 13, 14 green (happy-path writes + bucket mode + XDG) | **8 / 37** |
 | 3 | `feat(wor-276): atomic tmp-rename + fsync + 0o600 + failure-aborts-write for backup` | — | 7-10 green (durability + abort on ENOSPC) | **12 / 37** |
-| 4 | `feat(wor-276): rotate backups to last 20 per target, best-effort on failure` | — | 11, 12 green | **14 / 37** |
+| 4 | `feat(wor-276): rotate backups to last 50 per target, best-effort on failure` | — | 11, 12 green | **14 / 37** |
 | 5 | `feat(wor-276): chaos-resistant backup window + orphan allowlist` | — | 30-32 green (cumulative chaos) | **17 / 37** |
 | 6 | `refactor(wor-276): extract _safe_rewrite_core(skip_delta) + safe_restore()` + `test(wor-276): red suite for safe_restore` | 36, 37 | 36, 37 green | **19 / 37** |
 | 7 | `feat(wor-276): worthless restore --list + --all-repos` + red suite for restore cmd | 15-23 | 15, 16, 20 green (read-only paths) | **22 / 37** |
@@ -178,7 +199,7 @@ uv run pytest tests/backup/ tests/e2e/test_restore_cli.py \
 | **NFS / CIFS fsync lies** — `os.fsync` on network mounts may return success without durability. | Documented in RECOVERY.md ("backups are local-disk guarantees only"); out of scope to detect. Follow-up ticket if user data shows NFS usage. |
 | **Clock skew under `ntpd` step / DST** — `time.time_ns()` is monotonic-ish but not guaranteed; two rewrites could produce out-of-order timestamps. | `<counter>` is a per-process monotonic int that breaks ties; rotation sorts by `(timestamp_ns, counter)` tuple, not filename lexicographic, to survive backward clock jumps. Test 32b exercises this. |
 | **Bucket bind-mount collision** — two bind-mounts of the same repo at different paths produce different buckets; user sees split backup history. | Documented; `--all-repos` surfaces all buckets so discovery still works. Acceptable given bind-mounts are advanced usage. |
-| **`--list` UX for large backup counts** — 20 × N targets × M repos can be noisy. | Default `--list` scopes to current repo; `--all-repos` is opt-in. Follow-up: `--target <basename>` filter if feedback demands. |
+| **`--list` UX for large backup counts** — 50 × N targets × M repos can be noisy. | Default `--list` scopes to current repo; `--all-repos` is opt-in. Follow-up: `--target <basename>` filter if feedback demands. |
 | **`safe_restore` exposes a bypass vector** — if attacker can call `safe_restore` directly with hostile bytes, they bypass the delta gate. | `safe_restore` is still gated by symlink / size / TOCTOU / containment / path-identity; delta is the *only* gate skipped, and delta was already a soft gate (threshold-based), not a security boundary. Reviewed in C5. |
 
 ## 9. Definition of done
