@@ -32,6 +32,8 @@ import asyncio
 import logging
 import os
 import signal
+import socket
+import stat
 import sys
 from pathlib import Path
 
@@ -54,6 +56,52 @@ def _load_shares(a_path: Path, b_path: Path) -> tuple[bytes, bytes]:
     if len(share_a) != len(share_b):
         raise ValueError(f"share length mismatch: {len(share_a)} vs {len(share_b)}")
     return share_a, share_b
+
+
+_PROBE_TIMEOUT_S = 1.0
+
+
+def _check_socket_path_available(path: Path) -> bool:
+    """Probe ``path`` to decide whether we can safely bind there.
+
+    Returns True in three cases: the path is missing, it's a stale socket
+    inode (``connect`` → ``ECONNREFUSED``), or it's a socket inode whose
+    peer has disappeared. The stale inode is unlinked before returning
+    so the subsequent ``bind`` sees a clean path.
+
+    Returns False when the path is occupied in a way we must not
+    clobber — a live sidecar still accepting connections, or a
+    non-socket file (which would indicate an operator config mistake;
+    silently unlinking user data is worse than refusing to start).
+
+    Rationale: ``asyncio.start_unix_server`` auto-unlinks *any* existing
+    socket path before binding — including live ones — so two sidecars
+    pointed at the same socket silently race for new connections. This
+    probe closes that gap.
+    """
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return True
+    if not stat.S_ISSOCK(st.st_mode):
+        _LOG.error("refusing to bind: %s exists and is not a socket", path)
+        return False
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(_PROBE_TIMEOUT_S)
+    try:
+        probe.connect(str(path))
+    except (ConnectionRefusedError, FileNotFoundError):
+        # Stale inode — no one is accept()ing. Clear and proceed.
+        path.unlink(missing_ok=True)
+        return True
+    except OSError as exc:
+        _LOG.error("probe of existing socket %s failed: %s", path, exc)
+        return False
+    else:
+        _LOG.error("sidecar already running on %s", path)
+        return False
+    finally:
+        probe.close()
 
 
 def _parse_allowlist(raw: str) -> tuple[int, ...]:
@@ -89,6 +137,9 @@ async def _run() -> int:
     except ValueError as exc:
         _LOG.error("backend init failed: %s", exc)
         return 1
+
+    if not _check_socket_path_available(socket_path):
+        return 2
 
     try:
         server = await start_sidecar(
