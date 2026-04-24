@@ -4,7 +4,11 @@ compatibility_date = "2026-04-01"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/shacharm2/worthless/main/install.sh"
+# Supply-chain: pin GITHUB_RAW_URL to a release tag, not a mutable branch.
+# `main` would let any push immediately change what `curl worthless.sh | sh`
+# serves, bypassing the review gate. Bump this tag on each install.sh
+# release (matches the "trust roots" posture in docs/install-security.md).
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/shacharm2/worthless/v0.3.0/install.sh"
 REDIRECT_URL = "https://wless.io"
 
 # Production route — wired in WOR-300 when DNS is live
