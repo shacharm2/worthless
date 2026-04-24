@@ -68,10 +68,17 @@ services:
       - "noeviction"
     networks:
       - backend
+    # Run as the built-in redis user (uid/gid 999 in redis:7-alpine).
+    # When docker-entrypoint.sh detects a non-root uid it skips the chown
+    # on /data, so we can cap_drop: ALL without breaking startup.
+    user: "999:999"
     restart: unless-stopped
     read_only: true
     tmpfs:
-      - /data:noexec,nosuid,size=64m
+      # writable-but-noexec; owned by uid/gid 999 so redis can write its
+      # working files. No persistence flags are set in command, so nothing
+      # important lives here beyond transient allocator state.
+      - /data:noexec,nosuid,size=64m,uid=999,gid=999
     cap_drop:
       - ALL
     security_opt:
