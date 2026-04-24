@@ -31,9 +31,10 @@ from pathlib import Path
 import pytest
 
 # Shared fixtures (sidecar_socket_path, fernet_shares, fernet_backend,
-# running_sidecar, ipc_client) live in tests/ipc/conftest.py.
+# running_sidecar, ipc_client) and the StallingBackend helper live in
+# tests/ipc/conftest.py.
+from tests.ipc.conftest import StallingBackend
 from worthless.ipc.client import IPCClient, IPCTimeoutError
-from worthless.sidecar.backends.base import Backend
 from worthless.sidecar.backends.fernet import FernetBackend
 from worthless.sidecar.server import start_sidecar
 
@@ -184,34 +185,6 @@ async def test_socket_is_cleaned_up_after_server_closes(
 # ---------------------------------------------------------------------------
 
 
-class _StallingBackend(Backend):
-    """Backend that hangs forever on seal; used to prove the client's
-    2-second timeout cap is actually enforced, not just a parameter.
-
-    ``attest`` and ``open`` delegate to a real Fernet so the handshake
-    path still works if the test ever needs them.
-    """
-
-    def __init__(self, inner: FernetBackend) -> None:
-        self._inner = inner
-
-    async def seal(self, plaintext: bytes, context: bytes | None = None) -> bytes:
-        # Deliberately longer than any sane test timeout; cancelled on teardown.
-        await asyncio.sleep(60)
-        return b""  # unreachable
-
-    async def open(
-        self,
-        ciphertext: bytes,
-        context: bytes | None = None,
-        key_id: bytes | None = None,
-    ) -> bytes:
-        return await self._inner.open(ciphertext, context, key_id)
-
-    async def attest(self, nonce: bytes, purpose: str | None = None) -> bytes:
-        return await self._inner.attest(nonce, purpose)
-
-
 async def test_client_timeout_raises_ipc_timeout_error_fast(
     sidecar_socket_path: Path, fernet_backend: FernetBackend
 ) -> None:
@@ -224,7 +197,7 @@ async def test_client_timeout_raises_ipc_timeout_error_fast(
     """
     server = await start_sidecar(
         socket_path=sidecar_socket_path,
-        backend=_StallingBackend(fernet_backend),
+        backend=StallingBackend(fernet_backend),
         allowed_uids=[os.getuid()],
     )
     try:

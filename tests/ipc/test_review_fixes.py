@@ -1,42 +1,34 @@
-"""Tests for PR #94 review fixes (CodeRabbit + GitHub Advanced Security).
+"""Pins wire-error routing, timeout-invalidation, and near-max frame delivery.
 
-These pin behaviours that were flagged on PR #94 before the contract freeze.
-Each test corresponds to one numbered finding so a regression surfaces with
-a clean signal rather than an opaque roundtrip failure.
+These tests target subtle edge cases in the IPC client/server layer that
+an opaque end-to-end test would mask. Each corresponds to a distinct
+failure mode: a regression here surfaces with a clean signal.
 
-Findings covered:
+Behaviours covered:
 
-1. **Timeout-desync**: ``asyncio.wait_for`` cancels ``read_frame`` mid-parse;
-   the StreamReader may have consumed a partial length prefix. The client
-   must invalidate the connection so the next call fails fast rather than
-   reading garbage off a desynchronised socket.
-
-2. **err-with-id-0 routing**: the server emits ``err`` envelopes with the
-   ``_ID_UNKNOWN`` sentinel (``id=0``) when it can't parse the inbound id.
-   The client must check ``kind == "err"`` BEFORE id-mismatch so AUTH /
-   PROTO / BACKEND distinctions are preserved.
-
-3. **No double-prefix**: ``_err_from_envelope`` prepends ``"{code}: "`` to
-   the message, but the server already sends pre-prefixed constants like
-   ``"AUTH: peer uid not allowed"``. We must detect and skip the prepend
-   so callers see ``"AUTH: peer uid not allowed"`` not
-   ``"AUTH: AUTH: peer uid not allowed"``.
-
-4. **Near-max frame roundtrip**: ``open_unix_connection`` defaults
-   StreamReader buffer to 64 KiB; our contract allows 1 MiB frames. We lift
-   the limit via ``limit=MAX_FRAME_SIZE`` on both client and server, so a
-   near-max legitimate seal must complete rather than tripping
-   ``LimitOverrunError``.
+* ``_err_from_envelope`` prefix-idempotency (unit): server-sent
+  ``"AUTH: peer uid not allowed"`` must not become ``"AUTH: AUTH: ..."``.
+* Timeout desync (integration): ``asyncio.wait_for`` cancels
+  ``read_frame`` mid-parse, desynchronising the StreamReader. The client
+  must invalidate the connection so the next call raises cleanly rather
+  than reading garbage off the socket.
+* ``err`` envelopes with the server's ``_ID_UNKNOWN`` sentinel (id=0)
+  must route to the typed exception by ``code`` — not trip an
+  id-mismatch check before ``kind`` is inspected.
+* Near-max frame roundtrip: ``asyncio.StreamReader`` defaults to 64 KiB
+  but the contract allows 1 MiB frames. Both client and server must lift
+  the limit via ``limit=MAX_FRAME_SIZE`` so a legitimate large seal
+  completes rather than tripping ``LimitOverrunError``.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 from pathlib import Path
 
 import pytest
 
+from tests.ipc.conftest import StallingBackend
 from worthless.ipc.client import (
     IPCAuthError,
     IPCClient,
@@ -44,13 +36,12 @@ from worthless.ipc.client import (
     IPCTimeoutError,
     _err_from_envelope,
 )
-from worthless.sidecar.backends.base import Backend
 from worthless.sidecar.backends.fernet import FernetBackend
 from worthless.sidecar.server import start_sidecar
 
 
 # ---------------------------------------------------------------------------
-# Fix 5 (unit): ``_err_from_envelope`` must not double-prefix.
+# ``_err_from_envelope`` — no double prefix (unit).
 # ---------------------------------------------------------------------------
 
 
@@ -83,30 +74,8 @@ def test_err_envelope_prepends_when_missing() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fix 2 (integration): timeout must invalidate the connection.
+# Timeout invalidates the connection (integration).
 # ---------------------------------------------------------------------------
-
-
-class _HangingBackend(Backend):
-    """Hangs on ``seal`` forever so the client's timeout trips."""
-
-    def __init__(self, inner: FernetBackend) -> None:
-        self._inner = inner
-
-    async def seal(self, plaintext: bytes, context: bytes | None = None) -> bytes:
-        await asyncio.sleep(60)
-        return b""  # unreachable
-
-    async def open(
-        self,
-        ciphertext: bytes,
-        context: bytes | None = None,
-        key_id: bytes | None = None,
-    ) -> bytes:
-        return await self._inner.open(ciphertext, context, key_id)
-
-    async def attest(self, nonce: bytes, purpose: str | None = None) -> bytes:
-        return await self._inner.attest(nonce, purpose)
 
 
 async def test_timeout_invalidates_connection(
@@ -122,7 +91,7 @@ async def test_timeout_invalidates_connection(
     """
     server = await start_sidecar(
         socket_path=sidecar_socket_path,
-        backend=_HangingBackend(fernet_backend),
+        backend=StallingBackend(fernet_backend),
         allowed_uids=[os.getuid()],
     )
     try:
@@ -146,7 +115,7 @@ async def test_timeout_invalidates_connection(
 
 
 # ---------------------------------------------------------------------------
-# Fix 3 (integration): err envelopes with id=0 sentinel route to typed exc.
+# ``err`` envelopes with id=0 sentinel route to typed exceptions (integration).
 # ---------------------------------------------------------------------------
 
 
@@ -186,7 +155,7 @@ async def test_err_with_zero_id_routes_to_typed_auth_error(
 
 
 # ---------------------------------------------------------------------------
-# Fix 4 (integration): near-max frame must roundtrip (StreamReader limit).
+# Near-max frame roundtrip (integration) — asyncio.StreamReader default limit.
 # ---------------------------------------------------------------------------
 
 

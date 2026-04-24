@@ -9,6 +9,7 @@ See ``docs/ipc-contract.md`` for the surfaces these fixtures exercise.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import secrets
@@ -20,6 +21,7 @@ import pytest
 import pytest_asyncio
 
 from worthless.ipc.client import IPCClient
+from worthless.sidecar.backends.base import Backend
 from worthless.sidecar.backends.fernet import FernetBackend
 from worthless.sidecar.server import start_sidecar
 
@@ -97,3 +99,29 @@ async def ipc_client(running_sidecar, sidecar_socket_path: Path) -> AsyncIterato
     """Yield a connected IPCClient against the running sidecar."""
     async with IPCClient(sidecar_socket_path) as client:
         yield client
+
+
+class StallingBackend(Backend):
+    """Backend that blocks forever on ``seal`` so client timeouts trip.
+
+    ``open`` and ``attest`` delegate to a real Fernet so the handshake and
+    any non-seal paths still work — only the operation under test stalls.
+    """
+
+    def __init__(self, inner: FernetBackend) -> None:
+        self._inner = inner
+
+    async def seal(self, plaintext: bytes, context: bytes | None = None) -> bytes:
+        await asyncio.sleep(60)
+        return b""  # unreachable
+
+    async def open(
+        self,
+        ciphertext: bytes,
+        context: bytes | None = None,
+        key_id: bytes | None = None,
+    ) -> bytes:
+        return await self._inner.open(ciphertext, context, key_id)
+
+    async def attest(self, nonce: bytes, purpose: str | None = None) -> bytes:
+        return await self._inner.attest(nonce, purpose)
