@@ -43,9 +43,12 @@ from worthless.proxy.errors import (
     ErrorResponse,
 )
 from worthless.proxy.metering import (
+    SpendDirtyTracker,
+    get_spend_hot,
     incr_spend_hot,
     record_spend,
     spend_key,
+    sum_spend_sqlite,
 )
 from worthless.proxy.rules import RulesEngine, SpendCapRule, TokenBudgetRule
 from worthless.storage.schema import SCHEMA
@@ -257,47 +260,105 @@ async def test_spend_cap_rule_survives_flushdb_mid_stream(sqlite_db):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known drift: when record_spend's Redis INCR failed and was swallowed, "
-        "the counter lags the SQLite ledger. _evaluate_redis trusts any non-None "
-        "GET value verbatim, so the gate silently under-reports committed spend "
-        "until an eviction forces a rehydrate. Fix tracked in beads: "
-        '"metering: detect Redis counter drift vs SQLite SUM".'
-    ),
-)
+class _IncrFailingRedis(_FakeRedis):
+    """GET/SET succeed, INCRBY always fails — simulates Redis mid-degradation.
+
+    Real-world trigger: Redis reachable for the gate's GET, unreachable
+    for record_spend's INCR (e.g. transient packet loss that happened to
+    land during the background task's write). The SQLite INSERT commits,
+    the INCR is swallowed, and the counter is stuck lagging the ledger.
+    """
+
+    async def incrby(self, key: str, amount: int) -> int:  # noqa: ARG002
+        raise ConnectionError("simulated INCRBY failure")
+
+
 @pytest.mark.asyncio
 async def test_spend_cap_rule_detects_partial_write_drift(sqlite_db):
-    """After a swallowed INCR failure, the NEXT evaluate must honour the cap.
+    """worthless-woh7: record_spend marks the alias dirty on INCR failure,
+    the next evaluate forces a rehydrate from SQLite, the stale counter
+    is overwritten, and the cap is honoured.
 
-    Simulates: cap=1000. SQLite says spend=900 (authoritative). Redis GET
-    returns 0 (because the last INCR failed and was swallowed). The gate
-    sees 0, reserves max_tokens=500, effective-total says (0 + 500) <
-    1000 → ALLOW. But the real committed spend is 900 + 500 reservation =
-    1400 → OVERRUN by 400.
+    Drives the fix through its real trigger (record_spend under a failing
+    Redis) rather than planting a bad counter directly.
     """
     db, db_path = sqlite_db
     await _configure_cap(db, "alice", 1000.0)
-    await _record_tokens(db_path, "alice", 900)  # authoritative
+    await _record_tokens(db_path, "alice", 500)  # first 500 via normal flow
 
+    tracker = SpendDirtyTracker()
     r = _FakeRedis()
-    # Drift: counter is 0, NOT 900. Simulates a previous INCR that was
-    # swallowed by record_spend after the SQLite write succeeded.
-    # Note the key is present but with a stale value (not missing).
-    await incr_spend_hot(r, "alice", 0)  # no-op — key stays absent
-    # Force the key to be present with a stale low value, bypassing the
-    # incr_spend_hot short-circuit on non-positive tokens.
-    r.store[spend_key("alice")] = b"0"
+    await incr_spend_hot(r, "alice", 500)  # Redis and SQLite agree at 500
 
-    rule = SpendCapRule(db=db, redis=r)
-    body = b'{"model":"gpt-4","max_tokens":500}'
-    result = await rule.evaluate("alice", object(), provider="openai", body=body)
-
-    assert result is not None and result.status_code == 402, (
-        "Drifted-low Redis counter silently bypasses the cap. "
-        "The rule must reconcile against SQLite SUM to detect this."
+    # record_spend now needs to add another 500 tokens, but Redis's INCR
+    # fails. The SQLite INSERT commits, the INCR is swallowed, and the
+    # tracker records the drift. No exception escapes.
+    failing = _IncrFailingRedis()
+    await record_spend(
+        db_path,
+        "alice",
+        500,
+        None,
+        "openai",
+        redis=failing,
+        dirty_tracker=tracker,
     )
+
+    # State after the failure: SQLite = 1000 (at cap), Redis = 500 (stale).
+    assert await sum_spend_sqlite(db, "alice") == 1000
+    assert await get_spend_hot(r, "alice") == 500, "drift: Redis lags SQLite"
+    assert await tracker.is_dirty("alice"), "INCR failure must mark alias dirty"
+
+    # Now the gate runs. Without drift detection, the stale 500 counter
+    # plus a max_tokens=1 reservation passes (500 + 1 < 1000 = false since
+    # committed is already at 1000, but the gate only sees 500). With
+    # drift detection, the tracker flag forces rehydrate to 1000, and the
+    # request is denied.
+    rule = SpendCapRule(db=db, redis=r, dirty_tracker=tracker)
+    body = b'{"model":"gpt-4","max_tokens":1}'
+    result = await rule.evaluate("alice", object(), provider="openai", body=body)
+    assert result is not None and result.status_code == 402
+
+    # Side effects: counter healed, tracker cleared.
+    assert await get_spend_hot(r, "alice") == 1000
+    assert not await tracker.is_dirty("alice")
+
+    # A follow-up request (no dirty flag) still denies via the normal path.
+    result2 = await rule.evaluate("alice", object(), provider="openai", body=body)
+    assert result2 is not None and result2.status_code == 402
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_rule_without_dirty_tracker_still_works(sqlite_db):
+    """Backward compatibility: SpendCapRule without a dirty_tracker uses the
+    old GET-or-rehydrate path. No-regression guard.
+    """
+    db, _ = sqlite_db
+    await _configure_cap(db, "alice", 1000.0)
+    r = _FakeRedis()
+    await incr_spend_hot(r, "alice", 500)
+
+    rule = SpendCapRule(db=db, redis=r)  # no dirty_tracker
+    body = b'{"model":"gpt-4","max_tokens":10}'
+    assert await rule.evaluate("alice", object(), provider="openai", body=body) is None
+
+
+@pytest.mark.asyncio
+async def test_record_spend_without_dirty_tracker_swallows_redis_failure(sqlite_db):
+    """record_spend without a dirty_tracker still swallows Redis failures
+    (pre-existing behaviour) — the tracker is optional.
+    """
+    _, db_path = sqlite_db
+    failing = _IncrFailingRedis()
+    await record_spend(db_path, "alice", 50, None, "openai", redis=failing)
+    # SQLite still has the record.
+    async with aiosqlite.connect(db_path) as wdb:
+        async with wdb.execute(
+            "SELECT COALESCE(SUM(tokens), 0) FROM spend_log WHERE key_alias = ?",
+            ("alice",),
+        ) as cur:
+            (total,) = await cur.fetchone()  # type: ignore[misc]
+    assert total == 50
 
 
 # ---------------------------------------------------------------------------

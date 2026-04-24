@@ -16,6 +16,7 @@ when ``WORTHLESS_REDIS_URL`` is unset, the gate uses SQLite end-to-end.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -48,6 +49,43 @@ class RedisValueError(RuntimeError):
     Callers treat this as a cache miss — rehydrate from SQLite rather than
     silently returning 0, which would bypass the cap.
     """
+
+
+class SpendDirtyTracker:
+    """Tracks aliases whose Redis counter may be stale (worthless-woh7).
+
+    When ``record_spend`` successfully writes to SQLite but the follow-up
+    Redis ``INCRBY`` fails (transient network blip, Redis flap, etc.), the
+    counter silently lags the authoritative ledger. ``SpendCapRule`` would
+    otherwise trust the stale counter on the next request.
+
+    This tracker is the signal between the writer (record_spend) and the
+    reader (SpendCapRule._evaluate_redis). Writer marks the alias dirty
+    on INCR failure; reader checks the flag, forces a rehydrate from
+    SQLite (``rehydrate_spend_hot(..., force=True)``), and clears the
+    flag.
+
+    Process-scoped by design. On proxy restart the flag is lost — but so
+    is the Redis counter (compose config has no persistence), so the
+    first post-restart read hits the cache-miss path and rehydrates
+    anyway.
+    """
+
+    def __init__(self) -> None:
+        self._dirty: set[str] = set()
+        self._lock = asyncio.Lock()
+
+    async def mark(self, alias: str) -> None:
+        async with self._lock:
+            self._dirty.add(alias)
+
+    async def is_dirty(self, alias: str) -> bool:
+        async with self._lock:
+            return alias in self._dirty
+
+    async def clear(self, alias: str) -> None:
+        async with self._lock:
+            self._dirty.discard(alias)
 
 
 def spend_key(alias: str) -> str:
@@ -124,16 +162,29 @@ async def sum_spend_sqlite(db: aiosqlite.Connection, alias: str) -> int:
     return int(row[0]) if row is not None else 0
 
 
-async def rehydrate_spend_hot(redis: AsyncRedis | Any, db: aiosqlite.Connection, alias: str) -> int:
+async def rehydrate_spend_hot(
+    redis: AsyncRedis | Any,
+    db: aiosqlite.Connection,
+    alias: str,
+    *,
+    force: bool = False,
+) -> int:
     """Warm the hot-path counter from SQLite. Returns the authoritative total.
 
-    Uses ``SET NX`` so a concurrent warmer / writer doesn't overwrite a
-    fresher value. Best-effort: if the SET fails we still return the SQLite
-    total — the caller makes the authoritative decision from this return.
+    When ``force`` is ``False`` (default, used on cache miss), a ``SET NX``
+    is issued so a concurrent warmer / fresher writer wins. When ``force``
+    is ``True`` (used by drift recovery — worthless-woh7), a plain ``SET``
+    overwrites any stale value.
+
+    Best-effort on the SET: if it fails we still return the SQLite total
+    so the caller can deny off the authoritative number.
     """
     total = await sum_spend_sqlite(db, alias)
     try:
-        await redis.set(spend_key(alias), total, nx=True)
+        if force:
+            await redis.set(spend_key(alias), total)
+        else:
+            await redis.set(spend_key(alias), total, nx=True)
     except Exception:
         logger.warning(
             "Failed to warm hot-path counter for alias=%s; SQLite total used for this request",
@@ -379,6 +430,7 @@ async def record_spend(
     model: str | None,
     provider: str,
     redis: AsyncRedis | Any | None = None,
+    dirty_tracker: SpendDirtyTracker | None = None,
 ) -> None:
     """Durably record spend to SQLite and (best-effort) increment the Redis counter.
 
@@ -386,6 +438,10 @@ async def record_spend(
     eventually-consistent cache used by :class:`SpendCapRule`; a Redis failure
     here is logged but does NOT fail the request — the request has already been
     served. The gate itself remains fail-closed on reads (see ``SpendCapRule``).
+
+    When a ``dirty_tracker`` is supplied and the INCR fails, the alias is
+    marked dirty so the next ``SpendCapRule._evaluate_redis`` forces a
+    rehydrate from SQLite (worthless-woh7 — bounds counter drift).
     """
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
@@ -398,6 +454,16 @@ async def record_spend(
         try:
             await incr_spend_hot(redis, alias, tokens)
         except Exception:
+            if dirty_tracker is not None:
+                try:
+                    await dirty_tracker.mark(alias)
+                except Exception:
+                    # Tracker must never propagate — SQLite is still authoritative.
+                    logger.warning(
+                        "SpendDirtyTracker.mark raised for alias=%s; "
+                        "drift detection may miss this write",
+                        alias,
+                    )
             logger.warning(
                 "Failed to increment Redis hot-path counter for alias=%s; "
                 "SQLite ledger is authoritative",

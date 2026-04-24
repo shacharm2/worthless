@@ -24,7 +24,12 @@ from worthless.proxy.errors import (
     time_window_error_response,
     token_budget_error_response,
 )
-from worthless.proxy.metering import RedisValueError, get_spend_hot, rehydrate_spend_hot
+from worthless.proxy.metering import (
+    RedisValueError,
+    SpendDirtyTracker,
+    get_spend_hot,
+    rehydrate_spend_hot,
+)
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis as AsyncRedis
@@ -129,6 +134,7 @@ class SpendCapRule:
 
     db: aiosqlite.Connection
     redis: AsyncRedis | Any | None = None
+    dirty_tracker: SpendDirtyTracker | None = None
     _reserved: dict[str, int] = field(default_factory=dict, init=False, repr=False)
     _reserve_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
@@ -155,24 +161,49 @@ class SpendCapRule:
             return None
         spend_cap = cap_row[0]
 
-        # Read the hot counter. Three shapes:
-        #   int  → direct comparison
-        #   None → cache miss; rehydrate from SQLite
-        #   raise RedisValueError → tamper/corruption; rehydrate
-        #   raise anything else  → transport error; drop to SQLite path
-        try:
-            counter = await get_spend_hot(self.redis, alias)
-        except RedisValueError:
-            counter = None  # treat as miss
-        except Exception:
-            return await self._evaluate_sqlite(alias, provider, body)
-
-        if counter is None:
+        # Drift recovery (worthless-woh7): if record_spend previously failed
+        # to INCR the counter, the alias is marked dirty. Force a rehydrate
+        # from SQLite instead of trusting the stale GET value.
+        dirty = False
+        if self.dirty_tracker is not None:
             try:
-                counter = await rehydrate_spend_hot(self.redis, self.db, alias)
+                dirty = await self.dirty_tracker.is_dirty(alias)
             except Exception:
-                # SQLite read inside rehydrate failed → fail closed.
-                return spend_cap_error_response(provider=provider)
+                dirty = False
+
+        if dirty:
+            try:
+                counter = await rehydrate_spend_hot(self.redis, self.db, alias, force=True)
+            except Exception:
+                # SQLite read failed during the forced rehydrate → fall back
+                # to the SQLite path so the gate still runs on authoritative
+                # data.
+                return await self._evaluate_sqlite(alias, provider, body)
+            # Only clear the flag on a clean rehydrate. If .clear raises the
+            # alias stays dirty and the next request retries — self-healing.
+            try:
+                await self.dirty_tracker.clear(alias)  # type: ignore[union-attr]
+            except Exception:  # noqa: S110 — intentional: dirty flag self-heals on retry  # nosec B110
+                pass
+        else:
+            # Read the hot counter. Three shapes:
+            #   int  → direct comparison
+            #   None → cache miss; rehydrate from SQLite
+            #   raise RedisValueError → tamper/corruption; rehydrate
+            #   raise anything else  → transport error; drop to SQLite path
+            try:
+                counter = await get_spend_hot(self.redis, alias)
+            except RedisValueError:
+                counter = None  # treat as miss
+            except Exception:
+                return await self._evaluate_sqlite(alias, provider, body)
+
+            if counter is None:
+                try:
+                    counter = await rehydrate_spend_hot(self.redis, self.db, alias)
+                except Exception:
+                    # SQLite read inside rehydrate failed → fail closed.
+                    return spend_cap_error_response(provider=provider)
 
         # Include in-flight reservations (WOR-242) — the Redis counter is
         # the committed total; in-flight requests haven't yet INCR'd it.

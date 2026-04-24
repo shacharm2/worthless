@@ -32,6 +32,7 @@ from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp, secur
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
 from worthless.proxy.metering import (
+    SpendDirtyTracker,
     StreamingUsageCollector,
     create_redis_client,
     extract_usage_anthropic,
@@ -186,6 +187,14 @@ async def _lifespan(app: FastAPI):
         redis_client = await create_redis_client(settings.redis_url)
     app.state.redis = redis_client
 
+    # worthless-woh7: drift recovery — record_spend marks aliases whose
+    # Redis INCR was swallowed; SpendCapRule consults the tracker on the
+    # next evaluate and forces a rehydrate from SQLite. The tracker is
+    # optional at the API level so single-backend deployments (no Redis)
+    # can skip it entirely.
+    dirty_tracker = SpendDirtyTracker() if redis_client is not None else None
+    app.state.dirty_tracker = dirty_tracker
+
     rules_engine = RulesEngine(
         rules=[
             TokenBudgetRule(db=db),
@@ -196,7 +205,7 @@ async def _lifespan(app: FastAPI):
             # LAST — TokenBudgetRule and SpendCapRule both place reservations;
             # SpendCapRule runs last to minimise denial-path leaks. The Redis
             # hot-path kicks in here when WORTHLESS_REDIS_URL is set.
-            SpendCapRule(db=db, redis=redis_client),
+            SpendCapRule(db=db, redis=redis_client, dirty_tracker=dirty_tracker),
         ]
     )
     app.state.rules_engine = rules_engine
@@ -435,6 +444,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                         model,
                         provider,
                         redis=getattr(request.app.state, "redis", None),
+                        dirty_tracker=getattr(request.app.state, "dirty_tracker", None),
                     )
                 except Exception:
                     logger.warning("Failed to record spend for alias=%s", alias)
@@ -475,6 +485,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                             usage.model,
                             encrypted.provider,
                             redis=getattr(request.app.state, "redis", None),
+                            dirty_tracker=getattr(request.app.state, "dirty_tracker", None),
                         )
                     else:
                         # Zero friction: if we can't extract usage (provider
