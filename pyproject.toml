@@ -149,6 +149,7 @@ markers = [
     "docker: Docker container end-to-end tests (requires running Docker daemon)",
     "e2e: end-to-end smoke tests — full lifecycle (lock, proxy, healthz)",
     "openclaw: OpenClaw integration tests (requires Docker + network pull)",
+    "redis: Redis hot-path metering tests — auto-applied to tests/test_redis_metering*.py and bench_spend_cap_rule.py",
 ]
 
 [tool.coverage.run]

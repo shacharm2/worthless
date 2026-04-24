@@ -226,3 +226,27 @@ async def repo(tmp_db_path: str, fernet_key: bytes) -> ShardRepository:
     r = ShardRepository(tmp_db_path, fernet_key)
     await r.initialize()
     return r
+
+
+# ---------------------------------------------------------------------------
+# Auto-tag Redis-related tests with @pytest.mark.redis.
+#
+# Keeps markers out of individual test files and survives new Redis tests
+# getting added. Matches anything under tests/test_redis_metering*.py and
+# tests/bench_spend_cap_rule.py.
+#
+# Run `pytest -m redis` to exercise just this surface, or
+# `pytest -m "not redis"` to skip it in a fast feedback loop.
+# ---------------------------------------------------------------------------
+
+_REDIS_TEST_FILES = (
+    "test_redis_metering",  # any tests/test_redis_metering*.py
+    "bench_spend_cap_rule",
+)
+
+
+def pytest_collection_modifyitems(config, items):  # noqa: ARG001 — pytest hook signature
+    for item in items:
+        path = str(item.fspath)
+        if any(marker in path for marker in _REDIS_TEST_FILES):
+            item.add_marker(pytest.mark.redis)
