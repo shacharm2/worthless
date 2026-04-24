@@ -195,6 +195,8 @@ ignore = [
 "tests/test_docker_e2e.py" = ["S607", "S108"]
 # Redis dynamic tests shell out to `docker` CLI for the real-container tier
 "tests/test_redis_metering_dynamic.py" = ["S603", "S607"]
+# Benchmark harness shells out to `docker` CLI for the TCP-Redis backend
+"tests/bench_spend_cap_rule.py" = ["S603", "S607"]
 # OpenClaw integration tests shell out to docker CLI
 "tests/test_openclaw_e2e.py" = ["S607", "S108"]
 # Deploy static tests use bash -n for entrypoint syntax validation

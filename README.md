@@ -81,6 +81,25 @@ worthless revoke       # Revoke enrolled keys
 
 `docker run ghcr.io/shacharm2/worthless-proxy:<version>` — multi-arch, vulnerability-scanned, cosign-signed. See [docs/install-docker.md](docs/install-docker.md).
 
+### Redis hot-path metering (opt-in)
+
+The default deploy uses SQLite end-to-end for spend enforcement. Compose
+also ships a `redis:7-alpine` service on an internal-only backend network;
+to enable the hot path, set `WORTHLESS_REDIS_URL=redis://redis:6379/0` in
+`docker-compose.env`. SQLite remains the authoritative ledger; Redis is a
+cache of the running counter rebuilt on miss.
+
+Benchmarks ([.planning/bench/spend-cap-rule-sqlite-vs-redis.md](.planning/bench/spend-cap-rule-sqlite-vs-redis.md))
+indicate Redis earns its keep when either:
+
+- **spend_log holds more than ~1,000 rows per alias** (SQLite gate p99
+  starts breaching 5 ms), or
+- **a single alias sees more than ~10 concurrent requests** (SQLite
+  wave p99 climbs into 60-310 ms, user-visible stall).
+
+Solo-developer and light-internal-tool workloads are better off with
+Redis off — the loopback round-trip adds latency without a gate payoff.
+
 ## Platforms
 
 Worthless runs on POSIX hosts. The proxy relies on `setsid`, `os.killpg`,
