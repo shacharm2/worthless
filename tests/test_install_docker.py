@@ -49,7 +49,10 @@ pytestmark = [
 ]
 
 
-@pytest.mark.timeout(180)
+# Test timeout must exceed the sum of subprocess budgets below
+# (build=240 + run=180 + rmi=30) so pytest-timeout doesn't preempt
+# a legitimately slow build before it gets a chance to report.
+@pytest.mark.timeout(480)
 @pytest.mark.parametrize("fixture", INSTALL_MATRIX)
 def test_install_succeeds_on_distro(fixture: str) -> None:
     """Build image, run install.sh + verify_install.sh, assert both succeed."""
@@ -107,7 +110,10 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
         )
 
 
-@pytest.mark.timeout(360)
+# 480s test timeout covers: compose up (360) + logs (30) + down (60)
+# with buffer. Otherwise the teardown and log-capture `finally` blocks
+# the test was designed around could be preempted before they run.
+@pytest.mark.timeout(480)
 @pytest.mark.parametrize(("distro", "dockerfile_name"), LOCK_E2E_MATRIX)
 def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
     """Post-install: `worthless lock` + proxied request → real key at upstream.

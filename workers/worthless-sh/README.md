@@ -18,7 +18,7 @@ Scaffolding + RED tests only. **Implementation pending: WOR-300.**
 
 ## Run tests locally
 
-```
+```sh
 cd workers/worthless-sh
 npm install
 npm test
