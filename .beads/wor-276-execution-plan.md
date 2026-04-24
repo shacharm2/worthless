@@ -6,16 +6,40 @@ Source of truth: [WOR-276 Redesign v2 Linear doc](https://linear.app/plumbusai/d
 
 ## Commit sequence (atomic, ordered)
 
-1. `refactor(wor-276): remove Wave 1 backup seam from safe_rewrite` — deletes lines 56-73 (`_backup_writer`, `_set_backup_writer`) and lines 775-785 (backup-writer call block) in `src/worthless/cli/safe_rewrite.py`. Tests: none new; existing safe_rewrite/safe_restore suite stays green.
-2. `feat(wor-276)!: delete backup module + tests` — `rm src/worthless/cli/backup.py`, `rm tests/backup/test_backup_writes.py`, `rm tests/backup/test_first_run.py`, trim `tests/backup/test_restore.py` to only cases exercising `safe_restore` core (rename dir → `tests/safe_restore/`), purge XDG/time_ns fixtures from `tests/backup/conftest.py`, remove `src/worthless/RECOVERY.md`, drop `force-include` from `pyproject.toml`, unbind `set_backup_hook()` call sites.
-3. `refactor(wor-276)!: rename UnsafeReason.BACKUP → VERIFY_FAILED` — `src/worthless/cli/errors.py:52`, update 2 refs in `tests/safe_rewrite/test_chaos.py`. Tests: existing enum-exhaustiveness test covers.
-4. `feat(wor-276): fs_check refuses non-atomic filesystems` — new `src/worthless/cli/fs_check.py` with `UnsupportedFilesystem` + `require_atomic_fs(path)`. Reads `/proc/self/mountinfo` (Linux), checks `statfs.f_type` against SMB/CIFS/NFS/FAT/9P/FUSE magics, rejects `/mnt/c` WSL prefix, rejects symlink-crossing FS. Wire into `_safe_rewrite_core` before `_platform_check`. Tests 17, 18, 19, 20 land here.
-5. `feat(wor-276): shard flock spans verify→rename` — extend `safe_rewrite._hook_before_replace` contract so caller holds shard flock across verify + rename; update `src/worthless/cli/commands/lock.py` to hold `fcntl.flock(shard_fd, LOCK_EX)` across the call. Tests 1, 8 land.
-6. `feat(wor-276): multi-key batch transactional lock` — refactor `commands/lock.py` to build full rewritten `.env` once, invoke `safe_rewrite` once with all N keys, reject whole batch on any verify failure. Tests 11, 12, 13, 14, 15, 16 land.
-7. `feat(wor-276): restore CLI command` — new `src/worthless/cli/commands/restore.py` wrapping `safe_restore` (thin typer wrapper). Register in `__main__.py`. Tests: 3 CLI subprocess tests in `tests/e2e/test_restore_cli.py` (happy, refuses bad basename, refuses non-atomic FS).
-8. `feat(wor-276): safe-abort error UX` — rework `UnsafeRewriteRefused` print path in `errors.py:error_boundary` to lead with ".env unchanged" + opaque reason; no path leakage. Tests 5, 10 land.
-9. `docs(wor-276): T-9 in-flight rollback + T-10 reconstruction-verify` — append to `docs/security.md` only. DO NOT touch `.planning/security/key-lock-threat-model.md`.
-10. `feat(wor-276): verify.py in-memory reconstruction verifier` **[LAST — HMAC input stubbed]** — new `src/worthless/cli/verify.py`: `verify_reconstruction(shard_a: bytearray, shard_b: bytearray, expected_hmac: bytes) -> bool`. bytearray-only inputs, `ctypes.mlock`+`munlock`, `resource.setrlimit(RLIMIT_CORE,(0,0))`, `prctl(PR_SET_DUMPABLE, 0)` on Linux, zero-on-exit via try/finally with `ctypes.memset`, `hmac.compare_digest` on the reconstruction HMAC. HMAC **input derivation is a TODO** — caller passes opaque `expected_hmac: bytes`. Wire into `commands/lock.py` batch path before rename. Tests 2, 3, 4, 6, 7, 9 land.
+**Status legend:** ✅ done · 🔨 in-flight · ⛔ blocked · 📋 pending
+
+1. ✅ `refactor(wor-276): remove Wave 1 backup seam from safe_rewrite` — deletes lines 56-73 (`_backup_writer`, `_set_backup_writer`) and lines 775-785 (backup-writer call block) in `src/worthless/cli/safe_rewrite.py`. Tests: none new; existing safe_rewrite/safe_restore suite stays green.
+2. ✅ `feat(wor-276)!: delete backup module + tests` — `rm src/worthless/cli/backup.py`, `rm tests/backup/test_backup_writes.py`, `rm tests/backup/test_first_run.py`, trim `tests/backup/test_restore.py` to only cases exercising `safe_restore` core (rename dir → `tests/safe_restore/`), purge XDG/time_ns fixtures from `tests/backup/conftest.py`, remove `src/worthless/RECOVERY.md`, drop `force-include` from `pyproject.toml`, unbind `set_backup_hook()` call sites.
+3. ✅ `refactor(wor-276)!: rename UnsafeReason.BACKUP → VERIFY_FAILED` — `src/worthless/cli/errors.py:52`, update 2 refs in `tests/safe_rewrite/test_chaos.py`. Tests: existing enum-exhaustiveness test covers.
+4. ✅ `feat(wor-276): fs_check refuses non-atomic filesystems` — new `src/worthless/cli/fs_check.py` with `UnsupportedFilesystem` + `require_atomic_fs(path)`. Reads `/proc/self/mountinfo` (Linux), checks `statfs.f_type` against SMB/CIFS/NFS/FAT/9P/FUSE magics, rejects `/mnt/c` WSL prefix, rejects symlink-crossing FS. Wire into `_safe_rewrite_core` before `_platform_check`. Tests 17, 18, 19, 20 land here.
+5. **Split into 5a (✅ done) + 5b (🔨 next):**
+   - 5a. ✅ `feat(wor-276): add rewrite_env_keys batch helper` — new public function in `dotenv_rewriter.py` (commit `5786344`). Single `safe_rewrite` call for N updates, all-or-nothing contract, forwards `_hook_before_replace`. 7 green unit tests in `tests/dotenv_rewriter/test_rewrite_env_keys.py`.
+   - 5b. 🔨 `feat(wor-276): multi-key batch transactional lock` — **merges original commits 5 + 6**. Refactor `commands/lock.py`: pass-1 DB writes → acquire `fcntl.flock(home.db_path, LOCK_EX|LOCK_NB)` → one `rewrite_env_keys` call with verify hook closure → compensating DB unwind on `UnsafeRewriteRefused`. Hook reconstructs each key via `reconstruct_key_fp`, compares to original plaintext, raises `VERIFY_FAILED` on mismatch. **Scoped to 5 integration tests** in `tests/transactional_lock/` (names below); tests 11 + 12 (threaded flock contention) deferred until HMAC panel clarifies plaintext lifetime.
+6. ~~Merged into 5b.~~
+7. ✅ `feat(wor-276): restore CLI command` — `src/worthless/cli/commands/restore.py` wrapping `safe_restore` (commit `3665510`, simplified `28e22ad`). Bounded stdin read (`_MAX_BYTES + 1`), refuses empty stdin, refuses non-`.env` basename. 3 e2e tests green.
+8. ✅ `feat(wor-276): safe-abort error UX` — landed prior to 7.
+9. ✅ `docs(wor-276): T-9 in-flight rollback + T-10 reconstruction-verify` — appended to `docs/security.md`. `.planning/security/key-lock-threat-model.md` untouched.
+10. ⛔ `feat(wor-276): verify.py in-memory reconstruction verifier` **[BLOCKED on HMAC panel]** — new `src/worthless/cli/verify.py`: `verify_reconstruction(shard_a, shard_b, expected_hmac)`. bytearray-only inputs, `ctypes.mlock`+`munlock`, `RLIMIT_CORE=0`, `PR_SET_DUMPABLE=0` (Linux), zero-on-exit try/finally with `ctypes.memset`, `hmac.compare_digest`. Ships with opaque `expected_hmac: bytes` + `pytest.xfail` sentinel `b"\x00" * 32` until panel resolves. Tests 2, 3, 4, 6, 7, 9.
+
+## Commit 5b — planned test names (locked scope, 5 tests)
+
+`tests/transactional_lock/test_lock_transactional.py`:
+- `test_batch_lock_single_safe_rewrite_call` — 3-key lock → exactly 1 `safe_rewrite` call.
+- `test_batch_lock_all_or_nothing_env_identical` — verify-fail on key #2 of 3 → `.env` byte-identical.
+- `test_batch_lock_all_or_nothing_db_rolled_back` — same fault → `list_enrollments()` empty, `fetch_encrypted` None for every alias.
+- `test_batch_lock_happy_path_all_enrolled` — no verify failure → all keys enrolled, `.env` has all shard_a + BASE_URL entries, exit 0.
+- `test_batch_lock_rewrite_refused_leaves_no_ghost_tmp` — verify-fail → no `.env.tmp.*`/`.env.staging.*` artifacts.
+
+**Deferred** (belt-and-suspenders, post-HMAC-panel):
+- Original test 11 `test_verify_runs_under_db_flock` (threaded EWOULDBLOCK assertion).
+- Original test 12 `test_concurrent_shard_swap_blocked` (thread UPDATE during hook window).
+
+## Commit 5b — expert chain (before writing code)
+
+1. `backend-developer` — propose control-flow refactor of `_lock_keys` (pass-1 DB, flock acquire, batch rewrite, compensating unwind).
+2. `test-automator` — write the 5 RED integration tests first; confirm they fail against current code.
+3. `security-auditor` — review hook closure: plaintext lifetime, zeroization, flock release ordering on every exit path (success, `UnsafeRewriteRefused`, exception).
+4. Implement; run regression; `/simplify` pass.
 
 ## File changes
 
@@ -29,23 +53,25 @@ Source of truth: [WOR-276 Redesign v2 Linear doc](https://linear.app/plumbusai/d
 
 ## Test-to-commit map
 
-| Commit | Tests |
-|---|---|
-| 4 fs_check | 17, 18, 19, 20 |
-| 5 shard flock | 1, 8 |
-| 6 batch tx | 11, 12, 13, 14, 15, 16 |
-| 7 restore CLI | 3 e2e (not in the 20) |
-| 8 safe-abort UX | 5, 10 |
-| 10 verify.py | 2, 3, 4, 6, 7, 9 |
+| Commit | Tests | Status |
+|---|---|---|
+| 4 fs_check | 17, 18, 19, 20 | ✅ |
+| 5a rewrite_env_keys helper | 7 unit tests in `tests/dotenv_rewriter/test_rewrite_env_keys.py` | ✅ |
+| 5b batch tx lock | 5 integration tests (see above); 11 + 12 deferred | 🔨 next |
+| 7 restore CLI | 3 e2e | ✅ |
+| 8 safe-abort UX | 5, 10 | ✅ |
+| 9 docs | — | ✅ |
+| 10 verify.py | 2, 3, 4, 6, 7, 9 | ⛔ HMAC panel |
 
 Every commit 4-10 ships covering tests in the same commit. No red lands in main.
 
 ## Risks & rollback points
 
-- **Commit 6 (batch transactional lock)** is the highest-risk: rewrites `lock.py` control flow. Rollback painful once 7-10 stack on top.
+- **Commit 5b (batch transactional lock)** is the highest-risk: rewrites `lock.py` control flow. Rollback painful once 10 stacks on top.
 - **Commit 10 (verify.py)** mlock/prctl behavior varies per-platform; tests 2/3 need Linux for PR_SET_DUMPABLE.
 - **Commit 4 (fs_check)** may false-positive on exotic dev setups; keep `WORTHLESS_FORCE_FS=1` escape hatch documented in `docs/security.md`.
 - Safe rollback window: **after commit 3** (pure deletion/rename, no behavior change).
+- **Anti-pattern (ruled out):** structural-only pass-1/pass-2 refactor without batching. Opens a *new* inconsistency window between DB writes and per-key env writes — strictly worse than either current code or 5b target. Batching + hook + flock must land together.
 
 ## Blocking dependencies
 
