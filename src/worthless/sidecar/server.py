@@ -397,6 +397,34 @@ async def start_sidecar(
     handler = _make_client_handler(backend, allowed_uids)
     server = await asyncio.start_unix_server(handler, path=str(socket_path))
 
+    # Tighten permissions on the bound socket to 0660 (owner + group rw,
+    # world none). Rationale:
+    #
+    #   * ``asyncio.start_unix_server`` honours the caller's umask — in
+    #     containers that often defaults to 0022, yielding a 0755 socket
+    #     any local UID could connect to. World access is unacceptable
+    #     even though peer-uid is the authz gate: a world-accessible
+    #     socket is DoS surface and a side-channel probing target.
+    #   * We pick 0660 (not 0600) so the single-container two-uid pattern
+    #     works: sidecar binds as uid ``worthless-crypto``, proxy
+    #     connects as uid ``worthless-proxy`` which is a member of the
+    #     ``worthless-crypto`` group. A single-uid deployment sees 0660
+    #     as 0600-equivalent (owner == group == same user) with no loss.
+    #   * peer-uid enforcement (``require_peer_uid``) still fires on
+    #     every connection, so even group-scoped access is gated by the
+    #     configured allowlist.
+    try:
+        socket_path.chmod(0o660)
+    except OSError as exc:
+        # If chmod fails we must NOT leave a loose-permissioned socket
+        # running. Tear down and surface the failure.
+        server.close()
+        try:
+            socket_path.unlink()
+        except OSError:
+            pass
+        raise OSError(f"failed to tighten socket permissions on {socket_path}: {exc}") from exc
+
     # Install shutdown hygiene: unlink the socket file on close(). POSIX
     # does not auto-unlink pathname AF_UNIX sockets — without this, a
     # stale socket file lingers and the next bind to the same path fails
