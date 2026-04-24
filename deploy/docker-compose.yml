@@ -11,9 +11,11 @@ services:
       # Separate fernet key from shard data — requires the worthless-secrets
       # volume below. Remove this for single-volume PaaS deployments.
       WORTHLESS_FERNET_KEY_PATH: /secrets/fernet.key
-      # Hot-path metering: reaches Redis over the internal `backend` network.
-      # Unset this to fall back to SQLite-only metering.
-      WORTHLESS_REDIS_URL: redis://redis:6379/0
+      # Redis hot-path metering is OPT-IN. Set WORTHLESS_REDIS_URL in
+      # docker-compose.env to enable — e.g. redis://redis:6379/0. When unset,
+      # the proxy uses SQLite-only metering (pre-Redis behaviour). The redis
+      # service below starts regardless, so enabling later is a config flip
+      # with no rebuild.
     volumes:
       - worthless-data:/data
       # Keeps the decryption key off the same volume as shard data.
@@ -24,9 +26,6 @@ services:
       - frontend
       # Backend: internal-only link to Redis; no external routing.
       - backend
-    depends_on:
-      redis:
-        condition: service_healthy
     restart: unless-stopped
     read_only: true
     tmpfs:
