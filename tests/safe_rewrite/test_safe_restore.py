@@ -12,6 +12,7 @@ through the public ``safe_rewrite`` signature.
 
 from __future__ import annotations
 
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -209,8 +210,6 @@ def test_safe_rewrite_public_surface_has_no_skip_delta() -> None:
     a separate ``safe_restore`` entry point is to keep DELTA non-optional
     on the normal write path.
     """
-    import inspect
-
     sig = inspect.signature(safe_rewrite)
     assert "skip_delta" not in sig.parameters, (
         "safe_rewrite() must not expose skip_delta — only safe_restore() bypasses DELTA"
@@ -226,7 +225,6 @@ def test_safe_rewrite_core_is_private_and_accepts_skip_delta() -> None:
     exists with the documented knob.
     """
     from worthless.cli.safe_rewrite import _safe_rewrite_core  # RED: doesn't exist yet
-    import inspect
 
     sig = inspect.signature(_safe_rewrite_core)
     assert "skip_delta" in sig.parameters, (

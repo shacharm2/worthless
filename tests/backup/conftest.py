@@ -11,11 +11,42 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# Bucket-path contract (locked in plan §3)
+#
+# Shared across every file in the backup suite — keeping one canonical copy
+# here prevents the rotation regex from drifting out of sync with the backup
+# writer, which happened once already when a stale ``Z`` suffix snuck in.
+# ---------------------------------------------------------------------------
+
+
+def _bucket_for(repo_root: Path) -> str:
+    """Expected bucket name = sha256 hex of the resolved repo-root path."""
+    return hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()
+
+
+def _bucket_dir(xdg: Path, repo_root: Path) -> Path:
+    """Resolve the expected on-disk bucket directory for ``repo_root``."""
+    return xdg / "worthless" / "backups" / _bucket_for(repo_root)
+
+
+_BACKUP_NAME_RE = re.compile(
+    r"^(?P<base>[^/]+?)"
+    r"\.(?P<yy>\d{4})-(?P<mm>\d{2})-(?P<dd>\d{2})"
+    r"T(?P<hh>\d{2}):(?P<mi>\d{2}):(?P<ss>\d{2})"
+    r"\.(?P<ns>\d{9})"
+    r"\.(?P<pid>\d+)"
+    r"\.(?P<counter>\d+)"
+    r"\.bak$"
+)
 
 
 # ---------------------------------------------------------------------------

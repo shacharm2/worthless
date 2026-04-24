@@ -30,9 +30,10 @@ import re
 import stat
 import sys
 import time
-from pathlib import Path
 
 import pytest
+
+from tests.backup.conftest import _BACKUP_NAME_RE, _bucket_for
 
 
 pytestmark = pytest.mark.skipif(
@@ -44,11 +45,6 @@ pytestmark = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 # Helpers local to this module
 # ---------------------------------------------------------------------------
-
-
-def _bucket_for(repo_root: Path) -> str:
-    """Expected bucket name = sha256 hex of the resolved repo-root path."""
-    return hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()
 
 
 def _import_backup():
@@ -79,18 +75,10 @@ def _require_unsafe_reason_backup():
 # ``st_mtime_ns``) because backup files are written with ``shutil.copystat``,
 # so their mtime reflects the *original file's* mtime, not backup creation
 # time. Sorting by filename components is deterministic and monotonic.
+#
+# ``_BACKUP_NAME_RE`` lives in ``tests/backup/conftest.py`` so the whole suite
+# shares one canonical copy.
 # ---------------------------------------------------------------------------
-
-
-_BACKUP_NAME_RE = re.compile(
-    r"^(?P<base>[^/]+?)"
-    r"\.(?P<yy>\d{4})-(?P<mm>\d{2})-(?P<dd>\d{2})"
-    r"T(?P<hh>\d{2}):(?P<mi>\d{2}):(?P<ss>\d{2})"
-    r"\.(?P<ns>\d{9})"
-    r"\.(?P<pid>\d+)"
-    r"\.(?P<counter>\d+)"
-    r"\.bak$"
-)
 
 
 def _parse_ts_counter_from_name(name: str) -> tuple[int, int]:

@@ -20,12 +20,13 @@ still succeeds and failure messages are attached to individual tests.
 
 from __future__ import annotations
 
-import hashlib
 import re
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.backup.conftest import _bucket_dir
 
 
 pytestmark = pytest.mark.skipif(
@@ -34,19 +35,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# ---------------------------------------------------------------------------
-# Bucket path helper (pure; duplicates the locked contract in the plan)
-# ---------------------------------------------------------------------------
-
-
-def _bucket_for(repo_root: Path) -> str:
-    """SHA-256 of the resolved repo root — the locked bucket name."""
-    return hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()
-
-
-def _bucket_dir(xdg: Path, repo_root: Path) -> Path:
-    """Resolve the expected on-disk bucket directory for ``repo_root``."""
-    return xdg / "worthless" / "backups" / _bucket_for(repo_root)
+_MARKER_NAME = ".first-run-seen"
+_RESTORE_HINT = "worthless restore"
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +68,7 @@ def test_first_run_prints_backup_path_once(
     )
     first = capsys.readouterr()
     assert str(bucket) in first.err
-    assert "worthless restore" in first.err
+    assert _RESTORE_HINT in first.err
 
     safe_rewrite(
         target,
@@ -88,7 +78,7 @@ def test_first_run_prints_backup_path_once(
     )
     second = capsys.readouterr()
     assert str(bucket) not in second.err
-    assert "worthless restore" not in second.err
+    assert _RESTORE_HINT not in second.err
 
 
 def test_first_run_marker_file_created(
@@ -111,7 +101,7 @@ def test_first_run_marker_file_created(
     )
 
     bucket = _bucket_dir(fake_xdg, tmp_repo)
-    assert (bucket / ".first-run-seen").is_file()
+    assert (bucket / _MARKER_NAME).is_file()
 
 
 def test_first_run_marker_mode_is_0600(
@@ -133,7 +123,7 @@ def test_first_run_marker_mode_is_0600(
         repo_root=tmp_repo,
     )
 
-    marker = _bucket_dir(fake_xdg, tmp_repo) / ".first-run-seen"
+    marker = _bucket_dir(fake_xdg, tmp_repo) / _MARKER_NAME
     assert marker.stat().st_mode & 0o777 == 0o600
 
 
@@ -160,9 +150,9 @@ def test_first_run_message_goes_to_stderr_not_stdout(
 
     captured = capsys.readouterr()
     assert str(bucket) in captured.err
-    assert "worthless restore" in captured.err
+    assert _RESTORE_HINT in captured.err
     assert str(bucket) not in captured.out
-    assert "worthless restore" not in captured.out
+    assert _RESTORE_HINT not in captured.out
 
 
 def test_recovery_md_shipped_in_wheel() -> None:
@@ -180,4 +170,4 @@ def test_recovery_md_first_fenced_block_is_the_command() -> None:
     text = files("worthless").joinpath("RECOVERY.md").read_text(encoding="utf-8")
     match = re.search(r"```[a-z]*\n(.*?)\n```", text, re.DOTALL)
     assert match is not None, "RECOVERY.md has no fenced code block"
-    assert "worthless restore" in match.group(1)
+    assert _RESTORE_HINT in match.group(1)

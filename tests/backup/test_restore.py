@@ -27,13 +27,13 @@ Contract pins (locked by plan §3, §4):
 
 from __future__ import annotations
 
-import hashlib
 import os
-import re
 import sys
 from pathlib import Path
 
 import pytest
+
+from tests.backup.conftest import _BACKUP_NAME_RE, _bucket_for
 
 
 pytestmark = pytest.mark.skipif(
@@ -43,26 +43,11 @@ pytestmark = pytest.mark.skipif(
 
 
 # ---------------------------------------------------------------------------
-# Helpers local to this module (mirror tests/backup/test_backup_writes.py:49
-# and the ``_make_fake_bak`` pattern from tests/safe_rewrite/test_chaos.py;
-# re-created inline because cross-suite test imports are not permitted).
+# Module-scope constants
 # ---------------------------------------------------------------------------
 
 
-def _bucket_for(repo_root: Path) -> str:
-    """Expected bucket name = sha256 hex of the resolved repo-root path."""
-    return hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()
-
-
-_BACKUP_NAME_RE = re.compile(
-    r"^(?P<base>[^/]+?)"
-    r"\.(?P<yy>\d{4})-(?P<mm>\d{2})-(?P<dd>\d{2})"
-    r"T(?P<hh>\d{2}):(?P<mi>\d{2}):(?P<ss>\d{2})"
-    r"\.(?P<ns>\d{9})"
-    r"\.(?P<pid>\d+)"
-    r"\.(?P<counter>\d+)"
-    r"\.bak$"
-)
+_TS_NS_BASE = 1_700_000_000_000_000_000
 
 
 def _iso_from_ns(ts_ns: int) -> str:
@@ -139,11 +124,6 @@ def _invoke_app(args: list[str], *, input: str | None = None, env: dict | None =
     return runner.invoke(app, args, input=input, env=env)
 
 
-# ---------------------------------------------------------------------------
-# Test 15: restore --list on an empty bucket exits 0 with no stdout output.
-# ---------------------------------------------------------------------------
-
-
 def test_restore_list_empty_exits_zero(tmp_repo, fake_xdg, monkeypatch) -> None:
     """Fresh repo with no backups: ``restore --list`` exits 0, stdout empty.
 
@@ -160,11 +140,6 @@ def test_restore_list_empty_exits_zero(tmp_repo, fake_xdg, monkeypatch) -> None:
     assert result.stdout == "", f"stdout must be empty on empty bucket, got {result.stdout!r}"
 
 
-# ---------------------------------------------------------------------------
-# Test 16: --list prints backups newest-first by (timestamp_ns, counter).
-# ---------------------------------------------------------------------------
-
-
 def test_restore_list_newest_first(tmp_repo, fake_xdg, monkeypatch) -> None:
     """Three backups at increasing ``time_ns``: ``--list`` prints them in
     descending order (newest first) — the filename with the largest
@@ -174,9 +149,9 @@ def test_restore_list_newest_first(tmp_repo, fake_xdg, monkeypatch) -> None:
     monkeypatch.chdir(tmp_repo)
 
     bucket = fake_xdg / "worthless" / "backups" / _bucket_for(tmp_repo)
-    ts1 = 1_700_000_000_000_000_000
-    ts2 = 1_700_000_001_000_000_000
-    ts3 = 1_700_000_002_000_000_000
+    ts1 = _TS_NS_BASE
+    ts2 = _TS_NS_BASE + 1_000_000_000
+    ts3 = _TS_NS_BASE + 2_000_000_000
     bak_old = _make_fake_bak(bucket, ".env", ts1, pid=111, counter=1, content=b"v1\n")
     bak_mid = _make_fake_bak(bucket, ".env", ts2, pid=222, counter=2, content=b"v2\n")
     bak_new = _make_fake_bak(bucket, ".env", ts3, pid=333, counter=3, content=b"v3\n")
@@ -196,11 +171,6 @@ def test_restore_list_newest_first(tmp_repo, fake_xdg, monkeypatch) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 17: restore <target> writes via safe_restore (not safe_rewrite).
-# ---------------------------------------------------------------------------
-
-
 def test_restore_file_writes_via_safe_restore(
     tmp_repo, fake_xdg, make_env_file, monkeypatch
 ) -> None:
@@ -215,9 +185,7 @@ def test_restore_file_writes_via_safe_restore(
     env = make_env_file(tmp_repo / ".env", b"current\n")
     bucket = fake_xdg / "worthless" / "backups" / _bucket_for(tmp_repo)
     bak_content = b"pre-corruption bytes\n"
-    bak = _make_fake_bak(
-        bucket, ".env", 1_700_000_000_000_000_000, pid=999, counter=1, content=bak_content
-    )
+    bak = _make_fake_bak(bucket, ".env", _TS_NS_BASE, pid=999, counter=1, content=bak_content)
 
     calls: list[tuple[Path, bytes]] = []
 
@@ -284,9 +252,7 @@ def test_restore_prompts_when_target_diverged_since_backup(
     backup_bytes = b"original-pre-backup\n"
     env = make_env_file(tmp_repo / ".env", current_bytes)
     bucket = fake_xdg / "worthless" / "backups" / _bucket_for(tmp_repo)
-    _make_fake_bak(
-        bucket, ".env", 1_700_000_000_000_000_000, pid=42, counter=1, content=backup_bytes
-    )
+    _make_fake_bak(bucket, ".env", _TS_NS_BASE, pid=42, counter=1, content=backup_bytes)
 
     result = _invoke_app(["restore", str(env)], input=stdin_input)
 
@@ -305,11 +271,6 @@ def test_restore_prompts_when_target_diverged_since_backup(
         )
 
 
-# ---------------------------------------------------------------------------
-# Test 19: --force bypasses the prompt but NOT the safety gate.
-# ---------------------------------------------------------------------------
-
-
 def test_restore_force_bypasses_prompt_but_not_gate(
     tmp_repo, fake_xdg, make_env_file, monkeypatch
 ) -> None:
@@ -318,7 +279,7 @@ def test_restore_force_bypasses_prompt_but_not_gate(
     refuses. Two sub-assertions in one test so the RED signal can't be
     gamed by implementing one half.
     """
-    restore_mod = _import_restore()  # noqa: F841 — RED import signal
+    _import_restore()
     from worthless.cli.errors import UnsafeReason, UnsafeRewriteRefused
 
     monkeypatch.chdir(tmp_repo)
@@ -327,9 +288,7 @@ def test_restore_force_bypasses_prompt_but_not_gate(
     env_a = make_env_file(tmp_repo / ".env", b"diverged\n")
     bucket = fake_xdg / "worthless" / "backups" / _bucket_for(tmp_repo)
     backup_bytes = b"original\n"
-    _make_fake_bak(
-        bucket, ".env", 1_700_000_000_000_000_000, pid=1, counter=1, content=backup_bytes
-    )
+    _make_fake_bak(bucket, ".env", _TS_NS_BASE, pid=1, counter=1, content=backup_bytes)
 
     result_a = _invoke_app(["restore", str(env_a), "--force"], input="")
     assert result_a.exit_code == 0, (
@@ -348,7 +307,7 @@ def test_restore_force_bypasses_prompt_but_not_gate(
     bucket_b.chmod(0o700)
     real_payload = other_repo / "real.bak.source"
     real_payload.write_bytes(b"attacker-controlled\n")
-    iso = _iso_from_ns(1_700_000_000_000_000_000)
+    iso = _iso_from_ns(_TS_NS_BASE)
     bak_symlink = bucket_b / f".env.{iso}.2.1.bak"
     os.symlink(str(real_payload), str(bak_symlink))
     bak_symlink.chmod(0o600)
@@ -370,11 +329,6 @@ def test_restore_force_bypasses_prompt_but_not_gate(
     assert env_b.read_bytes() == b"before\n", "target must be untouched on gate refusal"
 
 
-# ---------------------------------------------------------------------------
-# Test 20: restore --list --all-repos lists every bucket, grouped.
-# ---------------------------------------------------------------------------
-
-
 def test_restore_all_repos_lists_every_bucket_grouped(tmp_repo, fake_xdg, monkeypatch) -> None:
     """With two distinct repo buckets present, ``--list --all-repos`` must
     enumerate backups from both, grouped under per-bucket headers that
@@ -386,9 +340,7 @@ def test_restore_all_repos_lists_every_bucket_grouped(tmp_repo, fake_xdg, monkey
 
     # Repo A — the cwd.
     bucket_a = fake_xdg / "worthless" / "backups" / _bucket_for(tmp_repo)
-    bak_a = _make_fake_bak(
-        bucket_a, ".env", 1_700_000_000_000_000_000, pid=1, counter=1, content=b"a\n"
-    )
+    bak_a = _make_fake_bak(bucket_a, ".env", _TS_NS_BASE, pid=1, counter=1, content=b"a\n")
 
     # Repo B — sibling directory.
     repo_b = tmp_repo.parent / "repo-b"
@@ -396,7 +348,7 @@ def test_restore_all_repos_lists_every_bucket_grouped(tmp_repo, fake_xdg, monkey
     (repo_b / ".git").mkdir()
     bucket_b = fake_xdg / "worthless" / "backups" / _bucket_for(repo_b)
     bak_b = _make_fake_bak(
-        bucket_b, ".env", 1_700_000_001_000_000_000, pid=2, counter=1, content=b"b\n"
+        bucket_b, ".env", _TS_NS_BASE + 1_000_000_000, pid=2, counter=1, content=b"b\n"
     )
 
     result = _invoke_app(["restore", "--list", "--all-repos"])
@@ -421,11 +373,6 @@ def test_restore_all_repos_lists_every_bucket_grouped(tmp_repo, fake_xdg, monkey
     )
 
 
-# ---------------------------------------------------------------------------
-# Test 21: interactive picker accepts a 1-based number or 'q' to quit.
-# ---------------------------------------------------------------------------
-
-
 def test_restore_interactive_picker_accepts_number_and_q(
     tmp_repo, fake_xdg, make_env_file, monkeypatch
 ) -> None:
@@ -439,9 +386,9 @@ def test_restore_interactive_picker_accepts_number_and_q(
     env = make_env_file(tmp_repo / ".env", b"current\n")
     bucket = fake_xdg / "worthless" / "backups" / _bucket_for(tmp_repo)
     # Three backups, ascending ts. Newest (last) is listed first.
-    _make_fake_bak(bucket, ".env", 1_700_000_000_000_000_000, 1, 1, content=b"oldest\n")
-    _make_fake_bak(bucket, ".env", 1_700_000_001_000_000_000, 2, 1, content=b"middle\n")
-    _make_fake_bak(bucket, ".env", 1_700_000_002_000_000_000, 3, 1, content=b"newest\n")
+    _make_fake_bak(bucket, ".env", _TS_NS_BASE, 1, 1, content=b"oldest\n")
+    _make_fake_bak(bucket, ".env", _TS_NS_BASE + 1_000_000_000, 2, 1, content=b"middle\n")
+    _make_fake_bak(bucket, ".env", _TS_NS_BASE + 2_000_000_000, 3, 1, content=b"newest\n")
 
     # --- Sub-case A: pick "1" → restores backup #1 in the listing (newest).
     result_pick = _invoke_app(["restore", str(env), "--force"], input="1\n")
@@ -459,11 +406,6 @@ def test_restore_interactive_picker_accepts_number_and_q(
     assert env.read_bytes() == b"post-pick-state\n", (
         f"'q' must not write; target={env.read_bytes()!r}"
     )
-
-
-# ---------------------------------------------------------------------------
-# Test 22: restore refuses when the .bak is a symlink (UnsafeReason.SYMLINK).
-# ---------------------------------------------------------------------------
 
 
 def test_restore_refuses_symlinked_backup_file(
@@ -490,7 +432,7 @@ def test_restore_refuses_symlinked_backup_file(
     decoy = tmp_repo / "attacker.txt"
     decoy.write_bytes(b"attacker-controlled\n")
 
-    iso = _iso_from_ns(1_700_000_000_000_000_000)
+    iso = _iso_from_ns(_TS_NS_BASE)
     bak_symlink = bucket / f".env.{iso}.7.1.bak"
     os.symlink(str(decoy), str(bak_symlink))
 
@@ -509,11 +451,6 @@ def test_restore_refuses_symlinked_backup_file(
             f"SYMLINK refusal reason not surfaced; combined={combined!r}"
         )
     assert env.read_bytes() == pre, "target must be untouched when .bak is a symlink"
-
-
-# ---------------------------------------------------------------------------
-# Test 23: nonexistent target exits non-zero with a user-facing stderr error.
-# ---------------------------------------------------------------------------
 
 
 def test_restore_nonexistent_target_exits_nonzero(tmp_repo, fake_xdg, monkeypatch) -> None:
