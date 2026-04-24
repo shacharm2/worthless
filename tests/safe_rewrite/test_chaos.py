@@ -17,15 +17,22 @@ files may remain in the target directory.
 
 from __future__ import annotations
 
+import base64
+import calendar
 import errno
 import fcntl
+import hashlib
+import inspect
+import logging
 import os
+import re
 import signal
 import stat
 import subprocess
 import sys
 import textwrap
 import time
+from pathlib import Path
 
 import pytest
 
@@ -53,53 +60,114 @@ def test_sigkill_between_fsync_and_rename_leaves_target_byte_identical(
     Uses a SIGSTOP / SIGCONT handshake via a marker file so the kill
     lands deterministically and the test is not scheduler-dependent.
     """
+    # MAJOR 7 (WOR-276): hook-API drift smoke-check. The test relies on
+    # ``_hook_before_replace`` being a valid kwarg of ``safe_rewrite``.
+    # If a refactor renames it, fail cleanly here instead of letting the
+    # child raise a confusing TypeError after Popen.
+    if "_hook_before_replace" not in inspect.signature(safe_rewrite).parameters:
+        pytest.fail("hook API renamed \u2014 expected safe_rewrite(_hook_before_replace=...)")
+
     env = make_env_file(tmp_path / ".env", b"OPENAI_API_KEY=sk-orig\n")
     baseline = sha256_of(env)
     marker = tmp_path / "_fsync_done"
 
+    # MAJOR 4 (WOR-276): pass bytes + paths via environment variables
+    # (base64 for bytes) to keep the child script free of f-string
+    # interpolation pitfalls. Mirrors test 30b.
+    new_bytes = b"OPENAI_API_KEY=sk-decoy\n"
+    child_env = {
+        **os.environ,
+        "WOR276_ENV_PATH": str(env),
+        "WOR276_MARKER": str(marker),
+        "WOR276_NEW_B64": base64.b64encode(new_bytes).decode("ascii"),
+    }
     child_src = textwrap.dedent(
-        f"""
-        import os, signal, sys
+        """
+        import base64, os, signal
         from pathlib import Path
         from worthless.cli.safe_rewrite import safe_rewrite
 
+        env = Path(os.environ["WOR276_ENV_PATH"])
+        marker = Path(os.environ["WOR276_MARKER"])
+        new_bytes = base64.b64decode(os.environ["WOR276_NEW_B64"])
+
         def hook():
-            # Signal the parent that fsync has landed and we're about to
-            # rename. Then stop ourselves so the parent can SIGKILL
-            # deterministically.
-            Path({str(marker)!r}).write_text("ready")
+            # Signal parent that fsync landed; stop self so parent can
+            # SIGKILL deterministically.
+            marker.write_text("ready")
             os.kill(os.getpid(), signal.SIGSTOP)
 
-        env = Path({str(env)!r})
         safe_rewrite(
             env,
-            b"OPENAI_API_KEY=sk-decoy\\n",
+            new_bytes,
             original_user_arg=env,
             _hook_before_replace=hook,
         )
         """
     )
 
+    # MINOR 9 (WOR-276): DEVNULL on stdout to avoid full-pipe deadlock
+    # from a chatty child; stderr is inspected on failure paths.
     proc = subprocess.Popen(
         [sys.executable, "-c", child_src],
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
+        env=child_env,
     )
     try:
-        # Wait for the child to signal "fsync done, I'm about to stop".
+        # MAJOR 7 (WOR-276): bounded waitpid(WNOHANG | WUNTRACED) loop.
+        # Marker-only polling is vulnerable to the SIGSTOP race: if the
+        # child is stopped externally (debugger, load control) the marker
+        # never appears and we would spin until pytest's wall-clock
+        # timeout. Mirroring test 30b, we explicitly observe WIFSTOPPED
+        # and surface stderr on premature exit.
         deadline = time.monotonic() + 10.0
-        while not marker.exists() and time.monotonic() < deadline:
-            if proc.poll() is not None:
+        stopped = False
+        while time.monotonic() < deadline:
+            try:
+                pid, status = os.waitpid(proc.pid, os.WNOHANG | os.WUNTRACED)
+            except OSError as exc:
+                if exc.errno in (errno.EINTR, errno.ECHILD):
+                    time.sleep(0.01)
+                    continue
+                raise
+            if pid == proc.pid and os.WIFSTOPPED(status):
+                stopped = True
+                break
+            if pid == proc.pid and (os.WIFEXITED(status) or os.WIFSIGNALED(status)):
+                stderr_text = ""
+                if proc.stderr is not None:
+                    try:
+                        stderr_text = proc.stderr.read().decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        pass
                 pytest.fail(
                     f"child exited before fsync marker: "
-                    f"rc={proc.returncode}, stderr={proc.stderr.read()!r}"
+                    f"rc={proc.returncode} status={status:#x}\n"
+                    f"stderr:\n{stderr_text}"
                 )
             time.sleep(0.01)
-        assert marker.exists(), "child never reached the pre-rename hook"
+        if not stopped:
+            stderr_text = ""
+            if proc.stderr is not None:
+                try:
+                    stderr_text = proc.stderr.read().decode("utf-8", errors="replace")
+                except Exception:  # noqa: BLE001
+                    pass
+            pytest.fail(
+                f"child did not reach pre-rename checkpoint within 10s\nstderr:\n{stderr_text}"
+            )
+        assert marker.exists(), "child stopped but never wrote marker"
 
-        # Child is now SIGSTOPped inside the hook; kill it.
+        # Child is SIGSTOPped inside the hook; deliver the kill. Use
+        # bounded communicate() to collect stderr without relying on
+        # proc.wait() alone.
         os.kill(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=5)
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
     finally:
         try:
             proc.kill()
@@ -139,39 +207,99 @@ def test_sigkill_between_fsync_and_rename_leaves_target_byte_identical(
 
 def test_sigterm_between_fsync_and_rename(tmp_path, make_env_file, sha256_of) -> None:
     """SIGTERM during the pre-rename window → target byte-identical, no ghost tmp."""
+    # MAJOR 7 (WOR-276): hook-API drift smoke-check — see test 30 above.
+    if "_hook_before_replace" not in inspect.signature(safe_rewrite).parameters:
+        pytest.fail("hook API renamed \u2014 expected safe_rewrite(_hook_before_replace=...)")
+
     env = make_env_file(tmp_path / ".env", b"OPENAI_API_KEY=sk-orig\n")
     baseline = sha256_of(env)
     marker = tmp_path / "_fsync_done"
 
+    # MAJOR 4 (WOR-276): env-var plumbing instead of f-string interpolation.
+    new_bytes = b"A=1\n"
+    child_env = {
+        **os.environ,
+        "WOR276_ENV_PATH": str(env),
+        "WOR276_MARKER": str(marker),
+        "WOR276_NEW_B64": base64.b64encode(new_bytes).decode("ascii"),
+    }
     child_src = textwrap.dedent(
-        f"""
-        import os, signal
+        """
+        import base64, os, signal
         from pathlib import Path
         from worthless.cli.safe_rewrite import safe_rewrite
 
+        env = Path(os.environ["WOR276_ENV_PATH"])
+        marker = Path(os.environ["WOR276_MARKER"])
+        new_bytes = base64.b64decode(os.environ["WOR276_NEW_B64"])
+
         def hook():
-            Path({str(marker)!r}).write_text("ready")
+            marker.write_text("ready")
             os.kill(os.getpid(), signal.SIGSTOP)
 
-        env = Path({str(env)!r})
-        safe_rewrite(env, b"A=1\\n", original_user_arg=env, _hook_before_replace=hook)
+        safe_rewrite(
+            env, new_bytes, original_user_arg=env, _hook_before_replace=hook
+        )
         """
     )
+    # MINOR 9 (WOR-276): DEVNULL on stdout to avoid pipe-full deadlock.
     proc = subprocess.Popen(
         [sys.executable, "-c", child_src],
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
+        env=child_env,
     )
     try:
+        # MAJOR 7 (WOR-276): bounded waitpid(WNOHANG | WUNTRACED) loop,
+        # mirrors test 30b. See test 30 above for the full rationale.
         deadline = time.monotonic() + 10.0
-        while not marker.exists() and time.monotonic() < deadline:
-            if proc.poll() is not None:
-                pytest.fail(f"child exited early: rc={proc.returncode}")
+        stopped = False
+        while time.monotonic() < deadline:
+            try:
+                pid, status = os.waitpid(proc.pid, os.WNOHANG | os.WUNTRACED)
+            except OSError as exc:
+                if exc.errno in (errno.EINTR, errno.ECHILD):
+                    time.sleep(0.01)
+                    continue
+                raise
+            if pid == proc.pid and os.WIFSTOPPED(status):
+                stopped = True
+                break
+            if pid == proc.pid and (os.WIFEXITED(status) or os.WIFSIGNALED(status)):
+                stderr_text = ""
+                if proc.stderr is not None:
+                    try:
+                        stderr_text = proc.stderr.read().decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        pass
+                pytest.fail(
+                    f"child exited before fsync marker: "
+                    f"rc={proc.returncode} status={status:#x}\n"
+                    f"stderr:\n{stderr_text}"
+                )
             time.sleep(0.01)
-        assert marker.exists()
+        if not stopped:
+            stderr_text = ""
+            if proc.stderr is not None:
+                try:
+                    stderr_text = proc.stderr.read().decode("utf-8", errors="replace")
+                except Exception:  # noqa: BLE001
+                    pass
+            pytest.fail(
+                f"child did not reach pre-rename checkpoint within 10s\nstderr:\n{stderr_text}"
+            )
+        assert marker.exists(), "child stopped but never wrote marker"
+
+        # Deliver SIGTERM then SIGCONT so the stopped child can run its
+        # default SIGTERM disposition (terminate). Bounded communicate()
+        # replaces the bare proc.wait().
         os.kill(proc.pid, signal.SIGTERM)
         os.kill(proc.pid, signal.SIGCONT)
-        proc.wait(timeout=5)
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
     finally:
         try:
             proc.kill()
@@ -1235,7 +1363,7 @@ def test_directory_swap_real_fs_sibling(tmp_path, make_env_file, sha256_of) -> N
 
 def test_inode_reuse_real_fs_sibling(tmp_path, make_env_file) -> None:
     """Real FS: hook unlinks + recreates target; fstatat recheck refuses."""
-    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    env = make_env_file(tmp_path / ".env", b"KEY=orig\n")
 
     def _reuse() -> None:
         env.unlink()
@@ -1254,3 +1382,950 @@ def test_inode_reuse_real_fs_sibling(tmp_path, make_env_file) -> None:
     assert exc_info.value.reason == UnsafeReason.TOCTOU
     assert env.read_bytes() == b"KEY=attacker\n"
     assert list(tmp_path.glob(".env.tmp-*")) == []
+
+
+# ---------------------------------------------------------------------------
+# WOR-276 additions: tests 30, 31, 32 — chaos invariants for the backup
+# window. Mirrors the allowlist style of the top-of-file SIGKILL test:
+# post-SIGKILL survivors are checked against an explicit allowlist of
+# ``{.env, .env.tmp-*, .env.staging-*, *.bak.tmp-*}`` rather than a
+# denylist that could miss new orphan patterns.
+# ---------------------------------------------------------------------------
+
+
+def _bucket_path(repo_root, xdg_data_home) -> str:
+    """Compute the backup bucket path a ``safe_rewrite`` in ``repo_root``
+    would use given an explicit ``$XDG_DATA_HOME``. Inline here so the
+    chaos tests do not cross-import ``tests/backup/*``.
+    """
+    digest = hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()
+    return f"{xdg_data_home}/worthless/backups/{digest}"
+
+
+# ---------------------------------------------------------------------------
+# Test 30: SIGKILL between backup write and backup rename → no ghost
+# ``*.bak.tmp-*``. The backup has its own atomic tmp+rename window; this
+# test pins the same no-ghost invariant the ``.env.tmp-*`` spine gives
+# us, extended to the backup side.
+# ---------------------------------------------------------------------------
+
+
+def test_sigkill_between_backup_write_and_rename_leaves_no_ghost_bak_tmp(
+    tmp_path, make_env_file, sha256_of
+) -> None:
+    """SIGKILL after backup bytes are fsync'd but before backup rename.
+
+    Mirrors ``test_sigkill_between_fsync_and_rename_leaves_target_byte_identical``
+    except the kill lands inside the backup-write window rather than the
+    target-write window. The target must remain byte-identical (rewrite
+    never reached the target rename), the bucket may contain a
+    ``*.bak.tmp-*`` residue (SIGKILL is uncatchable — user-space cleanup
+    cannot run), and the allowlist of survivors is extended to include
+    ``*.bak.tmp-*``.
+
+    RED on this commit: ``worthless.cli.backup`` does not exist, so the
+    child fails with ``ModuleNotFoundError`` and never reaches the
+    marker. The assertion ``marker.exists()`` surfaces that as a clean
+    failure pointing at the missing module.
+    """
+    # Make the repo root the child's CWD so the bucket path is deterministic.
+    (tmp_path / ".git").mkdir()
+    env = make_env_file(tmp_path / ".env", b"OPENAI_API_KEY=sk-orig\n")
+    baseline = sha256_of(env)
+    marker = tmp_path / "_backup_fsync_done"
+
+    xdg = tmp_path / "xdg"
+    xdg.mkdir()
+
+    child_src = textwrap.dedent(
+        f"""
+        import os, signal
+        from pathlib import Path
+        os.environ["XDG_DATA_HOME"] = {str(xdg)!r}
+        os.environ["HOME"] = {str(tmp_path / "home")!r}
+        os.makedirs(os.environ["HOME"], exist_ok=True)
+
+        # Import the (not-yet-existing) backup module's post-backup-fsync
+        # hook. On RED this raises ModuleNotFoundError and the child
+        # exits nonzero before the marker is written.
+        from worthless.cli.backup import set_post_backup_fsync_hook
+
+        def hook():
+            Path({str(marker)!r}).write_text("ready")
+            os.kill(os.getpid(), signal.SIGSTOP)
+
+        set_post_backup_fsync_hook(hook)
+
+        from worthless.cli.safe_rewrite import safe_rewrite
+        env = Path({str(env)!r})
+        safe_rewrite(env, b"OPENAI_API_KEY=sk-decoy\\n", original_user_arg=env)
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_src],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=str(tmp_path),
+    )
+    try:
+        deadline = time.monotonic() + 10.0
+        while not marker.exists() and time.monotonic() < deadline:
+            if proc.poll() is not None:
+                pytest.fail(
+                    f"child exited before backup-fsync marker: "
+                    f"rc={proc.returncode}, stderr={proc.stderr.read()!r}"
+                )
+            time.sleep(0.01)
+        assert marker.exists(), "child never reached the backup post-fsync hook"
+
+        os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+    finally:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+    # Invariant 1: target is byte-identical (rewrite never reached rename).
+    assert sha256_of(env) == baseline, "target clobbered despite pre-target-rename SIGKILL"
+
+    # Invariant 2: allowlist — extend the .env / tmp / staging allowlist
+    # with ``*.bak.tmp-*``. Nothing outside the allowlist may survive.
+    survivors = list(tmp_path.iterdir())
+    allowed_names = {".env", marker.name, ".git", "xdg", "home"}
+    unexpected_top = [
+        p.name
+        for p in survivors
+        if p.name not in allowed_names and not p.name.startswith((".env.tmp-", ".env.staging-"))
+    ]
+    assert unexpected_top == [], f"unexpected top-level survivor(s): {unexpected_top}"
+
+    # The bucket may contain a .bak.tmp-* residue (allowed); any other
+    # name in the bucket (e.g. a complete .bak from a rename that should
+    # not have reached this window) is a contract violation.
+    bucket = Path(_bucket_path(tmp_path, str(xdg)))
+    if bucket.is_dir():
+        for p in bucket.iterdir():
+            assert ".bak.tmp-" in p.name, (
+                f"unexpected bucket survivor after pre-rename SIGKILL: {p.name}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Test 31: SIGKILL between backup atomic rename and target atomic rename
+# → bucket contains exactly one ``.bak`` with pre-write bytes; target
+# unchanged.
+# ---------------------------------------------------------------------------
+
+
+def test_sigkill_between_backup_rename_and_target_rename_leaves_intact_bak(
+    tmp_path, make_env_file, sha256_of
+) -> None:
+    """SIGKILL in the narrow window after backup is fully committed but
+    before the target rename lands. Invariants:
+
+    1. Bucket contains exactly one ``.bak`` file.
+    2. That ``.bak`` file's bytes are the pre-write target bytes
+       (the backup was atomically renamed before the kill).
+    3. Target is byte-identical to baseline (target rename never landed).
+
+    RED on this commit: the hook seam
+    ``worthless.cli.backup.set_post_backup_rename_hook`` does not exist.
+    """
+    (tmp_path / ".git").mkdir()
+    pre = b"OPENAI_API_KEY=sk-orig\n"
+    env = make_env_file(tmp_path / ".env", pre)
+    baseline = sha256_of(env)
+    pre_sha = hashlib.sha256(pre).hexdigest()
+    marker = tmp_path / "_backup_renamed"
+    xdg = tmp_path / "xdg"
+    xdg.mkdir()
+
+    child_src = textwrap.dedent(
+        f"""
+        import os, signal
+        from pathlib import Path
+        os.environ["XDG_DATA_HOME"] = {str(xdg)!r}
+        os.environ["HOME"] = {str(tmp_path / "home")!r}
+        os.makedirs(os.environ["HOME"], exist_ok=True)
+
+        from worthless.cli.backup import set_post_backup_rename_hook
+
+        def hook():
+            Path({str(marker)!r}).write_text("ready")
+            os.kill(os.getpid(), signal.SIGSTOP)
+
+        set_post_backup_rename_hook(hook)
+
+        from worthless.cli.safe_rewrite import safe_rewrite
+        env = Path({str(env)!r})
+        safe_rewrite(env, b"OPENAI_API_KEY=sk-decoy\\n", original_user_arg=env)
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_src],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=str(tmp_path),
+    )
+    try:
+        deadline = time.monotonic() + 10.0
+        while not marker.exists() and time.monotonic() < deadline:
+            if proc.poll() is not None:
+                pytest.fail(
+                    f"child exited before backup-rename marker: "
+                    f"rc={proc.returncode}, stderr={proc.stderr.read()!r}"
+                )
+            time.sleep(0.01)
+        assert marker.exists(), "child never reached the post-backup-rename hook"
+        os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+    finally:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+    # Invariant 3: target is byte-identical.
+    assert sha256_of(env) == baseline, "target clobbered despite pre-target-rename SIGKILL"
+
+    # Invariant 1 + 2: exactly one .bak, with pre-write bytes.
+    bucket = Path(_bucket_path(tmp_path, str(xdg)))
+    baks = sorted(bucket.glob(".env.*.bak"))
+    assert len(baks) == 1, f"expected exactly one .bak after backup-rename-then-kill, got {baks!r}"
+    assert sha256_of(baks[0]) == pre_sha, "committed .bak does not contain pre-write bytes"
+
+    # No bak tmp residue allowed — the rename already happened before
+    # the kill, so cleanup of the tmp name was not needed.
+    residue = list(bucket.glob("*.bak.tmp-*"))
+    assert residue == [], f"unexpected .bak.tmp residue: {residue}"
+
+
+# ---------------------------------------------------------------------------
+# Test 31b: SIGKILL between target atomic rename and target-parent dir fsync
+# → target content is atomic (old OR new, never hybrid); bucket holds exactly
+# one pre-write .bak so recovery is possible either way.
+#
+# This is the corruption-inducing window the qa-expert review of WOR-276
+# flagged as a BLOCKER coverage gap: after ``os.replace(tmp, target)`` but
+# before ``os.fsync(target.parent)``, a SIGKILL + power loss can cause the
+# rename to revert on reboot. With a durable backup but a non-durable target
+# rename, the user sees the old ``.env`` and never knows to run
+# ``worthless restore`` — silent data loss.
+# ---------------------------------------------------------------------------
+
+
+def test_sigkill_between_target_rename_and_target_dir_fsync_leaves_recoverable_bak(
+    tmp_path, make_env_file, sha256_of
+) -> None:
+    """SIGKILL after the target atomic ``os.replace`` but before the
+    parent-directory fsync that makes the rename durable. Invariants:
+
+    1. ``.env`` content is EITHER the pre-write bytes OR the post-write
+       bytes — never a truncated hybrid. The replace is atomic on POSIX.
+       Crucially, we also require that the hook observed the POST-rename
+       state (written into ``marker_observed.txt``) — this proves the
+       ``os.replace`` completed before the hook fired, so the kill
+       window is genuinely AFTER the rename and BEFORE the parent-dir
+       fsync. Without this second marker, an inverse-order bug that
+       fsyncs the parent dir BEFORE the rename would still pass this
+       test while still losing data on power failure.
+    2. The bucket contains exactly one ``.bak`` file whose bytes equal
+       the pre-write target bytes. Both of case (1)'s outcomes are
+       recoverable from this backup.
+    3. The survivor allowlist established by tests 30/31 still holds at
+       the top level (target parent dir): only ``.env``, the two marker
+       files, test scaffolding dirs, or names starting with
+       ``.env.tmp-`` / ``.env.staging-``. Note: ``.bak.tmp-*`` is NOT
+       allowed at the top level — those only legitimately live inside
+       the bucket, where residue is handled by invariant 2.
+
+    RED on this commit: the hook seam
+    ``worthless.cli.backup.set_post_target_rename_hook`` does not
+    exist. The child raises ``ModuleNotFoundError`` before writing the
+    marker, and ``pytest.fail`` surfaces the child's stderr traceback
+    as the failure reason — the classic right-reason RED signal.
+    """
+    # MINOR 6: distinguish hook-API drift from RED "not yet implemented".
+    # If the backup module imports cleanly but the attribute has been
+    # renamed, fail with a specific message pointing at API drift.
+    try:
+        import worthless.cli.backup as _backup  # noqa: WPS433
+    except ModuleNotFoundError:
+        # Expected on RED: module itself does not yet exist. Fall through
+        # to the subprocess, which will surface the same error with a
+        # clear traceback.
+        pass
+    else:
+        if getattr(_backup, "set_post_target_rename_hook", None) is None:
+            pytest.fail(
+                "hook API renamed — expected worthless.cli.backup.set_post_target_rename_hook"
+            )
+
+    (tmp_path / ".git").mkdir()
+    pre = b"OPENAI_API_KEY=sk-orig\n"
+    post = b"OPENAI_API_KEY=sk-decoy\n"
+    env = make_env_file(tmp_path / ".env", pre)
+    pre_sha = hashlib.sha256(pre).hexdigest()
+    post_sha = hashlib.sha256(post).hexdigest()
+    marker = tmp_path / "_target_renamed"
+    marker_observed = tmp_path / "marker_observed.txt"
+    xdg = tmp_path / "xdg"
+    xdg.mkdir()
+
+    # MAJOR 4: pass bytes + paths via environment variables (base64 for
+    # bytes to avoid binary-safety issues, plain UTF-8 for paths). This
+    # keeps the inlined child script free of f-string interpolation of
+    # bytes/paths with quoting pitfalls.
+    child_env = {
+        **os.environ,
+        "WOR276_POST_B64": base64.b64encode(post).decode("ascii"),
+        "WOR276_PRE_SHA": pre_sha,
+        "WOR276_ENV_PATH": str(env),
+        "WOR276_MARKER": str(marker),
+        "WOR276_MARKER_OBSERVED": str(marker_observed),
+        "WOR276_XDG": str(xdg),
+        "WOR276_HOME": str(tmp_path / "home"),
+    }
+
+    child_src = textwrap.dedent(
+        """
+        import base64, hashlib, os, signal
+        from pathlib import Path
+
+        os.environ["XDG_DATA_HOME"] = os.environ["WOR276_XDG"]
+        os.environ["HOME"] = os.environ["WOR276_HOME"]
+        os.makedirs(os.environ["HOME"], exist_ok=True)
+
+        # Import the (not-yet-existing) post-target-rename hook. On RED
+        # this raises ModuleNotFoundError and the child exits nonzero
+        # before the marker is written.
+        from worthless.cli.backup import set_post_target_rename_hook
+
+        env_path = Path(os.environ["WOR276_ENV_PATH"])
+        marker_path = Path(os.environ["WOR276_MARKER"])
+        marker_observed = Path(os.environ["WOR276_MARKER_OBSERVED"])
+        pre_sha = os.environ["WOR276_PRE_SHA"]
+        post = base64.b64decode(os.environ["WOR276_POST_B64"])
+
+        def hook():
+            # BLOCKER 1: prove rename completed BEFORE the hook fired by
+            # reading the target here and writing the observed state
+            # ("pre" vs "post") into a second marker. The parent asserts
+            # "post". If the implementation fsyncs the parent dir BEFORE
+            # os.replace (inverse-order bug), we would see "pre" here
+            # and fail explicitly instead of passing on the coincidence
+            # that target_sha is still a valid pre/post value.
+            try:
+                observed = hashlib.sha256(env_path.read_bytes()).hexdigest()
+            except OSError as exc:
+                observed = f"error:{exc.errno}"
+            if observed == pre_sha:
+                marker_observed.write_text("pre")
+            else:
+                marker_observed.write_text("post")
+            marker_path.write_text("ready")
+            os.kill(os.getpid(), signal.SIGSTOP)
+
+        set_post_target_rename_hook(hook)
+
+        from worthless.cli.safe_rewrite import safe_rewrite
+        safe_rewrite(env_path, post, original_user_arg=env_path)
+        """
+    )
+    # MINOR 9: stdout=DEVNULL to avoid full-pipe deadlock from chatty
+    # stdout. Only stderr is inspected on failure.
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_src],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        cwd=str(tmp_path),
+        env=child_env,
+    )
+    try:
+        deadline = time.monotonic() + 10.0
+        while not marker.exists() and time.monotonic() < deadline:
+            if proc.poll() is not None:
+                # MAJOR 3: use communicate() with timeout + decode so we
+                # surface a readable traceback, not raw bytes.
+                try:
+                    _, stderr_bytes = proc.communicate(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    _, stderr_bytes = proc.communicate()
+                stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace")
+                pytest.fail(
+                    f"child exited before target-rename marker: "
+                    f"rc={proc.returncode}\nstderr:\n{stderr_text}"
+                )
+            time.sleep(0.01)
+        assert marker.exists(), "child never reached the post-target-rename hook"
+
+        # BLOCKER 2 + SIGSTOP-race hardening: bounded polling loop around
+        # waitpid(WNOHANG | WUNTRACED). If a future refactor moves the
+        # hook call behind an exception path, a blocking waitpid would
+        # hang until the pytest wall-clock timeout — confusing. Here we
+        # fail fast with the child's stderr on deadline expiry.
+        stop_deadline = time.monotonic() + 10.0
+        stopped = False
+        while time.monotonic() < stop_deadline:
+            pid, status = os.waitpid(proc.pid, os.WNOHANG | os.WUNTRACED)
+            if pid == proc.pid and os.WIFSTOPPED(status):
+                stopped = True
+                break
+            if pid == proc.pid and (os.WIFEXITED(status) or os.WIFSIGNALED(status)):
+                stderr_text = ""
+                if proc.stderr is not None:
+                    try:
+                        stderr_text = proc.stderr.read().decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        pass
+                pytest.fail(
+                    f"child exited before reaching stopped state: "
+                    f"status={status:#x}\nstderr:\n{stderr_text}"
+                )
+            time.sleep(0.01)
+        if not stopped:
+            stderr_text = ""
+            if proc.stderr is not None:
+                try:
+                    stderr_text = proc.stderr.read().decode("utf-8", errors="replace")
+                except Exception:  # noqa: BLE001
+                    pass
+            pytest.fail(
+                f"child did not transition to stopped state within deadline\nstderr:\n{stderr_text}"
+            )
+
+        os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+    finally:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+    # BLOCKER 1 assertion: the hook MUST have observed the post-rename
+    # state. "pre" here means the implementation has the inverse-order
+    # bug (parent-dir fsync happens before os.replace) and would still
+    # lose data on a real power failure even though the target_sha
+    # check below would pass coincidentally.
+    assert marker_observed.exists(), "hook never wrote the observed-state marker"
+    observed = marker_observed.read_text()
+    assert observed == "post", (
+        f"hook fired before os.replace completed — inverse-order bug "
+        f"(observed={observed!r}): parent-dir fsync must happen AFTER "
+        f"the rename, not before"
+    )
+
+    # Invariant 1: target content is atomic — old OR new, never a
+    # truncated hybrid. Both are recoverable; hybrid is the bug.
+    target_sha = sha256_of(env)
+    assert target_sha in {pre_sha, post_sha}, (
+        f"target content is neither pre-write nor post-write "
+        f"(hybrid / torn rename): sha={target_sha}"
+    )
+
+    # Invariant 2: exactly one .bak in the bucket, with pre-write bytes.
+    # Recovery works regardless of which branch invariant 1 landed on.
+    bucket = Path(_bucket_path(tmp_path, str(xdg)))
+    baks = sorted(bucket.glob(".env.*.bak"))
+    assert len(baks) == 1, f"expected exactly one .bak after target-rename-then-kill, got {baks!r}"
+    assert sha256_of(baks[0]) == pre_sha, (
+        "committed .bak does not contain pre-write bytes — recovery would "
+        "silently restore the wrong content"
+    )
+
+    # Invariant 3: top-level survivor allowlist (bucket contents handled
+    # by invariant 2 above). MAJOR 5: .bak.tmp-* is NOT allowed at the
+    # top level — those patterns only legitimately live inside the
+    # bucket. A crashed backup tmp leaking into the target's parent dir
+    # would otherwise pass silently.
+    survivors = list(tmp_path.iterdir())
+    allowed_names = {
+        ".env",
+        marker.name,
+        marker_observed.name,
+        ".git",
+        "xdg",
+        "home",
+    }
+    unexpected_top = [
+        p.name
+        for p in survivors
+        if p.name not in allowed_names and not p.name.startswith((".env.tmp-", ".env.staging-"))
+    ]
+    assert unexpected_top == [], f"unexpected top-level survivor(s): {unexpected_top}"
+
+
+# ---------------------------------------------------------------------------
+# Test 32: concurrent rewrites do not collide on backup filename.
+#
+# Three subcases:
+#   (a) two processes, same time_ns, different pid → distinct filenames
+#   (b) same process, time_ns constant, counter differs → distinct
+#       filenames across back-to-back calls
+#   (c) if both safeties fail (same pid, same time_ns, same counter via
+#       monkeypatched _BACKUP_COUNTER), O_EXCL on the backup tmp open
+#       must raise FileExistsError — fail-closed, not silently overwrite.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("subcase", ["two_procs_same_ns", "same_proc_constant_ns", "excl_tripwire"])
+def test_concurrent_rewrites_do_not_collide_on_backup_filename(
+    tmp_path, make_env_file, subcase, monkeypatch
+) -> None:
+    """Three collision-safety subcases for the backup filename format.
+
+    RED on this commit: ``worthless.cli.backup`` does not exist, so its
+    counter subsystem (accessed only via the test seam
+    ``_reset_counter_for_tests``) is also unavailable.
+    """
+    (tmp_path / ".git").mkdir()
+    xdg = tmp_path / "xdg"
+    xdg.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+
+    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+
+    # Import the not-yet-existing module. On RED, this raises
+    # ModuleNotFoundError and is the correct red signal.
+    from worthless.cli import backup as _backup
+    from worthless.cli.safe_rewrite import safe_rewrite
+
+    if subcase == "two_procs_same_ns":
+        # Two children, same time_ns, different pids → two distinct .bak
+        # files in the bucket (pid component disambiguates).
+        fixed_ns = 1_700_000_000_000_000_000
+        scripts = []
+        for _ in range(2):
+            scripts.append(
+                textwrap.dedent(
+                    f"""
+                    import os, time
+                    os.environ["XDG_DATA_HOME"] = {str(xdg)!r}
+                    os.environ["HOME"] = {str(tmp_path / "home")!r}
+                    time.time_ns = lambda: {fixed_ns}
+                    from worthless.cli.safe_rewrite import safe_rewrite
+                    from pathlib import Path
+                    env = Path({str(env)!r})
+                    safe_rewrite(env, b"KEY=new-{{pid}}\\n".replace(
+                        b"{{pid}}", str(os.getpid()).encode()
+                    ), original_user_arg=env)
+                    """
+                )
+            )
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", s],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(tmp_path),
+            )
+            for s in scripts
+        ]
+        for p in procs:
+            stdout, stderr = p.communicate(timeout=15)
+            assert p.returncode == 0, (
+                f"child rewrite subprocess failed: rc={p.returncode}, "
+                f"stdout={stdout!r}, stderr={stderr!r}"
+            )
+
+        bucket = Path(_bucket_path(tmp_path, str(xdg)))
+        baks = list(bucket.glob(".env.*.bak"))
+        names = {p.name for p in baks}
+        assert len(names) == 2, f"expected 2 distinct .bak filenames, got {names}"
+        # The <pid> components must differ.
+        pids = {p.name.split(".")[-3] for p in baks}
+        assert len(pids) == 2, f"expected 2 distinct pid components in {names}"
+
+    elif subcase == "same_proc_constant_ns":
+        # Same process, time_ns pinned → counter must disambiguate.
+        import time as _time
+
+        monkeypatch.setattr(_time, "time_ns", lambda: 1_700_000_000_000_000_000)
+        safe_rewrite(env, b"KEY=a\n", original_user_arg=env)
+        safe_rewrite(env, b"KEY=b\n", original_user_arg=env)
+
+        bucket = Path(_bucket_path(tmp_path, str(xdg)))
+        baks = list(bucket.glob(".env.*.bak"))
+        names = {p.name for p in baks}
+        assert len(names) == 2, f"expected 2 distinct .bak filenames, got {names}"
+        counters = {p.name.split(".")[-2] for p in baks}
+        assert len(counters) == 2, (
+            f"expected counter component to disambiguate same-ns same-pid calls: {names}"
+        )
+
+    elif subcase == "excl_tripwire":
+        # If time_ns, pid, and counter all collide (both safeties
+        # defeated), O_EXCL must trip FileExistsError rather than
+        # silently overwriting an existing backup. We force-reset the
+        # counter between calls to force the collision.
+        import time as _time
+
+        monkeypatch.setattr(_time, "time_ns", lambda: 1_700_000_000_000_000_000)
+        safe_rewrite(env, b"KEY=first\n", original_user_arg=env)
+
+        # Reset the per-process counter so the next write picks the
+        # same (pid, time_ns, counter) triple as the previous one.
+        #
+        # Uses ``backup._reset_counter_for_tests(start)`` rather than
+        # poking ``backup._BACKUP_COUNTER`` directly — decouples the
+        # test from the prod internal name and ensures any sibling
+        # state (last-ns-used, etc.) resets atomically. GREEN impl
+        # must honour this contract: a single call resets the full
+        # counter subsystem to ``start`` (default 0) in one shot.
+        #
+        # RED: fails with ImportError on ``worthless.cli.backup`` (the
+        # module doesn't exist yet), or — if the module somehow resolves
+        # — AttributeError on ``_reset_counter_for_tests``.
+        _backup._reset_counter_for_tests(0)
+
+        # The second write must fail closed with FileExistsError
+        # (propagated out of the backup O_EXCL open) rather than
+        # silently clobber the existing backup.
+        with pytest.raises(FileExistsError) as exc_info:
+            safe_rewrite(env, b"KEY=second\n", original_user_arg=env)
+
+        # Narrow the errno to EEXIST so a stray unrelated FileExistsError
+        # (raised somewhere else in the code path) cannot silently pass.
+        err = exc_info.value
+        assert err.errno == errno.EEXIST, f"expected EEXIST on backup collision, got {err!r}"
+
+
+# Bonus tests B4-B7 from wor-276-recovery-final-plan.md §5a (chaos review pass).
+
+
+def _import_backup():
+    """Import the not-yet-existing backup module; RED signal when absent."""
+    from worthless.cli import backup
+
+    return backup
+
+
+def _make_fake_bak(bucket: Path, basename: str, ts_ns: int, pid: int, counter: int) -> Path:
+    """Create a regex-conforming fake ``.bak`` file with pinned (ts_ns, counter).
+
+    Filename shape matches plan §5 test 3 (no trailing ``Z``):
+    ``<basename>.<YYYY-MM-DD>T<HH:MM:SS>.<ns>.<pid>.<counter>.bak``.
+    """
+    secs, ns = divmod(ts_ns, 1_000_000_000)
+    iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(secs)) + f".{ns:09d}"
+    name = f"{basename}.{iso}.{pid}.{counter}.bak"
+    path = bucket / name
+    path.write_bytes(b"stale\n")
+    return path
+
+
+def _setup_xdg_repo(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    """Pin ``$XDG_DATA_HOME`` + ``$HOME`` under tmp_path and mark repo root."""
+    xdg = tmp_path / "xdg"
+    xdg.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
+    monkeypatch.setenv("HOME", str(home))
+    return xdg, home
+
+
+def test_enospc_during_backup_tmp_write(tmp_path, make_env_file, sha256_of, monkeypatch) -> None:
+    """ENOSPC on the backup ``.bak.tmp-*`` write must refuse and leave target intact."""
+    xdg, _ = _setup_xdg_repo(tmp_path, monkeypatch)
+    pre = b"OPENAI_API_KEY=sk-orig\n"
+    env = make_env_file(tmp_path / ".env", pre)
+    baseline = sha256_of(env)
+
+    _import_backup()  # RED: ImportError surfaces here.
+
+    bucket = Path(_bucket_path(tmp_path, str(xdg)))
+    real_write = os.write
+    fired = {"count": 0}
+
+    def _failing_write(fd, data, *args, **kwargs):
+        # Never touch stdin/stdout/stderr — pytest's own capturing
+        # layer uses fd 1/2 and F_GETPATH on those is undefined.
+        if fd <= 2:
+            return real_write(fd, data, *args, **kwargs)
+        # Resolve fd to its on-disk path; fail only for bucket/*.bak.tmp-*.
+        try:
+            link = str(Path(f"/proc/self/fd/{fd}").readlink())
+        except OSError:
+            link = ""
+        if not link:
+            # macOS: fall back to F_GETPATH via fcntl. ``bytearray`` is
+            # the idiomatic mutable buffer here; passing it without the
+            # legacy ``mutate_flag`` argument lets fcntl copy the result
+            # back into the same object.
+            try:
+                buf = bytearray(1024)
+                fcntl.fcntl(fd, fcntl.F_GETPATH, buf)
+                link = bytes(buf).rstrip(b"\x00").decode("utf-8", errors="replace")
+            except OSError:
+                link = ""
+        if bucket.name in link and ".bak.tmp-" in link:
+            fired["count"] += 1
+            raise OSError(errno.ENOSPC, "no space left on device")
+        return real_write(fd, data, *args, **kwargs)
+
+    monkeypatch.setattr(os, "write", _failing_write)
+
+    with pytest.raises(UnsafeRewriteRefused) as excinfo:
+        safe_rewrite(env, b"OPENAI_API_KEY=sk-new\n", original_user_arg=env)
+    assert excinfo.value.reason == UnsafeReason.BACKUP
+    assert fired["count"] >= 1, (
+        "ENOSPC injection never fired — the fd-to-path filter did not "
+        "match any bucket/*.bak.tmp-* write, so the refusal was caused "
+        "by something else and the test would false-pass"
+    )
+
+    assert sha256_of(env) == baseline, "target clobbered despite ENOSPC on backup tmp"
+
+    if bucket.is_dir():
+        assert list(bucket.glob("*.bak.tmp-*")) == [], "ghost .bak.tmp-* residue"
+        assert list(bucket.glob("*.bak")) == [], "unexpected .bak after ENOSPC refusal"
+
+
+def test_enospc_during_rotation_unlink_errno_pin(
+    tmp_path, make_env_file, sha256_of, monkeypatch, caplog
+) -> None:
+    """Rotation unlink ENOSPC is logged (errno=28) but the rewrite still succeeds."""
+    xdg, _ = _setup_xdg_repo(tmp_path, monkeypatch)
+    env = make_env_file(tmp_path / ".env", b"KEY=orig\n")
+
+    _import_backup()  # RED: ImportError here.
+
+    bucket = Path(_bucket_path(tmp_path, str(xdg)))
+    bucket.mkdir(parents=True, exist_ok=True)
+    for i in range(50):
+        _make_fake_bak(bucket, ".env", ts_ns=1_700_000_000_000_000_000 + i, pid=1, counter=i)
+
+    real_unlink = os.unlink
+    real_rename = os.rename
+    fired = {"count": 0}
+    # Ordered event log. Entries are either ("rename", src, dst) or
+    # ("unlink", path) — we need to assert the promote-rename of the
+    # newly-written ``.bak.tmp-*`` happens BEFORE the rotation unlink
+    # fault fires; otherwise a rotation-first impl would lose the new
+    # backup on ENOSPC and this test would false-pass on a count check.
+    events: list[tuple] = []
+
+    def _spy_rename(src, dst, *args, **kwargs):
+        events.append(("rename", str(src), str(dst)))
+        return real_rename(src, dst, *args, **kwargs)
+
+    def _failing_unlink(path, *args, **kwargs):
+        p_str = str(path)
+        events.append(("unlink", p_str))
+        if fired["count"] == 0 and bucket.name in p_str and p_str.endswith(".bak"):
+            fired["count"] += 1
+            raise OSError(errno.ENOSPC, "no space left on device")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", _spy_rename)
+    monkeypatch.setattr(os, "unlink", _failing_unlink)
+
+    caplog.set_level(logging.WARNING, logger="worthless.cli.backup")
+
+    safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+    assert fired["count"] >= 1, (
+        "rotation unlink fault never fired — the impl skipped the "
+        "best-effort rotation path entirely, so no ENOSPC was raised "
+        "and the errno-pin assertion below would false-pass"
+    )
+
+    # Ordering invariant: the promote-rename of the newly-written
+    # ``.bak.tmp-*`` → ``.bak`` must appear before the first unlink
+    # fault. We locate the first promote-rename index and assert it
+    # precedes the first faulting unlink of a ``.bak`` file.
+    promote_idx = next(
+        (
+            i
+            for i, e in enumerate(events)
+            if e[0] == "rename" and ".bak.tmp-" in e[1] and e[2].endswith(".bak")
+        ),
+        None,
+    )
+    fault_idx = next(
+        (
+            i
+            for i, e in enumerate(events)
+            if e[0] == "unlink" and bucket.name in e[1] and e[1].endswith(".bak")
+        ),
+        None,
+    )
+    assert promote_idx is not None, (
+        f"expected a ``*.bak.tmp-* -> *.bak`` rename, got events={events!r}"
+    )
+    assert fault_idx is not None, (
+        f"expected at least one unlink of a ``*.bak``, got events={events!r}"
+    )
+    assert promote_idx < fault_idx, (
+        f"promote-rename (idx={promote_idx}) must precede rotation "
+        f"unlink (idx={fault_idx}); events={events!r}"
+    )
+
+    baks = list(bucket.glob(".env.*.bak"))
+    assert len(baks) == 51, f"expected 51 .bak files (50 stale + 1 new), got {len(baks)}"
+
+    rotation_records = [
+        r
+        for r in caplog.records
+        if "rotation" in r.getMessage().lower()
+        and ("enospc" in r.getMessage().lower() or f"errno={errno.ENOSPC}" in r.getMessage())
+    ]
+    assert rotation_records, (
+        f"expected WARNING log mentioning rotation + ENOSPC/errno={errno.ENOSPC}, "
+        f"got {[r.getMessage() for r in caplog.records]}"
+    )
+    rec = rotation_records[0]
+    assert rec.levelno == logging.WARNING
+    msg = rec.getMessage()
+    # Structured pin: literal ``errno=<ENOSPC>`` substring (not bare
+    # ``28``, which would match noise like timestamps or counters).
+    assert f"errno={errno.ENOSPC}" in msg, (
+        f"rotation warning must pin errno={errno.ENOSPC} as a labelled field, got: {msg!r}"
+    )
+
+
+def test_rotation_self_heals_from_51_plus_files(
+    tmp_path, make_env_file, sha256_of, monkeypatch
+) -> None:
+    """A bucket with 60 pre-existing .bak files prunes to 50 (newest-kept) on next write."""
+    xdg, _ = _setup_xdg_repo(tmp_path, monkeypatch)
+    env = make_env_file(tmp_path / ".env", b"KEY=orig\n")
+
+    _import_backup()  # RED: ImportError here.
+
+    bucket = Path(_bucket_path(tmp_path, str(xdg)))
+    bucket.mkdir(parents=True, exist_ok=True)
+
+    pre_seeded: list[tuple[int, int, Path]] = []
+    base_ns = 1_700_000_000_000_000_000
+    for i in range(60):
+        ts_ns = base_ns + i * 1_000_000
+        p = _make_fake_bak(bucket, ".env", ts_ns=ts_ns, pid=1, counter=i)
+        pre_seeded.append((ts_ns, i, p))
+
+    safe_rewrite(env, b"KEY=new\n", original_user_arg=env)
+
+    remaining = list(bucket.glob(".env.*.bak"))
+    assert len(remaining) == 50, f"rotation must prune to 50, got {len(remaining)}"
+
+    remaining_names = {p.name for p in remaining}
+    pre_seeded_sorted = sorted(pre_seeded, key=lambda x: (x[0], x[1]))
+    newest_49_preseed = {p.name for (_, _, p) in pre_seeded_sorted[-49:]}
+    # The 11 oldest pre-seed entries MUST be dropped. Pins both sides
+    # of the fencepost: an off-by-one that keeps all 50 pre-seed and
+    # drops the new write would pass the ``== 50`` count check and the
+    # ``newest_49_preseed`` superset check, but fails this disjoint.
+    dropped_expected = {p.name for (_, _, p) in pre_seeded_sorted[:11]}
+    assert dropped_expected.isdisjoint(remaining_names), (
+        f"rotation must drop the 11 oldest pre-seed; "
+        f"still present={dropped_expected & remaining_names!r}"
+    )
+    kept_preseed = {n for n in remaining_names if n in {p.name for (_, _, p) in pre_seeded}}
+    assert kept_preseed == newest_49_preseed, (
+        f"rotation must keep the 49 newest pre-seed + 1 new write; "
+        f"got pre-seed kept={kept_preseed!r}, expected newest 49={newest_49_preseed!r}"
+    )
+    new_bak = remaining_names - {p.name for (_, _, p) in pre_seeded}
+    assert len(new_bak) == 1, f"expected exactly one newly-written .bak, got {new_bak!r}"
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["forward_jump", "zero_delta", "negative_delta"],
+)
+def test_rotation_sort_survives_clock_anomalies(
+    tmp_path, make_env_file, sha256_of, monkeypatch, scenario
+) -> None:
+    """(ts_ns, counter) composite sort keeps newest 50 under any clock behaviour."""
+    xdg, _ = _setup_xdg_repo(tmp_path, monkeypatch)
+    env = make_env_file(tmp_path / ".env", b"KEY=orig\n")
+
+    _import_backup()  # RED: ImportError here.
+
+    bucket = Path(_bucket_path(tmp_path, str(xdg)))
+    bucket.mkdir(parents=True, exist_ok=True)
+
+    pre_base = 500_000_000_000_000_000
+    pre_seeded: list[tuple[int, int, Path]] = []
+    for i in range(50):
+        ts_ns = pre_base + i
+        p = _make_fake_bak(bucket, ".env", ts_ns=ts_ns, pid=1, counter=i)
+        pre_seeded.append((ts_ns, i, p))
+
+    if scenario == "forward_jump":
+        clocks = [1000, 2000, 3000, 1_000_000, 1_000_001]
+    elif scenario == "zero_delta":
+        clocks = [5_000_000] * 5
+    elif scenario == "negative_delta":
+        clocks = [9_000_000, 8_000_000, 7_000_000, 6_000_000, 5_000_000]
+    else:
+        raise AssertionError(f"unknown scenario {scenario!r}")
+
+    import time as _time
+
+    clock_idx = {"i": 0}
+
+    def _fake_time_ns() -> int:
+        i = clock_idx["i"]
+        if i >= len(clocks):
+            return clocks[-1]
+        clock_idx["i"] += 1
+        return clocks[i]
+
+    # Cover both import styles the impl might use. ``raising=False``
+    # on the product-module target is required: the backup module is
+    # not importable yet in the RED phase, so the attr lookup would
+    # otherwise blow up before the RED ``_import_backup()`` line above.
+    monkeypatch.setattr(_time, "time_ns", _fake_time_ns)
+    monkeypatch.setattr("worthless.cli.backup.time_ns", _fake_time_ns, raising=False)
+
+    for j in range(5):
+        safe_rewrite(env, f"KEY=v{j}\n".encode(), original_user_arg=env)
+
+    remaining = list(bucket.glob(".env.*.bak"))
+    assert len(remaining) == 50, (
+        f"bucket must contain exactly 50 files after rotation ({scenario!r}), got {len(remaining)}"
+    )
+
+    def _parse(name: str) -> tuple[int, int]:
+        m = re.match(
+            r"^\.env"
+            r"\.(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{9})"
+            r"\.(\d+)\.(\d+)\.bak$",
+            name,
+        )
+        assert m is not None, f"unparsable bak name: {name!r}"
+        epoch = calendar.timegm(
+            (
+                int(m.group(1)),
+                int(m.group(2)),
+                int(m.group(3)),
+                int(m.group(4)),
+                int(m.group(5)),
+                int(m.group(6)),
+                0,
+                0,
+                0,
+            )
+        )
+        ts_ns = epoch * 1_000_000_000 + int(m.group(7))
+        return (ts_ns, int(m.group(9)))
+
+    parsed_remaining = sorted((_parse(p.name) for p in remaining), key=lambda t: t)
+
+    all_real_keys = [(ts, c) for (ts, c, _) in pre_seeded]
+    for j, clk in enumerate(clocks):
+        all_real_keys.append((clk, j))
+    all_real_keys.sort()
+    expected_newest_50 = sorted(all_real_keys[-50:])
+
+    assert parsed_remaining == expected_newest_50, (
+        f"[{scenario}] rotation kept wrong set: "
+        f"got {parsed_remaining!r}, expected {expected_newest_50!r}"
+    )
