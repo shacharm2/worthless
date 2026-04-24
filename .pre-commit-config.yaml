@@ -174,11 +174,14 @@ repos:
         pass_filenames: false
         files: '(\.py|pyproject\.toml|uv\.lock)$'
 
-      # Vulnerability scan — pre-push only (slow, needs network)
+      # Vulnerability scan — pre-push only (slow, needs network).
+      # --ignore-vuln: transitive pip 26.0.1 advisory GHSA-58qw-9mgm-455v
+      # has no fix version published upstream. Tracking: remove this flag
+      # when pip ships a patched release (WOR-333).
       - id: uv-audit
         name: "supply chain: vulnerability scan"
         language: system
-        entry: sh -c 'uv export --frozen --no-emit-project | uv run pip-audit --disable-pip -r /dev/stdin'
+        entry: sh -c 'uv export --frozen --no-emit-project | uv run pip-audit --disable-pip --ignore-vuln GHSA-58qw-9mgm-455v -r /dev/stdin'
         pass_filenames: false
         stages: [pre-push]
 
