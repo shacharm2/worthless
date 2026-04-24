@@ -3,14 +3,9 @@
 The v2 ``restore`` subcommand is a thin wrapper around
 :func:`worthless.cli.safe_rewrite.safe_restore` — it reads replacement
 bytes from stdin and atomically rewrites the target ``.env`` file,
-bypassing only the DELTA blowup-ratio gate (see ``safe_restore``
-docstring). Every other invariant still fires.
-
-Tests cover:
-
-* Happy path: stdin content lands byte-identical on disk.
-* Refuses bad basename (target basename ``!= .env``) with nonzero exit.
-* Refuses non-atomic filesystem via the fs_check gate.
+bypassing only the DELTA blowup-ratio gate. Every other invariant still
+fires. The fs_check gate itself is covered by the unit suite under
+``tests/fs_check/``; here we stay at the CLI surface.
 """
 
 from __future__ import annotations
@@ -34,11 +29,6 @@ def _child_env(tmp_path: Path) -> dict[str, str]:
     return env
 
 
-# ---------------------------------------------------------------------------
-# Happy path — stdin bytes land byte-identical on disk.
-# ---------------------------------------------------------------------------
-
-
 def test_restore_from_stdin_writes_bytes_atomically(
     tmp_path: Path, worthless_cli: list[str]
 ) -> None:
@@ -54,17 +44,12 @@ def test_restore_from_stdin_writes_bytes_atomically(
         env=_child_env(tmp_path),
         cwd=str(repo),
         input=payload,
-        capture_output=False,
+        capture_output=True,
         timeout=30,
         check=False,
     )
     assert proc.returncode == 0
     assert _sha256(env_file.read_bytes()) == _sha256(payload)
-
-
-# ---------------------------------------------------------------------------
-# Bad basename — ``restore`` must refuse anything that is not ``.env``.
-# ---------------------------------------------------------------------------
 
 
 def test_restore_refuses_non_env_basename(tmp_path: Path, worthless_cli: list[str]) -> None:
@@ -83,18 +68,9 @@ def test_restore_refuses_non_env_basename(tmp_path: Path, worthless_cli: list[st
         check=False,
     )
     assert proc.returncode != 0
-    # Original bytes untouched.
     assert bogus.read_bytes() == b"NOT_AN_ENV=1\n"
-    # Public message promises unchanged; no internal reason identifier.
     assert b"unchanged" in proc.stderr.lower()
     assert b"UnsafeReason." not in proc.stderr
-
-
-# ---------------------------------------------------------------------------
-# Empty stdin — nothing to restore; command refuses with nonzero exit and
-# leaves the target untouched. The fs_check gate itself is covered in
-# ``tests/fs_check/`` as a unit suite; no need to re-run it end-to-end.
-# ---------------------------------------------------------------------------
 
 
 def test_restore_refuses_empty_stdin(tmp_path: Path, worthless_cli: list[str]) -> None:
