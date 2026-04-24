@@ -54,25 +54,6 @@ _log = logging.getLogger("worthless.safe_rewrite")
 
 
 # ---------------------------------------------------------------------------
-# Backup writer seam (WOR-276).
-#
-# Populated by ``worthless.cli.backup`` at import time via
-# ``set_backup_hook()``. Kept as a module-level variable so tests
-# that monkeypatch ``worthless.cli.backup.write_backup`` are honoured
-# at call time — the adapter (_backup_caller in backup.py) resolves
-# ``write_backup`` via ``globals()`` dynamically.
-# ---------------------------------------------------------------------------
-
-_backup_writer: Callable[[Path, Path | None], None] | None = None
-
-
-def _set_backup_writer(fn: Callable[[Path, Path | None], None] | None) -> None:
-    """Install the pre-target-rename backup hook. Called from ``backup.py``."""
-    global _backup_writer  # noqa: PLW0603
-    _backup_writer = fn
-
-
-# ---------------------------------------------------------------------------
 # Module constants - the contract surface. Tests reference these values.
 # ---------------------------------------------------------------------------
 
@@ -772,18 +753,6 @@ def _safe_rewrite_core(
         _flock_exclusive_nonblocking(target_fd, target)
         flock_held = True
 
-        # WOR-276: write an out-of-repo backup of the pre-write bytes
-        # under lock before any target-side writing. Refuses with
-        # UnsafeReason.BACKUP on any OSError so the target cannot be
-        # touched when backup storage is broken.
-        if _backup_writer is not None:
-            try:
-                _backup_writer(target, repo_root)
-            except UnsafeRewriteRefused:
-                raise
-            except OSError as _bk_exc:
-                raise _refuse(UnsafeReason.BACKUP, target) from _bk_exc
-
         _check_size_sniff_delta(
             target_fd,
             baseline_fstat,
@@ -948,9 +917,7 @@ def safe_restore(
     the recovery path to clobber a shell rc file or similar.
 
     The ``_hook_before_replace`` hook fires at the same point as on the
-    normal write path, which lets callers take a fresh backup of the
-    current (possibly broken) bytes before they are overwritten by the
-    recovered content.
+    normal write path.
     """
     _safe_rewrite_core(
         target,
