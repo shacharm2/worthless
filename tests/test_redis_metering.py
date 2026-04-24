@@ -402,6 +402,175 @@ async def test_spend_cap_rule_without_redis_uses_sqlite(sqlite_db):
 
 
 # ---------------------------------------------------------------------------
+# WOR-242 × Redis — reservation mechanism across the hot path.
+#
+# The merge of feat/redis-metering with origin/main (WOR-242) composed two
+# mechanisms: Redis counter (committed total) + in-memory reservation
+# (in-flight total). The merged contract — same as the pre-Redis SQLite
+# path — is soft: a request passes whenever committed + reserved < cap,
+# reserving min(estimate, remaining_budget). Concurrent bursts can still
+# overrun by up to `_estimate_tokens × concurrency`; the committed counter
+# catches up via record_spend and denies subsequent requests. See the
+# SpendCapRule docstring.
+#
+# These tests cover that contract explicitly under the Redis backend —
+# previously only fakeredis under-cap / over-cap tests existed, so the
+# reservation path on the Redis side was never exercised.
+# ---------------------------------------------------------------------------
+
+
+import asyncio  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_rule_redis_reservation_denies_when_committed_plus_reserved_at_cap(
+    sqlite_db,
+):
+    """Concrete effective-total check: committed + reserved >= cap → deny.
+
+    Seed the Redis counter at the cap value and ensure a new request is
+    denied regardless of the requested size. Without the Redis path
+    applying the reservation lock check, this would pass-through.
+    """
+    db, _ = sqlite_db
+    await _configure_cap(db, "alice", 1000.0)
+    r = _FakeRedis()
+    await incr_spend_hot(r, "alice", 1000)  # already at cap
+
+    rule = SpendCapRule(db=db, redis=r)
+    body = b'{"model":"gpt-4","max_tokens":10}'
+    result = await rule.evaluate("alice", object(), provider="openai", body=body)
+    assert result is not None
+    assert result.status_code == 402
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_rule_redis_reservation_denies_when_prior_reservation_fills_cap(
+    sqlite_db,
+):
+    """After one request reserves the whole remaining budget, a second is denied.
+
+    Cap=1000, committed=0. Place a reservation directly via a first
+    evaluate with max_tokens=1000 — that reserves all 1000. The second
+    call sees committed(0) + reserved(1000) >= cap → deny.
+    """
+    db, _ = sqlite_db
+    await _configure_cap(db, "alice", 1000.0)
+    r = _FakeRedis()
+    rule = SpendCapRule(db=db, redis=r)
+
+    body_full = b'{"model":"gpt-4","max_tokens":1000}'
+    assert await rule.evaluate("alice", object(), provider="openai", body=body_full) is None
+
+    body_small = b'{"model":"gpt-4","max_tokens":50}'
+    result = await rule.evaluate("alice", object(), provider="openai", body=body_small)
+    assert result is not None
+    assert result.status_code == 402
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_rule_redis_release_reservation_frees_budget(sqlite_db):
+    """release_reservation makes the budget available for a follow-up request."""
+    db, _ = sqlite_db
+    await _configure_cap(db, "alice", 1000.0)
+    r = _FakeRedis()
+    rule = SpendCapRule(db=db, redis=r)
+    body_full = b'{"model":"gpt-4","max_tokens":1000}'
+
+    # Reserve the whole budget.
+    assert await rule.evaluate("alice", object(), provider="openai", body=body_full) is None
+    # At cap via reservation → deny.
+    assert (await rule.evaluate("alice", object(), provider="openai", body=body_full)) is not None
+
+    # Release the reservation (simulates upstream call completing).
+    await rule.release_reservation("alice", 1000)
+
+    # Budget restored.
+    assert await rule.evaluate("alice", object(), provider="openai", body=body_full) is None
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_rule_redis_committed_plus_reservation_combine(sqlite_db):
+    """Both committed counter and reservations contribute to the effective total.
+
+    Prevents the regression where either mechanism silently shadows the
+    other on the Redis path.
+    """
+    db, _ = sqlite_db
+    await _configure_cap(db, "alice", 1000.0)
+    r = _FakeRedis()
+    await incr_spend_hot(r, "alice", 600)  # prior committed spend
+
+    rule = SpendCapRule(db=db, redis=r)
+
+    # max_tokens=400 fills the remaining budget via reservation.
+    body_400 = b'{"model":"gpt-4","max_tokens":400}'
+    assert await rule.evaluate("alice", object(), provider="openai", body=body_400) is None
+
+    # Effective total is now 600 committed + 400 reserved = 1000 = cap → deny.
+    body_any = b'{"model":"gpt-4","max_tokens":1}'
+    result = await rule.evaluate("alice", object(), provider="openai", body=body_any)
+    assert result is not None
+    assert result.status_code == 402
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_rule_redis_reservation_rehydrates_on_cache_miss(sqlite_db):
+    """Cache miss → rehydrate from SQLite → reservation check uses the rehydrated counter.
+
+    Without this, a miss would run the reservation-lock branch with
+    counter=None/0 and let an over-cap alias bypass on the very first
+    request after cold start.
+    """
+    db, db_path = sqlite_db
+    await _configure_cap(db, "alice", 1000.0)
+    await _record_tokens(db_path, "alice", 1000)  # already at cap in ledger
+    r = _FakeRedis()  # cold
+
+    rule = SpendCapRule(db=db, redis=r)
+    body = b'{"model":"gpt-4","max_tokens":1}'
+    result = await rule.evaluate("alice", object(), provider="openai", body=body)
+    assert result is not None
+    assert result.status_code == 402
+    # Side effect: the counter is now warmed.
+    assert await get_spend_hot(r, "alice") == 1000
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_rule_redis_concurrent_requests_bounded_by_reservation(sqlite_db):
+    """PoC-level bound: N concurrent requests each reserve at most the remaining budget.
+
+    This is the weaker contract WOR-242 actually delivers — a hard
+    boundary would require a Lua/CAS reserve in Redis. The test
+    documents what the current mechanism DOES guarantee:
+
+    * at least one of the two concurrent requests passes
+    * the cumulative reservation never exceeds the cap
+    * the SECOND request to reserve sees the first's reservation
+    """
+    db, _ = sqlite_db
+    await _configure_cap(db, "alice", 1000.0)
+    r = _FakeRedis()
+
+    rule = SpendCapRule(db=db, redis=r)
+    body = b'{"model":"gpt-4","max_tokens":800}'
+
+    r1, r2 = await asyncio.gather(
+        rule.evaluate("alice", object(), provider="openai", body=body),
+        rule.evaluate("alice", object(), provider="openai", body=body),
+    )
+    # Both pass: first reserves 800, second reserves the remaining 200.
+    assert r1 is None and r2 is None
+    # Invariant: cumulative reservation equals cap (800 + 200 = 1000).
+    assert rule._reserved["alias" if False else "alice"] == 1000
+
+    # A THIRD concurrent request now finds committed(0) + reserved(1000) ≥ cap → deny.
+    third = await rule.evaluate("alice", object(), provider="openai", body=body)
+    assert third is not None
+    assert third.status_code == 402
+
+
+# ---------------------------------------------------------------------------
 # Gate-before-reconstruct invariant (SR-03) — REAL app pipeline.
 #
 # The sentinel-rule test that lived here previously only proved the rules
