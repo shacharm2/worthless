@@ -77,11 +77,11 @@ def encode_frame(envelope: Mapping[str, Any]) -> bytes:
     # msgpack-python's stub types packb as `bytes | None` because a `default=`
     # handler could theoretically return None; with no default and a plain
     # dict, the lib raises TypeError on unserializable values and otherwise
-    # always returns bytes. Assert narrows the type for the static checker.
+    # always returns bytes. We check with ``if`` (not ``assert``) so the
+    # type-narrowing guard survives ``python -O`` and passes bandit B101.
     payload = msgpack.packb(dict(envelope), use_bin_type=True)
-    assert payload is not None, (
-        "msgpack.packb returned None — should be unreachable without default="
-    )
+    if payload is None:  # pragma: no cover - unreachable without default=
+        raise RuntimeError("msgpack.packb returned None without default= — unreachable")
     if len(payload) > MAX_FRAME_SIZE:
         raise FrameTooLargeError(f"encoded frame is {len(payload)} bytes (max {MAX_FRAME_SIZE})")
     return len(payload).to_bytes(_HEADER_LEN, "big") + payload

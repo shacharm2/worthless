@@ -114,6 +114,38 @@ async def test_attest_differs_across_nonces(backend: FernetBackend) -> None:
     )
 
 
+async def test_attest_domain_separation_length_prefix(backend: FernetBackend) -> None:
+    """attest(nonce, purpose) must not collide across (nonce, purpose) splits.
+
+    CodeRabbit PR #94 flagged that naive ``nonce + purpose.encode()`` HMAC
+    is non-injective: ``attest(b"abcde", "")`` and ``attest(b"abc", "de")``
+    hash the same bytes. Once a proxy-side verifier exists that checks
+    ``(nonce, purpose)`` independently, an attacker could harvest a
+    ``liveness`` evidence and replay it as a ``decrypt`` evidence.
+
+    The backend must length-prefix each component so these two pairs
+    produce DIFFERENT MACs.
+    """
+    nonce_split_a = b"abcde"
+    purpose_split_a = ""
+    nonce_split_b = b"abc"
+    purpose_split_b = "de"
+
+    # Sanity: the naive concatenation is identical — this is the collision
+    # that the fix must defeat.
+    assert nonce_split_a + purpose_split_a.encode(
+        "utf-8"
+    ) == nonce_split_b + purpose_split_b.encode("utf-8")
+
+    ev_a = await backend.attest(nonce=nonce_split_a, purpose=purpose_split_a)
+    ev_b = await backend.attest(nonce=nonce_split_b, purpose=purpose_split_b)
+
+    assert ev_a != ev_b, (
+        "attest must length-prefix nonce and purpose separately; "
+        "otherwise cross-purpose MAC collisions are trivial"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Construction guards
 # ---------------------------------------------------------------------------

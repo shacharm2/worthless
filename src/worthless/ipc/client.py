@@ -34,6 +34,7 @@ from types import TracebackType
 from typing import Any
 
 from worthless.ipc.framing import (
+    MAX_FRAME_SIZE,
     FrameError,
     FrameTruncatedError,
     encode_frame,
@@ -107,8 +108,11 @@ def _err_from_envelope(envelope: dict[str, Any]) -> IPCError:
     message = message_raw if isinstance(message_raw, str) else "<no message>"
     exc_cls = _CODE_TO_EXC.get(code, IPCProtocolError)
     # str(exc) must include the code uppercase so callers (and the
-    # context-mismatch xfail test) can assert on it.
-    return exc_cls(f"{code}: {message}")
+    # context-mismatch xfail test) can assert on it. Server messages are
+    # already prefixed (``"AUTH: peer uid not allowed"``) — don't prepend
+    # again and produce ``"AUTH: AUTH: peer uid not allowed"``.
+    final = message if message.startswith(f"{code}:") else f"{code}: {message}"
+    return exc_cls(final)
 
 
 class IPCClient:
@@ -140,7 +144,14 @@ class IPCClient:
 
     async def __aenter__(self) -> IPCClient:
         try:
-            self._reader, self._writer = await asyncio.open_unix_connection(self._socket_path)
+            # ``limit=MAX_FRAME_SIZE`` lifts the StreamReader's internal buffer
+            # ceiling (default 64 KiB) up to our contract's frame cap (1 MiB).
+            # Without this, a near-max legitimate frame would hit
+            # ``LimitOverrunError`` inside ``readexactly`` and surface as a
+            # confusing protocol error.
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                self._socket_path, limit=MAX_FRAME_SIZE
+            )
         except (ConnectionError, FileNotFoundError, OSError) as exc:
             raise IPCProtocolError(f"sidecar connect failed: {exc}") from exc
         try:
@@ -271,12 +282,18 @@ class IPCClient:
         }
         async with self._lock:
             resp = await self._roundtrip(envelope)
+        kind = resp.get("kind")
+        # Check ``kind == "err"`` BEFORE id-mismatch: the server emits
+        # ``err`` envelopes with ``id=0`` (the ``_ID_UNKNOWN`` sentinel) when
+        # it can't parse the inbound id (malformed frame, validation fail).
+        # Falling through to the id check would raise a generic
+        # ``IPCProtocolError("id mismatch")`` and callers would lose the
+        # typed AUTH / PROTO / BACKEND distinction.
+        if kind == "err":
+            raise _err_from_envelope(resp)
         resp_id = resp.get("id")
         if resp_id != req_id:
             raise IPCProtocolError(f"request id mismatch: sent {req_id}, got {resp_id!r}")
-        kind = resp.get("kind")
-        if kind == "err":
-            raise _err_from_envelope(resp)
         if kind != "resp":
             raise IPCProtocolError(f"unexpected reply kind={kind!r} for op={op!r}")
         if resp.get("op") != op:
@@ -302,9 +319,19 @@ class IPCClient:
                 return await read_frame(reader)
             return await asyncio.wait_for(read_frame(reader), timeout=self._timeout)
         except asyncio.TimeoutError as exc:
-            # Timed out waiting for the sidecar's reply. The contract's
-            # no-fallback rule is enforced above us (proxy layer surfaces
-            # this as HTTP 503); we just translate to a typed error.
+            # Timed out waiting for the sidecar's reply. ``asyncio.wait_for``
+            # cancels ``read_frame`` mid-parse — the StreamReader may have
+            # already consumed part of the length prefix or envelope body.
+            # The connection is now desynchronised; any further request on
+            # this client would read garbage and surface as a confusing
+            # ``MalformedFrameError``. Invalidate the connection so
+            # subsequent calls fail fast with "client is not connected".
+            self._reader = None
+            self._writer = None
+            try:
+                writer.close()
+            except (ConnectionError, BrokenPipeError, OSError):
+                pass
             raise IPCTimeoutError(f"TIMEOUT: no reply within {self._timeout:.3f}s") from exc
         except FrameTruncatedError as exc:
             raise IPCProtocolError(f"sidecar connection lost: {exc}") from exc

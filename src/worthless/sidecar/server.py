@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from worthless.ipc.framing import (
+    MAX_FRAME_SIZE,
     FrameTooLargeError,
     FrameTruncatedError,
     MalformedFrameError,
@@ -80,15 +81,17 @@ async def _write_err(
     are expected to pass one of the ``_ERR_*`` module constants.
     """
     # Defensive check: callers pass module-level constants. A future refactor
-    # that accidentally threads peer data here would fail this assert under
-    # test before reaching production.
-    assert message in {
+    # that accidentally threads peer data here fails this guard BEFORE the
+    # frame is written. ``if ...: raise`` (not ``assert``) so it survives
+    # ``python -O`` and static analysis (bandit B101).
+    if message not in {
         _ERR_AUTH,
         _ERR_PROTO_HANDSHAKE,
         _ERR_PROTO_GENERIC,
         _ERR_PROTO_INTERNAL,
         _ERR_BACKEND_GENERIC,
-    }, "error message must be a fixed module constant"
+    }:
+        raise RuntimeError("error message must be a fixed module constant")
 
     envelope: dict[str, Any] = {
         "v": _PROTOCOL_VERSION,
@@ -313,7 +316,11 @@ def _make_client_handler(
 
                 op = envelope["op"]
                 body = envelope["body"]
-                assert req_id is not None  # guaranteed by _validate_request_envelope
+                # Guaranteed non-None by ``_validate_request_envelope``; we
+                # use ``if ... raise`` (not ``assert``) so the guard survives
+                # ``python -O`` and satisfies bandit B101.
+                if req_id is None:  # pragma: no cover - unreachable after validation
+                    raise RuntimeError("req_id unexpectedly None after validation")
 
                 try:
                     resp_body = await _dispatch_op(backend, op, body)
@@ -395,7 +402,11 @@ async def start_sidecar(
         )
 
     handler = _make_client_handler(backend, allowed_uids)
-    server = await asyncio.start_unix_server(handler, path=str(socket_path))
+    # ``limit=MAX_FRAME_SIZE`` lifts the per-connection StreamReader buffer
+    # ceiling (default 64 KiB) up to the contract's frame cap (1 MiB).
+    # Without this, near-max legitimate frames would trip
+    # ``LimitOverrunError`` before ``read_frame`` even sees them.
+    server = await asyncio.start_unix_server(handler, path=str(socket_path), limit=MAX_FRAME_SIZE)
 
     # Tighten permissions on the bound socket to 0660 (owner + group rw,
     # world none). Rationale:

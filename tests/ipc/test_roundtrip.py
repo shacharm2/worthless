@@ -231,7 +231,9 @@ async def test_client_timeout_raises_ipc_timeout_error_fast(
         async with IPCClient(sidecar_socket_path, timeout=0.2) as client:
             # Handshake succeeded (it doesn't touch the stalling path);
             # now prove the operational call trips the timeout.
-            loop = asyncio.get_event_loop()
+            # ``get_running_loop()`` is the 3.12+ idiom; ``get_event_loop()``
+            # is deprecated outside a running loop context.
+            loop = asyncio.get_running_loop()
             started = loop.time()
             with pytest.raises(IPCTimeoutError) as exc_info:
                 await client.seal(b"payload")

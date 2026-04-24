@@ -101,9 +101,18 @@ class FernetBackend(Backend):
 
     async def attest(self, nonce: bytes, purpose: str | None = None) -> bytes:
         purpose_bytes = purpose.encode("utf-8") if purpose is not None else b""
-        mac = hmac.new(
-            self._attest_secret,
-            nonce + purpose_bytes,
-            sha256,
+        # Length-prefix each component so distinct (nonce, purpose) pairs map
+        # to distinct MAC inputs. Without this, variable-length ``nonce``
+        # concatenated with free-form ``purpose`` produces collisions across
+        # purposes — e.g. ``attest(b"abc", "de")`` and ``attest(b"abcde", "")``
+        # would hash the same bytes, letting an attacker forge a
+        # ``decrypt``-purpose attestation from a ``liveness`` one once a
+        # verifier exists. Fix: Q-prefix (8 bytes BE) each component.
+        message = (
+            len(nonce).to_bytes(8, "big")
+            + nonce
+            + len(purpose_bytes).to_bytes(8, "big")
+            + purpose_bytes
         )
+        mac = hmac.new(self._attest_secret, message, sha256)
         return mac.digest()
