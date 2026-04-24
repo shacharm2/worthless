@@ -25,7 +25,7 @@ services:
   worthless-installed:
     build:
       context: ../..
-      dockerfile: tests/install_fixtures/Dockerfile.ubuntu-bare-lock-e2e
+      dockerfile: tests/install_fixtures/${LOCK_E2E_DOCKERFILE:-Dockerfile.ubuntu-bare-lock-e2e}
     environment:
       # Point the proxy at the fake upstream instead of api.openai.com.
       WORTHLESS_UPSTREAM_OPENAI_URL: "http://mock-upstream:9999/v1/chat/completions"
