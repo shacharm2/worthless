@@ -74,7 +74,14 @@ def encode_frame(envelope: Mapping[str, Any]) -> bytes:
     Raises:
         FrameTooLargeError: encoded body would exceed :data:`MAX_FRAME_SIZE`.
     """
+    # msgpack-python's stub types packb as `bytes | None` because a `default=`
+    # handler could theoretically return None; with no default and a plain
+    # dict, the lib raises TypeError on unserializable values and otherwise
+    # always returns bytes. Assert narrows the type for the static checker.
     payload = msgpack.packb(dict(envelope), use_bin_type=True)
+    assert payload is not None, (
+        "msgpack.packb returned None — should be unreachable without default="
+    )
     if len(payload) > MAX_FRAME_SIZE:
         raise FrameTooLargeError(f"encoded frame is {len(payload)} bytes (max {MAX_FRAME_SIZE})")
     return len(payload).to_bytes(_HEADER_LEN, "big") + payload
