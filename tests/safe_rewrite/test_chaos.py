@@ -2201,6 +2201,9 @@ def test_rotation_self_heals_from_51_plus_files(
 
     bucket = Path(_bucket_path(tmp_path, str(xdg)))
     bucket.mkdir(parents=True, exist_ok=True)
+    # WOR-276: bucket dir mode contract is 0o700; test pre-seeds must
+    # respect it or write_backup refuses on mode mismatch.
+    bucket.chmod(0o700)
 
     pre_seeded: list[tuple[int, int, Path]] = []
     base_ns = 1_700_000_000_000_000_000
