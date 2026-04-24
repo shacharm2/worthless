@@ -107,8 +107,7 @@ Sidecar unreachable, dead, or returning `AUTH`/`PROTO`/`TIMEOUT` → proxy retur
 |---|---|---|
 | `src/worthless/ipc/framing.py` | length-prefix + msgpack codec | WOR-307 |
 | `src/worthless/ipc/peercred.py` | Linux/macOS peer-uid auth | WOR-307 |
-| `src/worthless/ipc/protocol.py` | envelope types + op enums | WOR-307 |
-| `src/worthless/ipc/client.py` | async client (used by proxy) | WOR-307 → WOR-309 |
+| `src/worthless/ipc/client.py` | async client (used by proxy) — envelope types inline | WOR-307 → WOR-309 |
 | `src/worthless/sidecar/server.py` | async server | WOR-307 → WOR-308 |
 | `src/worthless/sidecar/backends/base.py` | abstract seal/open/attest | WOR-307 |
 | `src/worthless/sidecar/backends/fernet.py` | Fernet backend | WOR-307 → WOR-308 |

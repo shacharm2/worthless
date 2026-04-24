@@ -12,7 +12,7 @@ This document describes what the 3-day prototype built, which invariants are loa
 |---|---|---|
 | Wire codec | `src/worthless/ipc/framing.py` | `encode_frame` / `read_frame`, 1 MiB cap, `FrameError` hierarchy |
 | Peer auth | `src/worthless/ipc/peercred.py` | `get_peer_credentials`, `require_peer_uid`, AF_UNIX guard |
-| Envelope | `src/worthless/ipc/protocol.py` | `{v, id, kind, op, deadline_ms, body}` + error codes |
+| Envelope | inline in `src/worthless/ipc/client.py` + `src/worthless/sidecar/server.py` | `{v, id, kind, op, deadline_ms, body}` + error codes (no separate `protocol.py` module in v1.1) |
 | Async client | `src/worthless/ipc/client.py` | `IPCClient.seal / open / attest`, 2 s default timeout, lock-serialized |
 | Async server | `src/worthless/sidecar/server.py` | `start_sidecar(...)`, 0660 socket, peer-uid gate |
 | Backend ABC | `src/worthless/sidecar/backends/base.py` | `Backend.seal / open / attest`, `BackendError` |
@@ -83,7 +83,7 @@ Socket activation + `User=` / `Group=` directives give the same two-uid/0660 sha
 | 3 | `/proc/<proxy-pid>/mem` dump | Key is in crypto process, not proxy | Two-uid container asserts process split; no crypto symbol imported in proxy client (`tests/ipc/test_failure_matrix.py::test_client_module_has_no_crypto_fallback_path`) |
 | 4 | Read shared volume | Socket is rendezvous only | Dockerfile `chmod 0750 /var/run/worthless`, 0660 socket (see row 6) |
 | 5 | Cold-boot memory dump (host) | **Out of scope — documented limit** | `docs/ipc-contract.md` + §7 below |
-| 6 | Connect from random uid | `require_peer_uid` | `tests/ipc/test_peercred.py::test_require_peer_uid_rejects_unlisted_uid`, `::test_require_peer_uid_rejects_non_af_unix_sockets` (Darwin bypass) |
+| 6 | Connect from random uid | `require_peer_uid` | `tests/ipc/test_peercred.py::TestRequirePeerUid::test_disallowed_uid_raises`, `::test_empty_allowlist_always_rejects`, `::test_multi_uid_allowlist`; AF_UNIX bypass closed in `TestGetPeerCredentials::test_raises_on_non_unix_socket` |
 | 7 | Malformed IPC payload | `FrameError` + envelope validation | `tests/ipc/test_framing.py` (oversized, truncated, non-map body, missing fields) + `tests/ipc/test_failure_matrix.py::test_connect_to_stale_socket_file_raises_protocol_error` |
 | 8 | Sidecar dies mid-request | `IPCProtocolError`, **no fallback** | `tests/ipc/test_failure_matrix.py::test_op_after_transport_closed_raises_protocol_error`, `::test_reconnect_after_server_killed_raises_protocol_error`, `::test_client_module_has_no_crypto_fallback_path` |
 | 9 | Container escape | **Out of scope — documented limit** | See §7 |
@@ -149,9 +149,26 @@ The following are **deliberate** choices; flipping any of them breaks the securi
 | Gate criterion | Status |
 |---|---|
 | Clean 3-day build | ✅ (Day 1 framing+peercred; Day 2 server+client+backend; Day 3 container+failure matrix+handoff) |
-| `install.sh` under ~300 lines | ✅ (336 lines, no sidecar-driven growth — sidecar lives in container & `python -m worthless.sidecar`) |
+| `install.sh` under ~300 lines | ⚠️ (336 lines — 12% over the soft cap; no sidecar-driven growth. Delta is from unrelated lock/recovery work in WOR-252.) |
 | IPC contract ≤2 revisions | ✅ (1 revision after Day 1.5 expert review: added `deadline_ms`, error-message hygiene clause, `key_id` shape) |
 | SO_PEERCRED works on Linux and macOS | ✅ (`tests/ipc/test_peercred.py` green on both) |
 | Supervision reliable (no races/zombies) | ✅ (tini reaps; `supervise.sh` cleanup trap; container smoke test green) |
 | Failure matrix: sidecar dies → no fallback | ✅ (`test_client_module_has_no_crypto_fallback_path` + transport-closed/reconnect tests) |
 | Handoff doc for v2.0 reuse | ✅ (this document) |
+
+## 9. What the claim honestly is — and isn't
+
+An external red-team pass on the product claim (brutus gate, WOR-307 validation round) flagged that the narrow engineering win is easy to over-sell. Canonical phrasing for launch comms + threat model page:
+
+**Safe to claim:**
+- *"The Fernet key is not in proxy memory. Offline decryption of at-rest ciphertext requires compromising a second process (different uid, different PID, different address space)."*
+- *"A proxy RCE cannot exfiltrate the Fernet key for offline bulk decryption."*
+- *"The sidecar IPC contract is designed to survive the v2.0 Rust/MPC rewrite without proxy-side code changes."*
+
+**Must NOT claim (would be materially misleading):**
+- ❌ "Your keys are safe even if the proxy is compromised." A proxy with RCE can still call `open` over IPC on every active key for the duration of the compromise window.
+- ❌ "Isolated key material." Single-container topology shares a kernel, namespace, and host filesystem volume with the proxy uid.
+- ❌ Any comparison to HSM / secure enclave / MPC — not earned until v2.0.
+- ❌ "Proxy RCE can't steal keys." It can — one `open` call at a time — just not in bulk and not offline.
+
+**Honest positioning:** this raises the cost of offline decryption of *cold* (at-rest, not currently flowing through the proxy) ciphertext. It does not turn a live-proxy compromise into a non-event. For the full security story users want, v2.0 MPC is load-bearing — v1.1 sidecar is a down-payment, not a finished product.
