@@ -13,9 +13,23 @@ from typer.testing import CliRunner
 
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
+from worthless.cli.key_patterns import KEY_PATTERN
 
 from tests.helpers import fake_openai_key as _fake_openai_key
 from tests.helpers import fake_anthropic_key as _fake_anthropic_key
+
+
+def _strip_env_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove env vars whose value matches any known API key pattern.
+
+    The deep-scan env dump reads the entire process environment, so a real
+    developer's shell (e.g. CLAUDE_CODE_OAUTH_TOKEN, HF_TOKEN) can leak
+    pattern-matching values into "clean dir" tests. Filter by value, not name.
+    """
+    for key, value in list(os.environ.items()):
+        if KEY_PATTERN.search(value):
+            monkeypatch.delenv(key, raising=False)
+
 
 runner = CliRunner(mix_stderr=False)
 
@@ -332,10 +346,7 @@ class TestScanDeep:
         (tmp_path / "config.yml").write_text("database: postgres\n")
         (tmp_path / ".env").write_text("APP_NAME=myapp\n")
         monkeypatch.chdir(tmp_path)
-        # Strip real API keys from env so the env dump doesn't find them
-        for key in list(os.environ):
-            if "API_KEY" in key or "SECRET" in key:
-                monkeypatch.delenv(key, raising=False)
+        _strip_env_secrets(monkeypatch)
         result = runner.invoke(app, ["scan", "--deep"])
         assert result.exit_code == 0
 
@@ -551,9 +562,7 @@ class TestCollectDeepPaths:
     ) -> None:
         """Deep scan in dir with no .yml/.yaml/.toml/.json -> still works."""
         monkeypatch.chdir(tmp_path)
-        for key in list(os.environ):
-            if "API_KEY" in key or "SECRET" in key:
-                monkeypatch.delenv(key, raising=False)
+        _strip_env_secrets(monkeypatch)
         result = runner.invoke(app, ["scan", "--deep"])
         assert result.exit_code == 0
 

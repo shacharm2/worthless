@@ -32,6 +32,7 @@ services:
     environment:
       WORTHLESS_ALLOW_INSECURE: "true"
       WORTHLESS_UPSTREAM_OPENAI_URL: "http://mock-upstream:9999/v1/chat/completions"
+      WORTHLESS_UPSTREAM_ANTHROPIC_URL: "http://mock-upstream:9999/v1/messages"
       WORTHLESS_FERNET_KEY_PATH: /secrets/fernet.key
     volumes:
       - worthless-data:/data

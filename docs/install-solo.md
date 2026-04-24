@@ -1,34 +1,35 @@
-# Install -- Solo Developer
-
-> [!NOTE]
-> **Not yet available.** The one-line installer requires a PyPI package and domain
-> that are not yet published. Install from source -- see the [README](../README.md).
-
-## Target-state install (coming soon)
+# Install — Solo Developer
 
 ```bash
-pip install worthless
-worthless lock
-worthless wrap python your_app.py
+pipx install worthless   # or: pip install worthless
+cd your-project
+worthless
 ```
 
-This will:
+That's it. `worthless` (no args) detects keys in `.env`, splits them, starts the proxy. No code changes.
 
-1. Scan your `.env` for API keys
-2. Split each key into two shards (one local, one encrypted in the proxy DB)
-3. Replace the `.env` value with shard-A (format-preserving, looks like a real key)
-4. Start a local proxy on `localhost:8787`
-5. Inject `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` so your SDK routes through the proxy
+What it does:
 
-Your existing code works identically. Your key is now split and budget-protected.
+1. Scans `.env` (and `.env.local`) for API keys
+2. Splits each key into two shards (shard-A stays local, shard-B encrypted in the proxy DB)
+3. Replaces the `.env` value with shard-A — format-preserving (same prefix, same length, looks like a real key, useless on its own)
+4. Starts the proxy on `localhost:8787`
+5. Injects `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` into `.env` so your SDK routes through the proxy
 
-## Current install (from source)
+Your existing code works identically. The proxy reconstructs the key only when the rules engine approves the request — blow your spend cap, the key never forms.
+
+## Non-interactive (CI, scripts)
+
+```bash
+worthless --yes      # skip the confirmation prompt
+worthless --json     # read-only state report, never writes
+```
+
+## Install from source
 
 ```bash
 git clone https://github.com/shacharm2/worthless && cd worthless
 uv pip install -e .
-worthless lock
-worthless wrap python your_app.py
 ```
 
-See the [README quickstart](../README.md#quickstart) for full walkthrough.
+See the [README quickstart](../README.md#quickstart) for the full walkthrough and command reference.

@@ -175,7 +175,7 @@ Primary evidence:
 
 - `src/worthless/cli/commands/wrap.py`
 - `src/worthless/cli/bootstrap.py`
-- `docs/security-model.md`
+- `docs/security.md`
 
 ### 5. Ambient environment can silently redirect upstream traffic
 
@@ -284,7 +284,7 @@ issues after initial access.
 
 Primary evidence:
 
-- `docs/risk-key-material-in-python-memory.md`
+- `docs/security.md` (Known limitations → `api_key.decode()` creates an immutable str copy)
 - `src/worthless/crypto/splitter.py`
 - `src/worthless/storage/schema.py`
 - `src/worthless/storage/repository.py`

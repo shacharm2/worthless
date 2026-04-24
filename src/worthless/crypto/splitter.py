@@ -151,6 +151,49 @@ def split_key_fp(
     )
 
 
+def derive_shard_a_fp(
+    api_key: str,
+    shard_b: bytes | bytearray,
+    prefix: str,
+    charset: str,
+) -> bytearray:
+    """Derive the shard-A that pairs with *shard_b* to reconstruct *api_key*.
+
+    Re-lock path: when an alias is already enrolled (shard-B stored), locking
+    the same real key in a new .env must recreate the format-preserving
+    shard-A rather than leaving the real key in the file. Inverting the
+    modular split over charset index space: shard_a_idx = (key_idx - shard_b_idx) mod N.
+    """
+    # Defense-in-depth: prefix + charset come from decrypted DB rows, a
+    # different trust boundary than the live env value. Row corruption /
+    # swap would otherwise silently slice the wrong bytes or KeyError.
+    if not api_key.startswith(prefix):
+        raise ValueError(f"Key does not start with stored prefix {prefix!r}")
+    if charset not in _CHAR_TO_IDX:
+        raise ValueError(f"Unsupported stored charset (len={len(charset)})")
+
+    body = api_key[len(prefix) :]
+    # SR-01: decode via mutable bytearray so we can zero the copy. The
+    # caller owns shard_b's lifecycle; the transient copy here is ours.
+    tmp = bytearray(shard_b)
+    try:
+        b_body = tmp.decode("utf-8")
+    finally:
+        zero_buf(tmp)
+
+    if len(body) != len(b_body):
+        raise ValueError(f"Shard-B length mismatch: key_body={len(body)}, shard_b={len(b_body)}")
+
+    n = len(charset)
+    char_to_idx = _CHAR_TO_IDX[charset]
+
+    shard_a_chars: list[str] = []
+    for k_char, b_char in zip(body, b_body, strict=True):
+        shard_a_chars.append(charset[(char_to_idx[k_char] - char_to_idx[b_char]) % n])
+
+    return bytearray((prefix + "".join(shard_a_chars)).encode("utf-8"))
+
+
 def reconstruct_key_fp(
     shard_a: bytes | bytearray,
     shard_b: bytes | bytearray,

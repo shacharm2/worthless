@@ -6,22 +6,39 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Tests](https://github.com/shacharm2/worthless/actions/workflows/tests.yml/badge.svg)](https://github.com/shacharm2/worthless/actions/workflows/tests.yml)
 
-Your API key is split into two pieces. Neither piece is useful on its own.
-Every request goes through a proxy that enforces a hard spend cap **before** the key ever reconstructs.
-Budget blown = key never forms = request never reaches the provider.
-
-> Every secrets tool protects the key until your app uses it.
-> Worthless protects you **after it leaks**.
+Your API key is split in two. Neither half works alone.
+The proxy enforces a hard spend cap **before** the key reconstructs — blow the budget, the key never forms, the request never leaves your machine.
 
 ## Quickstart
 
 ```bash
+curl -sSL https://worthless.sh | sh        # fresh machine — no Python needed
+# or, if you already have Python 3.10+:
 pipx install worthless
+```
+
+Then, in your project:
+
+```bash
 cd your-project
 worthless
 ```
 
-That's it. Worthless detects API keys in your `.env`, splits them, starts a local proxy, and you're protected.
+Detects keys in your `.env`, splits them, starts a local proxy. No code changes.
+
+### Verify before running
+
+Piping a script from the internet into `sh` is a supply-chain risk. Read it first:
+
+```bash
+curl -sSL https://worthless.sh -o install.sh
+less install.sh                                   # inspect, then run
+sh install.sh
+```
+
+See [docs/install-security.md](docs/install-security.md) for trust roots
+(what the installer talks to and what it verifies) and the kill-switch
+runbook.
 
 ```
 $ worthless
@@ -31,21 +48,10 @@ $ worthless
     ANTHROPIC_API_KEY   anthropic
 
   Lock these keys? [y/N] y
+    OPENAI_API_KEY      locked
+    ANTHROPIC_API_KEY   locked
 
-  Protecting OPENAI_API_KEY...      done
-  Protecting ANTHROPIC_API_KEY...   done
-
-  Starting proxy on 127.0.0.1:8787...   healthy
-
-  Proxy healthy on 127.0.0.1:8787
-```
-
-Your code doesn't change. The proxy handles everything.
-
-### Alternative install
-
-```bash
-pip install worthless        # in a virtualenv
+  Proxy ready on 127.0.0.1:8787
 ```
 
 ## How it works
@@ -70,6 +76,35 @@ worthless down         # Stop the proxy
 worthless wrap <cmd>   # Run a command through the proxy
 worthless revoke       # Revoke enrolled keys
 ```
+
+## Docker
+
+`docker run ghcr.io/shacharm2/worthless-proxy:<version>` — multi-arch, vulnerability-scanned, cosign-signed. See [docs/install-docker.md](docs/install-docker.md).
+
+## Platforms
+
+Worthless runs on POSIX hosts. The proxy relies on `setsid`, `os.killpg`,
+fd-based key transport, and signal-group shutdown — primitives that have no
+reliable native-Windows equivalent. Rather than degrade silently, the CLI
+refuses to start on native Windows and tells you how to run it under WSL or
+Docker.
+
+| Platform | Status |
+|---|---|
+| macOS | Supported |
+| Linux | Supported |
+| Windows + WSL | Supported |
+| Windows + Docker | Supported |
+| Native Windows | Not supported — `up`, `wrap`, and the default command exit with `WRTLS-110`. `down` is allowed so existing state can be cleaned up. |
+
+`WORTHLESS_WINDOWS_ACK=1` suppresses the soft warning on `down`; it does not
+bypass the hard gate on the other entry points.
+
+**Planned:** native-Windows support (stdin Fernet key transport, Windows Job
+Objects, `DETACHED_PROCESS`) is tracked in
+[WOR-237](https://linear.app/plumbusai/issue/WOR-237/v12-native-windows-support-stdin-fernet-job-objects-detached-process) —
+target v1.2. If you need it sooner or want to help, comment on the issue
+rather than patching around the guard locally.
 
 ## Undo everything
 
@@ -108,13 +143,15 @@ uv run pytest
 
 ## Learn more
 
-- [Security model](docs/security-model.md) -- how the split-key proxy works
-- [Security rules](SECURITY_RULES.md) -- invariants all contributions must preserve
+- [Security model](docs/security.md) -- threat model, invariants, known limitations
+- [Engineering docs](engineering/README.md) -- internal developer documentation for the live codebase
+- [Engineering architecture](engineering/architecture.md) -- current internal architecture overview
+- [Contributor security rules](CONTRIBUTING-security.md) -- invariants all contributions must preserve
 - [SKILL.md](SKILL.md) -- agent discovery file
 
 ## Contributing
 
-PRs welcome. Read [SECURITY_RULES.md](SECURITY_RULES.md) first.
+PRs welcome. Read [CONTRIBUTING-security.md](CONTRIBUTING-security.md) first.
 
 ## License
 

@@ -6,7 +6,7 @@ import functools
 import logging
 import sys
 import traceback
-from enum import IntEnum
+from enum import Enum, IntEnum
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,34 @@ class ErrorCode(IntEnum):
     PORT_IN_USE = 107
     WRAP_CHILD_FAILED = 108
     PROXY_NOT_RUNNING = 109
+    PLATFORM_UNSUPPORTED = 110
+    UNSAFE_REWRITE_REFUSED = 111
     UNKNOWN = 199
+
+
+class UnsafeReason(str, Enum):
+    """Internal granular reason for ``UnsafeRewriteRefused``.
+
+    Exposed on :attr:`UnsafeRewriteRefused.reason` and logged at DEBUG level.
+    Never appears in the user-facing message.
+    """
+
+    PLATFORM = "platform"
+    BASENAME = "basename"
+    PATH_IDENTITY = "path_identity"
+    SPECIAL_FILE = "special_file"
+    SYMLINK = "symlink"
+    CONTAINMENT = "containment"
+    SIZE = "size"
+    SNIFF = "sniff"
+    DELTA = "delta"
+    TOCTOU = "toctou"
+    TMP_COLLISION = "tmp_collision"
+    IO_ERROR = "io_error"
+    LOCKED = "locked"
+
+
+_UNSAFE_REWRITE_PUBLIC_MESSAGE = "unsafe rewrite refused"
 
 
 class WorthlessError(Exception):
@@ -38,6 +65,23 @@ class WorthlessError(Exception):
 
     def __str__(self) -> str:  # noqa: D105
         return f"WRTLS-{self.code.value}: {self.message}"
+
+
+class UnsafeRewriteRefused(WorthlessError):
+    """Raised by ``safe_rewrite`` when any invariant refuses a rewrite.
+
+    The public message is intentionally opaque. The granular cause is
+    available via :attr:`reason` and is logged at DEBUG level. Neither
+    absolute paths nor environment data ever appear in ``str(exc)``.
+    """
+
+    def __init__(self, reason: UnsafeReason) -> None:
+        self.reason = reason
+        super().__init__(
+            ErrorCode.UNSAFE_REWRITE_REFUSED,
+            _UNSAFE_REWRITE_PUBLIC_MESSAGE,
+        )
+        logger.debug("UnsafeRewriteRefused: reason=%s", reason.value)
 
 
 def sanitize_exception(exc: Exception, *, generic: str = "an internal error occurred") -> str:

@@ -11,6 +11,7 @@ import typer
 from worthless.cli.console import WorthlessConsole, get_console, set_console
 from worthless.cli.default_command import run_default
 from worthless.cli.errors import WorthlessError, set_debug
+from worthless.cli.platform import fail_if_windows
 
 
 def _version_callback(value: bool) -> None:
@@ -53,9 +54,10 @@ def _main(
     set_debug(debug)
     set_console(WorthlessConsole(quiet=quiet, json_mode=json_output))
 
-    # When no subcommand is given, run the magic default pipeline
+    # When no subcommand is given, run the magic default pipeline.
     if ctx.invoked_subcommand is None:
         try:
+            fail_if_windows()
             interactive = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
             run_default(interactive=interactive, yes=yes, json_mode=json_output)
         except WorthlessError as exc:

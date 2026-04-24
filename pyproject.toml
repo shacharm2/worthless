@@ -34,6 +34,7 @@ dependencies = [
 
 [project.scripts]
 worthless = "worthless.cli.app:app"
+docs-generate = "worthless.dev.docs:generate_docs"
 test-unit = "worthless.testing.runners:unit"
 test-docker = "worthless.testing.runners:docker"
 test-live = "worthless.testing.runners:live"
@@ -61,8 +62,10 @@ dev = [
     "ruff>=0.8",
 ]
 test = [
+    "anthropic>=0.40",
     "fakeredis>=2.20",
     "hypothesis>=6.0",
+    "openai>=1.54",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-benchmark>=5.0",
@@ -92,7 +95,6 @@ fuzz = [
 [dependency-groups]
 dev = [
     {include-group = "test"},
-    "cyclonedx-bom>=7.3.0",
     "deptry>=0.22",
     "pip-audit>=2.8",
     "pip-licenses>=5.5.5",
@@ -103,8 +105,10 @@ dev = [
     "xenon>=0.9.3",
 ]
 test = [
+    "anthropic>=0.40",
     "fakeredis>=2.20",
     "hypothesis>=6.0",
+    "openai>=1.54",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-benchmark>=5.0",

@@ -332,6 +332,183 @@ class TestLockCommand:
         aliases = asyncio.run(repo.list_keys())
         assert len(aliases) == 2
 
+    def test_relock_same_key_new_env_rewrites_to_shard_a(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Locking the same real key in a second .env must rewrite the new .env.
+
+        Regression for the silent-no-op bug where the re-lock guard added a DB
+        enrollment, printed "1 key(s) protected.", but left the real key in the
+        second .env — silently leaking secret material into a file the user
+        believed was protected.
+        """
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        key = fake_openai_key()
+
+        env_a = tmp_path / "a" / ".env"
+        env_b = tmp_path / "b" / ".env"
+        env_a.parent.mkdir()
+        env_b.parent.mkdir()
+        env_a.write_text(f"OPENAI_API_KEY={key}\n")
+        env_b.write_text(f"OPENAI_API_KEY={key}\n")
+
+        r1 = runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars)
+        assert r1.exit_code == 0, r1.output
+
+        from dotenv import dotenv_values
+
+        shard_a_first = dotenv_values(env_a)["OPENAI_API_KEY"]
+        assert shard_a_first != key, "first lock should already rewrite env_a"
+
+        r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
+        assert r2.exit_code == 0, r2.output
+
+        shard_a_second = dotenv_values(env_b)["OPENAI_API_KEY"]
+        assert shard_a_second != key, (
+            "re-lock left the real key in the .env — silent secret leak. "
+            f"env_b still contains: {shard_a_second[:12]}..."
+        )
+        # shard-A must still be format-preserving (prefix + length match).
+        assert shard_a_second.startswith("sk-proj-")
+        assert len(shard_a_second) == len(key)
+
+    def test_relock_same_key_new_env_reconstructs_correctly(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Shard-A written on re-lock must reconstruct the real key via shard-B.
+
+        Derivation correctness check: the re-lock path must produce a shard-A
+        that, combined with the already-stored shard-B, yields the original
+        real key. Without this, the proxy could not rebuild the real key.
+        """
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        key = fake_openai_key()
+
+        env_a = tmp_path / "a" / ".env"
+        env_b = tmp_path / "b" / ".env"
+        env_a.parent.mkdir()
+        env_b.parent.mkdir()
+        env_a.write_text(f"OPENAI_API_KEY={key}\n")
+        env_b.write_text(f"OPENAI_API_KEY={key}\n")
+
+        assert runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars).exit_code == 0
+        assert runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars).exit_code == 0
+
+        from dotenv import dotenv_values
+
+        from worthless.crypto.splitter import reconstruct_key_fp
+
+        shard_a_str = dotenv_values(env_b)["OPENAI_API_KEY"]
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        assert len(aliases) == 1
+        encrypted = asyncio.run(repo.fetch_encrypted(aliases[0]))
+        assert encrypted is not None
+        stored = repo.decrypt_shard(encrypted)
+
+        reconstructed = reconstruct_key_fp(
+            bytearray(shard_a_str.encode()),
+            stored.shard_b,
+            stored.commitment,
+            stored.nonce,
+            encrypted.prefix or "",
+            encrypted.charset or "",
+        )
+        assert reconstructed.decode() == key
+
+    def test_relock_compensation_restores_env_on_base_url_failure(
+        self, home_dir: WorthlessHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-lock path must restore real key to .env if BASE_URL write fails.
+
+        Without compensation this recreates WOR-280: the re-lock overwrote .env
+        with shard-A, then the BASE_URL write crashed, and the real key was
+        gone from the file (destructive) while the user saw an error (not a
+        silent leak, but unrecoverable partial state).
+        """
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        key = fake_openai_key()
+
+        env_a = tmp_path / "a" / ".env"
+        env_b = tmp_path / "b" / ".env"
+        env_a.parent.mkdir()
+        env_b.parent.mkdir()
+        env_a.write_text(f"OPENAI_API_KEY={key}\n")
+        env_b.write_text(f"OPENAI_API_KEY={key}\n")
+
+        # Prime: lock env_a cleanly so alias is in DB.
+        r1 = runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars)
+        assert r1.exit_code == 0, r1.output
+
+        # Now sabotage BASE_URL writes so the re-lock fails mid-way.
+        from worthless.cli.commands import lock as lock_mod
+
+        def _boom_on_base_url(*args, **kwargs):
+            raise OSError("disk full on BASE_URL write")
+
+        monkeypatch.setattr(lock_mod, "add_or_rewrite_env_key", _boom_on_base_url)
+
+        r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
+        assert r2.exit_code == 1  # expected failure
+
+        from dotenv import dotenv_values
+
+        parsed = dotenv_values(env_b)
+        assert parsed["OPENAI_API_KEY"] == key, (
+            "Re-lock failed mid-way and left env_b in a broken state — "
+            f"expected real key restored, got: {parsed['OPENAI_API_KEY'][:12]}..."
+        )
+
+    def test_relock_rolls_back_base_url_when_enrollment_fails(
+        self, home_dir: WorthlessHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-lock must restore the *whole* .env if enrollment fails after BASE_URL.
+
+        Step 2 (BASE_URL write) succeeds, step 3 (DB enrollment) fails. Partial-
+        restore that only rewrites OPENAI_API_KEY would leave a real key
+        coexisting with a proxy BASE_URL — inconsistent state the user can't
+        reason about. Whole-file snapshot rollback is the correct fix.
+        """
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        key = fake_openai_key()
+
+        env_a = tmp_path / "a" / ".env"
+        env_b = tmp_path / "b" / ".env"
+        env_a.parent.mkdir()
+        env_b.parent.mkdir()
+        env_a.write_text(f"OPENAI_API_KEY={key}\n")
+        env_b.write_text(f"OPENAI_API_KEY={key}\n")
+
+        # Prime: lock env_a cleanly.
+        r1 = runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars)
+        assert r1.exit_code == 0, r1.output
+
+        # Capture env_b pre-content (exactly the snapshot we expect restored).
+        original_content = env_b.read_text()
+
+        # Sabotage enrollment (step 3) so step 1 (key) and step 2 (BASE_URL)
+        # are already on disk when the failure fires.
+        from worthless.storage import repository as repo_mod
+
+        async def _boom_on_enrollment(self, *args, **kwargs):
+            raise RuntimeError("db write failed after BASE_URL was persisted")
+
+        monkeypatch.setattr(repo_mod.ShardRepository, "add_enrollment", _boom_on_enrollment)
+
+        r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
+        assert r2.exit_code == 1, r2.output
+
+        # Whole-file restoration: env_b must be byte-identical to pre-run.
+        # Partial compensation would leave OPENAI_BASE_URL lingering.
+        restored = env_b.read_text()
+        assert restored == original_content, (
+            "env_b should be restored to its pre-re-lock snapshot — "
+            "partial compensation would leak BASE_URL changes."
+        )
+        assert "OPENAI_BASE_URL" not in restored, (
+            "BASE_URL must not persist when re-lock fails mid-way."
+        )
+
     def test_lock_acquires_and_releases_lock_file(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:

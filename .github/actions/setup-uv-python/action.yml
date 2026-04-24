@@ -1,0 +1,24 @@
+name: Set up uv + Python
+description: Install Python at a pinned SHA and bootstrap the uv package manager.
+
+# Atomic SHA bumps: one edit here upgrades every workflow that consumes it.
+# Checkout is NOT included — its options (persist-credentials, fetch-depth)
+# vary per workflow and belong at the caller's step level.
+
+inputs:
+  python-version:
+    description: Python version to install (passed to actions/setup-python).
+    required: false
+    default: "3.13"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python ${{ inputs.python-version }}
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install uv
+      shell: bash
+      run: python -m pip install --disable-pip-version-check uv

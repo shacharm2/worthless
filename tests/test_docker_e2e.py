@@ -10,22 +10,25 @@ Run with:
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
-import time
 import uuid
 from pathlib import Path
 
+import anthropic
 import httpx
+import openai
 import pytest
+
+from tests._docker_helpers import docker_available, docker_exec, wait_healthy
+from tests.helpers import fake_anthropic_key, fake_openai_key
+from worthless.cli.commands.lock import _make_alias
 
 # ---------------------------------------------------------------------------
 # Module-level skip + marker
 # ---------------------------------------------------------------------------
-docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.docker,
-    pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    pytest.mark.skipif(not docker_available(), reason="Docker not available"),
     pytest.mark.timeout(90),
 ]
 
@@ -53,51 +56,6 @@ def _run_ok(cmd: list[str]) -> str:
     return _run(cmd).stdout.strip()
 
 
-def _docker_exec(container: str, cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    """Execute a command inside a running container."""
-    return subprocess.run(
-        ["docker", "exec", container, *cmd],
-        capture_output=True,
-        text=True,
-    )
-
-
-def _wait_healthy(container: str, timeout: float = 60.0) -> bool:
-    """Poll container health status until healthy or timeout."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        result = subprocess.run(
-            [
-                "docker",
-                "inspect",
-                "--format",
-                "{{.State.Health.Status}}",
-                container,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        status = result.stdout.strip()
-        if status == "healthy":
-            return True
-        if status in ("unhealthy", ""):
-            state = subprocess.run(
-                [
-                    "docker",
-                    "inspect",
-                    "--format",
-                    "{{.State.Status}}",
-                    container,
-                ],
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            if state != "running":
-                return False
-        time.sleep(1)
-    return False
-
-
 def _cleanup_container(name: str) -> None:
     """Force-remove a container and its associated volumes if they exist."""
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
@@ -105,21 +63,6 @@ def _cleanup_container(name: str) -> None:
         ["docker", "volume", "rm", "-f", f"{name}-data", f"{name}-secrets"],
         capture_output=True,
     )
-
-
-def _fake_openai_key() -> str:
-    """Generate a scanner-safe fake OpenAI key at runtime."""
-    try:
-        from tests.helpers import fake_openai_key
-
-        return fake_openai_key()
-    except ImportError:
-        import base64
-        import hashlib
-
-        raw = hashlib.sha256(b"test-fixture-seed").digest()
-        body = base64.urlsafe_b64encode(raw).decode().rstrip("=")[:48]
-        return "sk-" + "proj-" + body
 
 
 # ---------------------------------------------------------------------------
@@ -133,10 +76,6 @@ def docker_image() -> str:
 
     If WORTHLESS_DOCKER_IMAGE is set (CI), skip the build and use that tag.
     """
-    result = subprocess.run(["docker", "info"], capture_output=True)
-    if result.returncode != 0:
-        pytest.skip("Docker daemon not running")
-
     if os.environ.get("WORTHLESS_DOCKER_IMAGE"):
         # CI already built the image -- just use it
         yield IMAGE_TAG  # type: ignore[misc]
@@ -188,7 +127,7 @@ def container(docker_image: str) -> tuple[str, int]:
     )
     port = int(_run_ok(["docker", "port", name, "8787"]).rsplit(":", 1)[-1])
     try:
-        assert _wait_healthy(name), f"Container {name} did not become healthy"
+        assert wait_healthy(name), f"Container {name} did not become healthy"
         yield name, port  # type: ignore[misc]
     finally:
         _cleanup_container(name)
@@ -223,7 +162,7 @@ def persistent_container(docker_image: str) -> tuple[str, int, str]:
     port_out = _run_ok(["docker", "port", name, "8787"])
     port = int(port_out.strip().rsplit(":", 1)[-1])
     try:
-        assert _wait_healthy(name), f"Container {name} did not become healthy"
+        assert wait_healthy(name), f"Container {name} did not become healthy"
         yield name, port, vol  # type: ignore[misc]
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
@@ -273,7 +212,7 @@ def compose_stack(docker_image: str) -> tuple[str, str]:
         )
 
         container_name = f"{project}-proxy-1"
-        assert _wait_healthy(container_name, timeout=30), (
+        assert wait_healthy(container_name, timeout=30), (
             f"Compose container {container_name} did not become healthy"
         )
         yield project, container_name  # type: ignore[misc]
@@ -330,7 +269,7 @@ class TestBuild:
 
     def test_runs_as_non_root(self, container: tuple[str, int]) -> None:
         name, _ = container
-        result = _docker_exec(name, ["id"])
+        result = docker_exec(name, ["id"])
         assert result.returncode == 0
         assert "worthless" in result.stdout
         # uid should be non-zero
@@ -348,18 +287,18 @@ class TestBootstrap:
     def test_container_starts_healthy(self, container: tuple[str, int]) -> None:
         """Container fixture already asserts healthy -- this is explicit."""
         name, _ = container
-        result = _docker_exec(name, ["true"])
+        result = docker_exec(name, ["true"])
         assert result.returncode == 0
 
     def test_fernet_key_generated(self, container: tuple[str, int]) -> None:
         """Standalone container generates fernet.key in /data."""
         name, _ = container
-        result = _docker_exec(name, ["test", "-f", "/data/fernet.key"])
+        result = docker_exec(name, ["test", "-f", "/data/fernet.key"])
         assert result.returncode == 0, "fernet.key not found in /data"
 
     def test_db_initialized(self, container: tuple[str, int]) -> None:
         name, _ = container
-        result = _docker_exec(
+        result = docker_exec(
             name,
             [
                 "python",
@@ -380,7 +319,7 @@ class TestBootstrap:
     def test_fernet_key_permissions(self, container: tuple[str, int]) -> None:
         name, _ = container
         # GNU coreutils stat inside Debian slim
-        result = _docker_exec(name, ["stat", "-c", "%a", "/data/fernet.key"])
+        result = docker_exec(name, ["stat", "-c", "%a", "/data/fernet.key"])
         assert result.returncode == 0
         assert result.stdout.strip() == "400"
 
@@ -397,7 +336,7 @@ class TestPersistence:
         name, _port, _vol = persistent_container
 
         # Enroll a fake key
-        key = _fake_openai_key()
+        key = fake_openai_key()
         enroll = subprocess.run(
             [
                 "docker",
@@ -421,10 +360,10 @@ class TestPersistence:
         # Stop and start (not rm)
         _run(["docker", "stop", name])
         _run(["docker", "start", name])
-        assert _wait_healthy(name, timeout=30), "Not healthy after restart"
+        assert wait_healthy(name, timeout=30), "Not healthy after restart"
 
         # Verify the alias still exists
-        status = _docker_exec(
+        status = docker_exec(
             name,
             [
                 "worthless",
@@ -448,7 +387,7 @@ class TestLifecycle:
         name, port = container
 
         # Enroll a fake key
-        key = _fake_openai_key()
+        key = fake_openai_key()
         enroll = subprocess.run(
             [
                 "docker",
@@ -492,7 +431,7 @@ class TestWave6Features:
         from importlib.metadata import version as pkg_version
 
         name, _ = container
-        result = _docker_exec(name, ["worthless", "--version"])
+        result = docker_exec(name, ["worthless", "--version"])
         assert result.returncode == 0, f"--version failed: {result.stderr}"
         assert pkg_version("worthless") in result.stdout
 
@@ -504,7 +443,7 @@ class TestWave6Features:
         any state.
         """
         name, _ = container
-        result = _docker_exec(name, ["worthless", "--json"])
+        result = docker_exec(name, ["worthless", "--json"])
         assert result.returncode == 0, f"--json failed: {result.stderr}"
         import json
 
@@ -515,7 +454,7 @@ class TestWave6Features:
     def test_json_mode_after_enroll(self, container: tuple[str, int]) -> None:
         """worthless --json reflects enrollment state after enroll."""
         name, _ = container
-        key = _fake_openai_key()
+        key = fake_openai_key()
 
         # Enroll a key
         enroll = subprocess.run(
@@ -539,7 +478,7 @@ class TestWave6Features:
         assert enroll.returncode == 0, f"enroll failed: {enroll.stderr}"
 
         # Now --json should show enrolled
-        result = _docker_exec(name, ["worthless", "--json"])
+        result = docker_exec(name, ["worthless", "--json"])
         assert result.returncode == 0, f"--json failed: {result.stderr}"
         import json
 
@@ -549,7 +488,7 @@ class TestWave6Features:
     def test_status_json_has_keys(self, container: tuple[str, int]) -> None:
         """worthless status --json shows enrolled key details."""
         name, _ = container
-        key = _fake_openai_key()
+        key = fake_openai_key()
 
         # Enroll
         subprocess.run(
@@ -572,7 +511,7 @@ class TestWave6Features:
             check=True,
         )
 
-        result = _docker_exec(name, ["worthless", "--json", "status"])
+        result = docker_exec(name, ["worthless", "--json", "status"])
         assert result.returncode == 0, f"status --json failed: {result.stderr}"
         assert "status-test" in result.stdout
 
@@ -583,13 +522,13 @@ class TestWave6Features:
         output never leaks key material.
         """
         name, _ = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         _write_env_to_container(name, env_content)
 
         # Run default command with --yes
-        result = _docker_exec(name, ["sh", "-c", "cd /tmp && worthless --yes"])
+        result = docker_exec(name, ["sh", "-c", "cd /tmp && worthless --yes"])
         combined = result.stdout + result.stderr
 
         # Full key must never appear
@@ -648,7 +587,7 @@ class TestLockWrapE2E:
         no enrollment record.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         # Write .env into the container
@@ -656,27 +595,27 @@ class TestLockWrapE2E:
         assert write_result.returncode == 0, f"Failed to write .env: {write_result.stderr}"
 
         # Run lock
-        lock_result = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        lock_result = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock_result.returncode == 0, (
             f"'worthless lock' failed (exit {lock_result.returncode}): {lock_result.stderr}"
         )
 
         # Assert: .env was rewritten (original key is gone)
-        cat_result = _docker_exec(name, ["cat", "/tmp/.env"])
+        cat_result = docker_exec(name, ["cat", "/tmp/.env"])
         assert cat_result.returncode == 0
         assert fake_key not in cat_result.stdout, (
             "Original API key still present in .env after lock -- decoy replacement failed"
         )
 
         # Assert: no shard_a files on disk (SR-09: shard-A goes to .env only)
-        ls_result = _docker_exec(name, ["ls", "/data/shard_a/"])
+        ls_result = docker_exec(name, ["ls", "/data/shard_a/"])
         if ls_result.returncode == 0:
             shard_files = ls_result.stdout.strip()
             assert not shard_files, f"Unexpected shard_a files after lock: {shard_files}"
         # If dir doesn't exist at all, that's also correct (SR-09)
 
         # Assert: DB has enrollment record
-        db_check = _docker_exec(
+        db_check = docker_exec(
             name,
             [
                 "python",
@@ -707,16 +646,16 @@ class TestLockWrapE2E:
         127.0.0.1.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         # Lock first
         _write_env_to_container(name, env_content)
-        lock = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        lock = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
         # Wrap a child that prints OPENAI_BASE_URL
-        wrap_result = _docker_exec(
+        wrap_result = docker_exec(
             name,
             [
                 "worthless",
@@ -744,16 +683,16 @@ class TestLockWrapE2E:
         Failure looks like: /healthz returns non-200 or connection refused.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         _write_env_to_container(name, env_content)
-        lock = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        lock = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
         # Wrap a long-running child. Use sh -c to: extract port, curl healthz,
         # print result, then exit. The child itself acts as the health checker.
-        wrap_result = _docker_exec(
+        wrap_result = docker_exec(
             name,
             [
                 "worthless",
@@ -800,15 +739,15 @@ class TestLockWrapE2E:
         the request never reaches the proxy.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         _write_env_to_container(name, env_content)
-        lock = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        lock = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
         # Wrap a child that makes a request to the proxy's /v1/chat/completions
-        wrap_result = _docker_exec(
+        wrap_result = docker_exec(
             name,
             [
                 "worthless",
@@ -865,20 +804,20 @@ class TestDockerEdgeCases:
         garbage data.
         """
         name, port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         # Lock first
         _write_env_to_container(name, env_content)
-        lock = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        lock = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
         # Unlock
-        unlock = _docker_exec(name, ["worthless", "unlock", "--env", "/tmp/.env"])
+        unlock = docker_exec(name, ["worthless", "unlock", "--env", "/tmp/.env"])
         assert unlock.returncode == 0, f"unlock failed: {unlock.stderr}"
 
         # Verify no shards remain
-        db_check = _docker_exec(
+        db_check = docker_exec(
             name,
             [
                 "python",
@@ -906,11 +845,11 @@ class TestDockerEdgeCases:
         increase.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         _write_env_to_container(name, env_content)
-        lock = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        lock = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
         # Count uvicorn processes BEFORE wrap (container's own proxy)
@@ -919,11 +858,11 @@ class TestDockerEdgeCases:
             "-c",
             "ls /proc/*/cmdline 2>/dev/null | xargs grep -l '[u]vicorn' 2>/dev/null | wc -l",
         ]
-        before = _docker_exec(name, _uvicorn_count_cmd)
+        before = docker_exec(name, _uvicorn_count_cmd)
         before_count = int(before.stdout.strip()) if before.returncode == 0 else 0
 
         # Wrap a nonexistent binary
-        wrap_result = _docker_exec(
+        wrap_result = docker_exec(
             name,
             ["worthless", "wrap", "--", "/nonexistent/binary"],
         )
@@ -932,7 +871,7 @@ class TestDockerEdgeCases:
         )
 
         # Count AFTER — must not have increased
-        after = _docker_exec(name, _uvicorn_count_cmd)
+        after = docker_exec(name, _uvicorn_count_cmd)
         after_count = int(after.stdout.strip()) if after.returncode == 0 else 0
         assert after_count <= before_count, (
             f"Orphan proxy: uvicorn count went from {before_count} to {after_count}"
@@ -951,17 +890,17 @@ class TestDockerEdgeCases:
         duplicate enrollment records.
         """
         name, _port = container
-        fake_key = _fake_openai_key()
+        fake_key = fake_openai_key()
         env_content = f"OPENAI_API_KEY={fake_key}\n"
 
         _write_env_to_container(name, env_content)
 
         # First lock
-        lock1 = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        lock1 = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock1.returncode == 0, f"first lock failed: {lock1.stderr}"
 
         # Count enrollments
-        count1_result = _docker_exec(
+        count1_result = docker_exec(
             name,
             [
                 "python",
@@ -976,11 +915,11 @@ class TestDockerEdgeCases:
         count1 = int(count1_result.stdout.strip())
 
         # Second lock (should be idempotent)
-        lock2 = _docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        lock2 = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock2.returncode == 0, f"second lock failed (not idempotent): {lock2.stderr}"
 
         # Count enrollments again -- should be same
-        count2_result = _docker_exec(
+        count2_result = docker_exec(
             name,
             [
                 "python",
@@ -1012,18 +951,18 @@ class TestDockerEdgeCases:
         name, _port = container
 
         # /data should be writable
-        data_write = _docker_exec(name, ["touch", "/data/test-rw-check"])
+        data_write = docker_exec(name, ["touch", "/data/test-rw-check"])
         assert data_write.returncode == 0, (
             f"/data should be writable but write failed: {data_write.stderr}"
         )
         # Clean up
-        _docker_exec(name, ["rm", "-f", "/data/test-rw-check"])
+        docker_exec(name, ["rm", "-f", "/data/test-rw-check"])
 
         # Root filesystem should be read-only. Write to /usr which is
         # always root-owned and not a mount/tmpfs — if this succeeds,
         # --read-only is not active. (The standalone container fixture
         # now passes --read-only, so this is a real test.)
-        usr_write = _docker_exec(name, ["touch", "/usr/test-ro-check"])
+        usr_write = docker_exec(name, ["touch", "/usr/test-ro-check"])
         assert usr_write.returncode != 0, (
             "/usr should not be writable -- container root filesystem is not "
             "read-only. Ensure container runs with --read-only flag."
@@ -1041,21 +980,119 @@ class TestComposeSecurity:
     def test_compose_fernet_on_secrets_volume(self, compose_stack: tuple[str, str]) -> None:
         _project, cname = compose_stack
         # Compose sets WORTHLESS_FERNET_KEY_PATH=/secrets/fernet.key
-        result = _docker_exec(cname, ["test", "-f", "/secrets/fernet.key"])
+        result = docker_exec(cname, ["test", "-f", "/secrets/fernet.key"])
         assert result.returncode == 0, "fernet.key not on /secrets volume"
         # Must NOT be on /data
-        result = _docker_exec(cname, ["test", "-f", "/data/fernet.key"])
+        result = docker_exec(cname, ["test", "-f", "/data/fernet.key"])
         assert result.returncode != 0, "fernet.key should not be on /data in compose mode"
 
     def test_compose_read_only_filesystem(self, compose_stack: tuple[str, str]) -> None:
         _project, cname = compose_stack
-        result = _docker_exec(cname, ["touch", "/etc/test"])
+        result = docker_exec(cname, ["touch", "/etc/test"])
         assert result.returncode != 0, "Filesystem should be read-only"
         assert "read-only" in result.stderr.lower() or "read only" in result.stderr.lower()
 
     def test_compose_non_root(self, compose_stack: tuple[str, str]) -> None:
         _project, cname = compose_stack
-        result = _docker_exec(cname, ["id"])
+        result = docker_exec(cname, ["id"])
         assert result.returncode == 0
         assert "worthless" in result.stdout
         assert "uid=0" not in result.stdout
+
+
+class TestSDKSmokeDocker:
+    """Smoke: SDKs on the host can reach the production Docker image's proxy.
+
+    Guards against regressions in the production image's route dispatch —
+    e.g., if the Dockerfile stops shipping uvicorn or the worthless CLI,
+    this catches it before release. Does NOT prove round-trip round-trip
+    correctness; that's the Compose lane's job.
+
+    Design note: plan originally called for in-container pip install of
+    the SDKs, but the container's /tmp is mounted noexec (per the
+    container fixture at line 179) and both openai and anthropic pull
+    in Rust-compiled extensions (jiter, tokenizers) that can't import
+    from noexec tmpfs. Running the SDKs from the host against the
+    containerized proxy proves the same thing — "the image serves SDK
+    requests" — without fighting the tmpfs policy.
+    """
+
+    def _enroll_fake_key(self, container_name: str, env_var: str, fake_key: str) -> None:
+        env_content = f"{env_var}={fake_key}"
+        subprocess.run(
+            [
+                "docker",
+                "exec",
+                container_name,
+                "sh",
+                "-c",
+                f"cat > /tmp/.env << 'ENVEOF'\n{env_content}\nENVEOF",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        lock = docker_exec(container_name, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock.returncode == 0, f"lock failed: {lock.stderr}"
+
+    def _read_shard_a(self, container_name: str, env_var: str) -> str:
+        result = docker_exec(
+            container_name,
+            ["sh", "-c", f"grep '^{env_var}=' /tmp/.env | cut -d= -f2-"],
+        )
+        assert result.returncode == 0
+        return result.stdout.strip()
+
+    def test_openai_sdk_reaches_proxy_from_host(self, container: tuple[str, int]) -> None:
+        name, port = container
+        fake_key = fake_openai_key()
+        alias = _make_alias("openai", fake_key)
+
+        self._enroll_fake_key(name, "OPENAI_API_KEY", fake_key)
+        shard_a = self._read_shard_a(name, "OPENAI_API_KEY")
+        assert shard_a != fake_key
+        assert shard_a.startswith("sk-")
+
+        client = openai.OpenAI(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{port}/{alias}/v1",
+        )
+        with pytest.raises(openai.APIError) as exc:
+            client.chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        err_name = type(exc.value).__name__
+        err_str = str(exc.value).lower()
+        assert "connectionerror" != err_name, (
+            f"SDK raised raw ConnectionError — proxy unreachable: {exc.value}"
+        )
+        assert "traceback" not in err_str
+        assert "worthless" not in err_str
+
+    def test_anthropic_sdk_reaches_proxy_from_host(self, container: tuple[str, int]) -> None:
+        name, port = container
+        fake_key = fake_anthropic_key()
+        alias = _make_alias("anthropic", fake_key)
+
+        self._enroll_fake_key(name, "ANTHROPIC_API_KEY", fake_key)
+        shard_a = self._read_shard_a(name, "ANTHROPIC_API_KEY")
+        assert shard_a != fake_key
+        assert shard_a.startswith("sk-ant-")
+
+        client = anthropic.Anthropic(
+            api_key=shard_a,
+            base_url=f"http://127.0.0.1:{port}/{alias}",
+        )
+        with pytest.raises(anthropic.APIError) as exc:
+            client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        err_name = type(exc.value).__name__
+        err_str = str(exc.value).lower()
+        assert "connectionerror" != err_name
+        assert "traceback" not in err_str
+        assert "worthless" not in err_str

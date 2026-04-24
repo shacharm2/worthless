@@ -16,6 +16,7 @@ import re
 import signal
 import subprocess  # nosec B404
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Generator
@@ -268,26 +269,67 @@ def _parse_uvicorn_port(proc: subprocess.Popen, timeout: float = 15.0) -> int:
 # Health polling
 # ---------------------------------------------------------------------------
 
+# Reject PIDs outside the valid range for any mainstream OS.
+# Linux default pid_max is 4194304; macOS uses 99998. Shared by
+# `poll_health_pid` (below) and `check_pid` (further down).
+MAX_VALID_PID: int = 4_194_304
 
-def poll_health(port: int, timeout: float = 10.0) -> bool:
-    """Poll ``GET /healthz`` until 200 or *timeout*.
 
-    Returns True if healthy, False if timeout.
+def _iter_healthz_responses(port: int, timeout: float) -> Generator[httpx.Response, None, None]:
+    """Yield each 200 response from ``GET /healthz`` until *timeout*.
+
+    Swallows connection/timeout/OS errors so callers see only successful
+    responses. Private: call ``poll_health`` for liveness or
+    ``poll_health_pid`` for authoritative PID resolution.
     """
     deadline = time.monotonic() + timeout
     url = f"http://127.0.0.1:{port}/healthz"
-
     with httpx.Client(timeout=2.0) as client:
         while time.monotonic() < deadline:
             try:
                 resp = client.get(url)
                 if resp.status_code == 200:
-                    return True
-            except (httpx.ConnectError, httpx.TimeoutException, OSError):
+                    yield resp
+            except (httpx.HTTPError, OSError):
                 pass
             time.sleep(0.3)
 
+
+def poll_health(port: int, timeout: float = 10.0) -> bool:
+    """Return True if ``GET /healthz`` returns 200 within *timeout* seconds."""
+    for _resp in _iter_healthz_responses(port, timeout):
+        return True
     return False
+
+
+def poll_health_pid(port: int, timeout: float = 10.0) -> int | None:
+    """Poll ``GET /healthz`` and return the proxy's self-reported PID.
+
+    The listening process exposes ``os.getpid()`` in the healthz payload so
+    the CLI can record an authoritative PID — the one actually bound to the
+    port — rather than whatever ``subprocess.Popen(...).pid`` returns on
+    this platform.
+
+    Returns the PID on success, ``None`` on timeout, non-200 response,
+    malformed JSON, a payload missing the ``pid`` field, or a ``pid`` out
+    of the valid range ``[2, MAX_VALID_PID]`` (in which case the caller
+    is expected to fall back to its own best guess).
+    """
+    for resp in _iter_healthz_responses(port, timeout):
+        try:
+            payload = resp.json()
+        except (ValueError, TypeError, httpx.HTTPError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        raw_pid = payload.get("pid")
+        # bool subclasses int in Python — reject True/False.
+        if isinstance(raw_pid, bool) or not isinstance(raw_pid, int):
+            return None
+        if raw_pid < 2 or raw_pid > MAX_VALID_PID:
+            return None
+        return raw_pid
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -301,12 +343,32 @@ def pid_path(home: WorthlessHome) -> Path:
 
 
 def write_pid(pid_path: Path, pid: int, port: int) -> None:
-    """Write PID file with ``pid\\nport`` format (0600 permissions)."""
-    fd = os.open(str(pid_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    """Write PID file with ``pid\\nport`` format (0600 permissions).
+
+    Writes atomically via a per-caller tmp file + ``os.replace`` — a
+    racing ``read_pid`` can see the old content or the new, never a torn
+    (truncated) state. The tmp name is unique per writer so two
+    concurrent ``worthless up`` invocations can't clobber each other's
+    in-flight tmp files and race the rename.
+    """
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=pid_path.name + ".",
+        suffix=".tmp",
+        dir=str(pid_path.parent),
+    )
+    tmp_path = Path(tmp_name)
     try:
+        # mkstemp already creates at 0600 on POSIX; be explicit to guard
+        # against umask / future cross-platform drift.
+        tmp_path.chmod(0o600)
         os.write(fd, f"{pid}\n{port}\n".encode())
-    finally:
+    except Exception:
         os.close(fd)
+        tmp_path.unlink(missing_ok=True)
+        raise
+    else:
+        os.close(fd)
+    tmp_path.replace(pid_path)
 
 
 def read_pid(pid_path: Path) -> tuple[int, int] | None:
@@ -319,11 +381,6 @@ def read_pid(pid_path: Path) -> tuple[int, int] | None:
         return int(parts[0]), int(parts[1])
     except (FileNotFoundError, ValueError, IndexError, OSError):
         return None
-
-
-# Reject PIDs outside the valid range for any mainstream OS.
-# Linux default pid_max is 4194304; macOS uses 99998.
-MAX_VALID_PID: int = 4_194_304
 
 
 def check_pid(pid: int) -> bool:

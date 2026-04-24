@@ -380,7 +380,13 @@ class TestGateBeforeDecrypt:
 
         proxy_app.state.repo.fetch_encrypted = mock_fetch
         proxy_app.state.repo.decrypt_shard = mock_decrypt
-        proxy_app.state.rules_engine = type("MockEngine", (), {"evaluate": mock_evaluate})()
+
+        async def mock_release(_self, alias, amount):
+            pass
+
+        proxy_app.state.rules_engine = type(
+            "MockEngine", (), {"evaluate": mock_evaluate, "release_spend_reservation": mock_release}
+        )()
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(
@@ -426,7 +432,8 @@ class TestGateBeforeDecrypt:
                         body=b'{"error": "spend cap exceeded"}',
                         headers={"content-type": "application/json"},
                     )
-                )
+                ),
+                "release_spend_reservation": AsyncMock(return_value=None),
             },
         )()
 
@@ -1803,7 +1810,8 @@ class TestTimingAttacks:
                         body=b'{"error": "spend cap exceeded"}',
                         headers={"content-type": "application/json"},
                     )
-                )
+                ),
+                "release_spend_reservation": AsyncMock(return_value=None),
             },
         )()
 
