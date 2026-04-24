@@ -40,12 +40,15 @@ def _docker_available() -> bool:
     # Deliberate PATH-resolved lookup: users install docker under wildly
     # varying prefixes (/usr/bin, /opt/homebrew/bin, Docker Desktop).
     # We already gated on ``shutil.which`` above.
-    result = subprocess.run(
-        ["docker", "version", "--format", "{{.Server.Version}}"],  # noqa: S607
-        capture_output=True,
-        timeout=5,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Version}}"],  # noqa: S607
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
     return result.returncode == 0
 
 

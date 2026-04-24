@@ -84,7 +84,11 @@ async def _run() -> int:
         _LOG.error("share load failed: %s", exc)
         return 1
 
-    backend = FernetBackend(shares=shares)
+    try:
+        backend = FernetBackend(shares=shares)
+    except ValueError as exc:
+        _LOG.error("backend init failed: %s", exc)
+        return 1
 
     try:
         server = await start_sidecar(

@@ -63,7 +63,7 @@ def sidecar_socket_path() -> Generator[Path, None, None]:
 
 @pytest.fixture
 def fernet_shares() -> tuple[bytes, bytes]:
-    """Two 32-byte shares whose XOR yields a valid urlsafe-b64 Fernet key."""
+    """Two 44-byte shares whose XOR yields a valid urlsafe-b64 Fernet key."""
     key = base64.urlsafe_b64encode(secrets.token_bytes(32))  # 44 bytes
     share_a = secrets.token_bytes(len(key))
     share_b = bytes(a ^ k for a, k in zip(share_a, key, strict=True))
