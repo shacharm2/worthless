@@ -60,11 +60,7 @@ def _proxy_base_url(alias: str) -> str:
 
 @dataclass(eq=False)
 class _PlannedUpdate:
-    """One key's in-flight lock plan — built pass-1, consumed by hook + unwind.
-
-    No `plaintext` field: `reconstruct_key_fp` verifies the HMAC commitment
-    internally, so calling it *is* the verify step.
-    """
+    """One key's in-flight lock plan — built pass-1, consumed by hook + unwind."""
 
     alias: str
     var_name: str
@@ -103,18 +99,16 @@ def _build_verify_hook(planned: list[_PlannedUpdate]):
                     p.prefix,
                     p.charset,
                 )
-            except ShardTamperedError as exc:
-                raise UnsafeRewriteRefused(UnsafeReason.VERIFY_FAILED) from exc
+            except ShardTamperedError:
+                # from None: drop traceback chain holding shard-material locals.
+                raise UnsafeRewriteRefused(UnsafeReason.VERIFY_FAILED) from None
             except ValueError as exc:
-                # Prefix/length/charset mismatch — data-model invariant broken.
-                # Not a refusable scenario; surface loudly (but .env still
-                # byte-identical since we're pre-rename).
                 raise WorthlessError(
                     ErrorCode.SHARD_STORAGE_FAILED,
                     sanitize_exception(exc, generic="shard reconstruction malformed"),
-                ) from exc
-            except Exception as exc:  # noqa: BLE001 — preserve opaque refusal contract
-                raise UnsafeRewriteRefused(UnsafeReason.VERIFY_FAILED) from exc
+                ) from None
+            except Exception:  # noqa: BLE001 — preserve opaque refusal contract
+                raise UnsafeRewriteRefused(UnsafeReason.VERIFY_FAILED) from None
             finally:
                 if reconstructed is not None:
                     zero_buf(reconstructed)
@@ -125,7 +119,6 @@ def _build_verify_hook(planned: list[_PlannedUpdate]):
 async def _pass1_db_writes(
     repo: ShardRepository,
     candidates: list[tuple[str, str, str]],
-    env_path: Path,
     env_str: str,
     token_budget_daily: int | None,
     planned_out: list[_PlannedUpdate],
@@ -252,9 +245,9 @@ def _batch_rewrite(
                 base_url_var
                 and base_url_var not in updates
                 and base_url_var not in existing_env_keys
+                and base_url_var not in additions
             ):
                 additions[base_url_var] = _proxy_base_url(p.alias)
-                existing_env_keys.add(base_url_var)
 
     rewrite_env_keys(
         env_path,
@@ -273,9 +266,9 @@ async def _compensating_unwind(
         try:
             await repo.delete_enrollment(p.alias, p.env_path_str)
             if p.was_fresh_enroll:
-                remaining = await repo.list_enrollments(p.alias)
-                if not remaining:
-                    await repo.delete_enrolled(p.alias)
+                # Fresh-enroll created this shard + its only enrollment in this
+                # same pass — delete_enrollment above just removed the last one.
+                await repo.delete_enrolled(p.alias)
         except Exception as exc:  # noqa: BLE001 — keep unwinding subsequent aliases
             logger.debug("Unwind failed for alias %s", p.alias, exc_info=True)
             errors.append(exc)
@@ -330,7 +323,7 @@ def _lock_keys(
         try:
             if not quiet:
                 console.print_hint(f"  Protecting {len(candidates)} key(s)...")
-            await _pass1_db_writes(repo, candidates, env_path, env_str, token_budget_daily, planned)
+            await _pass1_db_writes(repo, candidates, env_str, token_budget_daily, planned)
             if not planned:
                 return 0
             _batch_rewrite(env_path, planned, keys_only, existing_env_keys)

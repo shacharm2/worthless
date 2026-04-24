@@ -1,15 +1,7 @@
-"""RED tests for the WOR-276 commit 5b transactional ``_lock_keys`` refactor.
+"""Transactional-lock invariants for ``worthless lock`` across N keys.
 
-These tests lock the invariant: ``worthless lock`` across N keys is
-atomic. Either every key is enrolled in the DB AND ``.env`` is fully
-rewritten (happy path), or the DB has zero new rows AND ``.env`` is
-byte-identical to pre-lock (any failure path).
-
-The current implementation in ``src/worthless/cli/commands/lock.py``
-does per-key ``rewrite_env_key`` + ``add_or_rewrite_env_key`` loops —
-it is NOT atomic. These tests are expected to FAIL against HEAD
-(``feature/wor-276-transactional-lock`` pre-refactor) and to turn
-GREEN once the design in ``.beads/wor-276-commit-5b-design.md`` lands.
+Either every key is enrolled in the DB AND ``.env`` is fully rewritten,
+or the DB has zero new rows AND ``.env`` is byte-identical to pre-lock.
 """
 
 from __future__ import annotations
@@ -79,12 +71,7 @@ class TestBatchLockSingleSafeRewriteCall:
         three_key_env: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Locking 3 keys must issue exactly ONE ``safe_rewrite`` call.
-
-        Current HEAD: per-key ``rewrite_env_key`` + ``add_or_rewrite_env_key``
-        loop → multiple calls. Post-refactor (``rewrite_env_keys`` batch):
-        exactly 1 call.
-        """
+        """Locking 3 keys must issue exactly ONE ``safe_rewrite`` call."""
         import worthless.cli.dotenv_rewriter as rw
 
         call_count = 0
@@ -104,8 +91,7 @@ class TestBatchLockSingleSafeRewriteCall:
         )
         assert result.exit_code == 0, result.output
         assert call_count == 1, (
-            f"Expected exactly 1 safe_rewrite call for atomic 3-key lock, "
-            f"got {call_count}. Current per-key loop is not transactional."
+            f"Expected exactly 1 safe_rewrite call for atomic 3-key lock, got {call_count}."
         )
 
 
@@ -158,19 +144,8 @@ class TestBatchLockHappyPath:
         assert "ANTHROPIC_BASE_URL=" in content
 
 
-# ---------------------------------------------------------------------------
-# Shared fault-injection helper for tests 3-5
-# ---------------------------------------------------------------------------
-
-
-def _inject_middle_key_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force a VERIFY_FAILED refusal during the batch rewrite.
-
-    Replaces ``_build_verify_hook`` with one that raises
-    ``UnsafeRewriteRefused(VERIFY_FAILED)`` — the real ``safe_rewrite``
-    path inside ``rewrite_env_keys`` calls the hook before the atomic
-    rename, so raising aborts the rename and leaves ``.env`` byte-identical.
-    """
+def _inject_verify_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Swap the verify hook for one that unconditionally refuses the rewrite."""
     import worthless.cli.commands.lock as lock_mod
 
     def _bad_hook_builder(*_args, **_kwargs):
@@ -194,9 +169,9 @@ class TestBatchLockAllOrNothingEnvIdentical:
         three_key_env: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Middle-key verify failure → ``.env`` sha256 equals pre-lock sha256."""
+        """Verify failure → ``.env`` sha256 equals pre-lock sha256."""
         pre_sha = _sha256_of(three_key_env)
-        _inject_middle_key_failure(monkeypatch)
+        _inject_verify_failure(monkeypatch)
 
         result = runner.invoke(
             app,
@@ -206,10 +181,7 @@ class TestBatchLockAllOrNothingEnvIdentical:
         assert result.exit_code != 0, result.output
 
         post_sha = _sha256_of(three_key_env)
-        assert post_sha == pre_sha, (
-            ".env was mutated despite a mid-flight VERIFY_FAILED. "
-            "Per-key loop committed partial writes before the failure."
-        )
+        assert post_sha == pre_sha, ".env was mutated despite a VERIFY_FAILED refusal."
 
 
 # ---------------------------------------------------------------------------
@@ -224,8 +196,8 @@ class TestBatchLockAllOrNothingDbRolledBack:
         three_key_env: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Middle-key verify failure → zero enrollments, zero shards for every alias."""
-        _inject_middle_key_failure(monkeypatch)
+        """Verify failure → zero enrollments, zero shards for every alias."""
+        _inject_verify_failure(monkeypatch)
 
         result = runner.invoke(
             app,
@@ -237,8 +209,7 @@ class TestBatchLockAllOrNothingDbRolledBack:
         repo = _repo(home_dir)
         enrollments = asyncio.run(repo.list_enrollments())
         assert enrollments == [], (
-            f"DB still has {len(enrollments)} enrollment(s) after a failed lock — "
-            "pass-1 rows were not unwound."
+            f"DB still has {len(enrollments)} enrollment(s) after a failed lock."
         )
 
         # Defensive: raw shards table should be empty too.
@@ -263,20 +234,14 @@ class TestBatchLockRewriteRefusedLeavesNoGhostTmp:
         three_key_env: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Middle-key verify failure → only ``.env`` remains AND it is byte-identical.
+        """Verify failure → only ``.env`` remains AND it is byte-identical.
 
-        Two invariants, both must hold:
-
+        Two invariants:
         1. No ``.env.tmp-*`` / ``.env.staging-*`` litter in the parent dir.
         2. ``.env`` sha256 matches pre-lock.
-
-        Pre-refactor the second invariant fails (per-key loop commits
-        partial writes); post-refactor both hold because the single
-        ``rewrite_env_keys`` call either commits atomically or refuses
-        with ``safe_rewrite``'s cleanup spine ensuring no artifacts.
         """
         pre_sha = _sha256_of(three_key_env)
-        _inject_middle_key_failure(monkeypatch)
+        _inject_verify_failure(monkeypatch)
 
         result = runner.invoke(
             app,
@@ -291,7 +256,4 @@ class TestBatchLockRewriteRefusedLeavesNoGhostTmp:
         )
 
         post_sha = _sha256_of(three_key_env)
-        assert post_sha == pre_sha, (
-            ".env mutated despite refusal — refactor must make refused lock "
-            "a pure no-op on the filesystem."
-        )
+        assert post_sha == pre_sha, ".env mutated despite refusal."
