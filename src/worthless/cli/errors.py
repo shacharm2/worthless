@@ -50,6 +50,7 @@ class UnsafeReason(str, Enum):
     IO_ERROR = "io_error"
     LOCKED = "locked"
     VERIFY_FAILED = "verify_failed"
+    FILESYSTEM = "filesystem"
 
 
 _UNSAFE_REWRITE_PUBLIC_MESSAGE = "unsafe rewrite refused"

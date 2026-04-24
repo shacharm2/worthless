@@ -41,6 +41,7 @@ else:  # pragma: no cover — PLATFORM gate refuses before any fcntl is used
 from dotenv import dotenv_values
 
 from worthless.cli.errors import UnsafeReason, UnsafeRewriteRefused
+from worthless.cli.fs_check import require_atomic_fs
 
 __all__ = [
     "UnsafeReason",
@@ -731,6 +732,7 @@ def _safe_rewrite_core(
 
     # -- 1-5. Pre-open invariant gates. ------------------------------------
     _platform_check()
+    require_atomic_fs(target)
     _check_basename(target)
     _check_user_arg_basename(target, original_user_arg)
     lst = _lstat_target(target)
