@@ -49,6 +49,7 @@ class UnsafeReason(str, Enum):
     TMP_COLLISION = "tmp_collision"
     IO_ERROR = "io_error"
     LOCKED = "locked"
+    BACKUP = "backup"
 
 
 _UNSAFE_REWRITE_PUBLIC_MESSAGE = "unsafe rewrite refused"
