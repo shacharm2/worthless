@@ -8,25 +8,33 @@ import logging
 import re
 import stat
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
-from worthless.cli.console import get_console
-from worthless.cli.dotenv_rewriter import (
-    add_or_rewrite_env_key,
-    build_enrolled_locations,
-    rewrite_env_key,
-    scan_env_keys,
-)
-from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
-from worthless.cli.key_patterns import detect_prefix
 from worthless.cli.commands.up import _resolve_port
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
+from worthless.cli.console import get_console
+from worthless.cli.dotenv_rewriter import (
+    build_enrolled_locations,
+    rewrite_env_keys,
+    scan_env_keys,
+)
+from worthless.cli.errors import (
+    ErrorCode,
+    UnsafeReason,
+    UnsafeRewriteRefused,
+    WorthlessError,
+    error_boundary,
+    sanitize_exception,
+)
+from worthless.cli.key_patterns import detect_prefix
 from worthless.crypto.splitter import (
     _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
     derive_shard_a_fp,
+    reconstruct_key_fp,
     split_key_fp,
 )
 from worthless.crypto.types import zero_buf
@@ -50,6 +58,230 @@ def _proxy_base_url(alias: str) -> str:
     return f"http://127.0.0.1:{_resolve_port(None)}/{alias}/v1"
 
 
+@dataclass(eq=False)
+class _PlannedUpdate:
+    """One key's in-flight lock plan — built pass-1, consumed by hook + unwind.
+
+    No `plaintext` field: `reconstruct_key_fp` verifies the HMAC commitment
+    internally, so calling it *is* the verify step.
+    """
+
+    alias: str
+    var_name: str
+    env_path_str: str
+    provider: str
+    shard_a: bytearray
+    shard_b: bytearray
+    commitment: bytearray
+    nonce: bytearray
+    prefix: str
+    charset: str
+    was_fresh_enroll: bool
+
+    def zero(self) -> None:
+        for buf in (self.shard_a, self.shard_b, self.commitment, self.nonce):
+            buf[:] = b"\x00" * len(buf)
+
+
+def _build_verify_hook(planned: list[_PlannedUpdate]):
+    """Return a zero-arg hook that raises on any shard round-trip failure.
+
+    Fires inside ``safe_rewrite`` after the tmp fsync but before the atomic
+    rename — see ``safe_rewrite._hook_before_replace``. Raising aborts the
+    rename, leaving ``.env`` byte-identical.
+    """
+
+    def _hook() -> None:
+        for p in planned:
+            reconstructed: bytearray | None = None
+            try:
+                reconstructed = reconstruct_key_fp(
+                    p.shard_a,
+                    p.shard_b,
+                    p.commitment,
+                    p.nonce,
+                    p.prefix,
+                    p.charset,
+                )
+            except ShardTamperedError as exc:
+                raise UnsafeRewriteRefused(UnsafeReason.VERIFY_FAILED) from exc
+            except ValueError as exc:
+                # Prefix/length/charset mismatch — data-model invariant broken.
+                # Not a refusable scenario; surface loudly (but .env still
+                # byte-identical since we're pre-rename).
+                raise WorthlessError(
+                    ErrorCode.SHARD_STORAGE_FAILED,
+                    sanitize_exception(exc, generic="shard reconstruction malformed"),
+                ) from exc
+            except Exception as exc:  # noqa: BLE001 — preserve opaque refusal contract
+                raise UnsafeRewriteRefused(UnsafeReason.VERIFY_FAILED) from exc
+            finally:
+                if reconstructed is not None:
+                    zero_buf(reconstructed)
+
+    return _hook
+
+
+async def _pass1_db_writes(
+    repo: ShardRepository,
+    candidates: list[tuple[str, str, str]],
+    env_path: Path,
+    env_str: str,
+    token_budget_daily: int | None,
+    planned_out: list[_PlannedUpdate],
+) -> None:
+    """Do every DB write; append each ``_PlannedUpdate`` to *planned_out*.
+
+    MUTATES *planned_out* so partial-failure paths still expose the
+    bytearrays the caller's ``finally`` needs to zero.
+    """
+    for var_name, value, provider in candidates:
+        if provider not in _SUPPORTED_PROVIDERS:
+            get_console().print_warning(
+                f"Skipping {var_name}: provider {provider!r} not yet supported"
+            )
+            continue
+
+        alias = _make_alias(provider, value)
+        db_shard = await repo.fetch_encrypted(alias)
+
+        if db_shard is not None:
+            if not db_shard.prefix or not db_shard.charset:
+                raise WorthlessError(
+                    ErrorCode.SHARD_STORAGE_FAILED,
+                    f"Alias {alias!r} predates format-preserving split. "
+                    "Run `worthless unlock --all` then re-lock this .env.",
+                )
+            stored_decrypted = repo.decrypt_shard(db_shard)
+            verify_payload = bytearray(value.encode("utf-8"))
+            try:
+                try:
+                    _verify_commitment(
+                        verify_payload,
+                        stored_decrypted.commitment,
+                        stored_decrypted.nonce,
+                    )
+                except ShardTamperedError as exc:
+                    raise WorthlessError(
+                        ErrorCode.SHARD_STORAGE_FAILED,
+                        f"Alias {alias!r} exists but {var_name} does not match "
+                        "the originally-locked key (commitment mismatch).",
+                    ) from exc
+
+                derived_shard_a = derive_shard_a_fp(
+                    value,
+                    stored_decrypted.shard_b,
+                    db_shard.prefix,
+                    db_shard.charset,
+                )
+                await repo.add_enrollment(alias, var_name=var_name, env_path=env_str)
+                planned_out.append(
+                    _PlannedUpdate(
+                        alias=alias,
+                        var_name=var_name,
+                        env_path_str=env_str,
+                        provider=provider,
+                        shard_a=derived_shard_a,
+                        shard_b=bytearray(stored_decrypted.shard_b),
+                        commitment=bytearray(stored_decrypted.commitment),
+                        nonce=bytearray(stored_decrypted.nonce),
+                        prefix=db_shard.prefix,
+                        charset=db_shard.charset,
+                        was_fresh_enroll=False,
+                    )
+                )
+            finally:
+                zero_buf(verify_payload)
+                stored_decrypted.zero()
+            continue
+
+        # Fresh enroll
+        try:
+            prefix = detect_prefix(value, provider)
+        except ValueError:
+            prefix = ""
+        sr = split_key_fp(value, prefix, provider)
+        try:
+            stored = StoredShard(
+                shard_b=sr.shard_b,
+                commitment=sr.commitment,
+                nonce=sr.nonce,
+                provider=provider,
+            )
+            await repo.store_enrolled(
+                alias,
+                stored,
+                var_name=var_name,
+                env_path=env_str,
+                token_budget_daily=token_budget_daily,
+                prefix=sr.prefix,
+                charset=sr.charset,
+            )
+            planned_out.append(
+                _PlannedUpdate(
+                    alias=alias,
+                    var_name=var_name,
+                    env_path_str=env_str,
+                    provider=provider,
+                    shard_a=bytearray(sr.shard_a),
+                    shard_b=bytearray(sr.shard_b),
+                    commitment=bytearray(sr.commitment),
+                    nonce=bytearray(sr.nonce),
+                    prefix=sr.prefix,
+                    charset=sr.charset,
+                    was_fresh_enroll=True,
+                )
+            )
+        finally:
+            sr.zero()
+
+
+def _batch_rewrite(
+    env_path: Path,
+    planned: list[_PlannedUpdate],
+    keys_only: bool,
+    existing_env_keys: set[str],
+) -> None:
+    """One ``safe_rewrite`` call for every planned update + BASE_URL additions."""
+    updates: dict[str, str] = {p.var_name: p.shard_a.decode("utf-8") for p in planned}
+    additions: dict[str, str] = {}
+    if not keys_only:
+        for p in planned:
+            base_url_var = _PROVIDER_ENV_MAP.get(p.provider)
+            if (
+                base_url_var
+                and base_url_var not in updates
+                and base_url_var not in existing_env_keys
+            ):
+                additions[base_url_var] = _proxy_base_url(p.alias)
+                existing_env_keys.add(base_url_var)
+
+    rewrite_env_keys(
+        env_path,
+        updates,
+        additions=additions or None,
+        _hook_before_replace=_build_verify_hook(planned),
+    )
+
+
+async def _compensating_unwind(
+    repo: ShardRepository, planned: list[_PlannedUpdate]
+) -> list[Exception]:
+    """Best-effort rollback of pass-1 DB writes. Returns list of failures."""
+    errors: list[Exception] = []
+    for p in reversed(planned):
+        try:
+            await repo.delete_enrollment(p.alias, p.env_path_str)
+            if p.was_fresh_enroll:
+                remaining = await repo.list_enrollments(p.alias)
+                if not remaining:
+                    await repo.delete_enrolled(p.alias)
+        except Exception as exc:  # noqa: BLE001 — keep unwinding subsequent aliases
+            logger.debug("Unwind failed for alias %s", p.alias, exc_info=True)
+            errors.append(exc)
+    return errors
+
+
 def _lock_keys(
     env_path: Path,
     home: WorthlessHome,
@@ -58,25 +290,19 @@ def _lock_keys(
     quiet: bool = False,
     keys_only: bool = False,
 ) -> int:
-    """Core lock logic. Returns count of keys protected.
+    """Transactional multi-key lock.
 
-    When *quiet* is True, suppress progress and summary output.
-    The caller (e.g. the default command pipeline) controls its own
-    output instead.
-
-    When *keys_only* is True, only rewrite API key values in .env
-    (skip BASE_URL injection).
+    Pass-1 does every DB write and builds a ``_PlannedUpdate`` list. A single
+    ``rewrite_env_keys`` call then updates ``.env`` atomically, with a verify
+    hook that reconstructs every shard before the rename commits. On any
+    failure the DB writes are unwound so the system is consistent either way.
     """
     console = get_console()
 
     if not env_path.exists():
         raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"File not found: {env_path}")
-
     if env_path.is_symlink():
-        raise WorthlessError(
-            ErrorCode.ENV_NOT_FOUND,
-            f"Refusing to follow symlink: {env_path}",
-        )
+        raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"Refusing to follow symlink: {env_path}")
 
     if not quiet:
         console.print_hint(f"Scanning {env_path} for API keys...")
@@ -89,170 +315,41 @@ def _lock_keys(
         all_enrollments = await repo.list_enrollments()
         enrolled_locations = build_enrolled_locations(all_enrollments)
 
-        keys = scan_env_keys(env_path, enrolled_locations=enrolled_locations)
-        if not keys:
+        scanned = scan_env_keys(env_path, enrolled_locations=enrolled_locations)
+        if not scanned:
             console.print_warning("No unprotected API keys found.")
             return 0
 
-        total = len(keys)
-        count = 0
+        candidates = [
+            (var_name, value, provider_override or detected_provider)
+            for var_name, value, detected_provider in scanned
+        ]
+        existing_env_keys = {var_name for var_name, _, _ in scanned}
 
-        for i, (var_name, value, detected_provider) in enumerate(keys, 1):
+        planned: list[_PlannedUpdate] = []
+        try:
             if not quiet:
-                console.print_hint(f"  [{i}/{total}] Protecting {var_name}...")
-            provider = provider_override or detected_provider
-
-            # Only enroll providers that wrap can redirect
-            if provider not in _SUPPORTED_PROVIDERS:
-                console.print_warning(
-                    f"Skipping {var_name}: provider {provider!r} "
-                    "not yet supported for proxy redirect"
-                )
-                continue
-
-            alias = _make_alias(provider, value)
-
-            # Re-lock guard: alias already in DB (same real key from another
-            # var/env). Derive the shard-A that pairs with the stored shard-B
-            # (modular inverse), verify the commitment, then rewrite this .env.
-            # Silent no-op here would leave the real key plaintext on disk.
-            db_shard = await repo.fetch_encrypted(alias)
-            if db_shard is not None:
-                if not db_shard.prefix or not db_shard.charset:
-                    raise WorthlessError(
-                        ErrorCode.SHARD_STORAGE_FAILED,
-                        f"Alias {alias!r} predates format-preserving split "
-                        "(no prefix/charset stored). Run `worthless unlock --all` "
-                        "then re-lock this .env.",
+                console.print_hint(f"  Protecting {len(candidates)} key(s)...")
+            await _pass1_db_writes(repo, candidates, env_path, env_str, token_budget_daily, planned)
+            if not planned:
+                return 0
+            _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
+            return len(planned)
+        except Exception:
+            if planned:
+                unwind_errors = await _compensating_unwind(repo, planned)
+                if unwind_errors:
+                    console.print_warning(
+                        f"Database may contain {len(unwind_errors)} stale row(s); "
+                        "run `worthless unlock --all` to reconcile."
                     )
-                stored_decrypted = repo.decrypt_shard(db_shard)
-                verify_payload = bytearray(value.encode("utf-8"))
-                derived_shard_a: bytearray | None = None
-                # Whole-file snapshot: the re-lock branch makes up to two
-                # .env writes (key + BASE_URL) before the DB enrollment. A
-                # failure between them would leave a half-rewritten .env
-                # (e.g. real key restored but BASE_URL still pointing at
-                # the proxy). Snapshot once, restore whole file on any fail.
-                original_env_content: str | None = None
-                try:
-                    try:
-                        _verify_commitment(
-                            verify_payload,
-                            stored_decrypted.commitment,
-                            stored_decrypted.nonce,
-                        )
-                    except ShardTamperedError as exc:
-                        raise WorthlessError(
-                            ErrorCode.SHARD_STORAGE_FAILED,
-                            f"Alias {alias!r} exists but the provided {var_name} does "
-                            "not match the originally-locked key (commitment mismatch).",
-                        ) from exc
-
-                    derived_shard_a = derive_shard_a_fp(
-                        value,
-                        stored_decrypted.shard_b,
-                        db_shard.prefix,
-                        db_shard.charset,
-                    )
-                    original_env_content = env_path.read_text()
-                    rewrite_env_key(env_path, var_name, derived_shard_a.decode("utf-8"))
-
-                    if not keys_only:
-                        base_url_var = _PROVIDER_ENV_MAP.get(provider)
-                        if base_url_var:
-                            add_or_rewrite_env_key(env_path, base_url_var, _proxy_base_url(alias))
-
-                    await repo.add_enrollment(
-                        alias,
-                        var_name=var_name,
-                        env_path=env_str,
-                    )
-                    count += 1
-                except Exception as exc:
-                    if original_env_content is not None:
-                        try:
-                            env_path.write_text(original_env_content)
-                        except Exception:
-                            logger.debug("Failed to restore .env for %s", var_name, exc_info=True)
-                    if isinstance(exc, WorthlessError):
-                        raise
-                    raise WorthlessError(
-                        ErrorCode.SHARD_STORAGE_FAILED,
-                        sanitize_exception(exc, generic="failed to re-lock key"),
-                    ) from exc
-                finally:
-                    zero_buf(verify_payload)
-                    if derived_shard_a is not None:
-                        zero_buf(derived_shard_a)
-                    stored_decrypted.zero()
-                continue
-
-            try:
-                prefix = detect_prefix(value, provider)
-            except ValueError:
-                prefix = ""
-
-            sr = split_key_fp(value, prefix, provider)
-            db_written = False
-            env_rewritten = False
-            try:
-                stored = StoredShard(
-                    shard_b=sr.shard_b,
-                    commitment=sr.commitment,
-                    nonce=sr.nonce,
-                    provider=provider,
-                )
-                # DB first -- atomic commit point
-                await repo.store_enrolled(
-                    alias,
-                    stored,
-                    var_name=var_name,
-                    env_path=env_str,
-                    token_budget_daily=token_budget_daily,
-                    prefix=sr.prefix,
-                    charset=sr.charset,
-                )
-                db_written = True
-
-                # Rewrite .env: API_KEY = shard-A (format-preserving)
-                shard_a_str = sr.shard_a.decode("utf-8")
-                rewrite_env_key(env_path, var_name, shard_a_str)
-                env_rewritten = True
-
-                # Write BASE_URL unless --keys-only
-                if not keys_only:
-                    base_url_var = _PROVIDER_ENV_MAP.get(provider)
-                    if base_url_var:
-                        url = _proxy_base_url(alias)
-                        add_or_rewrite_env_key(env_path, base_url_var, url)
-
-                count += 1
-            except Exception as exc:
-                # Restore .env to original value if we rewrote it
-                if env_rewritten:
-                    try:
-                        rewrite_env_key(env_path, var_name, value)
-                    except Exception:
-                        logger.debug("Failed to restore .env for %s", var_name, exc_info=True)
-                if db_written:
-                    await repo.delete_enrollment(alias, env_str)
-                    remaining = await repo.list_enrollments(alias)
-                    if not remaining:
-                        await repo.delete_enrolled(alias)
-                if isinstance(exc, WorthlessError):
-                    raise
-                raise WorthlessError(
-                    ErrorCode.SHARD_STORAGE_FAILED,
-                    sanitize_exception(exc, generic="failed to protect key"),
-                ) from exc
-            finally:
-                sr.zero()
-
-        return count
+            raise
+        finally:
+            for p in planned:
+                p.zero()
 
     count = asyncio.run(_lock_async())
 
-    # Tighten .env permissions — shard-A is secret material
     if count and env_path.exists():
         current = env_path.stat().st_mode
         if current & (stat.S_IRWXG | stat.S_IRWXO):
@@ -308,8 +405,6 @@ def _enroll_single(
             nonce=sr.nonce,
             provider=provider,
         )
-        # store_enrolled is atomic (BEGIN IMMEDIATE + commit) — no
-        # partial state to compensate on failure.
         await repo.store_enrolled(
             alias,
             stored,
