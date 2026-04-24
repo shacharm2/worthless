@@ -172,3 +172,14 @@ An external red-team pass on the product claim (brutus gate, WOR-307 validation 
 - ❌ "Proxy RCE can't steal keys." It can — one `open` call at a time — just not in bulk and not offline.
 
 **Honest positioning:** this raises the cost of offline decryption of *cold* (at-rest, not currently flowing through the proxy) ciphertext. It does not turn a live-proxy compromise into a non-event. For the full security story users want, v2.0 MPC is load-bearing — v1.1 sidecar is a down-payment, not a finished product.
+
+## 10. Architectural debts the contract freeze bakes in
+
+A round-2 architect-reviewer pass flagged four debts that freezing the v1.1 contract as-is carries into v2.0. Freezing is still the right call (unfreezing would delay the epic for a request/response crypto KMS that doesn't need these features), but the debts should be visible up-front so v2.0 doesn't claim forward-compat it doesn't have.
+
+1. **No `session_id` distinct from `id`.** `id` is per-request correlation. Multi-round MPC protocols need a session token that survives across requests. Today: stuff `session_id` inside `body`. Expected v:2 bump trigger if MPC needs first-class session semantics.
+2. **No `stream` / `cancel` kinds.** Only `req` / `resp` / `err`. Long-running MPC rounds with server-driven progress or client-side deadline cancellation can't express either cleanly — proxy's only recourse is TCP close. Expected v:2 bump trigger and the most likely one.
+3. **Backend-specific `attest` verifier lives proxy-side.** The wire stays opaque (per §5), but whoever verifies an MPC `attest` bundle needs MPC-aware code in the proxy. The contract is wire-agnostic; the verifier split is not. Plan the proxy-side verifier abstraction before v2.0 lands so this coupling doesn't compound.
+4. **Handshake downgrade path unwritten.** `_PROTOCOL_VERSION` is exact-match (server rejects if `1 ∉ client_versions`). A v:2 server accepting v:1 clients is a policy choice, not a spec. Add a "downgrade-on-handshake" clause to the §Versioning section of `docs/ipc-contract.md` *before* we ever ship v:2.
+
+None of these break v1.1 for its stated workload (Fernet request/response). All four are expected to surface when v2.0 work starts; treat them as known-debt, not discovered-debt.
