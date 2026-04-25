@@ -48,31 +48,15 @@ const CURL_FAMILY_PREFIXES = [
   "HTTPie/",
 ] as const;
 
-// Tokens that should never appear in a real script-client UA. If the UA
-// contains any of these (case-sensitive — the legitimate-curl space
-// doesn't include "Mozilla" in any casing), classify as composite and
-// fall back to the safe branch.
-const COMPOSITE_REJECT_TOKENS = [
-  "Mozilla",
-  "WebKit",
-  "Gecko",
-  "Chrome",
-  "Safari",
-  "Firefox",
-  "Edge",
-  "Opera",
-  "OPR",
-  "bot",
-  "Bot",
-  "spider",
-  "Spider",
-  "crawl",
-  "Crawl",
-];
-
-// Characters that mark composite-UA grammar. Real curl-family UAs use
-// space-and-slash only.
-const COMPOSITE_REJECT_CHARS = /[(),;]/;
+// Composite-UA rejection in a single regex pass:
+//   - parens / comma / semicolon: composite-UA grammar markers (real
+//     curl-family UAs use space-and-slash only)
+//   - browser/bot identifier substrings: `Mozilla`, `WebKit`, `Gecko`,
+//     `Chrome`, `Safari`, `Firefox`, `Edge`, `Opera`, `OPR`, `bot`/`Bot`,
+//     `spider`/`Spider`, `crawl`/`Crawl` — case-sensitive (the legitimate
+//     curl space doesn't include these in any casing).
+const COMPOSITE_REJECT =
+  /[(),;]|Mozilla|WebKit|Gecko|Chrome|Safari|Firefox|Edge|Opera|OPR|Bot|bot|Spider|spider|Crawl|crawl/;
 
 /**
  * Classify a User-Agent header value as curl-family or not.
@@ -94,18 +78,12 @@ export function isCurlFamily(ua: string | null | undefined): boolean {
     if (code < 0x20 || code === 0x7f) return false;
   }
 
-  // Explicit leading-whitespace rejection — even if RFC OWS-stripping was
-  // bypassed by an upstream proxy, defend at this layer.
-  const first = ua.charCodeAt(0);
-  if (first === 0x20) return false; // leading SP (HTAB caught above)
+  // Explicit leading-SP rejection — even if RFC OWS-stripping was bypassed
+  // by an upstream proxy, defend at this layer. (Leading HTAB caught above.)
+  if (ua.charCodeAt(0) === 0x20) return false;
 
-  // Composite-UA grammar markers — parens, comma, semicolon.
-  if (COMPOSITE_REJECT_CHARS.test(ua)) return false;
-
-  // Browser/bot identifier substrings.
-  for (const token of COMPOSITE_REJECT_TOKENS) {
-    if (ua.includes(token)) return false;
-  }
+  // Composite-UA grammar markers and browser/bot identifier substrings.
+  if (COMPOSITE_REJECT.test(ua)) return false;
 
   // Strict prefix match — no trim, no lowercase. `CURL/8.4.0` and
   // `  curl/8.4.0` both fail by design.

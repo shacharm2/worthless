@@ -49,6 +49,13 @@ const INSTALL_SH_LENGTH = INSTALL_SH_BYTES.byteLength;
 const WALKTHROUGH_BYTES = ENCODER.encode(WALKTHROUGH);
 const WALKTHROUGH_LENGTH = WALKTHROUGH_BYTES.byteLength;
 
+const TEXT_PLAIN = "text/plain; charset=utf-8";
+const NO_STORE = "no-store";
+const CACHEABLE = "public, max-age=300, must-revalidate";
+const HSTS = "max-age=63072000; includeSubDomains; preload";
+const CSP_NONE = "default-src 'none'";
+const ALLOW_READONLY = "GET, HEAD, OPTIONS";
+
 // sha256 is computed lazily on first request (Web Crypto digest is async)
 // and cached for the isolate's lifetime. Body is static, so the value is
 // stable across the cache.
@@ -101,28 +108,39 @@ function buildSecurityTxt(): string {
 
 // ---- Header builders -----------------------------------------------------
 
-const HSTS = "max-age=63072000; includeSubDomains; preload";
-
 /**
  * Apply the security-headers contract to a response Headers object.
  * Every response leaves the Worker with these set — there is no path that
  * skips them. Mutates and returns the same object for fluency.
+ *
+ * Read-only endpoint with no JSON or browser-script consumers; do NOT emit
+ * any `Access-Control-Allow-*` headers. M-03 forbids wildcard ACAO; the
+ * simplest defence is to not set CORS at all.
  */
 function withSecurityHeaders(h: Headers): Headers {
   h.set("X-Content-Type-Options", "nosniff");
   h.set("Strict-Transport-Security", HSTS);
   h.set("Referrer-Policy", "no-referrer");
-  // Read-only endpoint with no JSON or browser-script consumers; do not
-  // emit any `Access-Control-Allow-*` headers. M-03 forbids wildcard
-  // ACAO; the simplest defence is to not set CORS at all.
   return h;
+}
+
+/**
+ * Build the headers shared by every short, non-cacheable text response
+ * (404, 405, 414, 500, 503, OPTIONS). Callers add Allow / Content-Length /
+ * etc. as needed.
+ */
+function buildShortResponseHeaders(): Headers {
+  const h = new Headers();
+  h.set("Content-Type", TEXT_PLAIN);
+  h.set("Cache-Control", NO_STORE);
+  return withSecurityHeaders(h);
 }
 
 function buildInstallHeaders(env: Env, sha: string): Headers {
   const h = new Headers();
-  h.set("Content-Type", "text/plain; charset=utf-8");
+  h.set("Content-Type", TEXT_PLAIN);
   h.set("Content-Length", String(INSTALL_SH_LENGTH));
-  h.set("Cache-Control", "public, max-age=300, must-revalidate");
+  h.set("Cache-Control", CACHEABLE);
   h.set("Vary", "User-Agent, Accept-Encoding");
   h.set("ETag", `"${sha}"`);
   h.set("X-Worthless-Script-Sha256", sha);
@@ -131,82 +149,58 @@ function buildInstallHeaders(env: Env, sha: string): Headers {
   // Defence-in-depth: even though browsers never see this content (UA gate
   // routes them to the redirect), pin a strict CSP to neutralise any sniffer
   // that ignores nosniff.
-  h.set("Content-Security-Policy", "default-src 'none'");
+  h.set("Content-Security-Policy", CSP_NONE);
   return withSecurityHeaders(h);
 }
 
 function buildWalkthroughHeaders(sha: string): Headers {
   const h = new Headers();
-  h.set("Content-Type", "text/plain; charset=utf-8");
+  h.set("Content-Type", TEXT_PLAIN);
   h.set("Content-Length", String(WALKTHROUGH_LENGTH));
-  h.set("Cache-Control", "public, max-age=300, must-revalidate");
+  h.set("Cache-Control", CACHEABLE);
   h.set("Vary", "User-Agent, Accept-Encoding");
   h.set("ETag", `W/"walkthrough-${sha}"`);
-  h.set("Content-Security-Policy", "default-src 'none'");
+  h.set("Content-Security-Policy", CSP_NONE);
   return withSecurityHeaders(h);
 }
 
 function buildRedirectHeaders(location: string): Headers {
   const h = new Headers();
   h.set("Location", location);
-  h.set("Cache-Control", "no-store");
+  h.set("Cache-Control", NO_STORE);
   h.set("Vary", "User-Agent");
   h.set("Content-Length", "0");
   // Browser-side defence: even if a body somehow leaks through a 302
   // (intermediaries quirk), CSP prevents any script from running.
-  h.set("Content-Security-Policy", "default-src 'none'");
+  h.set("Content-Security-Policy", CSP_NONE);
   return withSecurityHeaders(h);
 }
 
 function buildSecurityTxtHeaders(body: string): Headers {
   const h = new Headers();
-  h.set("Content-Type", "text/plain; charset=utf-8");
+  h.set("Content-Type", TEXT_PLAIN);
   h.set("Content-Length", String(ENCODER.encode(body).byteLength));
   h.set("Cache-Control", "public, max-age=86400");
   return withSecurityHeaders(h);
 }
 
 function buildMethodNotAllowedHeaders(): Headers {
-  const h = new Headers();
-  h.set("Content-Type", "text/plain; charset=utf-8");
+  const h = buildShortResponseHeaders();
   // RFC 9110 §15.5.6 — the Allow header MUST list the methods this resource
   // accepts. Listing the read-only set so HTTP intermediaries can hint
   // their callers without us advertising mutating verbs.
-  h.set("Allow", "GET, HEAD, OPTIONS");
-  h.set("Cache-Control", "no-store");
-  return withSecurityHeaders(h);
-}
-
-function buildNotFoundHeaders(): Headers {
-  const h = new Headers();
-  h.set("Content-Type", "text/plain; charset=utf-8");
-  h.set("Cache-Control", "no-store");
-  return withSecurityHeaders(h);
+  h.set("Allow", ALLOW_READONLY);
+  return h;
 }
 
 function buildOptionsHeaders(): Headers {
-  const h = new Headers();
+  const h = buildShortResponseHeaders();
   // Read-only endpoint; advertise only safe methods. NOT setting
   // Access-Control-Allow-Origin at all is the safest CORS policy
   // (M-03 forbids wildcard, and any value here is risk we don't need).
-  h.set("Allow", "GET, HEAD, OPTIONS");
+  h.set("Allow", ALLOW_READONLY);
   h.set("Content-Length", "0");
-  h.set("Cache-Control", "no-store");
-  return withSecurityHeaders(h);
-}
-
-function buildErrorHeaders(): Headers {
-  const h = new Headers();
-  h.set("Content-Type", "text/plain; charset=utf-8");
-  h.set("Cache-Control", "no-store");
-  return withSecurityHeaders(h);
-}
-
-function buildUriTooLongHeaders(): Headers {
-  const h = new Headers();
-  h.set("Content-Type", "text/plain; charset=utf-8");
-  h.set("Cache-Control", "no-store");
-  return withSecurityHeaders(h);
+  return h;
 }
 
 // ---- Pathological-input guards (E-01 contract) --------------------------
@@ -243,24 +237,18 @@ const ACCEPT_ENCODING_MAX_CODINGS = 64;
  */
 function refuseBadInput(req: Request): Response | null {
   const ua = req.headers.get("user-agent");
-  if (ua !== null && ua.length > UA_MAX_LENGTH) {
-    return badInputResponse();
-  }
   const range = req.headers.get("range");
-  if (range !== null && !VALID_RANGE_VALUE.test(range)) {
-    return badInputResponse();
-  }
   const ae = req.headers.get("accept-encoding");
-  if (ae !== null && ae.split(",").length > ACCEPT_ENCODING_MAX_CODINGS) {
-    return badInputResponse();
-  }
-  return null;
-}
 
-function badInputResponse(): Response {
+  const bad =
+    (ua !== null && ua.length > UA_MAX_LENGTH) ||
+    (range !== null && !VALID_RANGE_VALUE.test(range)) ||
+    (ae !== null && ae.split(",").length > ACCEPT_ENCODING_MAX_CODINGS);
+
+  if (!bad) return null;
   return new Response("# worthless-sh: bad-input\n", {
     status: 503,
-    headers: buildErrorHeaders(),
+    headers: buildShortResponseHeaders(),
   });
 }
 
@@ -297,7 +285,6 @@ function respond(
  */
 function canonicalisePath(rawPath: string): string {
   if (rawPath.length === 0) return "/";
-  // Collapse leading multiple slashes.
   let i = 0;
   while (i < rawPath.length && rawPath[i] === "/") i++;
   if (i > 1) return "/" + rawPath.slice(i);
@@ -330,7 +317,6 @@ async function handle(req: Request, env: Env): Promise<Response> {
   const refusal = refuseBadInput(req);
   if (refusal !== null) return refusal;
 
-  // From here, method ∈ {GET, HEAD}.
   const url = new URL(req.url);
 
   // Long-path guard (P-06). Return 414 with a shell-safe body so a
@@ -339,7 +325,7 @@ async function handle(req: Request, env: Env): Promise<Response> {
     return respond(
       isHead,
       414,
-      buildUriTooLongHeaders(),
+      buildShortResponseHeaders(),
       "# worthless-sh: uri-too-long\n",
     );
   }
@@ -359,11 +345,11 @@ async function handle(req: Request, env: Env): Promise<Response> {
   // parallel install vector that bypasses the cache-key, audit, and
   // "what you see at worthless.sh" trust contract.
   if (path !== "/") {
-    return respond(isHead, 404, buildNotFoundHeaders(), "Not Found\n");
+    return respond(isHead, 404, buildShortResponseHeaders(), "Not Found\n");
   }
 
   // From here, path is `/`. Branch on UA.
-
+  //
   // Duplicate User-Agent header → fail-safe redirect. `Headers.get()`
   // already collapses to a comma-joined value; if that value ends up
   // not starting with a curl prefix (because of the `Mozilla/...,curl/...`
@@ -374,8 +360,7 @@ async function handle(req: Request, env: Env): Promise<Response> {
 
   // Curl-family branch. ?explain=1 (case-sensitive, exact value `1`) →
   // walkthrough; otherwise the install script.
-  const explain = url.searchParams.get("explain");
-  if (explain === "1") {
+  if (url.searchParams.get("explain") === "1") {
     const sha = await getWalkthroughSha256();
     return respond(isHead, 200, buildWalkthroughHeaders(sha), WALKTHROUGH);
   }
@@ -397,7 +382,7 @@ export default {
       // both valid shell redirection operators).
       return new Response("# worthless-sh: error\n", {
         status: 500,
-        headers: buildErrorHeaders(),
+        headers: buildShortResponseHeaders(),
       });
     }
   },
