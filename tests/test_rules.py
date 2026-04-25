@@ -1123,6 +1123,40 @@ async def test_spend_cap_overshoot_release_drops_key(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_spend_cap_negative_release_is_noop(tmp_path):
+    """A non-positive amount must not inflate the reservation.
+
+    Without an early-return guard, ``held - amount`` with a negative ``amount``
+    would *grow* the reservation (held=100, amount=-50 -> remaining=150). This
+    test pins the helper's no-op contract for non-positive inputs.
+    """
+    db_path = str(tmp_path / "negative.db")
+    async with aiosqlite.connect(db_path) as setup_db:
+        await setup_db.executescript(SCHEMA)
+        await setup_db.execute(
+            "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
+            ("alice", 1000.0),
+        )
+        await setup_db.commit()
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        body = json.dumps({"max_tokens": 100}).encode()
+        assert await rule.evaluate("alice", None, body=body) is None
+        before = rule._reserved["alice"]
+
+        await rule.release_reservation("alice", -50)
+        assert rule._reserved["alice"] == before, (
+            "negative amount must be a no-op, not inflate the reservation"
+        )
+        await rule.release_reservation("alice", 0)
+        assert rule._reserved["alice"] == before, "zero amount must be a no-op"
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
 async def test_spend_cap_concurrent_release_race(tmp_path):
     """Interleaved evaluate/release on overlapping aliases must not leak
     or corrupt the _reserved dict.
