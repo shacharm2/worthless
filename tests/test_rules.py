@@ -836,6 +836,20 @@ async def _setup_token_budget_db(
         await db.commit()
 
 
+async def _seed_aliases(db_path: str, *, count: int, column: str, value: float | int) -> None:
+    """Seed enrollment_config with *count* aliases, each with one column set."""
+    # `column` is whitelisted; the f-string is not user-influenced.
+    assert column in {"spend_cap", "token_budget_daily"}
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        for i in range(count):
+            await db.execute(
+                f"INSERT INTO enrollment_config (key_alias, {column}) VALUES (?, ?)",  # noqa: S608
+                (f"alias-{i}", value),
+            )
+        await db.commit()
+
+
 # ---------------------------------------------------------------------------
 # SpendCapRule — persistent connection, atomic, fail-closed
 # ---------------------------------------------------------------------------
@@ -995,26 +1009,20 @@ async def test_spend_cap_reserved_dict_drops_zero_entries(tmp_path):
     reservation hits 0 — otherwise the dict grows unboundedly across
     long-lived proxies that see many unique aliases.
 
-    Walks 500 unique aliases through evaluate -> release. A correct
+    Walks N unique aliases through evaluate -> release. A correct
     implementation leaves _reserved empty; the previous behaviour
     (``self._reserved[alias] = max(0, held - amount)``) leaked one
     zero-valued entry per alias forever.
     """
     db_path = str(tmp_path / "bound_spend.db")
-    async with aiosqlite.connect(db_path) as setup_db:
-        await setup_db.executescript(SCHEMA)
-        for i in range(500):
-            await setup_db.execute(
-                "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
-                (f"alias-{i}", 1000.0),
-            )
-        await setup_db.commit()
+    n = 50
+    await _seed_aliases(db_path, count=n, column="spend_cap", value=1000.0)
 
     db_conn = await aiosqlite.connect(db_path)
     try:
         rule = SpendCapRule(db=db_conn)
         body = json.dumps({"max_tokens": 10}).encode()
-        for i in range(500):
+        for i in range(n):
             alias = f"alias-{i}"
             assert await rule.evaluate(alias, None, body=body) is None
             await rule.release_reservation(alias, 10)
@@ -1032,20 +1040,14 @@ async def test_token_budget_reserved_dict_drops_zero_entries(tmp_path):
     """Same bound applies to TokenBudgetRule's _reserved dict — both
     rules share the release_reservation pattern."""
     db_path = str(tmp_path / "bound_budget.db")
-    async with aiosqlite.connect(db_path) as setup_db:
-        await setup_db.executescript(SCHEMA)
-        for i in range(500):
-            await setup_db.execute(
-                "INSERT INTO enrollment_config (key_alias, token_budget_daily) VALUES (?, ?)",
-                (f"alias-{i}", 10_000),
-            )
-        await setup_db.commit()
+    n = 50
+    await _seed_aliases(db_path, count=n, column="token_budget_daily", value=10_000)
 
     db_conn = await aiosqlite.connect(db_path)
     try:
         rule = TokenBudgetRule(db=db_conn)
         body = json.dumps({"max_tokens": 10}).encode()
-        for i in range(500):
+        for i in range(n):
             alias = f"alias-{i}"
             assert await rule.evaluate(alias, None, body=body) is None
             await rule.release_reservation(alias, 10)

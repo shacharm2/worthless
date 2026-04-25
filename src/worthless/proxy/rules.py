@@ -49,6 +49,23 @@ def _estimate_tokens(body: bytes) -> int:
     return _DEFAULT_TOKEN_ESTIMATE
 
 
+def _release_into(reserved: dict[str, int], alias: str, amount: int) -> None:
+    """Drop *amount* from a reservation dict, removing the key when fully released.
+
+    Callers everywhere read via ``reserved.get(alias, 0)``, so absent == zero
+    is the convention — keeping zero-valued entries would leak one dict slot
+    per alias the proxy has ever seen.
+    """
+    held = reserved.get(alias, 0)
+    if amount > 0 and alias not in reserved:
+        logger.debug("release_reservation called for unreserved alias=%s amount=%d", alias, amount)
+    remaining = max(0, held - amount)
+    if remaining == 0:
+        reserved.pop(alias, None)
+    else:
+        reserved[alias] = remaining
+
+
 @runtime_checkable
 class Rule(Protocol):
     """Protocol for a single rule in the gate-before-reconstruct pipeline."""
@@ -167,21 +184,7 @@ class SpendCapRule:
         request fails with no tokens consumed).  Safe to call with amount=0.
         """
         async with self._reserve_lock:
-            held = self._reserved.get(alias, 0)
-            if amount > 0 and alias not in self._reserved:
-                logger.debug(
-                    "release_reservation called for unreserved alias=%s amount=%d", alias, amount
-                )
-            remaining = max(0, held - amount)
-            # Drop the alias key when fully released — otherwise zero-valued
-            # entries accumulate forever and a long-lived proxy with many
-            # unique aliases leaks one dict entry per alias ever seen.
-            # Callers read via .get(alias, 0) everywhere, so absent == zero
-            # is already the convention.
-            if remaining == 0:
-                self._reserved.pop(alias, None)
-            else:
-                self._reserved[alias] = remaining
+            _release_into(self._reserved, alias, amount)
 
 
 @dataclass
@@ -311,21 +314,7 @@ class TokenBudgetRule:
         request fails with no tokens consumed).  Safe to call with amount=0.
         """
         async with self._reserve_lock:
-            held = self._reserved.get(alias, 0)
-            if amount > 0 and alias not in self._reserved:
-                logger.debug(
-                    "release_reservation called for unreserved alias=%s amount=%d", alias, amount
-                )
-            remaining = max(0, held - amount)
-            # Drop the alias key when fully released — otherwise zero-valued
-            # entries accumulate forever and a long-lived proxy with many
-            # unique aliases leaks one dict entry per alias ever seen.
-            # Callers read via .get(alias, 0) everywhere, so absent == zero
-            # is already the convention.
-            if remaining == 0:
-                self._reserved.pop(alias, None)
-            else:
-                self._reserved[alias] = remaining
+            _release_into(self._reserved, alias, amount)
 
 
 @dataclass
