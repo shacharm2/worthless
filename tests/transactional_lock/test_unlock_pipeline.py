@@ -172,3 +172,33 @@ class TestBatchUnlockTamperLeavesNoGhostTmp:
         assert siblings == [".env"], (
             f"Ghost tmp/staging artifacts remain after refused unlock: {siblings!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 5. Missing .env: refuse pass-3 rather than silently purge DB rows
+# ---------------------------------------------------------------------------
+
+
+class TestBatchUnlockRefusesWhenEnvMissing:
+    def test_missing_env_keeps_db_rows(self, home_dir: WorthlessHome, three_key_env: Path) -> None:
+        # Lock as normal, then yank the .env out from under unlock.
+        _lock(three_key_env, home_dir)
+        repo = _repo(home_dir)
+        before = len(asyncio.run(repo.list_enrollments()))
+        assert before == 3
+        three_key_env.unlink()
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--env", str(three_key_env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        # Refuse rather than silently purge DB rows + zero plaintext.
+        assert result.exit_code != 0, (
+            f"unlock against missing .env must refuse, not silently purge. Output: {result.output}"
+        )
+        after = len(asyncio.run(repo.list_enrollments()))
+        assert after == before, (
+            f"DB rows were deleted despite missing .env: {before} → {after} "
+            f"(silent data loss — keys can never be recovered)."
+        )

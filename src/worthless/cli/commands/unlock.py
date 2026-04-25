@@ -229,7 +229,17 @@ async def _unlock_batch(
             return 0
 
         env_writers = [p for p in planned if p.env_path is not None and p.var_name is not None]
-        if env_writers and env_path is not None and env_path.exists():
+        if env_writers:
+            # Refuse pass-3 if the .env we were supposed to restore into is gone.
+            # Otherwise we'd zero plaintext, drop DB rows, and never write or print
+            # the key — silent permanent loss.
+            if env_path is None or not env_path.exists():
+                raise WorthlessError(
+                    ErrorCode.KEY_NOT_FOUND,
+                    f"Cannot restore plaintext to missing .env at {env_path}; "
+                    f"refusing to delete DB rows. Re-create the file (touch it) "
+                    f"or pass --env pointing at the correct path, then re-run.",
+                )
             _batch_restore_env(env_path, env_writers)
 
         _print_recovery_keys(planned, console)
