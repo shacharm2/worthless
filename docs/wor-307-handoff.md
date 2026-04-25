@@ -183,3 +183,19 @@ A round-2 architect-reviewer pass flagged four debts that freezing the v1.1 cont
 4. **Handshake downgrade path unwritten.** `_PROTOCOL_VERSION` is exact-match (server rejects if `1 ∉ client_versions`). A v:2 server accepting v:1 clients is a policy choice, not a spec. Add a "downgrade-on-handshake" clause to the §Versioning section of `docs/ipc-contract.md` *before* we ever ship v:2.
 
 None of these break v1.1 for its stated workload (Fernet request/response). All four are expected to surface when v2.0 work starts; treat them as known-debt, not discovered-debt.
+
+## §11 — Why the sidecar does not use the OS keyring
+
+The sidecar reads its two Fernet shares from `0600` files at `WORTHLESS_SIDECAR_SHARE_A` and `WORTHLESS_SIDECAR_SHARE_B`. It does not call `keyring`.
+
+Why:
+
+- Headless runtimes (Docker, systemd, launchd; WSL without a D-Bus session counts) return `keyring.backends.fail.Keyring`. The CLI already filters this case via `cli/keystore.py::keyring_available` — applying the same predicate inside the sidecar would always return false.
+- Shares are provisioned to disk by the install script (see WOR-311). The two env-var paths ARE the contract; treating them as the only ingress keeps the threat surface inspectable.
+- The interactive CLI path (`src/worthless/cli/keystore.py`) is unchanged. Keyring + env-cascade still applies to end-user secrets — only the sidecar opts out.
+
+A future PR adding "load from keyring when share files are missing" is rejected by design. Falling back to a single keyring entry collapses the two-share split into one secret, a strict downgrade of the threat model. Missing share files must be a hard config error (the existing rc=1 path), not a soft fallback.
+
+Adding sidecar keyring support later is a design pass, not a feature flag. Keyring stores one `(service, username)` value; the sidecar deliberately holds two XOR shares so no single artifact reconstructs the key. Re-introducing keyring requires either a new naming convention for share-pair entries or consolidating the threat model — both warrant their own ticket and security review.
+
+*See also: `docs/security.md`, `docs/adversarial/attack-map.md`, and the env-var contract in `src/worthless/sidecar/__main__.py`.*

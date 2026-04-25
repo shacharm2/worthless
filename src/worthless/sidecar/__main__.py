@@ -55,6 +55,13 @@ _REQUIRED_ENV = (
 
 
 def _load_shares(a_path: Path, b_path: Path) -> tuple[bytes, bytes]:
+    """Read two equal-length XOR shares from disk and return them as bytes.
+
+    WHY: shares come from disk by design. The sidecar does not consult the
+    OS keyring even when one is reachable — see §11 of
+    ``docs/wor-307-handoff.md`` for the no-keyring decision and why a
+    keyring fallback would collapse the two-share split into one secret.
+    """
     share_a = a_path.read_bytes()
     share_b = b_path.read_bytes()
     if len(share_a) != len(share_b):
