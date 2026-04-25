@@ -1,0 +1,208 @@
+name: Deploy Worker (worthless-sh)
+
+# Tag-triggered deploy of the install-script Worker. WOR-349 Phase 5.
+#
+# Trigger surfaces:
+#   - Push of a `v*` tag (signed) → production deploy.
+#   - workflow_dispatch with target=preview → deploys to
+#     worthless-sh-preview.<account>.workers.dev for end-to-end smoke
+#     before tagging.
+#   - workflow_dispatch with target=production → emergency rollback /
+#     re-deploy of the current main commit; bypasses tag-signature
+#     verification with a documented warning.
+#
+# Cross-references:
+#   - WOR-323 — deploy hardening (signed-tag verification, scoped
+#     Cloudflare token, Actions environment with secret scoping). Phase 5
+#     of WOR-349 ships the workflow shape; WOR-323 hardens it before the
+#     first production tag.
+#   - WOR-374 — Phase 6 raw-curl integration (runs against the preview
+#     URL produced by this workflow's preview path).
+#   - workers/worthless-sh/DEPLOY.md — operator runbook (one-time
+#     Cloudflare/GitHub setup, per-release procedure, rollback).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Deploy target"
+        type: choice
+        options:
+          - preview
+          - production
+        default: preview
+
+permissions:
+  contents: read
+
+# Don't kill an in-flight deploy; serialize per-ref. A second tag push to
+# the same ref is a no-op (the second job waits and then deploys the same
+# bytes); concurrent deploys on different tags are rare but allowed.
+concurrency:
+  group: deploy-worker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify build artifact (tests, sha256, tag signature)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      install_sha256: ${{ steps.sha.outputs.value }}
+      target: ${{ steps.target.outputs.value }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # Need full history so `git tag --verify` can read the signed
+          # tag object; shallow clone strips signatures.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve deploy target
+        id: target
+        # `inputs.target` and event-name routed through env vars (not
+        # inlined as `${{ … }}` in the shell body) so a malicious
+        # workflow_dispatch input cannot escape into shell. See
+        # https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-an-intermediate-environment-variable
+        env:
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            echo "value=production" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${INPUT_TARGET}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify tag is GPG-signed (tag-push only)
+        if: github.event_name == 'push'
+        run: |
+          # WOR-323 will: import the maintainer keyring as a workflow step,
+          # then make the verify-blob check fatal. Until then, surface a
+          # warning so we can dogfood Phase 5 without blocking on Phase 6
+          # of WOR-323. Shipping a soft-fail here is documented in
+          # workers/worthless-sh/DEPLOY.md §"Pre-WOR-323 caveats".
+          if git tag --verify "${GITHUB_REF_NAME}" 2>&1; then
+            echo "Tag ${GITHUB_REF_NAME} is GPG-signed (verified)."
+          else
+            echo "::warning title=Unsigned tag::Tag ${GITHUB_REF_NAME} is not GPG-signed. WOR-323 will make this fatal."
+          fi
+
+      - name: Compute install.sh sha256
+        id: sha
+        run: |
+          # This is the canonical bytes-served sha256. The Worker bundles
+          # install.sh at build time (Option A inline-bundle, ADR-001) and
+          # echoes the same hash via `X-Worthless-Script-Sha256`. The
+          # smoke-test step in the deploy job verifies they match.
+          SHA=$(shasum -a 256 install.sh | awk '{print $1}')
+          echo "value=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "install.sh sha256: ${SHA}"
+
+      - name: Set up Node.js
+        # No `cache:` setting — npm cache poisoning on a deploy workflow
+        # would let a compromised PR seed bytes into the cache that the
+        # next tag deploy then publishes. Pay the ~10s install cost.
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        with:
+          node-version: "22"
+
+      - name: Install Worker deps
+        working-directory: workers/worthless-sh
+        run: npm ci
+
+      - name: Run vitest suite
+        working-directory: workers/worthless-sh
+        run: npm test
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      # Actions environment scopes secrets and (when WOR-323 lands) gates
+      # production deploys behind required-reviewer rules. URL points at
+      # the production endpoint for production deploys, the Cloudflare
+      # dashboard otherwise — secrets cannot be referenced in
+      # `environment.url`, so the preview URL is documented in DEPLOY.md
+      # rather than templated in here.
+      name: worthless-sh-${{ needs.verify.outputs.target }}
+      url: >-
+        ${{ needs.verify.outputs.target == 'production' && 'https://worthless.sh/' || 'https://dash.cloudflare.com/' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        # See verify-job rationale; same cache-poisoning concern applies.
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
+        with:
+          node-version: "22"
+
+      - name: Install Worker deps
+        working-directory: workers/worthless-sh
+        run: npm ci
+
+      - name: Deploy via Wrangler
+        working-directory: workers/worthless-sh
+        # All template expansions piped through env vars (see
+        # security-hardening guide) so workflow_dispatch input or
+        # upstream-job output cannot escape into shell.
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DEPLOY_TARGET: ${{ needs.verify.outputs.target }}
+        run: |
+          # The npm `predeploy` script copies the canonical install.sh
+          # (kept at the repo root, single source of truth) into this
+          # Worker's project dir so Wrangler's bundler can include it via
+          # the `[[rules]]` Text glob. SCRIPT_TAG and SCRIPT_COMMIT
+          # propagate into the Worker via wrangler `--var` so the
+          # verifiability headers (X-Worthless-Script-Tag /
+          # X-Worthless-Script-Commit) point at the actual deployed git
+          # ref, not the dev placeholders pinned in wrangler.toml.
+          npm run stage:install-sh
+          npx wrangler deploy \
+            --env "${DEPLOY_TARGET}" \
+            --var "SCRIPT_TAG:${GITHUB_REF_NAME}" \
+            --var "SCRIPT_COMMIT:${GITHUB_SHA}"
+
+      - name: Smoke-test deployed Worker (production only)
+        if: needs.verify.outputs.target == 'production'
+        env:
+          EXPECTED_SHA: ${{ needs.verify.outputs.install_sha256 }}
+          DEPLOY_TARGET: ${{ needs.verify.outputs.target }}
+        run: |
+          # Verify the deployed Worker serves install.sh with matching
+          # sha256 via BOTH the body and the X-Worthless-Script-Sha256
+          # header. The body check catches a stale Wrangler bundle; the
+          # header check catches a Worker code regression that detached
+          # the header from the body. They MUST agree.
+          set -eu
+          BODY_SHA=$(curl --fail --silent --show-error --location \
+            -H "User-Agent: curl/8.4.0" https://worthless.sh/ \
+            | shasum -a 256 | awk '{print $1}')
+          HEADER_SHA=$(curl --fail --silent --show-error --head \
+            -H "User-Agent: curl/8.4.0" https://worthless.sh/ \
+            | grep -i '^x-worthless-script-sha256:' \
+            | awk '{print $2}' | tr -d '\r\n')
+          echo "expected: ${EXPECTED_SHA}"
+          echo "body:     ${BODY_SHA}"
+          echo "header:   ${HEADER_SHA}"
+          if [ "${BODY_SHA}" != "${EXPECTED_SHA}" ]; then
+            echo "::error::Deployed body sha256 differs from build artifact"
+            exit 1
+          fi
+          if [ "${HEADER_SHA}" != "${EXPECTED_SHA}" ]; then
+            echo "::error::Deployed header sha256 differs from build artifact"
+            exit 1
+          fi
+          echo "Smoke test passed."

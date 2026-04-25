@@ -23,7 +23,35 @@ REDIRECT_URL = "https://wless.io"
 SCRIPT_TAG = "v0.0.0-dev"
 SCRIPT_COMMIT = "0000000000000000000000000000000000000000"
 
-# Production route — wired in WOR-300 when DNS is live
-# [[routes]]
+# --- Deploy environments ----------------------------------------------------
+#
+# Two named environments. Tests run against the bare `[vars]` block above
+# (cloudflareTest reads it directly). `wrangler deploy --env preview` /
+# `--env production` pick the matching block below.
+#
+# Preview is a workers.dev-only deploy (no route) — used by the
+# deploy-worker workflow's workflow_dispatch path so we can validate the
+# build artifact end-to-end before tagging a release. Routes attached only
+# to production.
+
+[env.preview]
+name = "worthless-sh-preview"
+
+[env.preview.vars]
+REDIRECT_URL = "https://wless.io"
+SCRIPT_TAG = "preview"
+SCRIPT_COMMIT = "preview"
+
+[env.production]
+name = "worthless-sh"
+
+[env.production.vars]
+REDIRECT_URL = "https://wless.io"
+# SCRIPT_TAG and SCRIPT_COMMIT are injected at deploy time by the
+# .github/workflows/deploy-worker.yml workflow via `wrangler deploy --var`.
+
+# Production route — wired in WOR-300 when DNS is live (WOR-323 hardening
+# blocks the first production tag push; uncomment after that lands).
+# [[env.production.routes]]
 # pattern = "worthless.sh/*"
 # zone_name = "worthless.sh"

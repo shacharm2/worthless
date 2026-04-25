@@ -29,7 +29,15 @@
 // try/catch that returns a hand-built 500 with `# worthless-sh: error\n` —
 // piping that into /bin/sh is a no-op (just a comment).
 
-import INSTALL_SH from "../../install.sh";
+// `../install.sh` resolves to `workers/worthless-sh/install.sh`, which
+// is a build-time copy of the canonical `install.sh` at the repo root.
+// The npm script `stage:install-sh` (run automatically as `pretest` /
+// `predev` / `predeploy`) does a one-line `cp ../../install.sh
+// ./install.sh`. The copy is .gitignored — single source of truth lives
+// at the repo root. Both bundlers (Wrangler + Vitest pool) need the
+// file inside this Worker's project directory; this is the simplest
+// way to satisfy both without symlink or fs-allowlist trickery.
+import INSTALL_SH from "../install.sh";
 import WALKTHROUGH from "./walkthrough.txt";
 import { isCurlFamily } from "./ua";
 

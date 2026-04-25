@@ -5,6 +5,11 @@
   "description": "Cloudflare Worker at worthless.sh — serves install.sh to curl, redirects browsers to wless.io",
   "type": "module",
   "scripts": {
+    "stage:install-sh": "cp ../../install.sh ./install.sh",
+    "pretest": "npm run stage:install-sh",
+    "pretest:watch": "npm run stage:install-sh",
+    "predev": "npm run stage:install-sh",
+    "predeploy": "npm run stage:install-sh",
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "wrangler dev",
