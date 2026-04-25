@@ -170,9 +170,16 @@ describe("unknown query params are ignored and never echoed (Q-03)", () => {
         headers: { "user-agent": CURL_UA },
       },
     );
+    // Body is consumed twice — once by `expectWalkthrough` (which calls
+    // `res.text()` to assert the walkthrough shape) and once by the
+    // sentinel-echo check below. Clone before the helper consumes the
+    // primary body. Without `clone`, the second `text()` throws
+    // "Body has already been used" because Response bodies are
+    // single-use streams.
+    const cloned = res.clone();
     // Unknown params do not suppress the documented trigger.
     await expectWalkthrough(res);
-    const body = await res.text();
+    const body = await cloned.text();
     // And the sentinel still must not echo into the walkthrough body.
     expect(body).not.toContain(SENTINEL);
   });

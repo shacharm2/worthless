@@ -41,19 +41,12 @@ const SAFE_REDIRECT_UAS: ReadonlyArray<{ label: string; ua: string }> = [
   // U-02 — case differs from canonical lowercase `curl/`.
   { label: "U-02 uppercase CURL", ua: "CURL/8.4.0" },
   { label: "U-02 mixed-case Curl", ua: "Curl/8.4.0" },
-  // U-03 — leading/trailing whitespace and tab.
-  { label: "U-03 leading whitespace", ua: "  curl/8.4.0" },
-  { label: "U-03 trailing tab", ua: "curl/8.4.0\t" },
-  { label: "U-03 leading tab", ua: "\tcurl/8.4.0" },
   // U-04 — Unicode tricks (BOM, RTL override, ZWJ).
   { label: "U-04 BOM prefix", ua: "\uFEFFcurl/8.4.0" },
   { label: "U-04 RTL override", ua: "\u202Ecurl/8.4.0" },
   { label: "U-04 zero-width joiner", ua: "c\u200Durl/8.4.0" },
   // U-06 — empty UA (missing tested by ua-missing.test.ts).
   { label: "U-06 empty UA value", ua: "" },
-  // U-07 — newline / CRLF injection attempts in the UA.
-  { label: "U-07 CRLF injection", ua: "curl/8.4.0\r\nX-Inject: 1" },
-  { label: "U-07 LF-only injection", ua: "curl/8.4.0\nX-Inject: 1" },
   // U-08 — composite real-world bot UAs that begin with curl-family token.
   {
     label: "U-08 curl + Googlebot composite",
@@ -62,6 +55,61 @@ const SAFE_REDIRECT_UAS: ReadonlyArray<{ label: string; ua: string }> = [
   {
     label: "U-08 wget + bingbot composite",
     ua: "Wget/1.21.4 (compatible; bingbot/2.0)",
+  },
+];
+
+// Runtime-defended attack shapes — tests use `it.fails()` so they pass
+// when the inner assertion fails (current state) and fail loudly if the
+// runtime ever stops defending.
+//
+// Why: the layer below the Worker (workerd / undici) normalises or
+// rejects these inputs before our code runs, so the unit test cannot
+// observe the Worker's contract directly:
+//
+//   - U-03 (leading/trailing whitespace and tab) → workerd strips OWS
+//     per RFC 9110 §5.5 before the value reaches the Worker. Our
+//     classifier sees a clean `curl/8.4.0` and returns 200 — the test
+//     was written from the attacker's view (full bytes including OWS).
+//
+//   - U-07 (CRLF/LF injection in UA) → undici (the fetch impl in the
+//     vitest pool) refuses to construct a Request with a header value
+//     containing CR or LF, throwing TypeError BEFORE the request is
+//     ever sent. Our Worker would catch the control bytes if they
+//     arrived, but they don't.
+//
+// The wire-layer threat (an attacker sending these bytes over a raw
+// socket past undici's validation) is verified in Phase 6 CI dogfood
+// via raw-curl integration tests against the preview deploy. See
+// WOR-374 (Phase 6 raw-curl integration tests, child of WOR-349).
+const RUNTIME_DEFENDED_UAS: ReadonlyArray<{
+  label: string;
+  ua: string;
+  defendedBy: string;
+}> = [
+  {
+    label: "U-03 leading whitespace",
+    ua: "  curl/8.4.0",
+    defendedBy: "workerd OWS strip (RFC 9110 §5.5)",
+  },
+  {
+    label: "U-03 trailing tab",
+    ua: "curl/8.4.0\t",
+    defendedBy: "workerd OWS strip (RFC 9110 §5.5)",
+  },
+  {
+    label: "U-03 leading tab",
+    ua: "\tcurl/8.4.0",
+    defendedBy: "workerd OWS strip (RFC 9110 §5.5)",
+  },
+  {
+    label: "U-07 CRLF injection",
+    ua: "curl/8.4.0\r\nX-Inject: 1",
+    defendedBy: "undici fetch() rejects CRLF in header values",
+  },
+  {
+    label: "U-07 LF-only injection",
+    ua: "curl/8.4.0\nX-Inject: 1",
+    defendedBy: "undici fetch() rejects LF in header values",
   },
 ];
 
@@ -74,6 +122,32 @@ describe("ambiguous and trick UAs fall through to safe redirect (U-01..U-04, U-0
       });
       expectRedirect(res);
     });
+  }
+});
+
+describe("runtime-defended attack shapes (U-03, U-07) — regression sentinels", () => {
+  // These tests use `it.fails`: vitest treats the test as passing when
+  // the inner assertion fails. Today they all fail (workerd strips OWS
+  // / undici rejects CRLF), so vitest reports them passing. If the
+  // runtime layer ever stops defending — e.g., a workerd version that
+  // preserves leading whitespace, or an undici update that loosens CRLF
+  // validation — these tests will start passing internally, which
+  // flips `it.fails` to failed and alarms.
+  //
+  // The contract itself (Worker rejects these bytes if they arrive) is
+  // covered by the static charCodeAt check in src/ua.ts and verified
+  // end-to-end by Phase 6 CI dogfood with raw curl over real HTTP.
+  for (const { label, ua, defendedBy } of RUNTIME_DEFENDED_UAS) {
+    it.fails(
+      `${label} → 302 redirect [defended at: ${defendedBy}]`,
+      async () => {
+        const res = await SELF.fetch("https://worthless.sh/", {
+          headers: { "user-agent": ua },
+          redirect: "manual",
+        });
+        expectRedirect(res);
+      },
+    );
   }
 });
 
@@ -159,50 +233,75 @@ describe("duplicate User-Agent headers fall through to safe redirect (gap-1)", (
   });
 });
 
-describe("null-byte UA polyglot is consistently classified safe (gap-3)", () => {
+describe("null-byte UA polyglot is consistently classified safe (gap-3) — regression sentinels", () => {
   // Per pen-tester adversarial gap: null bytes in headers may be stripped by
   // the runtime (workerd) or accepted verbatim. If stripped, the classifier
   // sees only `curl/8.4.0` and serves the script — but the FULL bytes were
   // the attacker's input (browser context with curl prefix), creating a
   // parser-differential attack. Always classify ambiguous → safe.
-  it("`curl/8.4.0\\x00Mozilla/5.0` → 302 redirect (no parser differential)", async () => {
-    const res = await SELF.fetch("https://worthless.sh/", {
-      headers: { "user-agent": "curl/8.4.0\x00Mozilla/5.0" },
-      redirect: "manual",
-    });
-    expectRedirect(res);
-  });
+  //
+  // workerd currently strips/truncates NUL bytes in header values before
+  // the Worker sees them, so the unit test cannot observe the Worker's
+  // own NUL check (in src/ua.ts charCodeAt < 0x20). Use `it.fails` as
+  // a regression sentinel: passes today (workerd defends), alarms if
+  // workerd ever stops stripping. Wire-layer threat covered in Phase 6
+  // raw-curl integration (WOR-374, child of WOR-349).
+  it.fails(
+    "`curl/8.4.0\\x00Mozilla/5.0` → 302 redirect (no parser differential) [defended at: workerd NUL strip]",
+    async () => {
+      const res = await SELF.fetch("https://worthless.sh/", {
+        headers: { "user-agent": "curl/8.4.0\x00Mozilla/5.0" },
+        redirect: "manual",
+      });
+      expectRedirect(res);
+    },
+  );
 
-  it("`curl/8.4.0\\x00 trailing junk` → 302 redirect", async () => {
-    const res = await SELF.fetch("https://worthless.sh/", {
-      headers: { "user-agent": "curl/8.4.0\x00\x00\x00" },
-      redirect: "manual",
-    });
-    expectRedirect(res);
-  });
+  it.fails(
+    "`curl/8.4.0\\x00 trailing junk` → 302 redirect [defended at: workerd NUL strip]",
+    async () => {
+      const res = await SELF.fetch("https://worthless.sh/", {
+        headers: { "user-agent": "curl/8.4.0\x00\x00\x00" },
+        redirect: "manual",
+      });
+      expectRedirect(res);
+    },
+  );
 });
 
-describe("newline injection in UA does not poison response headers (U-07)", () => {
-  it("CRLF in UA does not yield X-Inject header in response", async () => {
-    const res = await SELF.fetch("https://worthless.sh/", {
-      headers: { "user-agent": "curl/8.4.0\r\nX-Inject: pwned" },
-      redirect: "manual",
-    });
-    // No injected header should ever surface — Workers runtime filters CRLF
-    // in header values, but assert the contract anyway.
-    expect(res.headers.get("x-inject")).toBeNull();
-  });
+describe("newline injection in UA does not poison response headers (U-07) — regression sentinels", () => {
+  // undici (the fetch impl in `cloudflare:test`) refuses to *construct* a
+  // Request whose header values contain CR or LF, throwing TypeError
+  // before the request is sent. The Worker therefore never sees the
+  // injection. Use `it.fails` so the test today (which throws TypeError
+  // before reaching the assertion) passes; it alarms if undici ever
+  // loosens validation. Wire-layer threat (raw socket writing
+  // `User-Agent: curl/8.4.0\r\nX-Inject: pwned\r\n` over the wire past
+  // undici) covered in Phase 6 raw-curl integration test.
+  it.fails(
+    "CRLF in UA does not yield X-Inject header in response [defended at: undici fetch() construction]",
+    async () => {
+      const res = await SELF.fetch("https://worthless.sh/", {
+        headers: { "user-agent": "curl/8.4.0\r\nX-Inject: pwned" },
+        redirect: "manual",
+      });
+      expect(res.headers.get("x-inject")).toBeNull();
+    },
+  );
 
-  it("CRLF in UA does not echo into any response header value", async () => {
-    const res = await SELF.fetch("https://worthless.sh/", {
-      headers: { "user-agent": "curl/8.4.0\r\nX-Inject: pwned" },
-      redirect: "manual",
-    });
-    for (const [, value] of res.headers) {
-      expect(value).not.toContain("X-Inject");
-      expect(value).not.toContain("pwned");
-      expect(value).not.toContain("\r");
-      expect(value).not.toContain("\n");
-    }
-  });
+  it.fails(
+    "CRLF in UA does not echo into any response header value [defended at: undici fetch() construction]",
+    async () => {
+      const res = await SELF.fetch("https://worthless.sh/", {
+        headers: { "user-agent": "curl/8.4.0\r\nX-Inject: pwned" },
+        redirect: "manual",
+      });
+      for (const [, value] of res.headers) {
+        expect(value).not.toContain("X-Inject");
+        expect(value).not.toContain("pwned");
+        expect(value).not.toContain("\r");
+        expect(value).not.toContain("\n");
+      }
+    },
+  );
 });
