@@ -13,7 +13,7 @@ Three features. All three must ship before this epic merges to `main`:
 | Ticket | Outcome | State |
 |---|---|---|
 | [WOR-275](https://linear.app/plumbusai/issue/WOR-275) | Writes can't destroy your data | **In progress** — code complete, awaiting review |
-| [WOR-276](https://linear.app/plumbusai/issue/WOR-276) | Recovery works after a bad lock | **Todo** — plan at [docs/planning/recovery-works-after-bad-lock.md](recovery-works-after-bad-lock.md) |
+| [WOR-276](https://linear.app/plumbusai/issue/WOR-276) | Recovery works after a bad lock | **Todo** — plan at [engineering/planning/recovery-works-after-bad-lock.md](recovery-works-after-bad-lock.md) |
 | [WOR-277](https://linear.app/plumbusai/issue/WOR-277) | No plaintext leaks anywhere | **Todo** — independent; may ship via a separate main-targeting PR |
 
 ## Merge rules

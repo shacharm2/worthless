@@ -3,8 +3,8 @@
 The ``skip_delta`` flag is an *internal* knob on the private
 ``_safe_rewrite_core`` helper. It must never leak onto the public
 ``safe_rewrite`` or ``safe_restore`` signatures, and the private helper
-must not be re-exported via ``__all__``. See ``docs/planning/
-wor-276-recovery-final-plan.md`` §4.
+must not be re-exported via ``__all__``. See
+``engineering/planning/wor-276-recovery-final-plan.md`` §4.
 """
 
 from __future__ import annotations
