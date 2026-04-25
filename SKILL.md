@@ -223,6 +223,20 @@ Lower-level than `lock` — enrolls one key by alias without scanning `.env`. De
 
 **Use case:** `echo "$OPENAI_KEY" | worthless enroll --alias ci-openai --provider openai --key-stdin`
 
+#### `worthless restore TARGET`
+**Atomically rewrite a `.env` from stdin bytes (recovery path).**
+
+Thin wrapper around `safe_restore` for ops runbooks and recovery scripts that need to stamp known-good bytes onto a `.env` while bypassing only the DELTA blowup-ratio gate. Every other invariant still fires (SYMLINK, CONTAINMENT, BASENAME, SNIFF, SIZE, TOCTOU, PATH_IDENTITY, FILESYSTEM).
+
+**Arguments:**
+- `TARGET`: Path to the `.env` file to restore.
+
+**Behavior:**
+- Reads replacement bytes from stdin; empty stdin refuses.
+- On any invariant violation: `.env` is byte-identical (unchanged), exit code 1.
+
+**Use case:** `cat backup.env | worthless restore ./.env`
+
 #### `worthless mcp [OPTIONS]`
 **Start the MCP server (stdio transport).**
 
