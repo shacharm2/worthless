@@ -119,8 +119,8 @@ class TestRenderConfig:
 
     @pytest.fixture(scope="module")
     def render_env_vars(self, render_service: dict) -> dict[str, str]:
-        """Build env var lookup from Render service config."""
-        return {v["key"]: v["value"] for v in render_service["envVars"]}
+        # `sync: false` entries have no `value` — operator sets them in the dashboard.
+        return {v["key"]: v.get("value", "") for v in render_service["envVars"]}
 
     def test_service_type_is_web(self, render_service: dict):
         """Render service must be type 'web' for HTTP traffic."""
@@ -142,13 +142,27 @@ class TestRenderConfig:
         """Disk must be >= 1 GB (SQLite + shards need headroom)."""
         assert render_service["disk"]["sizeGB"] >= 1
 
-    def test_allow_insecure_set(self, render_env_vars: dict[str, str]):
-        """Render terminates TLS at edge; container must allow plain HTTP.
+    def test_deploy_mode_public(self, render_service: dict, render_env_vars: dict[str, str]):
+        """Render terminates TLS at edge; container must run in public mode.
 
-        Without WORTHLESS_ALLOW_INSECURE=true, the proxy rejects non-TLS
-        requests and becomes unreachable behind Render's load balancer.
+        WORTHLESS_DEPLOY_MODE=public tells the proxy to trust X-Forwarded-Proto
+        only from the edge CIDR listed in WORTHLESS_TRUSTED_PROXIES. The old
+        WORTHLESS_ALLOW_INSECURE=true escape-hatch is forbidden in public mode.
         """
-        assert render_env_vars.get("WORTHLESS_ALLOW_INSECURE") == "true"
+        assert render_env_vars.get("WORTHLESS_DEPLOY_MODE") == "public"
+        assert render_env_vars.get("WORTHLESS_ALLOW_INSECURE") is None
+        # WORTHLESS_TRUSTED_PROXIES must be dashboard-prompted (sync: false), not
+        # a placeholder string — placeholders pass startup but uvicorn would
+        # trust no peer, silently 401-ing every request.
+        tp_entry = next(
+            (v for v in render_service["envVars"] if v["key"] == "WORTHLESS_TRUSTED_PROXIES"),
+            None,
+        )
+        assert tp_entry is not None, "public mode requires WORTHLESS_TRUSTED_PROXIES"
+        assert tp_entry.get("sync") is False, (
+            "WORTHLESS_TRUSTED_PROXIES must use `sync: false` so Render prompts the "
+            "operator at deploy time — never ship a placeholder value."
+        )
 
     def test_dockerfile_path(self, render_service: dict):
         """Render must reference the correct Dockerfile."""
@@ -482,18 +496,15 @@ class TestComposeEnvExample:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
-            # If uncommented key=value lines exist, they must have placeholder values
+            # If uncommented key=value lines exist, they must have placeholder
+            # values or be one of the deploy-mode contract values (the example
+            # documents the required compose default — see WOR-344).
             if "=" in stripped:
                 key, _, value = stripped.partition("=")
-                assert (
-                    not value
-                    or value.startswith('"')
-                    or value.lower()
-                    in (
-                        "true",
-                        "false",
-                    )
-                ), f"Env example has unexpected value for {key}: {value}"
+                allowed_literals = {"true", "false", "loopback", "lan", "public"}
+                assert not value or value.startswith('"') or value.lower() in allowed_literals, (
+                    f"Env example has unexpected value for {key}: {value}"
+                )
 
 
 # ------------------------------------------------------------------
