@@ -25,7 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -41,54 +41,6 @@ pytestmark = pytest.mark.integration
 
 _SUN_PATH_MAX = 104
 _READY_TIMEOUT_S = 5.0
-
-
-def _write_shares(dir_: Path) -> tuple[Path, Path]:
-    """Write two 44-byte XOR shares that reconstruct a valid Fernet key."""
-    key = base64.urlsafe_b64encode(secrets.token_bytes(32))
-    share_a = secrets.token_bytes(len(key))
-    share_b = bytes(a ^ k for a, k in zip(share_a, key, strict=True))
-    a_path = dir_ / "share_a"
-    b_path = dir_ / "share_b"
-    a_path.write_bytes(share_a)
-    b_path.write_bytes(share_b)
-    a_path.chmod(0o600)
-    b_path.chmod(0o600)
-    return a_path, b_path
-
-
-@pytest.fixture
-def sidecar_env() -> Iterator[tuple[Path, dict[str, str]]]:
-    """Yield (socket_path, env) for spawning ``python -m worthless.sidecar``.
-
-    Uses ``/tmp/w-*`` directly (not pytest's tmp_path) to stay inside the
-    104-byte AF_UNIX ``sun_path`` limit on macOS, same rationale as
-    ``tests/ipc/conftest.py::sidecar_socket_path``.
-    """
-    base = Path(tempfile.mkdtemp(prefix="w-", dir="/tmp"))
-    sock = base / "s.sock"
-    if len(str(sock)) >= _SUN_PATH_MAX:
-        pytest.skip(f"tmp path too long for AF_UNIX: {sock}")
-    a_path, b_path = _write_shares(base)
-    env = {
-        **os.environ,
-        "WORTHLESS_SIDECAR_SOCKET": str(sock),
-        "WORTHLESS_SIDECAR_SHARE_A": str(a_path),
-        "WORTHLESS_SIDECAR_SHARE_B": str(b_path),
-        "WORTHLESS_SIDECAR_ALLOWED_UID": str(os.getuid()),
-    }
-    try:
-        yield sock, env
-    finally:
-        for p in (sock, a_path, b_path):
-            try:
-                p.unlink()
-            except OSError:
-                pass
-        try:
-            base.rmdir()
-        except OSError:
-            pass
 
 
 def _spawn_sidecar(env: dict[str, str]) -> subprocess.Popen[str]:

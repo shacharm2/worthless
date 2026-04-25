@@ -17,7 +17,9 @@ Environment:
 * ``WORTHLESS_SIDECAR_ALLOWED_UID`` CSV of uids permitted to connect.
 * ``WORTHLESS_SIDECAR_DRAIN_TIMEOUT`` (opt) Seconds to wait for in-flight
                                     handlers on shutdown; default ``5.0``.
-* ``WORTHLESS_LOG_LEVEL`` (opt)     Python logging level; default ``INFO``.
+* ``WORTHLESS_LOG_LEVEL`` (opt)     One of ``DEBUG|INFO|WARNING|ERROR|CRITICAL``
+                                    (case-insensitive); default ``INFO``.
+                                    Invalid value → rc=1.
 
 Exit codes:
 
@@ -62,6 +64,30 @@ def _load_shares(a_path: Path, b_path: Path) -> tuple[bytes, bytes]:
 
 _PROBE_TIMEOUT_S = 1.0
 _DEFAULT_DRAIN_TIMEOUT_S = 5.0
+
+# Canonical stdlib level names. Aliases (``WARN``, ``FATAL``) are
+# intentionally excluded — we don't want operator typos to silently
+# resolve to a level whose name isn't in our docs. ``logging.getLevelName``
+# would happily accept them otherwise. ``getLevelNamesMapping`` would
+# be the cleaner check but it's 3.11+; we floor at 3.10.
+_VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
+def _resolve_log_level(raw: str | None) -> int | None:
+    """Map a ``WORTHLESS_LOG_LEVEL`` env value to a ``logging`` int.
+
+    Returns the int level on success, ``None`` on a name we don't
+    accept so the caller can ``return 1`` and emit a hint. ``None``
+    or empty input defaults to ``INFO`` to keep the no-config happy
+    path unchanged from pre-WOR-308 behavior.
+    """
+    if not raw:
+        return logging.INFO
+    name = raw.strip().upper()
+    if name not in _VALID_LOG_LEVELS:
+        return None
+    level = logging.getLevelName(name)
+    return level if isinstance(level, int) else None
 
 
 async def _drain_server(
@@ -251,8 +277,20 @@ async def _run() -> int:
 
 
 def main() -> int:
+    raw_level = os.environ.get("WORTHLESS_LOG_LEVEL")
+    level = _resolve_log_level(raw_level)
+    if level is None:
+        # basicConfig hasn't run yet — print to stderr directly so the
+        # operator sees the error even with logging unconfigured.
+        print(
+            f"sidecar: bad WORTHLESS_LOG_LEVEL={raw_level!r}; "
+            f"expected one of {sorted(_VALID_LOG_LEVELS)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     logging.basicConfig(
-        level=os.environ.get("WORTHLESS_LOG_LEVEL", "INFO"),
+        level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     return asyncio.run(_run())
