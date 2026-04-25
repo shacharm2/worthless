@@ -58,9 +58,14 @@ def _tamper_first_shard(home: WorthlessHome) -> None:
     """Corrupt one row's commitment so HMAC verify will fail in pass-1."""
     conn = sqlite3.connect(str(home.db_path))
     try:
+        # Per CodeRabbit nitpick: explicit ORDER BY so the chosen shard is
+        # deterministic across SQLite implementations / page-layout changes.
+        # Without ORDER BY, "LIMIT 1" picks any row — works today but flakes
+        # on a different SQLite build or after a schema-rewriting migration.
         conn.execute(
             "UPDATE shards SET commitment = randomblob(32) "
-            "WHERE key_alias = (SELECT key_alias FROM shards LIMIT 1)"
+            "WHERE key_alias = (SELECT key_alias FROM shards "
+            "ORDER BY key_alias LIMIT 1)"
         )
         conn.commit()
     finally:

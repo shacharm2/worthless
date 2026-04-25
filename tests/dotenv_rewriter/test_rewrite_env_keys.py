@@ -128,3 +128,92 @@ def test_rewrite_env_keys_idempotent_same_bytes_is_noop(
 
     assert safe_rewrite_spy.call_count == 0
     assert sha256_of(env) == pre_sha
+
+
+# ---------------------------------------------------------------------------
+# Overlap rejection — per CodeRabbit nitpick on PR #104.
+#
+# `_validate_rewrite_args` MUST refuse non-empty intersections across
+# (updates, additions, removals). Silent mangling (e.g. updates ∩ removals
+# would update then immediately delete) is a worse failure mode than a loud
+# ValueError that names the offending keys.
+# ---------------------------------------------------------------------------
+
+
+def test_rewrite_env_keys_rejects_updates_removals_overlap(
+    tmp_path: Path, safe_rewrite_spy, make_env_file, sha256_of
+) -> None:
+    env = make_env_file(tmp_path / ".env", b"A=1\nB=2\n")
+    pre_sha = sha256_of(env)
+
+    with pytest.raises(ValueError, match=r"updates and removals overlap"):
+        rewrite_env_keys(env, {"A": "new"}, removals={"A"})
+
+    # No write happened — file is byte-identical, no safe_rewrite call.
+    assert safe_rewrite_spy.call_count == 0
+    assert sha256_of(env) == pre_sha
+
+
+def test_rewrite_env_keys_rejects_additions_removals_overlap(
+    tmp_path: Path, safe_rewrite_spy, make_env_file, sha256_of
+) -> None:
+    env = make_env_file(tmp_path / ".env", b"A=1\n")
+    pre_sha = sha256_of(env)
+
+    with pytest.raises(ValueError, match=r"additions and removals overlap"):
+        rewrite_env_keys(env, {}, additions={"NEW": "v"}, removals={"NEW"})
+
+    assert safe_rewrite_spy.call_count == 0
+    assert sha256_of(env) == pre_sha
+
+
+def test_rewrite_env_keys_rejects_updates_additions_overlap(
+    tmp_path: Path, safe_rewrite_spy, make_env_file, sha256_of
+) -> None:
+    env = make_env_file(tmp_path / ".env", b"A=1\n")
+    pre_sha = sha256_of(env)
+
+    with pytest.raises(ValueError, match=r"updates and additions overlap"):
+        rewrite_env_keys(env, {"A": "x"}, additions={"A": "y"})
+
+    assert safe_rewrite_spy.call_count == 0
+    assert sha256_of(env) == pre_sha
+
+
+def test_rewrite_env_keys_overlap_error_names_offending_keys(
+    tmp_path: Path, safe_rewrite_spy, make_env_file
+) -> None:
+    """Error message MUST list which keys collided so callers can debug."""
+    env = make_env_file(tmp_path / ".env", b"A=1\nB=2\nC=3\n")
+
+    with pytest.raises(ValueError, match=r"\['A', 'B'\]"):
+        rewrite_env_keys(
+            env,
+            {"A": "x", "B": "y"},
+            removals={"A", "B"},
+        )
+
+    assert safe_rewrite_spy.call_count == 0
+
+
+def test_rewrite_env_keys_disjoint_sets_still_work(
+    tmp_path: Path, safe_rewrite_spy, make_env_file
+) -> None:
+    """Sanity: the validation MUST NOT reject legitimate non-overlapping use."""
+    env = make_env_file(tmp_path / ".env", b"A=1\nB=2\nC=3\n")
+
+    # updates A, removes B, adds D — three distinct sets, no overlap.
+    rewrite_env_keys(
+        env,
+        {"A": "new"},
+        additions={"D": "4"},
+        removals={"B"},
+    )
+
+    # Exactly one safe_rewrite call (the all-or-nothing primitive).
+    assert safe_rewrite_spy.call_count == 1
+    contents = env.read_bytes()
+    assert b"A=new" in contents
+    assert b"B=" not in contents
+    assert b"C=3" in contents
+    assert b"D=4" in contents
