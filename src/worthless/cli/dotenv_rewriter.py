@@ -26,7 +26,7 @@ import os
 import re
 import stat as _stat
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -707,6 +707,91 @@ def remove_env_key(env_path: Path, var_name: str) -> None:
         original_user_arg=env_path,
         allow_outside_repo=True,
         expected_baseline_sha256=hashlib.sha256(existing).digest(),
+    )
+
+
+def rewrite_env_keys(
+    env_path: Path,
+    updates: dict[str, str],
+    *,
+    additions: dict[str, str] | None = None,
+    _hook_before_replace: Callable[[], None] | None = None,
+) -> None:
+    """Atomically replace N keys in *env_path* via one ``safe_rewrite`` call.
+
+    Every key in *updates* must already exist in *env_path* — missing
+    keys raise :class:`KeyError` before any write happens. This is the
+    all-or-nothing primitive underpinning transactional multi-key lock:
+    either every key is replaced atomically or the file is byte-identical.
+
+    *additions* (optional) are appended at the end of the file, in
+    iteration order. They are a clean insert and must not already exist
+    as keys in the file.
+
+    *_hook_before_replace* is forwarded to :func:`safe_rewrite`; the
+    lock command binds a closure that runs reconstruct-and-verify for
+    every shard under an exclusive SQLite flock before the rename.
+    """
+    for var_name in updates:
+        _validate_var_name(var_name)
+    for value in updates.values():
+        _validate_value(value)
+    if additions:
+        for var_name in additions:
+            _validate_var_name(var_name)
+        for value in additions.values():
+            _validate_value(value)
+
+    if not updates and not additions:
+        return
+
+    existing = _safe_read_existing_bytes(env_path)
+    stripped, had_bom = _strip_bom(existing)
+    eol = _detect_eol(stripped)
+    lines = _split_logical_lines(stripped)
+
+    matched: set[str] = set()
+    for idx, line in enumerate(lines):
+        if line.key in updates:
+            new_value = updates[line.key]
+            lines[idx] = _LogicalLine(
+                raw=_rebuild_assignment_preserving_format(line.raw, new_value),
+                key=line.key,
+                has_export=line.has_export,
+            )
+            matched.add(line.key)
+
+    missing = set(updates) - matched
+    if missing:
+        raise KeyError(f"Variable(s) not found in {env_path}: {sorted(missing)!r}")
+
+    if additions:
+        if lines and not lines[-1].raw.endswith((b"\n", b"\r\n")):
+            last = lines[-1]
+            lines[-1] = _LogicalLine(
+                raw=last.raw + eol,
+                key=last.key,
+                has_export=last.has_export,
+            )
+        for var_name, value in additions.items():
+            lines.append(
+                _LogicalLine(
+                    raw=_format_assignment(var_name, value, has_export=False, eol=eol),
+                    key=var_name,
+                    has_export=False,
+                )
+            )
+
+    new_content = _restore_bom(_serialize_lines(lines), had_bom)
+    if new_content == existing:
+        return
+    safe_rewrite(
+        env_path,
+        new_content,
+        original_user_arg=env_path,
+        allow_outside_repo=True,
+        expected_baseline_sha256=hashlib.sha256(existing).digest(),
+        _hook_before_replace=_hook_before_replace,
     )
 
 
