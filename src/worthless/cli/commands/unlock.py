@@ -114,7 +114,11 @@ class _PlannedRestore:
     key_buf: bytearray = field(repr=False)
 
     def zero(self) -> None:
-        self.key_buf[:] = b"\x00" * len(self.key_buf)
+        # Per CodeRabbit nitpick: reuse the imported `zero_buf` helper
+        # rather than allocating a new bytes object. Slice-assignment leaves
+        # the previous secret material live until GC; zero_buf wipes in-place
+        # immediately, matching the pattern used in _pass1_reconstruct.
+        zero_buf(self.key_buf)
 
 
 async def _pass1_reconstruct(
@@ -169,6 +173,14 @@ def _batch_restore_env(env_path: Path, planned: list[_PlannedRestore]) -> None:
     for p in planned:
         if p.var_name is None:
             continue
+        # Per CodeRabbit nitpick: fail loudly on duplicate var_name rather
+        # than silently overwrite. Two PlannedRestore entries pointing at the
+        # same env var would mean DB inconsistency or planning bug — losing
+        # one plaintext silently is worse than aborting the whole batch.
+        assert p.var_name not in updates, (
+            f"duplicate planned restore for env var {p.var_name} "
+            f"(planned aliases: {[entry.alias for entry in planned]})"
+        )
         updates[p.var_name] = p.key_buf.decode("utf-8")
         base_url_var = _PROVIDER_ENV_MAP.get(p.provider)
         if base_url_var:
@@ -277,6 +289,11 @@ def register_unlock_commands(app: typer.Typer) -> None:
                 count = await _unlock_batch([alias], home, repo, env)
                 if count:
                     console.print_success(f"Unlocked {alias}.")
+                else:
+                    # Per CodeRabbit nitpick: don't exit silently on count==0.
+                    # If the user typo'd the alias, success-with-no-output is
+                    # the worst possible feedback.
+                    console.print_warning(f"Alias not found or no keys restored: {alias}.")
                 return
 
             env_str = str(env.resolve())
@@ -288,6 +305,10 @@ def register_unlock_commands(app: typer.Typer) -> None:
             count = await _unlock_batch(aliases, home, repo, env)
             if count:
                 console.print_success(f"{count} key(s) restored.")
+            else:
+                # Per CodeRabbit nitpick: explicit feedback when the env-wide
+                # branch finishes with zero restores.
+                console.print_warning("No keys restored.")
 
         with acquire_lock(home):
             asyncio.run(_unlock_async())
