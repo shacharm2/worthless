@@ -3,13 +3,25 @@ main = "src/index.ts"
 compatibility_date = "2026-04-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Text rules: bundle install.sh and walkthrough.txt as string exports at
+# build time. The Worker holds the canonical bytes inline (Option A — see
+# engineering/adr/001-worthless-sh-inline-bundle.md). No runtime fetch from
+# GitHub; the only way to change what `curl worthless.sh | sh` serves is to
+# ship a new Worker (gated by signed tags + protected ruleset, WOR-323).
+[[rules]]
+type = "Text"
+globs = ["**/*.sh", "**/*.txt"]
+fallthrough = true
+
 [vars]
-# Supply-chain: pin GITHUB_RAW_URL to a release tag, not a mutable branch.
-# `main` would let any push immediately change what `curl worthless.sh | sh`
-# serves, bypassing the review gate. Bump this tag on each install.sh
-# release (matches the "trust roots" posture in docs/install-security.md).
-GITHUB_RAW_URL = "https://raw.githubusercontent.com/shacharm2/worthless/v0.3.0/install.sh"
+# Browser fail-safe redirect target. Read by Worker code AND by tests
+# (`_helpers.ts` exposes it as `REDIRECT_URL`).
 REDIRECT_URL = "https://wless.io"
+# Verifiability metadata stamped into response headers
+# `X-Worthless-Script-Tag` and `X-Worthless-Script-Commit`. The deploy
+# pipeline (Phase 5 / WOR-323) overrides these per release.
+SCRIPT_TAG = "v0.0.0-dev"
+SCRIPT_COMMIT = "0000000000000000000000000000000000000000"
 
 # Production route — wired in WOR-300 when DNS is live
 # [[routes]]

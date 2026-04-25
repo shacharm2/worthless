@@ -1,0 +1,45 @@
+Worthless installer — what this script does, line by line
+===========================================================
+
+This is the human-readable walkthrough of the script you would have
+piped into `sh`. Read it first if you'd rather audit than execute.
+
+Step 1 — detect platform
+  The script reads `uname -s` and `uname -m` and refuses to continue
+  on anything that is not Linux or macOS on x86_64 / arm64. If the
+  platform check fails, the script exits with EXIT_PLATFORM=20 — a
+  documented exit code so wrappers can branch on it.
+
+Step 2 — bootstrap uv
+  Worthless uses Astral's uv as its Python toolchain. If uv is not
+  already on PATH, the script downloads the official uv installer
+  from astral.sh, runs it, then re-checks PATH. The download URL is
+  pinned. If uv is already present, this step is skipped.
+
+Step 3 — install worthless
+  `uv tool install worthless` fetches the package from PyPI into
+  `~/.local/bin/worthless`. uv handles isolation, version pinning,
+  and PATH setup. No system Python is touched.
+
+Step 4 — print the next-steps banner
+  The final lines tell you the three commands you'll run next:
+    cd your-project && worthless lock   # rewrites .env, creates backup
+    worthless up                        # starts the local proxy
+    python app.py                       # unchanged — uses modified .env
+
+What it does NOT do
+  - It does not write outside `$HOME` or `$XDG_*` paths.
+  - It does not require sudo. If you ran this as root, that's on you.
+  - It does not phone home. The only network calls are uv's PyPI
+    fetch and the optional astral.sh installer download.
+
+Verifying integrity
+  Compare `curl worthless.sh | sha256sum` to the value in the
+  `X-Worthless-Script-Sha256` response header. They must match.
+  If they don't, abort and report it.
+
+Source
+  https://github.com/shacharm2/worthless
+
+This walkthrough is rebuilt as Phase 4 of WOR-300; the prose here is
+intentionally placeholder until the brand voice pass lands.
