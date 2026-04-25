@@ -1,10 +1,17 @@
 """Invariant-gated safe rewrite for ``.env`` files.
 
-This module exposes a single public function, :func:`safe_rewrite`, which
-performs an atomic, invariant-checked rewrite of a literal ``.env`` file.
-Every check is structured so that the historical ".zshrc lock bug" - where
-a symlink or path confusion caused the tool to clobber a user's shell rc
-file - is *structurally impossible*.
+This module exposes two public functions, :func:`safe_rewrite` and
+:func:`safe_restore`, which perform an atomic, invariant-checked rewrite
+of a literal ``.env`` file. Every check is structured so that the
+historical ".zshrc lock bug" - where a symlink or path confusion caused
+the tool to clobber a user's shell rc file - is *structurally impossible*.
+
+``safe_rewrite`` is the normal write path with every gate engaged.
+``safe_restore`` is the recovery entry point: it reuses the same gate
+pipeline but bypasses the DELTA (content-blowup) gate, which otherwise
+refuses large decoy -> original swaps during lock-checkpoint restore.
+All other gates - SYMLINK, SIZE, SNIFF, TOCTOU, CONTAINMENT,
+PATH_IDENTITY, LOCKED, IO_ERROR - still fire.
 
 Every refusal raises :class:`UnsafeRewriteRefused`; the public message is
 opaque, the granular cause is on ``.reason``, and the target file is
@@ -34,10 +41,12 @@ else:  # pragma: no cover — PLATFORM gate refuses before any fcntl is used
 from dotenv import dotenv_values
 
 from worthless.cli.errors import UnsafeReason, UnsafeRewriteRefused
+from worthless.cli.fs_check import require_atomic_fs
 
 __all__ = [
     "UnsafeReason",
     "UnsafeRewriteRefused",
+    "safe_restore",
     "safe_rewrite",
 ]
 
@@ -248,9 +257,9 @@ def _unlink_tmp(tmp_path: str) -> None:
 
 # ---------------------------------------------------------------------------
 # Per-invariant gate helpers. Each raises UnsafeRewriteRefused directly.
-# These exist purely to keep safe_rewrite()'s cyclomatic complexity in
-# rank-B territory; they are NOT independent abstractions and the call
-# order in safe_rewrite() is load-bearing.
+# These exist purely to keep _safe_rewrite_core()'s cyclomatic complexity
+# in rank-B territory; they are NOT independent abstractions and the call
+# order in _safe_rewrite_core() is load-bearing.
 # ---------------------------------------------------------------------------
 
 
@@ -434,7 +443,22 @@ def _line_count(buf: bytes) -> int:
     return newline_count + 1
 
 
-def _check_delta(new_size: int, old_size: int, line_count: int, target: Path) -> None:
+def _data_line_count(buf: bytes) -> int:
+    """Count non-blank lines in *buf* for the DELTA "single-entry" proxy.
+
+    The DELTA gate targets "one KEY=value file gets replaced by a 10 MB
+    blob". The natural shape of such a file is a single data line plus
+    any trailing blank padding — so ``b"KEY=v\\n\\n"`` should be treated
+    as single-entry. Using the raw ``_line_count`` (which counts every
+    newline) would let an attacker slip a trailing ``\\n`` past the gate
+    and blow a tiny ``.env`` up to 1 MiB unchecked.
+    """
+    if not buf:
+        return 0
+    return sum(1 for line in buf.splitlines() if line.strip())
+
+
+def _check_delta(new_size: int, old_size: int, old_data_lines: int, target: Path) -> None:
     """Invariant 8c: blowup-only delta gate for single-entry files.
 
     Blocks "attacker replaces tiny .env with 10 MB payload" (upper bound).
@@ -442,8 +466,11 @@ def _check_delta(new_size: int, old_size: int, line_count: int, target: Path) ->
     decoy is the product's primary use case and shrinks the file 4x-8x.
     Attack value of single-line truncation is near-zero — the basename,
     path-identity, and sniff invariants already block content substitution.
+
+    ``old_data_lines`` counts non-blank lines so a file like ``KEY=v\\n\\n``
+    is still treated as single-entry for the purpose of the blowup ratio.
     """
-    if not (old_size > 0 and old_size < _MAX_BYTES and line_count <= 1):
+    if not (old_size > 0 and old_size < _MAX_BYTES and old_data_lines <= 1):
         return
     ratio = new_size / old_size
     if old_size >= 5 and ratio > _DELTA_MAX:
@@ -456,6 +483,8 @@ def _check_size_sniff_delta(
     new_content: bytes,
     target: Path,
     expected_baseline_sha256: bytes | None = None,
+    *,
+    skip_delta: bool = False,
 ) -> None:
     """Invariant 8: size + line-count + sniff + delta on existing & new content.
 
@@ -464,6 +493,11 @@ def _check_size_sniff_delta(
     :attr:`UnsafeReason.TOCTOU`. This lets callers pass the baseline they
     derived their *new_content* from and catch a concurrent writer that
     mutated the file after the caller's read but before we took the lock.
+
+    When *skip_delta* is True, the blowup-ratio DELTA check is bypassed.
+    Every other gate (SIZE, line-count, SNIFF) still runs. This is the
+    single knob that ``safe_restore`` turns to allow recovery writes that
+    legitimately re-inflate a tiny decoy back to its original size.
     """
     old_size = baseline_fstat.st_size
     if old_size > _MAX_BYTES:
@@ -498,8 +532,10 @@ def _check_size_sniff_delta(
     if new_content:
         _check_dotenv_content(new_content)
 
-    # Delta gate.
-    _check_delta(new_size, old_size, line_count, target)
+    # Delta gate. ``safe_restore`` is the only caller that sets skip_delta;
+    # every other path must enforce the blowup ratio.
+    if not skip_delta:
+        _check_delta(new_size, old_size, _data_line_count(existing_buf), target)
 
 
 def _open_dir_fd(parent: Path, target: Path) -> int:
@@ -669,11 +705,11 @@ def _close_fds(
 
 
 # ---------------------------------------------------------------------------
-# Public entry point.
+# Private core + public entry points.
 # ---------------------------------------------------------------------------
 
 
-def safe_rewrite(
+def _safe_rewrite_core(
     target: Path,
     new_content: bytes,
     *,
@@ -682,26 +718,21 @@ def safe_rewrite(
     allow_outside_repo: bool = False,
     expected_baseline_sha256: bytes | None = None,
     _hook_before_replace: Callable[[], None] | None = None,
+    skip_delta: bool = False,
 ) -> None:
-    """Atomically rewrite a literal ``.env`` file under invariant gates.
+    """Gate pipeline shared by :func:`safe_rewrite` and :func:`safe_restore`.
 
-    Raises :class:`UnsafeRewriteRefused` for any invariant violation. The
-    public exception message is opaque; callers inspect ``.reason`` or the
-    DEBUG log for granular cause.
-
-    ``expected_baseline_sha256``: when supplied, the under-lock read of the
-    existing file is SHA-256 hashed and compared against this value. A
-    mismatch refuses the write with :attr:`UnsafeReason.TOCTOU`, so callers
-    that derived *new_content* from a previously-read baseline cannot clobber
-    a concurrent writer's changes.
-
-    ``_hook_before_replace`` fires after the tmp file has been written,
-    fsynced, and the parent directory fsynced - and before the atomic
-    rename. Sub-PR 2 uses it to order shard writes without monkeypatching.
+    ``skip_delta`` is the single knob that distinguishes the two public
+    entry points. When True, the DELTA blowup-ratio gate is bypassed;
+    every other gate (PLATFORM, BASENAME, SYMLINK, SPECIAL_FILE,
+    CONTAINMENT, PATH_IDENTITY, TOCTOU, LOCKED, SIZE, SNIFF, IO_ERROR)
+    still fires. Kept private so callers cannot opt out of DELTA on the
+    normal write path — only ``safe_restore`` may bypass it.
     """
 
     # -- 1-5. Pre-open invariant gates. ------------------------------------
     _platform_check()
+    require_atomic_fs(target)
     _check_basename(target)
     _check_user_arg_basename(target, original_user_arg)
     lst = _lstat_target(target)
@@ -730,6 +761,7 @@ def safe_rewrite(
             new_content,
             target,
             expected_baseline_sha256=expected_baseline_sha256,
+            skip_delta=skip_delta,
         )
 
         parent = target.parent
@@ -822,3 +854,80 @@ def safe_rewrite(
         raise
     finally:
         _close_fds(target_fd, dir_fd, tmp_fd, flock_held)
+
+
+def safe_rewrite(
+    target: Path,
+    new_content: bytes,
+    *,
+    original_user_arg: Path,
+    repo_root: Path | None = None,
+    allow_outside_repo: bool = False,
+    expected_baseline_sha256: bytes | None = None,
+    _hook_before_replace: Callable[[], None] | None = None,
+) -> None:
+    """Atomically rewrite a literal ``.env`` file under invariant gates.
+
+    Raises :class:`UnsafeRewriteRefused` for any invariant violation. The
+    public exception message is opaque; callers inspect ``.reason`` or the
+    DEBUG log for granular cause.
+
+    ``expected_baseline_sha256``: when supplied, the under-lock read of the
+    existing file is SHA-256 hashed and compared against this value. A
+    mismatch refuses the write with :attr:`UnsafeReason.TOCTOU`, so callers
+    that derived *new_content* from a previously-read baseline cannot clobber
+    a concurrent writer's changes.
+
+    ``_hook_before_replace`` fires after the tmp file has been written,
+    fsynced, and the parent directory fsynced - and before the atomic
+    rename. Sub-PR 2 uses it to order shard writes without monkeypatching.
+
+    The DELTA blowup-ratio gate is always enforced on this path; the
+    recovery-only :func:`safe_restore` entry point is the sole way to
+    bypass it.
+    """
+    _safe_rewrite_core(
+        target,
+        new_content,
+        original_user_arg=original_user_arg,
+        repo_root=repo_root,
+        allow_outside_repo=allow_outside_repo,
+        expected_baseline_sha256=expected_baseline_sha256,
+        _hook_before_replace=_hook_before_replace,
+        skip_delta=False,
+    )
+
+
+def safe_restore(
+    target: Path,
+    new_content: bytes,
+    *,
+    original_user_arg: Path,
+    repo_root: Path | None = None,
+    allow_outside_repo: bool = False,
+    expected_baseline_sha256: bytes | None = None,
+    _hook_before_replace: Callable[[], None] | None = None,
+) -> None:
+    """Recovery write path: rewrite ``.env`` bypassing only the DELTA gate.
+
+    ``safe_restore`` exists for the lock-checkpoint recovery flow where a
+    tiny decoy must be swapped back to its original (potentially much
+    larger) content. The DELTA blowup-ratio gate would otherwise refuse
+    such a swap as an implausible expansion. Every other gate - SYMLINK,
+    SIZE, SNIFF, TOCTOU, CONTAINMENT, PATH_IDENTITY, LOCKED, IO_ERROR -
+    still fires, so a malicious or corrupted on-disk state cannot ride
+    the recovery path to clobber a shell rc file or similar.
+
+    The ``_hook_before_replace`` hook fires at the same point as on the
+    normal write path.
+    """
+    _safe_rewrite_core(
+        target,
+        new_content,
+        original_user_arg=original_user_arg,
+        repo_root=repo_root,
+        allow_outside_repo=allow_outside_repo,
+        expected_baseline_sha256=expected_baseline_sha256,
+        _hook_before_replace=_hook_before_replace,
+        skip_delta=True,
+    )

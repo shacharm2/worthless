@@ -719,7 +719,7 @@ class TestErrorCompensationPreservesEnrollments:
         )
 
         with patch(
-            "worthless.cli.commands.lock.rewrite_env_key",
+            "worthless.cli.commands.lock.rewrite_env_keys",
             side_effect=RuntimeError("simulated .env rewrite failure"),
         ):
             r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
