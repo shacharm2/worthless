@@ -188,13 +188,22 @@ class SpendCapRule:
         else:
             # Read the hot counter. Three shapes:
             #   int  → direct comparison
-            #   None → cache miss; rehydrate from SQLite
-            #   raise RedisValueError → tamper/corruption; rehydrate
+            #   None → cache miss; rehydrate from SQLite (SET NX is fine —
+            #          no existing key to overwrite)
+            #   raise RedisValueError → tamper/corruption; force-rehydrate
+            #          to evict the bad value (SET NX would no-op on the
+            #          still-present garbage)
             #   raise anything else  → transport error; drop to SQLite path
             try:
                 counter = await get_spend_hot(self.redis, alias)
             except RedisValueError:
-                counter = None  # treat as miss
+                # CodeRabbit major: SET NX no-ops on the existing corrupt
+                # key. Force a plain SET to clear the garbage, otherwise
+                # Redis stays permanently broken for this alias.
+                try:
+                    counter = await rehydrate_spend_hot(self.redis, self.db, alias, force=True)
+                except Exception:
+                    return spend_cap_error_response(provider=provider)
             except Exception:
                 return await self._evaluate_sqlite(alias, provider, body)
 

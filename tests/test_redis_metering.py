@@ -348,16 +348,38 @@ async def test_spend_cap_rule_redis_miss_rehydrates_and_allows_when_under_cap(sq
 
 @pytest.mark.asyncio
 async def test_spend_cap_rule_redis_malformed_value_rehydrates(sqlite_db):
-    """Planted bogus value must not read as 0 → rehydrate from SQLite instead."""
+    """Planted bogus value must not read as 0 — rehydrate from SQLite AND
+    overwrite the corrupt key (CodeRabbit major finding on rules.py:206).
+
+    Earlier this test only asserted a 402 — but that passes whether or not
+    Redis was healed. The real invariant is that the next request also
+    sees a clean counter, which requires force=True on the rehydrate.
+    Without that, SET NX no-ops on the existing corrupt key and Redis
+    stays permanently broken (every request pays the SQLite SUM cost).
+    """
     db, db_path = sqlite_db
     await _configure_cap(db, "alice", 1000.0)
     await _record_tokens(db_path, "alice", 5_000)
-    r = _PlantedRedis(key=spend_key("alice"), bad_value=b"lol")
+
+    # Use FakeRedis (which has a working SET) and plant a tampered value
+    # directly — _PlantedRedis's set() is a no-op so it can't observe the
+    # overwrite-or-not behaviour we care about here.
+    r = _FakeRedis()
+    r.store[spend_key("alice")] = b"tampered"
 
     rule = SpendCapRule(db=db, redis=r)
     result = await rule.evaluate("alice", object(), provider="openai", body=b"")
     assert result is not None
     assert result.status_code == 402
+
+    # The tampered value must have been overwritten with the SQLite SUM.
+    raw = r.store.get(spend_key("alice"))
+    assert raw == b"5000", (
+        f"Tampered Redis value was NOT overwritten — Redis stuck on {raw!r}. "
+        "rehydrate_spend_hot must use force=True on the RedisValueError path."
+    )
+    # And a follow-up evaluate sees the clean counter (not RedisValueError).
+    assert await get_spend_hot(r, "alice") == 5_000
 
 
 @pytest.mark.asyncio

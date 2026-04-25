@@ -278,8 +278,9 @@ async def test_client_abort_mid_stream_releases_reservation(stack):
 
     held = rule._reserved.get(alias, 0)
     assert held == 0, (
-        f"Client abort mid-stream must release the reservation via the generator "
-        f"finally: block. Held={held}."
+        f"Client abort mid-stream must release the reservation via the "
+        f"BackgroundTask that wraps _record_metering (the generator's "
+        f"finally only closes upstream_resp). Held={held}."
     )
     # And because no usage chunk was emitted, no INCR should have fired.
     assert redis.incr_calls == 0, (

@@ -408,24 +408,20 @@ async def test_streaming_no_usage_does_not_record_phantom_spend(redis_stack):
     _ = await resp.aread()
     await _wait_for_background()
 
-    # Whether the proxy's WOR-240 auto-injection fires depends on body
-    # rewriting logic - if it DID fire, the mock stream we returned would
-    # still not have a usage chunk (the mock is static). Either way, the
-    # collector yields None and the gate's "zero-friction" behaviour
-    # kicks in.
+    # WOR-240/241 invariant #4 (zero-friction failure): no usage chunk →
+    # collector.result() is None → record_spend MUST NOT run. Any spend_log
+    # row at this point would be a phantom-spend bug, not a happy path.
+    # CodeRabbit major: the previous `if rows: assert rows[0][0] > 0` branch
+    # *passed* exactly when the bug under test was present.
     rows = await _sqlite_spend_rows(app.state.settings.db_path, alias)
-    if rows:
-        # If WOR-240 injection made a difference, tokens would be > 0.
-        # In that case we've accidentally exercised the happy path; not a
-        # bug but not the invariant we wanted. Assert the mock did NOT
-        # emit usage so either way we've proven no phantom spend:
-        assert rows[0][0] > 0
-    else:
-        # The expected branch: collector.result() was None.
-        assert await get_spend_hot(redis, alias) is None, (
-            "No usage extracted -> no Redis INCR either (no phantom spend)"
-        )
-        assert not await tracker.is_dirty(alias), "No INCR attempted -> no dirty flag"
+    assert rows == [], (
+        f"WOR-240/241 zero-friction-failure invariant: no usage chunk "
+        f"means record_spend must NOT run; got phantom rows={rows}"
+    )
+    assert await get_spend_hot(redis, alias) is None, (
+        "No usage extracted → no Redis INCR (no phantom spend)"
+    )
+    assert not await tracker.is_dirty(alias), "No INCR attempted → no dirty flag"
 
 
 # ===========================================================================

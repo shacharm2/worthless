@@ -100,7 +100,7 @@ worthless-xcsi; `WORTHLESS_REDIS_URL` unset → pre-Redis SQLite path).
   `/tmp/bench2.json` (tcp) — local only; not committed.
 * Re-run (all three backends):
 
-  ```
+  ```bash
   pytest tests/bench_spend_cap_rule.py \
       -p no:xdist -p no:randomly -o addopts= \
       --benchmark-only --benchmark-sort=name \

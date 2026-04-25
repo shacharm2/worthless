@@ -66,7 +66,12 @@ class TestSpendKeyValidatesAlias:
             spend_key("has space")
 
     def test_rejects_non_string(self):
-        with pytest.raises((TypeError, ValueError)):
+        # Pin to TypeError specifically (the explicit isinstance guard).
+        # If the type check were ever removed, _ALIAS_RE.fullmatch would
+        # raise the less-specific TypeError from re — this test would
+        # still pass for the wrong reason. Keeping it as TypeError-only
+        # surfaces a regression where the guard goes missing.
+        with pytest.raises(TypeError):
             spend_key(123)  # type: ignore[arg-type]
 
 
