@@ -108,6 +108,10 @@ def live_proxy():
 
     # Enroll fake keys and collect shard_a tokens for Bearer auth
     shard_a_tokens: dict[str, str] = {}
+    # Capture each alias's plaintext shard-B so we can later pin it into
+    # the autouse FakeIPCSupervisor — without this the fake returns the
+    # wrong plaintext, reconstruction fails, and the proxy 401s.
+    plaintexts: dict[str, bytes] = {}
 
     prefixes = {"openai": "sk-proj-", "anthropic": "sk-ant-api03-"}
 
@@ -126,6 +130,7 @@ def live_proxy():
             )
             await repo.store(f"{provider}-contract", shard, prefix=sr.prefix, charset=sr.charset)
             shard_a_tokens[provider] = sr.shard_a.decode("utf-8")
+            plaintexts[f"{provider}-contract"] = bytes(sr.shard_b)
 
     asyncio.run(_enroll())
 
@@ -147,6 +152,14 @@ def live_proxy():
             default_rate_limit_rps=100.0,
         )
         proxy_app = create_app(settings)
+
+        # Pin per-alias plaintexts into the autouse FakeIPCSupervisor so
+        # the proxy's ipc.open(key_id=alias) yields the real shard-B
+        # bytes (without this, reconstruction fails and the proxy 401s).
+        fake_ipc = getattr(proxy_app.state, "ipc_supervisor", None)
+        if fake_ipc is not None and hasattr(fake_ipc, "set_plaintext"):
+            for alias, pt in plaintexts.items():
+                fake_ipc.set_plaintext(alias, pt)
 
         # Start both servers in background threads
         mock_server = uvicorn.Server(
