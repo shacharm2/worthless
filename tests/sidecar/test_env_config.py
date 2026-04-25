@@ -51,7 +51,7 @@ def test_resolve_log_level_accepts_canonical_names(raw: str | None, expected: in
 
 @pytest.mark.parametrize(
     "raw",
-    ["TRACE", "VERBOSE", "WARN", "FATAL", "info ".replace("info", "infomercial"), "0", "5"],
+    ["TRACE", "VERBOSE", "WARN", "FATAL", "infomercial", "0", "5"],
 )
 def test_resolve_log_level_rejects_non_stdlib_names(raw: str) -> None:
     """Anything outside the stdlib set returns ``None`` so callers can rc=1.

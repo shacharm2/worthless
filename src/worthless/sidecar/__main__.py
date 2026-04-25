@@ -53,22 +53,6 @@ _REQUIRED_ENV = (
     "WORTHLESS_SIDECAR_ALLOWED_UID",
 )
 
-
-def _load_shares(a_path: Path, b_path: Path) -> tuple[bytes, bytes]:
-    """Read two equal-length XOR shares from disk and return them as bytes.
-
-    WHY: shares come from disk by design. The sidecar does not consult the
-    OS keyring even when one is reachable — see §11 of
-    ``docs/wor-307-handoff.md`` for the no-keyring decision and why a
-    keyring fallback would collapse the two-share split into one secret.
-    """
-    share_a = a_path.read_bytes()
-    share_b = b_path.read_bytes()
-    if len(share_a) != len(share_b):
-        raise ValueError(f"share length mismatch: {len(share_a)} vs {len(share_b)}")
-    return share_a, share_b
-
-
 _PROBE_TIMEOUT_S = 1.0
 _DEFAULT_DRAIN_TIMEOUT_S = 5.0
 
@@ -77,7 +61,20 @@ _DEFAULT_DRAIN_TIMEOUT_S = 5.0
 # resolve to a level whose name isn't in our docs. ``logging.getLevelName``
 # would happily accept them otherwise. ``getLevelNamesMapping`` would
 # be the cleaner check but it's 3.11+; we floor at 3.10.
-_VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+_VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+
+def _load_shares(a_path: Path, b_path: Path) -> tuple[bytes, bytes]:
+    """Read two XOR shares from disk; the sidecar deliberately avoids any keyring fallback.
+
+    See §11 of ``docs/wor-307-handoff.md`` for the no-keyring decision and
+    why a keyring fallback would collapse the two-share split into one secret.
+    """
+    share_a = a_path.read_bytes()
+    share_b = b_path.read_bytes()
+    if len(share_a) != len(share_b):
+        raise ValueError(f"share length mismatch: {len(share_a)} vs {len(share_b)}")
+    return share_a, share_b
 
 
 def _resolve_log_level(raw: str | None) -> int | None:
@@ -114,9 +111,6 @@ async def _drain_server(
     tracked-task set directly rather than leaning on ``wait_closed``.
     That also keeps behavior consistent on 3.12+, where ``wait_closed``
     *does* wait on connections.
-
-    Separated from ``_run`` so tests can drive shutdown with a manually-set
-    ``stop`` event, avoiding flaky SIGTERM timing.
     """
     await stop.wait()
     server.close()
@@ -215,6 +209,16 @@ async def _run() -> int:
         _LOG.error("bad WORTHLESS_SIDECAR_ALLOWED_UID: %s", exc)
         return 1
 
+    # Parse drain_timeout BEFORE binding so a bad value fails fast without
+    # the cost (and operator confusion) of a bind/unbind cycle.
+    try:
+        drain_timeout = float(
+            os.environ.get("WORTHLESS_SIDECAR_DRAIN_TIMEOUT", str(_DEFAULT_DRAIN_TIMEOUT_S))
+        )
+    except ValueError as exc:
+        _LOG.error("bad WORTHLESS_SIDECAR_DRAIN_TIMEOUT: %s", exc)
+        return 1
+
     try:
         shares = _load_shares(share_a, share_b)
     except (OSError, ValueError) as exc:
@@ -251,19 +255,6 @@ async def _run() -> int:
     # signal.signal() would fight with asyncio's internal wakeup fd.
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _request_stop)
-
-    try:
-        drain_timeout = float(
-            os.environ.get("WORTHLESS_SIDECAR_DRAIN_TIMEOUT", str(_DEFAULT_DRAIN_TIMEOUT_S))
-        )
-    except ValueError as exc:
-        _LOG.error("bad WORTHLESS_SIDECAR_DRAIN_TIMEOUT: %s", exc)
-        server.close()
-        try:
-            await server.wait_closed()
-        except Exception as close_exc:  # noqa: BLE001 — best-effort cleanup
-            _LOG.debug("wait_closed raised during config-error cleanup: %s", close_exc)
-        return 1
 
     _LOG.info(
         "sidecar ready on %s (allowed_uids=%s, backend_caps=%s, drain_timeout=%.1fs)",

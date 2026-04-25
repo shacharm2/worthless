@@ -181,15 +181,17 @@ def _make_fernet_backend() -> FernetBackend:
     return FernetBackend(shares=(a, b))
 
 
-class _SlowSealBackend(Backend):
-    """Wraps a real backend, sleeping ``delay`` seconds before each seal."""
+class _DelegatingBackend(Backend):
+    """Forwards every Backend method to ``self._inner``.
 
-    def __init__(self, inner: FernetBackend, delay: float) -> None:
+    Subclasses override only the method they want to perturb (slow seal,
+    stalling seal) instead of re-implementing the open/attest pass-throughs.
+    """
+
+    def __init__(self, inner: FernetBackend) -> None:
         self._inner = inner
-        self._delay = delay
 
     async def seal(self, plaintext: bytes, context: bytes | None = None) -> bytes:
-        await asyncio.sleep(self._delay)
         return await self._inner.seal(plaintext, context)
 
     async def open(
@@ -204,26 +206,24 @@ class _SlowSealBackend(Backend):
         return await self._inner.attest(nonce, purpose)
 
 
-class _StallingSealBackend(Backend):
-    """Hangs forever on ``seal`` — simulates a stuck handler for drain tests."""
+class _SlowSealBackend(_DelegatingBackend):
+    """Sleeps ``delay`` seconds before each seal."""
 
-    def __init__(self, inner: FernetBackend) -> None:
-        self._inner = inner
+    def __init__(self, inner: FernetBackend, delay: float) -> None:
+        super().__init__(inner)
+        self._delay = delay
+
+    async def seal(self, plaintext: bytes, context: bytes | None = None) -> bytes:
+        await asyncio.sleep(self._delay)
+        return await self._inner.seal(plaintext, context)
+
+
+class _StallingSealBackend(_DelegatingBackend):
+    """Hangs forever on ``seal`` — simulates a stuck handler for drain tests."""
 
     async def seal(self, plaintext: bytes, context: bytes | None = None) -> bytes:
         await asyncio.sleep(3600)
         return b""  # unreachable
-
-    async def open(
-        self,
-        ciphertext: bytes,
-        context: bytes | None = None,
-        key_id: bytes | None = None,
-    ) -> bytes:
-        return await self._inner.open(ciphertext, context, key_id)
-
-    async def attest(self, nonce: bytes, purpose: str | None = None) -> bytes:
-        return await self._inner.attest(nonce, purpose)
 
 
 @pytest_asyncio.fixture
