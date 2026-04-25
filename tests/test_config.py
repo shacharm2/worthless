@@ -217,16 +217,27 @@ class TestFernetFdFallback:
 
 
 class TestValidation:
-    """ProxySettings.validate() should raise on missing fernet key."""
+    """ProxySettings.validate() — post-WOR-309 contract.
 
-    def test_missing_fernet_raises(self) -> None:
+    The proxy no longer holds the Fernet key; the sidecar does. ``validate()``
+    therefore MUST NOT raise when the key is unavailable: the proxy boots
+    fine and delegates decrypt over IPC. Asserting the absence of a raise
+    is the new regression guard.
+    """
+
+    def test_missing_fernet_does_not_raise(self) -> None:
+        """WOR-309: ``validate()`` ignores a missing Fernet key.
+
+        Pre-WOR-309 this raised ``ValueError`` because the proxy needed the
+        key to decrypt shard-B. Post-WOR-309 the sidecar holds the key and
+        the proxy only reads ciphertext-at-rest, so a missing key is fine.
+        """
         with patch(
             "worthless.proxy.config.read_fernet_key",
             side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
         ):
             s = ProxySettings()
-        with pytest.raises(ValueError, match="Fernet key not available"):
-            s.validate()
+        s.validate()  # MUST NOT raise — the proxy never decrypts
 
     def test_valid_fernet_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "valid-key")

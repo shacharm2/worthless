@@ -15,9 +15,12 @@ import httpx
 import pytest
 import respx
 
+from worthless.crypto.splitter import split_key_fp
 from worthless.proxy.app import create_app
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import ErrorResponse
+from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
+from worthless.storage.repository import StoredShard
 
 
 # ------------------------------------------------------------------
@@ -39,11 +42,14 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettin
 
 
 @pytest.fixture()
-async def enrolled_alias(repo, proxy_settings: ProxySettings):
-    """Enroll a test key and return (alias, shard_a_utf8, raw_api_key)."""
-    from worthless.crypto.splitter import split_key_fp
-    from worthless.storage.repository import StoredShard
+async def enrolled_alias(repo, proxy_settings: ProxySettings, proxy_app):
+    """Enroll a test key and return (alias, shard_a_utf8, raw_api_key).
 
+    Also pins the alias's plaintext shard-B onto the autouse FakeIPCSupervisor
+    attached to ``proxy_app.state.ipc_supervisor``. Without this pin the fake
+    returns its default plaintext, reconstruction yields the wrong API key,
+    and every routing test that depends on real reconstruction returns 401.
+    """
     alias = "test-key"
     api_key = "sk-test-key-1234567890abcdef"
     sr = split_key_fp(api_key, prefix="sk-", provider="openai")
@@ -56,6 +62,10 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings):
     )
     await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
 
+    fake_ipc = getattr(proxy_app.state, "ipc_supervisor", None)
+    if fake_ipc is not None and hasattr(fake_ipc, "set_plaintext"):
+        fake_ipc.set_plaintext(alias, bytes(sr.shard_b))
+
     shard_a_utf8 = sr.shard_a.decode("utf-8")
     return alias, shard_a_utf8, api_key.encode()
 
@@ -63,9 +73,6 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings):
 @pytest.fixture()
 async def proxy_app(proxy_settings: ProxySettings, repo):
     """A proxy app with state pre-initialized (ASGITransport skips lifespan)."""
-
-    from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
-
     app = create_app(proxy_settings)
     # Manually set up state since ASGITransport doesn't run lifespan
     db = await aiosqlite.connect(proxy_settings.db_path)
@@ -381,9 +388,6 @@ class TestTransparentRouting:
         self, repo, proxy_settings: ProxySettings, proxy_app
     ):
         """Enroll an Anthropic key and verify routing."""
-        from worthless.crypto.splitter import split_key_fp
-        from worthless.storage.repository import StoredShard
-
         api_key = "sk-ant-test-key-12345678901234"
         sr = split_key_fp(api_key, prefix="sk-ant-", provider="anthropic")
 
@@ -394,6 +398,11 @@ class TestTransparentRouting:
             provider="anthropic",
         )
         await repo.store("ant-key", shard, prefix=sr.prefix, charset=sr.charset)
+
+        # Pin shard-B onto the autouse Fake supervisor so reconstruction works.
+        fake_ipc = getattr(proxy_app.state, "ipc_supervisor", None)
+        if fake_ipc is not None and hasattr(fake_ipc, "set_plaintext"):
+            fake_ipc.set_plaintext("ant-key", bytes(sr.shard_b))
 
         shard_a_utf8 = sr.shard_a.decode("utf-8")
 
@@ -553,15 +562,21 @@ class TestSecurity:
 
 
 class TestSettingsValidation:
-    def test_create_app_rejects_missing_fernet_key(self, tmp_path):
-        """create_app() should raise ValueError when fernet_key is empty."""
+    def test_create_app_accepts_empty_fernet_key(self, tmp_path):
+        """WOR-309: ``create_app()`` MUST accept an empty Fernet key.
+
+        The proxy no longer decrypts anything itself — the sidecar holds
+        the key. Pre-WOR-309 ``create_app`` raised ``ValueError`` on an
+        empty key; post-WOR-309 it builds the app cleanly.
+        """
         settings = ProxySettings(
             db_path=str(tmp_path / "test.db"),
             fernet_key=bytearray(),
             allow_insecure=True,
         )
-        with pytest.raises(ValueError, match="WORTHLESS_FERNET_KEY"):
-            create_app(settings)
+        # MUST NOT raise — proxy never reconstructs in-process.
+        app = create_app(settings)
+        assert app is not None
 
 
 # ------------------------------------------------------------------
@@ -572,11 +587,6 @@ class TestSettingsValidation:
 @pytest.fixture()
 async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo):
     """Proxy app with an openai key enrolled using the provider-hash alias format."""
-
-    from worthless.crypto.splitter import split_key_fp
-    from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
-    from worthless.storage.repository import StoredShard
-
     alias = "openai-abcd1234"
     api_key = "sk-test-key-1234567890abcdef"
     sr = split_key_fp(api_key, prefix="sk-", provider="openai")
@@ -589,6 +599,11 @@ async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo):
     await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
 
     app = create_app(proxy_settings)
+    # Pin shard-B onto the autouse Fake supervisor so reconstruction works.
+    fake_ipc = getattr(app.state, "ipc_supervisor", None)
+    if fake_ipc is not None and hasattr(fake_ipc, "set_plaintext"):
+        fake_ipc.set_plaintext(alias, bytes(sr.shard_b))
+
     db = await aiosqlite.connect(proxy_settings.db_path)
     app.state.db = db
     app.state.repo = repo

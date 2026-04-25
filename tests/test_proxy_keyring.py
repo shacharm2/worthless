@@ -98,14 +98,19 @@ class TestProxySettingsKeyring:
             s = ProxySettings()
             s.validate()  # should not raise
 
-    def test_settings_validate_fails_when_no_key(self) -> None:
+    def test_settings_validate_does_not_fail_when_no_key(self) -> None:
+        """WOR-309: missing Fernet key no longer fails ``validate()``.
+
+        The proxy delegates decrypt to the sidecar, so the key is optional
+        at proxy boot. Pre-WOR-309 this raised ``ValueError``; post-WOR-309
+        the absence of a raise is the regression guard.
+        """
         with patch(
             "worthless.proxy.config.read_fernet_key",
             side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
         ):
             s = ProxySettings()
-        with pytest.raises(ValueError, match="Fernet key not available"):
-            s.validate()
+        s.validate()  # MUST NOT raise — the proxy never decrypts
 
 
 # ===========================================================================

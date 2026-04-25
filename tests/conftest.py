@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 from pathlib import Path
@@ -255,8 +256,15 @@ async def repo(tmp_db_path: str, fernet_key: bytes) -> ShardRepository:
 
 
 def _make_create_app_wrapper(original_create_app, fakes_seen: list[FakeIPCSupervisor]):
-    """Return a wrapper that stamps a FakeIPCSupervisor onto every app."""
+    """Return a wrapper that stamps a FakeIPCSupervisor onto every app.
 
+    Uses ``functools.wraps`` so ``inspect.getsource(create_app)`` returns the
+    original ``create_app`` source — required by tests in
+    ``test_security_properties.py`` that statically scan handler source for
+    the gate-before-decrypt invariant.
+    """
+
+    @functools.wraps(original_create_app)
     def _wrapped(*args, **kwargs):
         app = original_create_app(*args, **kwargs)
         if getattr(app.state, "ipc_supervisor", None) is None:
