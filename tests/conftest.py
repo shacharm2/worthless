@@ -14,8 +14,10 @@ from hypothesis import HealthCheck, settings
 
 from worthless.cli.bootstrap import WorthlessHome, ensure_home
 from worthless.crypto import SplitResult, split_key
+from worthless.proxy import app as _proxy_app_module
 from worthless.storage.repository import ShardRepository, StoredShard
 
+from tests._fakes.fake_ipc_supervisor import FakeIPCSupervisor
 from tests.helpers import fake_openai_key
 
 # Disable the real OS keyring for the entire test session.
@@ -226,3 +228,76 @@ async def repo(tmp_db_path: str, fernet_key: bytes) -> ShardRepository:
     r = ShardRepository(tmp_db_path, fernet_key)
     await r.initialize()
     return r
+
+
+# ------------------------------------------------------------------
+# WOR-309 Phase 5: autouse FakeIPCSupervisor injection
+# ------------------------------------------------------------------
+#
+# Phase 3 rewired the proxy to call ``app.state.ipc_supervisor.open(...)``
+# instead of an in-process Fernet decrypt. ``app.py:180-189`` honours a
+# pre-set ``app.state.ipc_supervisor`` and skips eager-connect when
+# ``app.state.ipc_supervisor_preconnected`` is truthy.
+#
+# This autouse fixture wraps :func:`worthless.proxy.app.create_app` so
+# every FastAPI app built during a test is silently equipped with a
+# :class:`FakeIPCSupervisor`. The proxy calls into the fake without
+# noticing — no real socket, no subprocess, no network.
+#
+# Tests that explicitly need a real or subprocess sidecar opt out by
+# marking ``@pytest.mark.real_ipc`` (declared in pyproject.toml).
+
+
+@pytest.fixture(autouse=True)
+def _autouse_fake_ipc_supervisor(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """Default every ``create_app()`` call to use a FakeIPCSupervisor.
+
+    Strategy: wrap the original ``create_app`` so it stamps a
+    :class:`FakeIPCSupervisor` onto ``app.state.ipc_supervisor`` and sets
+    the ``ipc_supervisor_preconnected`` flag (honoured by ``_lifespan``
+    at ``app.py:187``). The wrapper is published back into both
+    ``worthless.proxy.app`` (the canonical home) and any test module that
+    has already done ``from worthless.proxy.app import create_app`` —
+    that's the captured-reference problem we have to defeat.
+
+    Tests opt out by marking ``@pytest.mark.real_ipc`` — those bring
+    their own ``subprocess_sidecar`` and need the production code path.
+    """
+    if request.node.get_closest_marker("real_ipc") is not None:
+        # Honour the opt-out — yield without patching.
+        yield None
+        return
+
+    original_create_app = _proxy_app_module.create_app
+    fakes_seen: list[FakeIPCSupervisor] = []
+
+    def _wrapped_create_app(*args, **kwargs):
+        app = original_create_app(*args, **kwargs)
+        # Pre-set the supervisor and the "preconnected" flag so the
+        # lifespan accepts our injection and skips real connect().
+        if getattr(app.state, "ipc_supervisor", None) is None:
+            fake = FakeIPCSupervisor()
+            app.state.ipc_supervisor = fake
+            app.state.ipc_supervisor_preconnected = True
+            fakes_seen.append(fake)
+        return app
+
+    # Patch in the canonical location AND in every already-imported
+    # caller that captured the symbol by name. ``monkeypatch.setattr``
+    # restores both on teardown automatically.
+    monkeypatch.setattr(_proxy_app_module, "create_app", _wrapped_create_app)
+
+    # Tests typically write ``from worthless.proxy.app import create_app``
+    # — that snapshots the original symbol into the test module's
+    # namespace. Walk all already-imported modules whose ``create_app``
+    # attribute is the original function and rebind them too.
+    import sys
+
+    for mod in list(sys.modules.values()):
+        if mod is None or mod is _proxy_app_module:
+            continue
+        captured = getattr(mod, "create_app", None)
+        if captured is original_create_app:
+            monkeypatch.setattr(mod, "create_app", _wrapped_create_app)
+
+    yield fakes_seen
