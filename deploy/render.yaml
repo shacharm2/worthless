@@ -14,9 +14,10 @@ services:
       # `public` mode trusts X-Forwarded-Proto only from WORTHLESS_TRUSTED_PROXIES.
       - key: WORTHLESS_DEPLOY_MODE
         value: public
-      # Operators MUST replace with the actual edge CIDR; empty refuses startup.
+      # Render dashboard prompts the operator for the edge CIDR; the proxy
+      # refuses startup on missing/invalid values (validated as a CIDR).
       - key: WORTHLESS_TRUSTED_PROXIES
-        value: "REPLACE_WITH_EDGE_CIDR"
+        sync: false
       # Render defaults to PORT=10000; override to match Dockerfile's 8787.
       - key: PORT
         value: "8787"

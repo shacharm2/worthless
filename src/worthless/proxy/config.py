@@ -194,3 +194,13 @@ class ProxySettings:
                 "edge layer, e.g. Render/Fly internal CIDR). "
                 "Refusing to trust X-Forwarded-Proto from arbitrary peers."
             )
+        for entry in self.trusted_proxies:
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError as exc:
+                raise ConfigError(
+                    f"WORTHLESS_TRUSTED_PROXIES entry {entry!r} is not a valid CIDR. "
+                    "Replace placeholders (e.g. 'REPLACE_WITH_EDGE_CIDR') with the actual "
+                    "edge CIDR — uvicorn would otherwise trust no peer and every public "
+                    "request would 401."
+                ) from exc

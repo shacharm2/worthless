@@ -87,6 +87,14 @@ class TestValidateInvariants:
             ),
             # PUBLIC: refuses missing trusted_proxies
             ({"WORTHLESS_DEPLOY_MODE": "public"}, "requires WORTHLESS_TRUSTED_PROXIES"),
+            # PUBLIC: refuses unreplaced placeholder (would silently 401 every request)
+            (
+                {
+                    "WORTHLESS_DEPLOY_MODE": "public",
+                    "WORTHLESS_TRUSTED_PROXIES": "REPLACE_WITH_EDGE_CIDR",
+                },
+                "is not a valid CIDR",
+            ),
         ],
     )
     def test_refuses(
