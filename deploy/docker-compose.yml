@@ -63,7 +63,12 @@ services:
           echo "FATAL: REDIS_PASSWORD env var is not set; refusing to start without AUTH"
           exit 1
         fi
-        sed "s|__PASSWORD__|$$REDIS_PASSWORD|g" /etc/redis/users.acl.tmpl > /tmp/users.acl
+        # Render ACL: strip comments and blank lines (Redis 7 ACL parser
+        # rejects both — every line must start with 'user'), then
+        # substitute the password placeholder.
+        sed -e 's/#.*$$//' -e '/^[[:space:]]*$$/d' \
+            -e "s|__PASSWORD__|$$REDIS_PASSWORD|g" \
+            /etc/redis/users.acl.tmpl > /tmp/users.acl
         chmod 0400 /tmp/users.acl
         exec redis-server \
           --save "" \

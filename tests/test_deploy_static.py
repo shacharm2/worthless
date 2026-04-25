@@ -355,6 +355,31 @@ class TestRedisACL:
             "host, defeating the network isolation."
         )
 
+    def test_redis_boot_script_strips_comments_before_aclfile_render(self, compose_data: dict):
+        """Redis 7 ACL parser rejects comments AND blank lines — every line
+        must start with `user`. Earlier dynamic test caught this: container
+        restart-loops with 'should start with user keyword' for every
+        commented line in the template. Boot script must strip both
+        before substitution.
+
+        Regression guard: without this, the ACL template's documentation
+        comments make the live container un-startable, and only the
+        live-container test catches it.
+        """
+        cmd = compose_data["services"]["redis"]["command"]
+        cmd_str = "\n".join(str(c) for c in cmd) if isinstance(cmd, list) else str(cmd)
+        # Look for sed strip patterns. Either form acceptable as long as it
+        # removes both '#'-comments and blank lines before redis sees the
+        # file.
+        strips_comments = "s/#" in cmd_str or "/^#/" in cmd_str
+        strips_blanks = "/^[[:space:]]*$$/d" in cmd_str or "/^$$/d" in cmd_str
+        assert strips_comments and strips_blanks, (
+            "Boot script must strip comment lines AND blank lines from the "
+            "ACL template before exec'ing redis-server. Redis 7 ACL parser "
+            "rejects both — caught dynamically when the container "
+            "restart-loops with 'should start with user keyword'."
+        )
+
     def test_redis_consumes_env_file_for_password(self, compose_data: dict):
         """Compose-level ${REDIS_PASSWORD} interpolation reads shell env,
         not env_file. Use env_file: instead so the boot script sees the
