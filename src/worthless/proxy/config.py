@@ -73,7 +73,7 @@ def _read_default_host(mode: DeployMode) -> str:
     if explicit:
         return explicit
     if mode is DeployMode.PUBLIC:
-        return "0.0.0.0"  # noqa: S104 — public mode binds the edge-facing iface intentionally
+        return "0.0.0.0"  # noqa: S104  # nosec B104 — public mode binds edge-facing iface by design
     return "127.0.0.1"
 
 
@@ -172,7 +172,7 @@ class ProxySettings:
             return
 
         if self.deploy_mode is DeployMode.LAN:
-            if self.host not in ("127.0.0.1", "0.0.0.0") and not _is_private_ipv4_or_v6(  # noqa: S104
+            if self.host not in ("127.0.0.1", "0.0.0.0") and not _is_private_ipv4_or_v6(  # noqa: S104  # nosec B104
                 self.host
             ):
                 raise ConfigError(
