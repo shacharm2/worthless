@@ -15,6 +15,8 @@ Environment:
 * ``WORTHLESS_SIDECAR_SHARE_A``     Path to first XOR share file (raw bytes).
 * ``WORTHLESS_SIDECAR_SHARE_B``     Path to second XOR share file (raw bytes).
 * ``WORTHLESS_SIDECAR_ALLOWED_UID`` CSV of uids permitted to connect.
+* ``WORTHLESS_SIDECAR_DRAIN_TIMEOUT`` (opt) Seconds to wait for in-flight
+                                    handlers on shutdown; default ``5.0``.
 * ``WORTHLESS_LOG_LEVEL`` (opt)     Python logging level; default ``INFO``.
 
 Exit codes:
@@ -59,6 +61,60 @@ def _load_shares(a_path: Path, b_path: Path) -> tuple[bytes, bytes]:
 
 
 _PROBE_TIMEOUT_S = 1.0
+_DEFAULT_DRAIN_TIMEOUT_S = 5.0
+
+
+async def _drain_server(
+    server: asyncio.AbstractServer,
+    stop: asyncio.Event,
+    drain_timeout: float,
+) -> None:
+    """Shut the sidecar down with a bounded drain deadline.
+
+    Blocks on ``stop``; then stops accepting new connections and waits up to
+    ``drain_timeout`` seconds for in-flight handlers to finish. On deadline
+    expiry, cancels the tracked handler tasks registered by
+    ``start_sidecar`` on ``server._worthless_handler_tasks``.
+
+    Pre-3.12 ``asyncio.Server.wait_closed`` returns as soon as the listener
+    closes — it does **not** wait for connection tasks — so we drain the
+    tracked-task set directly rather than leaning on ``wait_closed``.
+    That also keeps behavior consistent on 3.12+, where ``wait_closed``
+    *does* wait on connections.
+
+    Separated from ``_run`` so tests can drive shutdown with a manually-set
+    ``stop`` event, avoiding flaky SIGTERM timing.
+    """
+    await stop.wait()
+    server.close()
+
+    tasks: set[asyncio.Task[None]] = getattr(server, "_worthless_handler_tasks", set())
+    if tasks:
+        _, pending = await asyncio.wait(tasks, timeout=drain_timeout)
+        if pending:
+            _LOG.warning(
+                "drain exceeded %.1fs — cancelling %d in-flight handler(s)",
+                drain_timeout,
+                len(pending),
+            )
+            for task in pending:
+                task.cancel()
+            still_pending: set[asyncio.Task[None]] = set()
+            try:
+                _, still_pending = await asyncio.wait(pending, timeout=1.0)
+            except Exception as exc:  # noqa: BLE001 — shutdown must not raise
+                _LOG.debug("post-cancel wait raised: %s", exc)
+            if still_pending:
+                _LOG.error("%d handler(s) ignored cancel; forcing close", len(still_pending))
+                # abort_clients is 3.13+; on older Pythons we've done all we can.
+                abort = getattr(server, "abort_clients", None)
+                if callable(abort):
+                    abort()
+
+    try:
+        await asyncio.wait_for(server.wait_closed(), timeout=1.0)
+    except asyncio.TimeoutError:
+        _LOG.debug("wait_closed timed out during final cleanup; continuing")
 
 
 def _check_socket_path_available(path: Path) -> bool:
@@ -163,21 +219,33 @@ async def _run() -> int:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _request_stop)
 
+    try:
+        drain_timeout = float(
+            os.environ.get("WORTHLESS_SIDECAR_DRAIN_TIMEOUT", str(_DEFAULT_DRAIN_TIMEOUT_S))
+        )
+    except ValueError as exc:
+        _LOG.error("bad WORTHLESS_SIDECAR_DRAIN_TIMEOUT: %s", exc)
+        server.close()
+        try:
+            await server.wait_closed()
+        except Exception as close_exc:  # noqa: BLE001 — best-effort cleanup
+            _LOG.debug("wait_closed raised during config-error cleanup: %s", close_exc)
+        return 1
+
     _LOG.info(
-        "sidecar ready on %s (allowed_uids=%s, backend_caps=%s)",
+        "sidecar ready on %s (allowed_uids=%s, backend_caps=%s, drain_timeout=%.1fs)",
         socket_path,
         list(allowed),
         ("seal", "open", "attest"),
+        drain_timeout,
     )
     # Print a stable, machine-parseable ready line for supervisors.
     print(f"sidecar: ready socket={socket_path}", flush=True)
 
-    await stop.wait()
-    server.close()
     try:
-        await server.wait_closed()
+        await _drain_server(server, stop, drain_timeout=drain_timeout)
     except Exception as exc:  # noqa: BLE001 — best-effort drain
-        _LOG.warning("wait_closed raised during shutdown: %s", exc)
+        _LOG.warning("drain raised during shutdown: %s", exc)
     _LOG.info("sidecar shut down cleanly")
     return 0
 
