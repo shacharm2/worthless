@@ -265,7 +265,7 @@ def test_expected_buf_initialized_as_bytearray() -> None:
         zeroed_items.append(buf)
         original_zero(buf)
 
-    with patch("worthless.crypto.splitter.zero_buf", side_effect=tracking_zero):
+    with patch("worthless.crypto.reconstruction.zero_buf", side_effect=tracking_zero):
         with patch("hmac.new", side_effect=RuntimeError("injected")):
             with pytest.raises(RuntimeError, match="injected"):
                 reconstruct_key(result.shard_a, result.shard_b, result.commitment, result.nonce)

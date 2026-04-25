@@ -150,11 +150,6 @@ def _walk_imports(tree: ast.AST) -> list[tuple[str, int]]:
     return found
 
 
-@pytest.mark.xfail(
-    reason="Phase 3 (WOR-309) removes the splitter import from proxy.app — "
-    "this guard is wired now so the failure is visible in CI.",
-    strict=True,
-)
 async def test_no_crypto_import_static() -> None:
     """#4 AST scan: ``worthless.proxy.app`` MUST NOT import crypto-fallback symbols.
 
