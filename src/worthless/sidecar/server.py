@@ -401,12 +401,31 @@ async def start_sidecar(
             "abstract-namespace AF_UNIX paths are not supported; use a pathname socket"
         )
 
-    handler = _make_client_handler(backend, allowed_uids)
+    raw_handler = _make_client_handler(backend, allowed_uids)
+    # Track live handler tasks so a shutdown path can cancel them when the
+    # drain deadline expires. asyncio.Server doesn't expose a public
+    # iterator over connection tasks until Python 3.13 (close_clients /
+    # abort_clients), and server.close() only stops accept() — it does
+    # NOT cancel in-flight handlers. Without this set, a stuck handler
+    # would hang ``await server.wait_closed()`` forever.
+    tracked_tasks: set[asyncio.Task[None]] = set()
+
+    async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            tracked_tasks.add(task)
+            task.add_done_callback(tracked_tasks.discard)
+        await raw_handler(reader, writer)
+
     # ``limit=MAX_FRAME_SIZE`` lifts the per-connection StreamReader buffer
     # ceiling (default 64 KiB) up to the contract's frame cap (1 MiB).
     # Without this, near-max legitimate frames would trip
     # ``LimitOverrunError`` before ``read_frame`` even sees them.
     server = await asyncio.start_unix_server(handler, path=str(socket_path), limit=MAX_FRAME_SIZE)
+    # Surface the tracked set to callers who need to cancel handlers on
+    # drain-deadline. Instance attribute on asyncio.Server, mirroring the
+    # 3.13 ``_clients`` WeakSet but typed + public via underscore prefix.
+    server._worthless_handler_tasks = tracked_tasks  # type: ignore[attr-defined]
 
     # Tighten permissions on the bound socket to 0660 (owner + group rw,
     # world none). Rationale:
