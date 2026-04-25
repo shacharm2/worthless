@@ -10,14 +10,11 @@ services:
     plan: starter
     healthCheckPath: /healthz
     envVars:
-      # Render terminates TLS at its edge; the container receives plain HTTP.
-      # `public` mode tells the proxy to trust X-Forwarded-Proto only from
-      # the edge CIDR listed in WORTHLESS_TRUSTED_PROXIES.
+      # Render terminates TLS at its edge; the container sees plain HTTP.
+      # `public` mode trusts X-Forwarded-Proto only from WORTHLESS_TRUSTED_PROXIES.
       - key: WORTHLESS_DEPLOY_MODE
         value: public
-      # Edge CIDR of the Render front layer. Operators MUST replace this
-      # placeholder with the actual CIDR Render exposes (see Render docs).
-      # Empty values cause the proxy to refuse startup. See WOR-344.
+      # Operators MUST replace with the actual edge CIDR; empty refuses startup.
       - key: WORTHLESS_TRUSTED_PROXIES
         value: "REPLACE_WITH_EDGE_CIDR"
       # Render defaults to PORT=10000; override to match Dockerfile's 8787.

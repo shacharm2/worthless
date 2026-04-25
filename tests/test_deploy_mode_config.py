@@ -1,10 +1,4 @@
-"""Tests for the WORTHLESS_DEPLOY_MODE invariant table (WOR-345).
-
-The invariants are encoded as a parametrized table so adding a new
-deploy mode requires only one row of test data, not a new test class.
-PaaS auto-detection is tested separately because it depends on env-var
-presence rather than mode value.
-"""
+"""Tests for the WORTHLESS_DEPLOY_MODE invariant table."""
 
 from __future__ import annotations
 
@@ -17,7 +11,6 @@ from worthless.proxy.config import ConfigError, DeployMode, ProxySettings
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip every WORTHLESS_*, RENDER, FLY_APP_NAME, KUBERNETES_SERVICE_HOST var."""
     for key in list(os.environ):
         if key.startswith("WORTHLESS_") or key in {
             "RENDER",
@@ -26,11 +19,6 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         }:
             monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("WORTHLESS_FERNET_KEY", "test-key")
-
-
-# ---------------------------------------------------------------------------
-# Mode parsing
-# ---------------------------------------------------------------------------
 
 
 class TestDeployModeParsing:
@@ -59,11 +47,6 @@ class TestDeployModeParsing:
             ProxySettings()
 
 
-# ---------------------------------------------------------------------------
-# Default host per mode
-# ---------------------------------------------------------------------------
-
-
 class TestDefaultHost:
     def test_loopback_defaults_127(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_DEPLOY_MODE", "loopback")
@@ -79,21 +62,7 @@ class TestDefaultHost:
         assert ProxySettings().host == "10.0.5.7"
 
 
-# ---------------------------------------------------------------------------
-# Invariant table — what validate() refuses
-# ---------------------------------------------------------------------------
-
-
-def _settings(env: dict[str, str]) -> ProxySettings:
-    """Construct settings from a flat env dict (for parametrized rows)."""
-    for k, v in env.items():
-        os.environ[k] = v
-    return ProxySettings()
-
-
 class TestValidateInvariants:
-    """One row per (mode, env, expected) — adding a mode = one new row."""
-
     @pytest.mark.parametrize(
         "env,match",
         [
@@ -148,11 +117,6 @@ class TestValidateInvariants:
         for k, v in env.items():
             monkeypatch.setenv(k, v)
         ProxySettings().validate()  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# PaaS auto-detection: refuse silent loopback default
-# ---------------------------------------------------------------------------
 
 
 class TestPaasAutoDetection:

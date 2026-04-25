@@ -74,15 +74,8 @@ def _uniform_401() -> Response:
 
 
 def _scheme_is_trusted(request: Request, settings: ProxySettings) -> bool:
-    """Decide whether this request reached us over a trusted-TLS path.
-
-    LOOPBACK / LAN: localhost or private LAN — TLS-on-the-wire isn't a
-    meaningful threat model; accept either scheme. PUBLIC: only accept
-    when ``X-Forwarded-Proto: https`` AND uvicorn's ``--proxy-headers
-    --forwarded-allow-ips=$WORTHLESS_TRUSTED_PROXIES`` already gated the
-    peer (request.scope["scheme"] reflects the *forwarded* scheme only
-    for trusted peers, otherwise the raw socket scheme).
-    """
+    # PUBLIC: scope["scheme"] reflects forwarded proto only when uvicorn's
+    # --forwarded-allow-ips already gated the peer; otherwise the raw socket scheme.
     if settings.deploy_mode is DeployMode.LOOPBACK:
         return True
     if settings.deploy_mode is DeployMode.LAN:

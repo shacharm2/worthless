@@ -1,11 +1,4 @@
-"""Proxy configuration from environment variables.
-
-WOR-hlls: ``deploy_mode`` is the explicit trust-boundary contract.
-Each mode pins the host bind, the X-Forwarded-Proto trust source, and
-whether ``WORTHLESS_ALLOW_INSECURE`` is even legal. ``ProxySettings.validate``
-refuses startup on any unsafe combination — operators can no longer silently
-cross trust boundaries by flipping a single env var.
-"""
+"""Proxy configuration from environment variables."""
 
 from __future__ import annotations
 
@@ -19,9 +12,11 @@ from worthless.cli.keystore import read_fernet_key
 
 
 _PAAS_ENV_VARS: tuple[str, ...] = ("RENDER", "FLY_APP_NAME", "KUBERNETES_SERVICE_HOST")
-"""Env vars that signal a public-PaaS runtime; require explicit deploy_mode."""
 
 _PRIVATE_CIDRS: tuple[str, ...] = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
+_PRIVATE_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = tuple(
+    ipaddress.ip_network(cidr) for cidr in _PRIVATE_CIDRS
+)
 
 
 class DeployMode(str, Enum):
@@ -42,12 +37,7 @@ class DeployMode(str, Enum):
 
 
 class ConfigError(ValueError):
-    """Raised when ProxySettings.validate() finds an unsafe combination.
-
-    Carries an actionable hint pointing at the env var(s) the operator
-    must fix. Distinct from ``ValueError`` so callers can differentiate
-    config errors from generic validation failures.
-    """
+    """Raised when ProxySettings.validate() finds an unsafe combination."""
 
 
 def _default_db_path() -> str:
@@ -121,7 +111,7 @@ def _is_private_ipv4_or_v6(addr: str) -> bool:
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return False
-    return any(ip in ipaddress.ip_network(cidr) for cidr in _PRIVATE_CIDRS)
+    return any(ip in net for net in _PRIVATE_NETWORKS)
 
 
 @dataclass

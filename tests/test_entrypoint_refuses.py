@@ -1,12 +1,4 @@
-"""Black-box tests for deploy/entrypoint.sh refusal of unsafe combos (WOR-345).
-
-The entrypoint composes the uvicorn bind from WORTHLESS_DEPLOY_MODE and
-must exit 78 (sysexits EX_CONFIG) on combinations the proxy itself
-would refuse — *before* any Python startup. We invoke the script as a
-subprocess with a stub `python` and stub `uvicorn` on PATH so the
-fernet-bootstrap + exec are short-circuited; only the precheck branch
-is exercised.
-"""
+"""Black-box tests: entrypoint.sh exits 78 on unsafe deploy_mode combos."""
 
 from __future__ import annotations
 

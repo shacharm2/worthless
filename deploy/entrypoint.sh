@@ -1,7 +1,5 @@
 #!/bin/sh
-# Entrypoint composes the uvicorn bind + proxy-header trust list from
-# WORTHLESS_DEPLOY_MODE so the Dockerfile cannot accidentally hard-code
-# a public bind. See WOR-345.
+# Composes uvicorn bind + proxy-header trust list from WORTHLESS_DEPLOY_MODE.
 set -e
 
 HOME_DIR="${WORTHLESS_HOME:-/data}"
@@ -9,17 +7,16 @@ FERNET_PATH="${WORTHLESS_FERNET_KEY_PATH:-$HOME_DIR/fernet.key}"
 MODE="${WORTHLESS_DEPLOY_MODE:-loopback}"
 PORT="${PORT:-8787}"
 
-# Refuse silently-unsafe combinations before any Python startup.
-# Exit 78 = configuration error (sysexits.h EX_CONFIG).
+# Refuse unsafe combinations before Python startup. Exit 78 = sysexits EX_CONFIG.
 if [ "$MODE" = "public" ]; then
   if [ "${WORTHLESS_ALLOW_INSECURE:-}" = "true" ] || [ "${WORTHLESS_ALLOW_INSECURE:-}" = "1" ]; then
     echo "FATAL: WORTHLESS_ALLOW_INSECURE is forbidden when WORTHLESS_DEPLOY_MODE=public." >&2
-    echo "       Set WORTHLESS_TRUSTED_PROXIES=<edge-CIDR> instead. See WOR-344." >&2
+    echo "       Set WORTHLESS_TRUSTED_PROXIES=<edge-CIDR> instead." >&2
     exit 78
   fi
   if [ -z "${WORTHLESS_TRUSTED_PROXIES:-}" ]; then
     echo "FATAL: WORTHLESS_DEPLOY_MODE=public requires WORTHLESS_TRUSTED_PROXIES" >&2
-    echo "       (CIDR of the edge layer, e.g. Render/Fly internal CIDR). See WOR-344." >&2
+    echo "       (CIDR of the edge layer, e.g. Render/Fly internal CIDR)." >&2
     exit 78
   fi
 fi
@@ -45,9 +42,6 @@ fi
 exec 3< "$FERNET_PATH"
 export WORTHLESS_FERNET_FD=3
 
-# Compose the uvicorn bind from deploy_mode. The Dockerfile CMD is now
-# just the script-name + factory flag; bind + proxy-header trust live
-# here where WORTHLESS_DEPLOY_MODE is in scope.
 case "$MODE" in
   public)
     HOST="0.0.0.0"
