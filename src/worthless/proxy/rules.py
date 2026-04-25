@@ -172,7 +172,16 @@ class SpendCapRule:
                 logger.debug(
                     "release_reservation called for unreserved alias=%s amount=%d", alias, amount
                 )
-            self._reserved[alias] = max(0, held - amount)
+            remaining = max(0, held - amount)
+            # Drop the alias key when fully released — otherwise zero-valued
+            # entries accumulate forever and a long-lived proxy with many
+            # unique aliases leaks one dict entry per alias ever seen.
+            # Callers read via .get(alias, 0) everywhere, so absent == zero
+            # is already the convention.
+            if remaining == 0:
+                self._reserved.pop(alias, None)
+            else:
+                self._reserved[alias] = remaining
 
 
 @dataclass
@@ -307,7 +316,16 @@ class TokenBudgetRule:
                 logger.debug(
                     "release_reservation called for unreserved alias=%s amount=%d", alias, amount
                 )
-            self._reserved[alias] = max(0, held - amount)
+            remaining = max(0, held - amount)
+            # Drop the alias key when fully released — otherwise zero-valued
+            # entries accumulate forever and a long-lived proxy with many
+            # unique aliases leaks one dict entry per alias ever seen.
+            # Callers read via .get(alias, 0) everywhere, so absent == zero
+            # is already the convention.
+            if remaining == 0:
+                self._reserved.pop(alias, None)
+            else:
+                self._reserved[alias] = remaining
 
 
 @dataclass
