@@ -149,11 +149,24 @@ repos:
 
 ## For AI coding agents
 
-Worthless ships a `SKILL.md` that tells Claude Code, Cursor, and Windsurf what commands are available. Agents use `--json` for structured output:
+Add to your project's `.mcp.json` (Node ≥ 18, no Python needed upfront):
 
-```bash
-worthless status --json
+```json
+{
+  "mcpServers": {
+    "worthless": {
+      "command": "npx",
+      "args": ["-y", "worthless-mcp"]
+    }
+  }
+}
 ```
+
+Restart Claude Code / Cursor / Windsurf — MCP tools appear immediately. On first run, `worthless-mcp` bootstraps `uv` and installs the Python package automatically. Install time < 30 s.
+
+Available tools: `worthless_status`, `worthless_lock`, `worthless_scan`, `worthless_spend`.
+
+See [SKILL.md](SKILL.md) for the full agent discovery file.
 
 ## Development
 

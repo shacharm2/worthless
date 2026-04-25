@@ -14,19 +14,37 @@ Worthless protects API keys in three scenarios:
 
 ## Installation & Setup
 
+### For AI agents — zero-Python install (recommended)
+
+Add to your project's `.mcp.json` (Node ≥ 18 required):
+
+```json
+{
+  "mcpServers": {
+    "worthless": {
+      "command": "npx",
+      "args": ["-y", "worthless-mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Code / Cursor / Windsurf. On first run, `worthless-mcp` bootstraps `uv` if needed and starts the MCP server. Install time < 30 s; no Python required upfront.
+
 ### Package Info
 - **Package name**: `worthless`
+- **npm wrapper**: `worthless-mcp`
 - **Version**: 0.3.0
 - **Entry point**: `worthless` (CLI command)
 - **Python**: 3.10+
 - **License**: AGPL-3.0
 - **Status**: Beta
 
-### Quick Install
+### Quick Install (human CLI)
 ```bash
+curl -sSL https://worthless.sh | sh   # fresh machine — installs uv + worthless
+# or, if you already have Python 3.10+:
 pipx install worthless
-# or: pip install worthless (in a virtualenv)
-# or: curl -sSL worthless.sh | sh
 ```
 
 ### First-Time Setup (the magic way)
@@ -425,21 +443,36 @@ repos:
 
 ## Integration with AI Agents
 
-Agents (Claude Code, Cursor, OpenClaw) can invoke Worthless via:
+### Recommended: MCP server (native tool calls)
 
-1. **CLI shell commands** (primary):
-   ```bash
-   worthless status
-   worthless scan --deep
-   worthless wrap pytest
-   ```
+Add to `.mcp.json` — works on any machine with Node ≥ 18, no Python required upfront:
 
-2. **MCP server** (when available):
-   ```
-   Tool: worthless_status() -> {"keys": [...], "proxy": {...}}
-   Tool: worthless_scan(paths, deep) -> "key exposures found"
-   Tool: worthless_wrap(command, args) -> "command output"
-   ```
+```json
+{
+  "mcpServers": {
+    "worthless": {
+      "command": "npx",
+      "args": ["-y", "worthless-mcp"]
+    }
+  }
+}
+```
+
+After restart, agents get native MCP tools:
+```
+Tool: worthless_status()            -> {"keys": [...], "proxy": {...}}
+Tool: worthless_lock(env_path)      -> {"protected_count": N}
+Tool: worthless_scan(paths, deep)   -> {"findings": [...], "summary": {...}}
+Tool: worthless_spend(alias)        -> {"spend": [...]}
+```
+
+### Alternative: CLI shell commands
+
+```bash
+worthless status
+worthless scan --deep
+worthless wrap pytest
+```
 
 Agents should:
 - Call `worthless status` to check if a proxy is running before issuing API calls
