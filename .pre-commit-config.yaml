@@ -175,10 +175,16 @@ repos:
         files: '(\.py|pyproject\.toml|uv\.lock)$'
 
       # Vulnerability scan — pre-push only (slow, needs network)
+      # GHSA-58qw-9mgm-455v: pip 26.0.1 tar-fallback symlink-extraction
+      # advisory. Pulled in transitively by pip-audit -> pip-api -> pip.
+      # Toolchain-only, not in our application deps. Drop --ignore-vuln
+      # once pip-api ships a constraint allowing the patched pip.
+      # Tracked: revisit each release; remove the ignore when upstream
+      # fix lands.
       - id: uv-audit
         name: "supply chain: vulnerability scan"
         language: system
-        entry: sh -c 'uv export --frozen --no-emit-project | uv run pip-audit --disable-pip -r /dev/stdin'
+        entry: sh -c 'uv export --frozen --no-emit-project | uv run pip-audit --disable-pip --ignore-vuln GHSA-58qw-9mgm-455v -r /dev/stdin'
         pass_filenames: false
         stages: [pre-push]
 
