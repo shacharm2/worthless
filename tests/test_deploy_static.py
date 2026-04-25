@@ -119,8 +119,8 @@ class TestRenderConfig:
 
     @pytest.fixture(scope="module")
     def render_env_vars(self, render_service: dict) -> dict[str, str]:
-        """Build env var lookup from Render service config."""
-        return {v["key"]: v["value"] for v in render_service["envVars"]}
+        # `sync: false` entries have no `value` — operator sets them in the dashboard.
+        return {v["key"]: v.get("value", "") for v in render_service["envVars"]}
 
     def test_service_type_is_web(self, render_service: dict):
         """Render service must be type 'web' for HTTP traffic."""
@@ -142,18 +142,26 @@ class TestRenderConfig:
         """Disk must be >= 1 GB (SQLite + shards need headroom)."""
         assert render_service["disk"]["sizeGB"] >= 1
 
-    def test_deploy_mode_public(self, render_env_vars: dict[str, str]):
+    def test_deploy_mode_public(self, render_service: dict, render_env_vars: dict[str, str]):
         """Render terminates TLS at edge; container must run in public mode.
 
         WORTHLESS_DEPLOY_MODE=public tells the proxy to trust X-Forwarded-Proto
         only from the edge CIDR listed in WORTHLESS_TRUSTED_PROXIES. The old
-        WORTHLESS_ALLOW_INSECURE=true escape-hatch is forbidden in public mode
-        — see WOR-344.
+        WORTHLESS_ALLOW_INSECURE=true escape-hatch is forbidden in public mode.
         """
         assert render_env_vars.get("WORTHLESS_DEPLOY_MODE") == "public"
         assert render_env_vars.get("WORTHLESS_ALLOW_INSECURE") is None
-        assert "WORTHLESS_TRUSTED_PROXIES" in render_env_vars, (
-            "public mode requires WORTHLESS_TRUSTED_PROXIES (edge CIDR list)"
+        # WORTHLESS_TRUSTED_PROXIES must be dashboard-prompted (sync: false), not
+        # a placeholder string — placeholders pass startup but uvicorn would
+        # trust no peer, silently 401-ing every request.
+        tp_entry = next(
+            (v for v in render_service["envVars"] if v["key"] == "WORTHLESS_TRUSTED_PROXIES"),
+            None,
+        )
+        assert tp_entry is not None, "public mode requires WORTHLESS_TRUSTED_PROXIES"
+        assert tp_entry.get("sync") is False, (
+            "WORTHLESS_TRUSTED_PROXIES must use `sync: false` so Render prompts the "
+            "operator at deploy time — never ship a placeholder value."
         )
 
     def test_dockerfile_path(self, render_service: dict):
