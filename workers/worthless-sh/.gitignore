@@ -1,8 +1,8 @@
-# Staged copy of the canonical install.sh (kept at the repo root). Both
-# vitest and wrangler require the file inside this Worker's project
-# directory; the `stage:install-sh` npm script copies it in before any
-# build step. The copy is generated, not source — never commit.
-install.sh
+# Staged copy of the canonical install.sh (kept at the repo root). The
+# `stage:install-sh` npm script copies it in before any build step; the
+# copy is generated, never source. Anchored so future `**/install.sh`
+# fixtures elsewhere under this dir aren't silently ignored.
+/install.sh
 
 # Wrangler deploy artifacts
 .wrangler/

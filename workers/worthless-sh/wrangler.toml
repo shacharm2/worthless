@@ -23,16 +23,9 @@ REDIRECT_URL = "https://wless.io"
 SCRIPT_TAG = "v0.0.0-dev"
 SCRIPT_COMMIT = "0000000000000000000000000000000000000000"
 
-# --- Deploy environments ----------------------------------------------------
-#
-# Two named environments. Tests run against the bare `[vars]` block above
-# (cloudflareTest reads it directly). `wrangler deploy --env preview` /
-# `--env production` pick the matching block below.
-#
-# Preview is a workers.dev-only deploy (no route) — used by the
-# deploy-worker workflow's workflow_dispatch path so we can validate the
-# build artifact end-to-end before tagging a release. Routes attached only
-# to production.
+# Bare `[vars]` is read by vitest's pool; named envs by `wrangler deploy --env`.
+# Wrangler 4 does NOT inherit top-level vars into env blocks, so the
+# REDIRECT_URL repetition below is required, not an oversight.
 
 [env.preview]
 name = "worthless-sh-preview"

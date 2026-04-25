@@ -37,9 +37,7 @@ on:
 permissions:
   contents: read
 
-# Don't kill an in-flight deploy; serialize per-ref. A second tag push to
-# the same ref is a no-op (the second job waits and then deploys the same
-# bytes); concurrent deploys on different tags are rare but allowed.
+# Serialize per-ref; never cancel an in-flight deploy.
 concurrency:
   group: deploy-worker-${{ github.ref }}
   cancel-in-progress: false
@@ -102,12 +100,7 @@ jobs:
           echo "install.sh sha256: ${SHA}"
 
       - name: Set up Node.js
-        # No `cache:` setting — npm cache poisoning on a deploy workflow
-        # would let a compromised PR seed bytes into the cache that the
-        # next tag deploy then publishes. Pay the ~10s install cost.
-        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
-        with:
-          node-version: "22"
+        uses: ./.github/actions/setup-node-worker
 
       - name: Install Worker deps
         working-directory: workers/worthless-sh
@@ -124,11 +117,9 @@ jobs:
     timeout-minutes: 10
     environment:
       # Actions environment scopes secrets and (when WOR-323 lands) gates
-      # production deploys behind required-reviewer rules. URL points at
-      # the production endpoint for production deploys, the Cloudflare
-      # dashboard otherwise — secrets cannot be referenced in
-      # `environment.url`, so the preview URL is documented in DEPLOY.md
-      # rather than templated in here.
+      # production deploys behind required-reviewer rules. The preview
+      # URL cannot be templated here (`environment.url` does not allow
+      # `secrets.*`); see DEPLOY.md for the actual workers.dev URL.
       name: worthless-sh-${{ needs.verify.outputs.target }}
       url: >-
         ${{ needs.verify.outputs.target == 'production' && 'https://worthless.sh/' || 'https://dash.cloudflare.com/' }}
@@ -138,14 +129,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          fetch-depth: 0
+          # Deploy job doesn't read git history; shallow clone is enough.
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Set up Node.js
-        # See verify-job rationale; same cache-poisoning concern applies.
-        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # v4.0.2
-        with:
-          node-version: "22"
+        uses: ./.github/actions/setup-node-worker
 
       - name: Install Worker deps
         working-directory: workers/worthless-sh
@@ -153,22 +142,16 @@ jobs:
 
       - name: Deploy via Wrangler
         working-directory: workers/worthless-sh
-        # All template expansions piped through env vars (see
-        # security-hardening guide) so workflow_dispatch input or
-        # upstream-job output cannot escape into shell.
+        # Inputs/outputs piped through env vars (see security-hardening
+        # guide) so workflow_dispatch input cannot escape into shell.
+        # SCRIPT_TAG / SCRIPT_COMMIT inject via --var so the verifiability
+        # headers point at the deployed git ref, not the wrangler.toml
+        # placeholders.
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           DEPLOY_TARGET: ${{ needs.verify.outputs.target }}
         run: |
-          # The npm `predeploy` script copies the canonical install.sh
-          # (kept at the repo root, single source of truth) into this
-          # Worker's project dir so Wrangler's bundler can include it via
-          # the `[[rules]]` Text glob. SCRIPT_TAG and SCRIPT_COMMIT
-          # propagate into the Worker via wrangler `--var` so the
-          # verifiability headers (X-Worthless-Script-Tag /
-          # X-Worthless-Script-Commit) point at the actual deployed git
-          # ref, not the dev placeholders pinned in wrangler.toml.
           npm run stage:install-sh
           npx wrangler deploy \
             --env "${DEPLOY_TARGET}" \
