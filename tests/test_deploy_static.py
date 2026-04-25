@@ -259,6 +259,128 @@ class TestDockerCompose:
 
 
 # ------------------------------------------------------------------
+# Redis ACL + AUTH (worthless-c3ox)
+#
+# Penetration-tester flagged that without AUTH any sibling container on
+# the backend network can `SET worthless:spend:victim 0` and reset the
+# spend cap. c3ox closes that bound by:
+#   - shipping deploy/redis-acl.conf.tmpl with `default off` + a
+#     locked-down `worthless` user (5 commands, key-pattern scoped)
+#   - mounting the template into the redis container at startup; an
+#     in-container `sh -c sed | redis-server --aclfile` renders the
+#     password from the env at boot
+#   - using authenticated PING in the healthcheck so a malformed ACL
+#     doesn't silently leave the default user enabled
+# ------------------------------------------------------------------
+
+
+class TestRedisACL:
+    """Static checks of the ACL template + compose wiring."""
+
+    def test_acl_template_exists(self):
+        from pathlib import Path
+
+        tmpl = Path(__file__).parent.parent / "deploy" / "redis-acl.conf.tmpl"
+        assert tmpl.exists(), "Missing deploy/redis-acl.conf.tmpl"
+
+    def test_acl_template_disables_default_user(self):
+        from pathlib import Path
+
+        tmpl = (Path(__file__).parent.parent / "deploy" / "redis-acl.conf.tmpl").read_text()
+        assert "user default off" in tmpl, (
+            "ACL must disable the default user — otherwise unauthenticated access remains possible"
+        )
+
+    def test_acl_template_grants_minimum_commands_only(self):
+        from pathlib import Path
+
+        tmpl = (Path(__file__).parent.parent / "deploy" / "redis-acl.conf.tmpl").read_text()
+        worthless_lines = [ln for ln in tmpl.splitlines() if ln.startswith("user worthless")]
+        assert len(worthless_lines) == 1, (
+            f"Expected exactly one `user worthless` line, got {len(worthless_lines)}"
+        )
+        line = worthless_lines[0]
+        assert "-@all" in line, "ACL must start from -@all and allow-list explicitly"
+        for cmd in ("+get", "+set", "+incrby", "+del", "+ping"):
+            assert cmd in line, f"Missing command grant: {cmd}"
+        assert "~worthless:spend:*" in line, (
+            "ACL must restrict keys to ~worthless:spend:* — anything else is an over-scoped grant"
+        )
+        for forbidden in ("+flushall", "+flushdb", "+config", "+debug", "+@all"):
+            assert forbidden not in line.lower(), (
+                f"ACL grants {forbidden} — must not be on the worthless user"
+            )
+
+    def test_acl_template_uses_password_placeholder(self):
+        from pathlib import Path
+
+        tmpl = (Path(__file__).parent.parent / "deploy" / "redis-acl.conf.tmpl").read_text()
+        assert "__PASSWORD__" in tmpl, (
+            "ACL template must use __PASSWORD__ as the substitution sentinel "
+            "so the redis service entrypoint can render it from $REDIS_PASSWORD"
+        )
+
+    def test_redis_service_runs_with_aclfile(self, compose_data: dict):
+        cmd = compose_data["services"]["redis"]["command"]
+        cmd_str = " ".join(str(c) for c in cmd) if isinstance(cmd, list) else str(cmd)
+        assert "--aclfile" in cmd_str, (
+            "Redis service command must include --aclfile so AUTH is enforced"
+        )
+
+    def test_redis_service_mounts_acl_template(self, compose_data: dict):
+        volumes = compose_data["services"]["redis"].get("volumes", [])
+        acl_mounts = [v for v in volumes if "redis-acl.conf.tmpl" in str(v)]
+        assert acl_mounts, (
+            "Redis service must bind-mount deploy/redis-acl.conf.tmpl "
+            "(read-only); operator-side pre-templating is rejected per "
+            "architect review"
+        )
+
+    def test_redis_healthcheck_authenticated(self, compose_data: dict):
+        hc = compose_data["services"]["redis"].get("healthcheck", {})
+        test_cmd = hc.get("test", [])
+        cmd_str = (
+            " ".join(str(c) for c in test_cmd) if isinstance(test_cmd, list) else str(test_cmd)
+        )
+        assert "--user" in cmd_str or "-a " in cmd_str or "-a$" in cmd_str, (
+            "Healthcheck PING must be authenticated — bare `redis-cli PING` "
+            "succeeds without auth even when ACL silently fails to load"
+        )
+
+    def test_redis_no_published_ports(self, compose_data: dict):
+        ports = compose_data["services"]["redis"].get("ports")
+        assert not ports, (
+            "Redis must remain reachable only via the internal `backend` "
+            "network. Any `ports:` block exposes AUTH credentials to the "
+            "host, defeating the network isolation."
+        )
+
+    def test_redis_consumes_env_file_for_password(self, compose_data: dict):
+        """Compose-level ${REDIS_PASSWORD} interpolation reads shell env,
+        not env_file. Use env_file: instead so the boot script sees the
+        password without operators having to `export` it before `up`."""
+        env_file = compose_data["services"]["redis"].get("env_file")
+        assert env_file == "docker-compose.env", (
+            f"Redis service must use env_file: docker-compose.env to "
+            f"propagate REDIS_PASSWORD to the container — got {env_file!r}"
+        )
+
+    def test_redis_boot_script_validates_password_present(self, compose_data: dict):
+        """The boot script must refuse to start without REDIS_PASSWORD —
+        otherwise a missing env silently launches an unauthenticated
+        redis (worst-case regression)."""
+        cmd = compose_data["services"]["redis"]["command"]
+        cmd_str = "\n".join(str(c) for c in cmd) if isinstance(cmd, list) else str(cmd)
+        has_check = (
+            'if [ -z "$$REDIS_PASSWORD" ]' in cmd_str or 'if [ -z "$REDIS_PASSWORD" ]' in cmd_str
+        )
+        assert has_check, "Boot script must check REDIS_PASSWORD before exec'ing redis-server"
+        assert "FATAL" in cmd_str.upper() or "exit 1" in cmd_str, (
+            "Boot script must exit non-zero on missing password"
+        )
+
+
+# ------------------------------------------------------------------
 # Entrypoint script
 # ------------------------------------------------------------------
 

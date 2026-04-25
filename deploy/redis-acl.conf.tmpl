@@ -1,0 +1,27 @@
+# Redis ACL — locked-down hot-path metering user.
+#
+# Rendered at container boot by:
+#   sed 's|__PASSWORD__|$REDIS_PASSWORD|' redis-acl.conf.tmpl > /tmp/users.acl
+# (handled in the redis service `command:` in deploy/docker-compose.yml).
+#
+# Security rationale (worthless-c3ox):
+#  - `default off` disables unauthenticated access entirely. Without
+#    this, an attacker on the backend network can SET/FLUSHALL freely.
+#  - `worthless` is the only enabled user. -@all then explicit allow-
+#    list bounds the command surface to exactly what SpendCapRule and
+#    record_spend need (GET / SET / INCRBY / DEL / PING) plus the
+#    redis-py connection-handshake commands (auth / hello / client).
+#  - `~worthless:spend:*` scopes keys to our namespace. An attacker
+#    with the password can only touch counters they can already read
+#    via the proxy — no lateral access to other Redis users' data on
+#    a shared instance.
+#  - `&*` is the pubsub channel pattern (none used; explicit deny).
+#  - `-@dangerous` does NOT include FLUSHALL/FLUSHDB (research
+#    footgun #7); that's why we use `-@all` + explicit allow-list.
+#
+# This file is mounted read-only. ACL SAVE will fail (intentional —
+# ACL is immutable in this deploy; rotation requires a re-render).
+
+user default off
+
+user worthless on >__PASSWORD__ ~worthless:spend:* &* -@all +get +set +incrby +del +ping +auth +hello +client|setname

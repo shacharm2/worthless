@@ -49,23 +49,39 @@ services:
   redis:
     image: redis:7-alpine
     # No ports block: reachable only via the internal `backend` network.
+    #
+    # AUTH (worthless-c3ox): the ACL template is bind-mounted read-only.
+    # Boot script renders __PASSWORD__ from $REDIS_PASSWORD into a tmpfs
+    # copy at /tmp/users.acl, then execs redis-server with --aclfile.
+    # We use `command:` (not `entrypoint:`) so the alpine image's
+    # docker-entrypoint user-switching logic still runs.
     command:
-      - redis-server
-      # No persistence: the counter is rebuildable from SQLite spend_log, so
-      # restart wipes the cache and the proxy rehydrates on the first GET.
-      - --save
-      - ""
-      - --appendonly
-      - "no"
-      - --maxmemory
-      - "128mb"
-      # noeviction is mandatory for correctness. allkeys-lru would silently
-      # evict a spend counter under memory pressure; the next GET would
-      # return nil → rehydrate from SQLite. That's safe, but eviction of a
-      # HOT counter mid-traffic forces an extra SQLite SUM on the gate path.
-      # Fail loud on OOM so operators provision up instead of degrading.
-      - --maxmemory-policy
-      - "noeviction"
+      - sh
+      - -c
+      - |
+        if [ -z "$$REDIS_PASSWORD" ]; then
+          echo "FATAL: REDIS_PASSWORD env var is not set; refusing to start without AUTH"
+          exit 1
+        fi
+        sed "s|__PASSWORD__|$$REDIS_PASSWORD|g" /etc/redis/users.acl.tmpl > /tmp/users.acl
+        chmod 0400 /tmp/users.acl
+        exec redis-server \
+          --save "" \
+          --appendonly no \
+          --maxmemory 128mb \
+          --maxmemory-policy noeviction \
+          --aclfile /tmp/users.acl
+    # Operator MUST set REDIS_PASSWORD in docker-compose.env. No
+    # auto-generation: the password is shared between proxy and redis,
+    # so generating one container-side desyncs from the proxy's
+    # WORTHLESS_REDIS_PASSWORD. The boot script (above) is the
+    # validation point — it exits with FATAL if REDIS_PASSWORD is
+    # absent, before redis-server is exec'd.
+    env_file: docker-compose.env
+    volumes:
+      # Read-only mount: ACL is immutable in this deploy. ACL SAVE will
+      # fail (intentional — rotation requires a re-render).
+      - ./redis-acl.conf.tmpl:/etc/redis/users.acl.tmpl:ro
     networks:
       - backend
     # Run as the built-in redis user (uid/gid 999 in redis:7-alpine).
@@ -79,12 +95,19 @@ services:
       # working files. No persistence flags are set in command, so nothing
       # important lives here beyond transient allocator state.
       - /data:noexec,nosuid,size=64m,uid=999,gid=999
+      # /tmp is writable by uid 999 so the boot script can render the ACL.
+      - /tmp:noexec,nosuid,size=8m,uid=999,gid=999
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # Authenticated PING — without --user/-a, bare PING succeeds even
+      # when ACL fails to load and default-user-on slips through. The
+      # auth shape catches a malformed users.acl at startup.
+      test:
+        - CMD-SHELL
+        - 'redis-cli --user worthless -a "$$REDIS_PASSWORD" --no-auth-warning PING | grep -q PONG'
       interval: 5s
       timeout: 3s
       retries: 5
