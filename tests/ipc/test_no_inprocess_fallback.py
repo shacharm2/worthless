@@ -197,6 +197,7 @@ async def test_no_crypto_import_runtime(broken_ipc_client) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_ipc
 async def test_lifespan_crashes_loud_when_sidecar_unreachable(
     tmp_db_path: str, fernet_key: bytes, tmp_path: Path
 ) -> None:
@@ -205,6 +206,10 @@ async def test_lifespan_crashes_loud_when_sidecar_unreachable(
     Drives the lifespan context manager directly — no httpx, no transport.
     Asserts the startup propagates an exception. The exact class is the
     canonical ``IPCUnavailable``; any silent success here is a regression.
+
+    ``real_ipc`` opts out of the autouse Fake supervisor injection — this
+    test specifically needs the proxy lifespan to attempt a real connect
+    against ``missing_socket`` and fail.
     """
     missing_socket = str(tmp_path / f"wor309-nonexistent-{uuid.uuid4().hex}.sock")
     settings = _build_settings(tmp_db_path, fernet_key, missing_socket)
