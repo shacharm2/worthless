@@ -206,6 +206,7 @@ class FakeSidecarHandle:
     sleep_before_response: float = 0.0
     caps: tuple[str, ...] = ("seal", "open", "attest")
     drop_after_n_requests: int | None = None
+    echo_ciphertext: bool = False
     requests_seen: int = 0
     server: asyncio.base_events.Server | None = None
 
@@ -244,10 +245,19 @@ async def _fake_sidecar_handler(
             handle.requests_seen += 1
             op = envelope.get("op", "")
             body: dict[str, Any] = {}
+            req_body = envelope.get("body") or {}
             if op == "seal":
-                body = {"ciphertext": b"FAKE-CT"}
+                if handle.echo_ciphertext:
+                    pt = req_body.get("plaintext", b"")
+                    body = {"ciphertext": bytes(pt) if isinstance(pt, bytes | bytearray) else b""}
+                else:
+                    body = {"ciphertext": b"FAKE-CT"}
             elif op == "open":
-                body = {"plaintext": b"FAKE-PT"}
+                if handle.echo_ciphertext:
+                    ct = req_body.get("ciphertext", b"")
+                    body = {"plaintext": bytes(ct) if isinstance(ct, bytes | bytearray) else b""}
+                else:
+                    body = {"plaintext": b"FAKE-PT"}
             elif op == "attest":
                 body = {"evidence": b"FAKE-EV"}
             reply = {
