@@ -728,6 +728,36 @@ def _validate_rewrite_args(
         for var_name in removals:
             _validate_var_name(var_name)
 
+    # Per CodeRabbit nitpick: reject overlapping keys across the three sets.
+    # `updates ∩ removals` would update then delete the same key — silent
+    # mangling. `additions ∩ removals` is similarly nonsense. `updates ∩
+    # additions` is ambiguous (which value wins?). Refuse deterministically
+    # so callers get a clear error rather than a surprising rewrite.
+    update_keys = set(updates)
+    addition_keys = set(additions) if additions else set()
+    removal_keys = set(removals) if removals else set()
+
+    if update_keys and removal_keys:
+        overlap = update_keys & removal_keys
+        if overlap:
+            raise ValueError(
+                f"updates and removals overlap (key would be updated then "
+                f"deleted): {sorted(overlap)!r}"
+            )
+    if addition_keys and removal_keys:
+        overlap = addition_keys & removal_keys
+        if overlap:
+            raise ValueError(
+                f"additions and removals overlap (key would be added then "
+                f"deleted): {sorted(overlap)!r}"
+            )
+    if update_keys and addition_keys:
+        overlap = update_keys & addition_keys
+        if overlap:
+            raise ValueError(
+                f"updates and additions overlap (ambiguous: which value wins?): {sorted(overlap)!r}"
+            )
+
 
 def _apply_updates(lines: list[_LogicalLine], updates: dict[str, str], env_path: Path) -> None:
     matched: set[str] = set()
