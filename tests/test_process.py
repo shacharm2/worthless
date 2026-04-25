@@ -173,7 +173,16 @@ class TestForwardSignals:
 
 
 @pytest.mark.integration
+@pytest.mark.real_ipc
 @pytest.mark.timeout(30)
+@pytest.mark.skip(
+    reason=(
+        "WOR-309 follow-up: spawn_proxy launches a real proxy subprocess that "
+        "now requires a real sidecar at WORTHLESS_SIDECAR_SOCKET. Re-enable "
+        "once the integration harness can launch a sidecar fixture and inject "
+        "the socket path into the spawned proxy's environment."
+    )
+)
 class TestSpawnProxyIntegration:
     """Integration test: spawn real proxy and check health."""
 
