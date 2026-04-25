@@ -82,3 +82,7 @@ history.md
 .gitnexus
 docs-standalone/
 .planning/launch-cleanup-state.json
+
+# Starlight / Astro docs site
+dist/
+.astro/
