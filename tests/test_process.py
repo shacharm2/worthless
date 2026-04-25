@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._fakes import WOR309_SUBPROCESS_FOLLOWUP
+
 
 class TestCreateLivenessPipe:
     """Test create_liveness_pipe returns two valid fds."""
@@ -175,14 +177,7 @@ class TestForwardSignals:
 @pytest.mark.integration
 @pytest.mark.real_ipc
 @pytest.mark.timeout(30)
-@pytest.mark.skip(
-    reason=(
-        "WOR-309 follow-up: spawn_proxy launches a real proxy subprocess that "
-        "now requires a real sidecar at WORTHLESS_SIDECAR_SOCKET. Re-enable "
-        "once the integration harness can launch a sidecar fixture and inject "
-        "the socket path into the spawned proxy's environment."
-    )
-)
+@pytest.mark.skip(reason=WOR309_SUBPROCESS_FOLLOWUP)
 class TestSpawnProxyIntegration:
     """Integration test: spawn real proxy and check health."""
 

@@ -255,7 +255,7 @@ async def repo(tmp_db_path: str, fernet_key: bytes) -> ShardRepository:
 #    inspect the fake.
 
 
-def _make_create_app_wrapper(original_create_app, fakes_seen: list[FakeIPCSupervisor]):
+def _make_create_app_wrapper(original_create_app):
     """Return a wrapper that stamps a FakeIPCSupervisor onto every app.
 
     Uses ``functools.wraps`` so ``inspect.getsource(create_app)`` returns the
@@ -268,10 +268,8 @@ def _make_create_app_wrapper(original_create_app, fakes_seen: list[FakeIPCSuperv
     def _wrapped(*args, **kwargs):
         app = original_create_app(*args, **kwargs)
         if getattr(app.state, "ipc_supervisor", None) is None:
-            fake = FakeIPCSupervisor()
-            app.state.ipc_supervisor = fake
+            app.state.ipc_supervisor = FakeIPCSupervisor()
             app.state.ipc_supervisor_preconnected = True
-            fakes_seen.append(fake)
         return app
 
     return _wrapped
@@ -290,10 +288,8 @@ def _session_fake_ipc_supervisor():
     """
     import sys
 
-    fakes_seen: list[FakeIPCSupervisor] = []
-    wrapper = _make_create_app_wrapper(_ORIGINAL_CREATE_APP, fakes_seen)
+    wrapper = _make_create_app_wrapper(_ORIGINAL_CREATE_APP)
 
-    # Snapshot every captured reference so we can restore them.
     captured_locations: list[tuple[object, str]] = []
     for mod in list(sys.modules.values()):
         if mod is None or mod is _proxy_app_module:
@@ -305,7 +301,7 @@ def _session_fake_ipc_supervisor():
     _proxy_app_module.create_app = wrapper
 
     try:
-        yield fakes_seen
+        yield
     finally:
         _proxy_app_module.create_app = _ORIGINAL_CREATE_APP
         for mod, attr in captured_locations:
@@ -321,20 +317,15 @@ def _autouse_fake_ipc_supervisor(request: pytest.FixtureRequest, monkeypatch: py
     rebind to the original at function-scope; ``monkeypatch`` restores the
     session-scope wrap on teardown.
     """
-    if request.node.get_closest_marker("real_ipc") is not None:
-        import sys
-
-        monkeypatch.setattr(_proxy_app_module, "create_app", _ORIGINAL_CREATE_APP)
-        for mod in list(sys.modules.values()):
-            if mod is None or mod is _proxy_app_module:
-                continue
-            captured = getattr(mod, "create_app", None)
-            if captured is not None and captured is not _ORIGINAL_CREATE_APP:
-                monkeypatch.setattr(mod, "create_app", _ORIGINAL_CREATE_APP)
-        yield None
+    if request.node.get_closest_marker("real_ipc") is None:
         return
 
-    # Convenience: tests that want the fake from
-    # ``app.state.ipc_supervisor`` already have it; this list is just a
-    # placeholder for parameter symmetry with the session fixture.
-    yield []
+    import sys
+
+    monkeypatch.setattr(_proxy_app_module, "create_app", _ORIGINAL_CREATE_APP)
+    for mod in list(sys.modules.values()):
+        if mod is None or mod is _proxy_app_module:
+            continue
+        captured = getattr(mod, "create_app", None)
+        if captured is not None and captured is not _ORIGINAL_CREATE_APP:
+            monkeypatch.setattr(mod, "create_app", _ORIGINAL_CREATE_APP)

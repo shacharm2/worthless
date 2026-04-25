@@ -22,6 +22,8 @@ from worthless.proxy.errors import ErrorResponse
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 from worthless.storage.repository import StoredShard
 
+from tests._fakes import pin_shard_b
+
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -62,9 +64,7 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings, proxy_app):
     )
     await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
 
-    fake_ipc = getattr(proxy_app.state, "ipc_supervisor", None)
-    if fake_ipc is not None and hasattr(fake_ipc, "set_plaintext"):
-        fake_ipc.set_plaintext(alias, bytes(sr.shard_b))
+    pin_shard_b(proxy_app, alias, sr.shard_b)
 
     shard_a_utf8 = sr.shard_a.decode("utf-8")
     return alias, shard_a_utf8, api_key.encode()
@@ -399,10 +399,7 @@ class TestTransparentRouting:
         )
         await repo.store("ant-key", shard, prefix=sr.prefix, charset=sr.charset)
 
-        # Pin shard-B onto the autouse Fake supervisor so reconstruction works.
-        fake_ipc = getattr(proxy_app.state, "ipc_supervisor", None)
-        if fake_ipc is not None and hasattr(fake_ipc, "set_plaintext"):
-            fake_ipc.set_plaintext("ant-key", bytes(sr.shard_b))
+        pin_shard_b(proxy_app, "ant-key", sr.shard_b)
 
         shard_a_utf8 = sr.shard_a.decode("utf-8")
 
@@ -599,10 +596,7 @@ async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo):
     await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
 
     app = create_app(proxy_settings)
-    # Pin shard-B onto the autouse Fake supervisor so reconstruction works.
-    fake_ipc = getattr(app.state, "ipc_supervisor", None)
-    if fake_ipc is not None and hasattr(fake_ipc, "set_plaintext"):
-        fake_ipc.set_plaintext(alias, bytes(sr.shard_b))
+    pin_shard_b(app, alias, sr.shard_b)
 
     db = await aiosqlite.connect(proxy_settings.db_path)
     app.state.db = db

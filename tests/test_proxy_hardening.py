@@ -30,6 +30,8 @@ from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 from worthless.storage.repository import EncryptedShard, ShardRepository, StoredShard
 from worthless.storage.shard_reader import ShardReader
 
+from tests._fakes import pin_shard_b
+
 
 # ------------------------------------------------------------------
 # Fixtures (Plan 02)
@@ -68,13 +70,7 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings, proxy_app):
     )
     await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
 
-    # Wire the autouse FakeIPCSupervisor so ipc.open() yields the actual
-    # plaintext shard-B for this alias. Without this, the proxy gets the
-    # default fake plaintext, reconstruction fails, and every happy-path
-    # test 401s.
-    fake_ipc = proxy_app.state.ipc_supervisor
-    if hasattr(fake_ipc, "set_plaintext"):
-        fake_ipc.set_plaintext(alias, bytes(sr.shard_b))
+    pin_shard_b(proxy_app, alias, sr.shard_b)
 
     shard_a_utf8 = sr.shard_a.decode("utf-8")
     return alias, shard_a_utf8, api_key.encode()
@@ -750,9 +746,7 @@ class TestUpstreamSanitizationAnthropic:
             provider="anthropic",
         )
         await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
-        # Pin the plaintext into the autouse FakeIPCSupervisor so the
-        # proxy's ipc.open(key_id=alias) yields the real shard_b bytes.
-        proxy_app.state.ipc_supervisor.set_plaintext(alias, bytes(sr.shard_b))
+        pin_shard_b(proxy_app, alias, sr.shard_b)
         shard_a_utf8 = sr.shard_a.decode("utf-8")
 
         respx.post("https://api.anthropic.com/v1/messages").mock(
@@ -1159,9 +1153,7 @@ async def attack_scenario(
             RateLimitRule(default_rps=100.0, db_path=tmp_db_path),
         ]
     )
-    # Pin shard-B plaintext into the autouse FakeIPCSupervisor so the
-    # happy-path TLS test reconstructs successfully.
-    app.state.ipc_supervisor.set_plaintext(alias, bytes(sr.shard_b))
+    pin_shard_b(app, alias, sr.shard_b)
 
     shard_a_utf8 = sr.shard_a.decode("utf-8")
     yield app, alias, shard_a_utf8, settings

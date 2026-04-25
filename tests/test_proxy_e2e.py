@@ -21,6 +21,8 @@ from worthless.proxy.config import ProxySettings
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 from worthless.storage.repository import ShardRepository, StoredShard
 
+from tests._fakes import pin_shard_b
+
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -88,9 +90,7 @@ async def _enroll(
     )
     await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
     if proxy_app is not None:
-        fake_ipc = getattr(proxy_app.state, "ipc_supervisor", None)
-        if fake_ipc is not None and hasattr(fake_ipc, "set_plaintext"):
-            fake_ipc.set_plaintext(alias, bytes(sr.shard_b))
+        pin_shard_b(proxy_app, alias, sr.shard_b)
     shard_a_utf8 = sr.shard_a.decode("utf-8")
     return alias, shard_a_utf8, api_key
 

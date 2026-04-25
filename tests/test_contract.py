@@ -22,6 +22,7 @@ import pytest
 import uvicorn
 from cryptography.fernet import Fernet
 
+from tests._fakes import pin_shard_b
 from tests.helpers import fake_anthropic_key, fake_openai_key
 from worthless.crypto.splitter import split_key_fp
 from worthless.proxy.app import create_app
@@ -153,13 +154,8 @@ def live_proxy():
         )
         proxy_app = create_app(settings)
 
-        # Pin per-alias plaintexts into the autouse FakeIPCSupervisor so
-        # the proxy's ipc.open(key_id=alias) yields the real shard-B
-        # bytes (without this, reconstruction fails and the proxy 401s).
-        fake_ipc = getattr(proxy_app.state, "ipc_supervisor", None)
-        if fake_ipc is not None and hasattr(fake_ipc, "set_plaintext"):
-            for alias, pt in plaintexts.items():
-                fake_ipc.set_plaintext(alias, pt)
+        for alias, pt in plaintexts.items():
+            pin_shard_b(proxy_app, alias, pt)
 
         # Start both servers in background threads
         mock_server = uvicorn.Server(

@@ -25,14 +25,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
 
-from worthless.proxy.ipc_supervisor import (
-    IPCBackpressure,
-    IPCCapsMismatch,
-    IPCUnavailable,
-    IPCVersionMismatch,
-)
+from worthless.proxy.ipc_supervisor import IPCUnavailable
 
 __all__ = [
     "DEFAULT_FAKE_PLAINTEXT",
@@ -219,14 +213,3 @@ class FakeIPCSupervisor:
     @property
     def is_closed(self) -> bool:
         return self._closed
-
-
-# Re-export the exception symbols so test files can ``from
-# tests._fakes.fake_ipc_supervisor import IPCUnavailable`` without pulling
-# from the production module — keeps fake-using tests visually self-contained.
-_ = (IPCBackpressure, IPCCapsMismatch, IPCVersionMismatch)
-
-
-def _surface_parity_check(_: Any) -> None:
-    """Internal: enforced at import time by tests/_fakes/test_*.py."""
-    return None

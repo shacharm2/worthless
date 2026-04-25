@@ -17,6 +17,7 @@ from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 from worthless.storage.repository import ShardRepository
 
+from tests._fakes import WOR309_SUBPROCESS_FOLLOWUP
 from tests.helpers import fake_openai_key
 
 runner = CliRunner(mix_stderr=False)
@@ -163,14 +164,7 @@ _CHILD_SCRIPT = textwrap.dedent("""\
 @pytest.mark.integration
 @pytest.mark.real_ipc
 @pytest.mark.timeout(60)
-@pytest.mark.skip(
-    reason=(
-        "WOR-309 follow-up: `worthless wrap` spawns a real proxy subprocess "
-        "that now requires a real sidecar at WORTHLESS_SIDECAR_SOCKET. The "
-        "wrap command must learn to spawn (and tear down) a sidecar before "
-        "this test can be resurrected. Tracked as follow-up."
-    )
-)
+@pytest.mark.skip(reason=WOR309_SUBPROCESS_FOLLOWUP)
 class TestWrapProxiesRequest:
     """Prove ``worthless wrap`` spawns a real proxy that transits requests."""
 

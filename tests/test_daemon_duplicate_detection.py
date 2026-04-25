@@ -25,21 +25,14 @@ import pytest
 from worthless.cli.bootstrap import ensure_home
 from worthless.cli.process import check_pid, pid_path, poll_health, read_pid
 
+from tests._fakes import WOR309_SUBPROCESS_FOLLOWUP
+
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.real_ipc,
     pytest.mark.timeout(30),
-    pytest.mark.skip(
-        reason=(
-            "WOR-309 follow-up: `worthless up --daemon` launches a real proxy "
-            "subprocess that now requires a real sidecar at "
-            "WORTHLESS_SIDECAR_SOCKET. Resurrecting these tests requires the "
-            "CLI to spawn (and tear down) a sidecar in --daemon mode. Tracked "
-            "as a follow-up; the duplicate-detection logic itself is unit-"
-            "covered in tests/test_health_polling.py and tests/test_process.py."
-        )
-    ),
+    pytest.mark.skip(reason=WOR309_SUBPROCESS_FOLLOWUP),
 ]
 
 

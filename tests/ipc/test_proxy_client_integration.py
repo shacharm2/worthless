@@ -28,6 +28,17 @@ from worthless.proxy.ipc_supervisor import (
 )
 
 
+def _wait_for_pid_gone(pid: int, *, timeout: float = 1.0, interval: float = 0.005) -> None:
+    """Poll until SIGKILL'd ``pid`` is fully reaped (kernel released its socket)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(interval)
+
+
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.integration,
@@ -101,10 +112,10 @@ async def test_real_sidecar_reconnect_after_sigkill(
         # SIGKILL the original sidecar process. We can't reap (Popen handle
         # lives in the fixture); but the kernel tears down the listener
         # synchronously on SIGKILL so connect attempts will fail immediately.
-        # Give the kernel a moment to release the bind, then unlink the
-        # stale socket file so the replacement can claim the path.
+        # Poll until the process is gone (kernel has released the bind),
+        # then unlink the stale socket file so the replacement can claim it.
         os.kill(pid, signal.SIGKILL)
-        time.sleep(0.2)
+        _wait_for_pid_gone(pid)
         if socket_path.exists():
             try:
                 socket_path.unlink()
@@ -194,7 +205,7 @@ async def test_open_without_replacement_raises_unavailable(
         # in the fixture); kernel tears down the listener on SIGKILL so the
         # next connect attempt fails synchronously.
         os.kill(pid, signal.SIGKILL)
-        time.sleep(0.2)
+        _wait_for_pid_gone(pid)
         if socket_path.exists():
             try:
                 socket_path.unlink()
