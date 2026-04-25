@@ -17,8 +17,10 @@ files may remain in the target directory.
 
 from __future__ import annotations
 
+import base64
 import errno
 import fcntl
+import inspect
 import os
 import signal
 import stat
@@ -53,53 +55,114 @@ def test_sigkill_between_fsync_and_rename_leaves_target_byte_identical(
     Uses a SIGSTOP / SIGCONT handshake via a marker file so the kill
     lands deterministically and the test is not scheduler-dependent.
     """
+    # MAJOR 7 (WOR-276): hook-API drift smoke-check. The test relies on
+    # ``_hook_before_replace`` being a valid kwarg of ``safe_rewrite``.
+    # If a refactor renames it, fail cleanly here instead of letting the
+    # child raise a confusing TypeError after Popen.
+    if "_hook_before_replace" not in inspect.signature(safe_rewrite).parameters:
+        pytest.fail("hook API renamed \u2014 expected safe_rewrite(_hook_before_replace=...)")
+
     env = make_env_file(tmp_path / ".env", b"OPENAI_API_KEY=sk-orig\n")
     baseline = sha256_of(env)
     marker = tmp_path / "_fsync_done"
 
+    # MAJOR 4 (WOR-276): pass bytes + paths via environment variables
+    # (base64 for bytes) to keep the child script free of f-string
+    # interpolation pitfalls. Mirrors test 30b.
+    new_bytes = b"OPENAI_API_KEY=sk-decoy\n"
+    child_env = {
+        **os.environ,
+        "WOR276_ENV_PATH": str(env),
+        "WOR276_MARKER": str(marker),
+        "WOR276_NEW_B64": base64.b64encode(new_bytes).decode("ascii"),
+    }
     child_src = textwrap.dedent(
-        f"""
-        import os, signal, sys
+        """
+        import base64, os, signal
         from pathlib import Path
         from worthless.cli.safe_rewrite import safe_rewrite
 
+        env = Path(os.environ["WOR276_ENV_PATH"])
+        marker = Path(os.environ["WOR276_MARKER"])
+        new_bytes = base64.b64decode(os.environ["WOR276_NEW_B64"])
+
         def hook():
-            # Signal the parent that fsync has landed and we're about to
-            # rename. Then stop ourselves so the parent can SIGKILL
-            # deterministically.
-            Path({str(marker)!r}).write_text("ready")
+            # Signal parent that fsync landed; stop self so parent can
+            # SIGKILL deterministically.
+            marker.write_text("ready")
             os.kill(os.getpid(), signal.SIGSTOP)
 
-        env = Path({str(env)!r})
         safe_rewrite(
             env,
-            b"OPENAI_API_KEY=sk-decoy\\n",
+            new_bytes,
             original_user_arg=env,
             _hook_before_replace=hook,
         )
         """
     )
 
+    # MINOR 9 (WOR-276): DEVNULL on stdout to avoid full-pipe deadlock
+    # from a chatty child; stderr is inspected on failure paths.
     proc = subprocess.Popen(
         [sys.executable, "-c", child_src],
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
+        env=child_env,
     )
     try:
-        # Wait for the child to signal "fsync done, I'm about to stop".
+        # MAJOR 7 (WOR-276): bounded waitpid(WNOHANG | WUNTRACED) loop.
+        # Marker-only polling is vulnerable to the SIGSTOP race: if the
+        # child is stopped externally (debugger, load control) the marker
+        # never appears and we would spin until pytest's wall-clock
+        # timeout. Mirroring test 30b, we explicitly observe WIFSTOPPED
+        # and surface stderr on premature exit.
         deadline = time.monotonic() + 10.0
-        while not marker.exists() and time.monotonic() < deadline:
-            if proc.poll() is not None:
+        stopped = False
+        while time.monotonic() < deadline:
+            try:
+                pid, status = os.waitpid(proc.pid, os.WNOHANG | os.WUNTRACED)
+            except OSError as exc:
+                if exc.errno in (errno.EINTR, errno.ECHILD):
+                    time.sleep(0.01)
+                    continue
+                raise
+            if pid == proc.pid and os.WIFSTOPPED(status):
+                stopped = True
+                break
+            if pid == proc.pid and (os.WIFEXITED(status) or os.WIFSIGNALED(status)):
+                stderr_text = ""
+                if proc.stderr is not None:
+                    try:
+                        stderr_text = proc.stderr.read().decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        pass
                 pytest.fail(
                     f"child exited before fsync marker: "
-                    f"rc={proc.returncode}, stderr={proc.stderr.read()!r}"
+                    f"rc={proc.returncode} status={status:#x}\n"
+                    f"stderr:\n{stderr_text}"
                 )
             time.sleep(0.01)
-        assert marker.exists(), "child never reached the pre-rename hook"
+        if not stopped:
+            stderr_text = ""
+            if proc.stderr is not None:
+                try:
+                    stderr_text = proc.stderr.read().decode("utf-8", errors="replace")
+                except Exception:  # noqa: BLE001
+                    pass
+            pytest.fail(
+                f"child did not reach pre-rename checkpoint within 10s\nstderr:\n{stderr_text}"
+            )
+        assert marker.exists(), "child stopped but never wrote marker"
 
-        # Child is now SIGSTOPped inside the hook; kill it.
+        # Child is SIGSTOPped inside the hook; deliver the kill. Use
+        # bounded communicate() to collect stderr without relying on
+        # proc.wait() alone.
         os.kill(proc.pid, signal.SIGKILL)
-        proc.wait(timeout=5)
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
     finally:
         try:
             proc.kill()
@@ -139,39 +202,99 @@ def test_sigkill_between_fsync_and_rename_leaves_target_byte_identical(
 
 def test_sigterm_between_fsync_and_rename(tmp_path, make_env_file, sha256_of) -> None:
     """SIGTERM during the pre-rename window → target byte-identical, no ghost tmp."""
+    # MAJOR 7 (WOR-276): hook-API drift smoke-check — see test 30 above.
+    if "_hook_before_replace" not in inspect.signature(safe_rewrite).parameters:
+        pytest.fail("hook API renamed \u2014 expected safe_rewrite(_hook_before_replace=...)")
+
     env = make_env_file(tmp_path / ".env", b"OPENAI_API_KEY=sk-orig\n")
     baseline = sha256_of(env)
     marker = tmp_path / "_fsync_done"
 
+    # MAJOR 4 (WOR-276): env-var plumbing instead of f-string interpolation.
+    new_bytes = b"A=1\n"
+    child_env = {
+        **os.environ,
+        "WOR276_ENV_PATH": str(env),
+        "WOR276_MARKER": str(marker),
+        "WOR276_NEW_B64": base64.b64encode(new_bytes).decode("ascii"),
+    }
     child_src = textwrap.dedent(
-        f"""
-        import os, signal
+        """
+        import base64, os, signal
         from pathlib import Path
         from worthless.cli.safe_rewrite import safe_rewrite
 
+        env = Path(os.environ["WOR276_ENV_PATH"])
+        marker = Path(os.environ["WOR276_MARKER"])
+        new_bytes = base64.b64decode(os.environ["WOR276_NEW_B64"])
+
         def hook():
-            Path({str(marker)!r}).write_text("ready")
+            marker.write_text("ready")
             os.kill(os.getpid(), signal.SIGSTOP)
 
-        env = Path({str(env)!r})
-        safe_rewrite(env, b"A=1\\n", original_user_arg=env, _hook_before_replace=hook)
+        safe_rewrite(
+            env, new_bytes, original_user_arg=env, _hook_before_replace=hook
+        )
         """
     )
+    # MINOR 9 (WOR-276): DEVNULL on stdout to avoid pipe-full deadlock.
     proc = subprocess.Popen(
         [sys.executable, "-c", child_src],
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
+        env=child_env,
     )
     try:
+        # MAJOR 7 (WOR-276): bounded waitpid(WNOHANG | WUNTRACED) loop,
+        # mirrors test 30b. See test 30 above for the full rationale.
         deadline = time.monotonic() + 10.0
-        while not marker.exists() and time.monotonic() < deadline:
-            if proc.poll() is not None:
-                pytest.fail(f"child exited early: rc={proc.returncode}")
+        stopped = False
+        while time.monotonic() < deadline:
+            try:
+                pid, status = os.waitpid(proc.pid, os.WNOHANG | os.WUNTRACED)
+            except OSError as exc:
+                if exc.errno in (errno.EINTR, errno.ECHILD):
+                    time.sleep(0.01)
+                    continue
+                raise
+            if pid == proc.pid and os.WIFSTOPPED(status):
+                stopped = True
+                break
+            if pid == proc.pid and (os.WIFEXITED(status) or os.WIFSIGNALED(status)):
+                stderr_text = ""
+                if proc.stderr is not None:
+                    try:
+                        stderr_text = proc.stderr.read().decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        pass
+                pytest.fail(
+                    f"child exited before fsync marker: "
+                    f"rc={proc.returncode} status={status:#x}\n"
+                    f"stderr:\n{stderr_text}"
+                )
             time.sleep(0.01)
-        assert marker.exists()
+        if not stopped:
+            stderr_text = ""
+            if proc.stderr is not None:
+                try:
+                    stderr_text = proc.stderr.read().decode("utf-8", errors="replace")
+                except Exception:  # noqa: BLE001
+                    pass
+            pytest.fail(
+                f"child did not reach pre-rename checkpoint within 10s\nstderr:\n{stderr_text}"
+            )
+        assert marker.exists(), "child stopped but never wrote marker"
+
+        # Deliver SIGTERM then SIGCONT so the stopped child can run its
+        # default SIGTERM disposition (terminate). Bounded communicate()
+        # replaces the bare proc.wait().
         os.kill(proc.pid, signal.SIGTERM)
         os.kill(proc.pid, signal.SIGCONT)
-        proc.wait(timeout=5)
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
     finally:
         try:
             proc.kill()
@@ -1235,7 +1358,7 @@ def test_directory_swap_real_fs_sibling(tmp_path, make_env_file, sha256_of) -> N
 
 def test_inode_reuse_real_fs_sibling(tmp_path, make_env_file) -> None:
     """Real FS: hook unlinks + recreates target; fstatat recheck refuses."""
-    env = make_env_file(tmp_path / ".env", b"KEY=v\n")
+    env = make_env_file(tmp_path / ".env", b"KEY=orig\n")
 
     def _reuse() -> None:
         env.unlink()

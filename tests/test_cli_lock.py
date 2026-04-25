@@ -446,7 +446,7 @@ class TestLockCommand:
         def _boom_on_base_url(*args, **kwargs):
             raise OSError("disk full on BASE_URL write")
 
-        monkeypatch.setattr(lock_mod, "add_or_rewrite_env_key", _boom_on_base_url)
+        monkeypatch.setattr(lock_mod, "rewrite_env_keys", _boom_on_base_url)
 
         r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
         assert r2.exit_code == 1  # expected failure
@@ -622,7 +622,7 @@ class TestLockErrorBranches:
             raise OSError("disk full")
 
         monkeypatch.setattr(
-            "worthless.cli.commands.lock.rewrite_env_key",
+            "worthless.cli.commands.lock.rewrite_env_keys",
             _boom,
         )
 
@@ -718,7 +718,7 @@ class TestLockBaseUrlFailureRestoresEnv:
             raise OSError("disk full on BASE_URL write")
 
         monkeypatch.setattr(
-            "worthless.cli.commands.lock.add_or_rewrite_env_key",
+            "worthless.cli.commands.lock.rewrite_env_keys",
             _boom_on_base_url,
         )
 

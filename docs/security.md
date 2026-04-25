@@ -154,6 +154,74 @@ zeros shard material.
 See [Known limitations](#known-limitations-python-poc) for what `secure_key`
 does NOT cover in the Python PoC.
 
+## Atomic `.env` rewrite (WOR-276 v2)
+
+`worthless lock KEY1 KEY2 ...` must leave the user's `.env` either
+fully locked or entirely untouched. Any state in between — half-locked
+`.env`, orphan tmp file, stale backup, corrupted shard — is a failure.
+
+The transactional model has no persistent rollback state: there is no
+`.bak` file, no RECOVERY.md, no cleartext backup bucket. Recovery
+works because the commit point is a single `rename(2)` call that is
+either entirely successful or has no effect.
+
+### T-9: In-flight transaction rollback
+
+An attacker or a crash may interrupt `worthless lock` after shard-B
+has been persisted to the server but before the `.env` has been
+atomically rewritten. The threat is that the user loses access to
+their own key: shard-B exists on the server, but shard-A was never
+written to `.env`.
+
+**Mitigation.** The `.env` rewrite pipeline is:
+
+1. Open target + grab exclusive `flock`.
+2. Build the fully-rewritten `.env` content in memory (all N keys at
+   once — no partial-batch state).
+3. Write to `.env.tmp-XXXX`, `fsync` the tmp file.
+4. **Verify** the reconstructed key (shard-A ⊕ shard-B) in memory
+   (see [T-10](#t-10-reconstruction-verify) below) against an
+   enrollment-time HMAC. Refuse with `UnsafeReason.VERIFY_FAILED`
+   on mismatch.
+5. `rename(2)` tmp → final (atomic on POSIX filesystems that
+   `fs_check` has admitted — see [`UnsafeReason.FILESYSTEM`](https://github.com/plumbusai/worthless/blob/main/src/worthless/cli/fs_check.py)).
+6. `fsync` parent directory.
+
+If the process is killed between steps 1 and 5, the `.env` is
+byte-identical to the pre-call state. If killed between 5 and 6, the
+rename is durable on any modern journaled filesystem; the parent-dir
+`fsync` only flushes the metadata journal entry.
+
+Non-atomic filesystems (CIFS/SMB, NFSv3/v4, FAT, 9P, WSL `/mnt/c`
+fuse.drvfs bridge) are refused before the pipeline starts. Users on
+those filesystems are told to move their project to a journaled
+Linux filesystem (on WSL, `/home` — the Microsoft/VSCode-recommended
+path). Ephemeral-backup support for those filesystems is tracked in
+[WOR-325](https://linear.app/plumbusai/issue/WOR-325). Set
+`WORTHLESS_FORCE_FS=1` to bypass for CI on exotic filesystems.
+
+### T-10: Reconstruction-verify
+
+An attacker who can tamper with the derived shard-A between
+derivation and the rewrite (e.g. by swapping the shard-B database
+row mid-call, or via a fault-injection attack on the XOR loop) could
+cause `worthless lock` to write a corrupted shard-A to `.env` — the
+user would then be unable to reconstruct the original key on every
+subsequent API call.
+
+**Mitigation.** Before the atomic rename, the CLI reconstructs
+`shard_a ⊕ shard_b` in memory and compares an HMAC of the result
+against an enrollment-time HMAC stored alongside shard-B. The HMAC
+input is length-prefixed and key-bound (see commit 10), so swapping
+shard-B for a different key will not produce a matching HMAC.
+
+Memory hygiene: all intermediate secrets (shard-A copy,
+reconstructed bytes, HMAC) are held in `bytearray` buffers, `mlock`ed,
+zeroed via `ctypes.memset` on function exit, and the process sets
+`RLIMIT_CORE=0` + Linux `PR_SET_DUMPABLE=0` so a crash cannot
+materialize them in a coredump. The comparison uses
+`hmac.compare_digest`.
+
 ## Threat model: non-goals
 
 Worthless does **not** protect against:
@@ -326,5 +394,6 @@ must make source available.
 
 | Date       | Change                                                                 |
 | ---------- | ---------------------------------------------------------------------- |
+| 2026-04-24 | Added T-9 (in-flight transaction rollback) + T-10 (reconstruction-verify) for WOR-276 v2. Transactional `.env` rewrite replaces persistent cleartext backups. |
 | 2026-04-21 | Consolidated from SECURITY_POSTURE.md, docs/security-model.md, docs/risk-key-material-in-python-memory.md. Stripped confidence-tier prose, hard-cap rule, update-cadence, enterprise-tier marketing, mTLS orphan claim. Refs WOR-235, WOR-257, WOR-262. |
 | 2026-04-03 | Initial security posture document (SECURITY_POSTURE.md). Commit `4f79fe6`. |
