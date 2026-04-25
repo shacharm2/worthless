@@ -836,6 +836,20 @@ async def _setup_token_budget_db(
         await db.commit()
 
 
+async def _seed_aliases(db_path: str, *, count: int, column: str, value: float | int) -> None:
+    """Seed enrollment_config with *count* aliases, each with one column set."""
+    # `column` is whitelisted; the f-string is not user-influenced.
+    assert column in {"spend_cap", "token_budget_daily"}
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        for i in range(count):
+            await db.execute(
+                f"INSERT INTO enrollment_config (key_alias, {column}) VALUES (?, ?)",  # noqa: S608
+                (f"alias-{i}", value),
+            )
+        await db.commit()
+
+
 # ---------------------------------------------------------------------------
 # SpendCapRule — persistent connection, atomic, fail-closed
 # ---------------------------------------------------------------------------
@@ -985,6 +999,204 @@ async def test_spend_cap_release_reservation(tmp_path):
         await rule.release_reservation("k1", 18)
         r3 = await rule.evaluate("k1", None, body=body)
         assert r3 is None  # passes again
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_reserved_dict_drops_zero_entries(tmp_path):
+    """release_reservation() must drop the alias key when remaining
+    reservation hits 0 — otherwise the dict grows unboundedly across
+    long-lived proxies that see many unique aliases.
+
+    Walks N unique aliases through evaluate -> release. A correct
+    implementation leaves _reserved empty; the previous behaviour
+    (``self._reserved[alias] = max(0, held - amount)``) leaked one
+    zero-valued entry per alias forever.
+    """
+    db_path = str(tmp_path / "bound_spend.db")
+    n = 50
+    await _seed_aliases(db_path, count=n, column="spend_cap", value=1000.0)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        body = json.dumps({"max_tokens": 10}).encode()
+        for i in range(n):
+            alias = f"alias-{i}"
+            assert await rule.evaluate(alias, None, body=body) is None
+            await rule.release_reservation(alias, 10)
+
+        assert len(rule._reserved) == 0, (
+            f"_reserved leaked {len(rule._reserved)} dead entries after "
+            "every reservation was fully released"
+        )
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_token_budget_reserved_dict_drops_zero_entries(tmp_path):
+    """Same bound applies to TokenBudgetRule's _reserved dict — both
+    rules share the release_reservation pattern."""
+    db_path = str(tmp_path / "bound_budget.db")
+    n = 50
+    await _seed_aliases(db_path, count=n, column="token_budget_daily", value=10_000)
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = TokenBudgetRule(db=db_conn)
+        body = json.dumps({"max_tokens": 10}).encode()
+        for i in range(n):
+            alias = f"alias-{i}"
+            assert await rule.evaluate(alias, None, body=body) is None
+            await rule.release_reservation(alias, 10)
+
+        assert len(rule._reserved) == 0, (
+            f"_reserved leaked {len(rule._reserved)} dead entries on TokenBudgetRule"
+        )
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_partial_release_keeps_entry(tmp_path):
+    """Guard against an overzealous 'drop zero entries' fix: a partial
+    release must keep the dict entry with the remaining count.
+    """
+    db_path = str(tmp_path / "partial.db")
+    async with aiosqlite.connect(db_path) as setup_db:
+        await setup_db.executescript(SCHEMA)
+        await setup_db.execute(
+            "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
+            ("alice", 1000.0),
+        )
+        await setup_db.commit()
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        body = json.dumps({"max_tokens": 100}).encode()
+        # Reserve 100, then partially release 40 — 60 should remain held.
+        assert await rule.evaluate("alice", None, body=body) is None
+        await rule.release_reservation("alice", 40)
+
+        assert "alice" in rule._reserved
+        assert rule._reserved["alice"] == 60
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_overshoot_release_drops_key(tmp_path):
+    """Releasing more than is held must drop the key (remaining == 0).
+
+    Catches the buggy-fix variant ``if held == amount: pop`` — that branch
+    only matches when held exactly equals the released amount, so an
+    overshoot (e.g. release 9999 while only 100 is held) leaves a
+    zero-valued entry behind and the dict still leaks. The correct
+    invariant is keyed on ``remaining == 0`` after ``max(0, held - amount)``.
+    """
+    db_path = str(tmp_path / "overshoot.db")
+    async with aiosqlite.connect(db_path) as setup_db:
+        await setup_db.executescript(SCHEMA)
+        await setup_db.execute(
+            "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
+            ("alice", 1000.0),
+        )
+        await setup_db.commit()
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        body = json.dumps({"max_tokens": 100}).encode()
+        assert await rule.evaluate("alice", None, body=body) is None
+        held = rule._reserved["alice"]
+        # Overshoot: release more than is held.
+        await rule.release_reservation("alice", held + 9999)
+        assert "alice" not in rule._reserved, (
+            "overshoot release must drop the key; an `if held == amount` "
+            "fix would leak a zero-valued entry here"
+        )
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_negative_release_is_noop(tmp_path):
+    """A non-positive amount must not inflate the reservation.
+
+    Without an early-return guard, ``held - amount`` with a negative ``amount``
+    would *grow* the reservation (held=100, amount=-50 -> remaining=150). This
+    test pins the helper's no-op contract for non-positive inputs.
+    """
+    db_path = str(tmp_path / "negative.db")
+    async with aiosqlite.connect(db_path) as setup_db:
+        await setup_db.executescript(SCHEMA)
+        await setup_db.execute(
+            "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
+            ("alice", 1000.0),
+        )
+        await setup_db.commit()
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        body = json.dumps({"max_tokens": 100}).encode()
+        assert await rule.evaluate("alice", None, body=body) is None
+        before = rule._reserved["alice"]
+
+        await rule.release_reservation("alice", -50)
+        assert rule._reserved["alice"] == before, (
+            "negative amount must be a no-op, not inflate the reservation"
+        )
+        await rule.release_reservation("alice", 0)
+        assert rule._reserved["alice"] == before, "zero amount must be a no-op"
+    finally:
+        await db_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_spend_cap_concurrent_release_race(tmp_path):
+    """Interleaved evaluate/release on overlapping aliases must not leak
+    or corrupt the _reserved dict.
+
+    Spawns many concurrent evaluate→release pairs across a small pool of
+    aliases via ``asyncio.gather``, forcing pop()/insert interleavings
+    that a sequential 500-alias loop cannot exercise. After all pairs
+    complete, the dict must be empty (no leaked zero entries) and no
+    task should have raised (no KeyError from a double-pop).
+    """
+    db_path = str(tmp_path / "race.db")
+    aliases = [f"a{i}" for i in range(5)]
+    async with aiosqlite.connect(db_path) as setup_db:
+        await setup_db.executescript(SCHEMA)
+        for alias in aliases:
+            await setup_db.execute(
+                "INSERT INTO enrollment_config (key_alias, spend_cap) VALUES (?, ?)",
+                (alias, 1_000_000.0),
+            )
+        await setup_db.commit()
+
+    db_conn = await aiosqlite.connect(db_path)
+    try:
+        rule = SpendCapRule(db=db_conn)
+        body = json.dumps({"max_tokens": 10}).encode()
+
+        async def evaluate_then_release(alias: str) -> None:
+            assert await rule.evaluate(alias, None, body=body) is None
+            # Yield to interleave with other tasks before releasing.
+            await asyncio.sleep(0)
+            await rule.release_reservation(alias, 10)
+
+        # 100 tasks across 5 aliases → 20 evaluate/release pairs per alias.
+        tasks = [evaluate_then_release(aliases[i % len(aliases)]) for i in range(100)]
+        await asyncio.gather(*tasks)
+
+        assert len(rule._reserved) == 0, (
+            f"_reserved leaked {len(rule._reserved)} entries after "
+            f"concurrent evaluate/release pairs: {dict(rule._reserved)}"
+        )
     finally:
         await db_conn.close()
 
