@@ -142,13 +142,19 @@ class TestRenderConfig:
         """Disk must be >= 1 GB (SQLite + shards need headroom)."""
         assert render_service["disk"]["sizeGB"] >= 1
 
-    def test_allow_insecure_set(self, render_env_vars: dict[str, str]):
-        """Render terminates TLS at edge; container must allow plain HTTP.
+    def test_deploy_mode_public(self, render_env_vars: dict[str, str]):
+        """Render terminates TLS at edge; container must run in public mode.
 
-        Without WORTHLESS_ALLOW_INSECURE=true, the proxy rejects non-TLS
-        requests and becomes unreachable behind Render's load balancer.
+        WORTHLESS_DEPLOY_MODE=public tells the proxy to trust X-Forwarded-Proto
+        only from the edge CIDR listed in WORTHLESS_TRUSTED_PROXIES. The old
+        WORTHLESS_ALLOW_INSECURE=true escape-hatch is forbidden in public mode
+        — see WOR-344.
         """
-        assert render_env_vars.get("WORTHLESS_ALLOW_INSECURE") == "true"
+        assert render_env_vars.get("WORTHLESS_DEPLOY_MODE") == "public"
+        assert render_env_vars.get("WORTHLESS_ALLOW_INSECURE") is None
+        assert "WORTHLESS_TRUSTED_PROXIES" in render_env_vars, (
+            "public mode requires WORTHLESS_TRUSTED_PROXIES (edge CIDR list)"
+        )
 
     def test_dockerfile_path(self, render_service: dict):
         """Render must reference the correct Dockerfile."""

@@ -34,5 +34,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 
 USER worthless
 
+# entrypoint.sh composes `uvicorn ... --host <mode-derived> --port $PORT
+# [--proxy-headers --forwarded-allow-ips=$WORTHLESS_TRUSTED_PROXIES]` from
+# WORTHLESS_DEPLOY_MODE. Don't reintroduce a literal `--host 0.0.0.0`
+# here — it bypasses the deploy-mode contract. See WOR-344.
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]
-CMD ["sh", "-c", "exec uvicorn worthless.proxy.app:create_app --factory --host 0.0.0.0 --port ${PORT}"]
