@@ -488,18 +488,15 @@ class TestComposeEnvExample:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
-            # If uncommented key=value lines exist, they must have placeholder values
+            # If uncommented key=value lines exist, they must have placeholder
+            # values or be one of the deploy-mode contract values (the example
+            # documents the required compose default — see WOR-344).
             if "=" in stripped:
                 key, _, value = stripped.partition("=")
-                assert (
-                    not value
-                    or value.startswith('"')
-                    or value.lower()
-                    in (
-                        "true",
-                        "false",
-                    )
-                ), f"Env example has unexpected value for {key}: {value}"
+                allowed_literals = {"true", "false", "loopback", "lan", "public"}
+                assert not value or value.startswith('"') or value.lower() in allowed_literals, (
+                    f"Env example has unexpected value for {key}: {value}"
+                )
 
 
 # ------------------------------------------------------------------
