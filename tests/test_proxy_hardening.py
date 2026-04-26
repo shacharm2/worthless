@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from contextlib import ExitStack
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -955,48 +956,52 @@ class TestAntiEnumeration:
         responses.append(("unknown_endpoint", r))
 
         # 7. Reconstruction failure (mock reconstruct_key_fp to raise)
-        # Belt-and-suspenders: patch BOTH reconstruct branches (`_fp` and the
-        # plain variant) at BOTH the proxy app binding AND the source module,
-        # and install a sentinel ``httpx_client.send`` that fails loudly if
-        # control ever escapes the reconstruction-failure path. Without this,
-        # a CI-only race on py3.10 ubuntu let one of the patches miss its
-        # call site, which silently let the request hit the real upstream
-        # and return an OpenAI-shaped 401 — breaking the byte-identical
-        # invariant in a way that was hard to diagnose.
-        async def _no_egress(*_args, **_kwargs):
-            raise AssertionError(
+        # Belt-and-suspenders defenses against CI-only py3.10 xdist-loadscope
+        # ordering flakes:
+        #   (a) Patch BOTH reconstruct branches (`_fp` and plain) at BOTH the
+        #       proxy app binding AND the source module — 4 sites total.
+        #   (b) Swap the proxy's whole ``httpx_client`` for a MagicMock(spec=)
+        #       so even a single-method override race can't let send() reach
+        #       a real socket. Both ``build_request`` (sync, called first at
+        #       app.py:406) and ``send`` (async, app.py:414) raise loudly.
+        #   (c) Use ``ExitStack`` for explicit, unambiguous patch entry —
+        #       sidesteps any py3.10 parenthesized-with parser edge case.
+        #
+        # If the body-equality assertion below ever fires for this mode, the
+        # response is whatever upstream returned — that's the leak we need to
+        # catch. The sentinel exceptions surface the leak earlier with a clear
+        # message instead of letting the request silently leave the process.
+        original_client = proxy_app.state.httpx_client
+        sentinel_client = MagicMock(spec=httpx.AsyncClient)
+        sentinel_client.build_request = MagicMock(
+            side_effect=AssertionError(
                 "reconstruct_failure path must not reach upstream — "
-                "the reconstruct mocks should have intercepted before send()"
+                "build_request was called, meaning reconstruct mocks missed"
             )
-
-        original_send = proxy_app.state.httpx_client.send
-        proxy_app.state.httpx_client.send = _no_egress
+        )
+        sentinel_client.send = AsyncMock(
+            side_effect=AssertionError(
+                "reconstruct_failure path must not reach upstream — "
+                "send() was called, meaning reconstruct mocks missed"
+            )
+        )
+        proxy_app.state.httpx_client = sentinel_client
         try:
-            with (
-                patch(
+            with ExitStack() as stack:
+                for target in (
                     "worthless.proxy.app.reconstruct_key_fp",
-                    side_effect=ValueError("tampered"),
-                ),
-                patch(
                     "worthless.proxy.app.reconstruct_key",
-                    side_effect=ValueError("tampered"),
-                ),
-                patch(
                     "worthless.crypto.reconstruction.reconstruct_key_fp",
-                    side_effect=ValueError("tampered"),
-                ),
-                patch(
                     "worthless.crypto.reconstruction.reconstruct_key",
-                    side_effect=ValueError("tampered"),
-                ),
-            ):
+                ):
+                    stack.enter_context(patch(target, side_effect=ValueError("tampered")))
                 r = await proxy_client.post(
                     f"/{alias}/v1/chat/completions",
                     headers={"authorization": f"Bearer {shard_a_utf8}"},
                     content=b"{}",
                 )
         finally:
-            proxy_app.state.httpx_client.send = original_send
+            proxy_app.state.httpx_client = original_client
         responses.append(("reconstruct_failure", r))
 
         # Assert ALL return 401 with byte-identical bodies
