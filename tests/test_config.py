@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 import pytest
 
-from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.proxy.config import ProxySettings, _read_fernet_key
 
 
@@ -37,12 +36,11 @@ class TestDefaults:
         s = ProxySettings()
         assert s.db_path == str(Path.home() / ".worthless" / "worthless.db")
 
-    def test_default_fernet_key_empty(self) -> None:
-        with patch(
-            "worthless.proxy.config.read_fernet_key",
-            side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
-        ):
-            s = ProxySettings()
+    def test_default_fernet_key_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Class-attr injection is bulletproof against the py3.10 xdist
+        # patch-state race that bit PR #112 — see ``ProxySettings`` docstring.
+        monkeypatch.setattr(ProxySettings, "_fernet_reader", staticmethod(lambda: bytearray()))
+        s = ProxySettings()
         assert s.fernet_key == bytearray()
 
     def test_default_rate_limit_rps(self) -> None:
@@ -125,26 +123,15 @@ class TestFernetKeyEnv:
         s = ProxySettings()
         assert s.fernet_key == bytearray(b"abc123secret")
 
-    def test_fernet_env_empty_string(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        # Defense in depth against CI py3.10 flake: CLI subprocess tests
-        # earlier in the same xdist loadscope group can call ``ensure_home()``
-        # without an explicit base_dir, leaving a real ``~/.worthless/fernet.key``
-        # on the runner. Pin HOME so the keystore file fallback resolves to an
-        # empty dir, and patch at both call sites so the cascade can't see it.
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
+    def test_fernet_env_empty_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Empty WORTHLESS_FERNET_KEY env behaves like no key set.
+
+        Class-attr injection on ``ProxySettings._fernet_reader`` sidesteps
+        the py3.10 xdist patch-state race that bit PR #112.
+        """
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "")
-        with (
-            patch(
-                "worthless.proxy.config.read_fernet_key",
-                side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
-            ),
-            patch(
-                "worthless.cli.keystore.read_fernet_key",
-                side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
-            ),
-        ):
-            s = ProxySettings()
+        monkeypatch.setattr(ProxySettings, "_fernet_reader", staticmethod(lambda: bytearray()))
+        s = ProxySettings()
         assert s.fernet_key == bytearray()
 
 
@@ -238,18 +225,15 @@ class TestValidation:
     is the new regression guard.
     """
 
-    def test_missing_fernet_does_not_raise(self) -> None:
+    def test_missing_fernet_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """WOR-309: ``validate()`` ignores a missing Fernet key.
 
         Pre-WOR-309 this raised ``ValueError`` because the proxy needed the
         key to decrypt shard-B. Post-WOR-309 the sidecar holds the key and
         the proxy only reads ciphertext-at-rest, so a missing key is fine.
         """
-        with patch(
-            "worthless.proxy.config.read_fernet_key",
-            side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
-        ):
-            s = ProxySettings()
+        monkeypatch.setattr(ProxySettings, "_fernet_reader", staticmethod(lambda: bytearray()))
+        s = ProxySettings()
         s.validate()  # MUST NOT raise — the proxy never decrypts
 
     def test_valid_fernet_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -13,7 +13,6 @@ from unittest.mock import patch
 
 import pytest
 
-from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.process import build_proxy_env, fernet_transport
 from worthless.proxy.config import ProxySettings, _read_fernet_key
 
@@ -47,7 +46,21 @@ class FakeHome:
 
 
 class TestReadFernetKeyCascade:
-    """_read_fernet_key delegates to keystore.read_fernet_key."""
+    """_read_fernet_key delegates to keystore.read_fernet_key.
+
+    These tests use REAL filesystem state instead of patching
+    ``worthless.proxy.config.read_fernet_key`` or its keystore counterpart.
+    Patching module attributes on py3.10 + xdist + pytest-rerunfailures
+    proved deterministically flaky on CI (PR #112): the patch state could
+    leak across reruns and produce a Mock that raised ``WorthlessError``
+    when the test expected a returned value. Real filesystem state has no
+    such cross-test pollution surface — ``HOME=tmp_path`` plus a real
+    ``fernet.key`` file is bulletproof.
+
+    The session-wide ``conftest.py`` sets keyring to the null backend
+    (rejected by ``keyring_available()``), so the cascade always reaches
+    the file fallback in this suite.
+    """
 
     def test_returns_key_from_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "env-key-value")
@@ -57,45 +70,28 @@ class TestReadFernetKeyCascade:
     def test_returns_key_from_keyring(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # Defense in depth against py3.10 xdist-loadscope flake (see class
-        # docstring on TestProxySettingsKeyring): pin HOME so the keystore
-        # file fallback can't see a leaked ``~/.worthless/fernet.key`` if the
-        # proxy.config patch fails to apply on the CI ordering.
+        """Cascade reads a real ``$HOME/.worthless/fernet.key`` file.
+
+        Despite the class name (kept for back-compat with WOR-188), the
+        keyring backend is disabled session-wide; the cascade therefore
+        falls through env -> keyring (skipped) -> file. We exercise the
+        FILE branch with a real on-disk key.
+        """
         monkeypatch.setenv("HOME", str(tmp_path))
-        with (
-            patch(
-                "worthless.cli.keystore.read_fernet_key",
-                return_value=bytearray(b"keyring-key"),
-            ),
-            patch(
-                "worthless.proxy.config.read_fernet_key",
-                return_value=bytearray(b"keyring-key"),
-            ),
-        ):
-            result = _read_fernet_key()
+        worthless_dir = tmp_path / ".worthless"
+        worthless_dir.mkdir()
+        (worthless_dir / "fernet.key").write_bytes(b"keyring-key")
+        result = _read_fernet_key()
         assert result == bytearray(b"keyring-key")
 
     def test_returns_empty_when_nothing_found(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # Defense in depth against CI py3.10 flake: CLI subprocess tests
-        # earlier in the same xdist loadscope group can call ``ensure_home()``
-        # without an explicit base_dir, leaving a real ``~/.worthless/fernet.key``
-        # on the runner. Pin HOME so the keystore file fallback resolves to an
-        # empty dir, and patch at both call sites so the cascade can't see it.
+        """Empty HOME, no env var, null keyring → cascade raises → empty."""
         monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
-        with (
-            patch(
-                "worthless.proxy.config.read_fernet_key",
-                side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
-            ),
-            patch(
-                "worthless.cli.keystore.read_fernet_key",
-                side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
-            ),
-        ):
-            result = _read_fernet_key()
+        # No file, no env, no keyring → keystore raises KEY_NOT_FOUND →
+        # ``_read_fernet_key()`` catches and returns ``bytearray()``.
+        result = _read_fernet_key()
         assert result == bytearray()
 
 
@@ -105,58 +101,41 @@ class TestReadFernetKeyCascade:
 
 
 class TestProxySettingsKeyring:
-    """Defense in depth against py3.10 xdist-loadscope flake.
+    """Inject the Fernet reader via the class-level ``_fernet_reader`` hook.
 
-    Sibling CLI subprocess tests in the same loadscope group can leave a
-    real ``~/.worthless/fernet.key`` on the runner. Patching only
-    ``worthless.proxy.config.read_fernet_key`` was deterministically lost
-    on py3.10.20 ubuntu — the cascade fell through to
-    ``worthless.cli.keystore.read_fernet_key`` and returned the leaked
-    file. Every test in this class therefore:
-      (a) pins ``HOME`` to an empty ``tmp_path`` so the file fallback
-          cannot find anything;
-      (b) patches ``read_fernet_key`` at BOTH call sites so neither
-          branch of the cascade can leak.
+    The previous approach — ``with patch("worthless.proxy.config.read_fernet_key", ...)``
+    — was deterministically flaky on py3.10.20 ubuntu under
+    ``--dist loadscope`` + ``--reruns 1``: the patch state could leak
+    across reruns and produce a Mock that raised ``WorthlessError`` when
+    the test expected a returned value (see PR #112 / WOR-309 for the
+    investigation trail).
+
+    ``monkeypatch.setattr(ProxySettings, "_fernet_reader", staticmethod(fn))``
+    binds against the class object directly. No module-attribute lookup,
+    no Mock-state pollution surface — the test holds the function
+    reference itself.
     """
 
-    def test_settings_loads_from_keyring(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
-        with (
-            patch(
-                "worthless.proxy.config.read_fernet_key",
-                return_value=bytearray(b"keyring-settings-key"),
-            ),
-            patch(
-                "worthless.cli.keystore.read_fernet_key",
-                return_value=bytearray(b"keyring-settings-key"),
-            ),
-        ):
-            s = ProxySettings()
+    def test_settings_loads_from_keyring(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            ProxySettings,
+            "_fernet_reader",
+            staticmethod(lambda: bytearray(b"keyring-settings-key")),
+        )
+        s = ProxySettings()
         assert s.fernet_key == bytearray(b"keyring-settings-key")
 
-    def test_settings_validate_passes_with_keyring(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
-        with (
-            patch(
-                "worthless.proxy.config.read_fernet_key",
-                return_value=bytearray(b"valid-key"),
-            ),
-            patch(
-                "worthless.cli.keystore.read_fernet_key",
-                return_value=bytearray(b"valid-key"),
-            ),
-        ):
-            s = ProxySettings()
-            s.validate()  # should not raise
+    def test_settings_validate_passes_with_keyring(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            ProxySettings,
+            "_fernet_reader",
+            staticmethod(lambda: bytearray(b"valid-key")),
+        )
+        s = ProxySettings()
+        s.validate()  # should not raise
 
     def test_settings_validate_does_not_fail_when_no_key(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """WOR-309: missing Fernet key no longer fails ``validate()``.
 
@@ -164,25 +143,14 @@ class TestProxySettingsKeyring:
         at proxy boot. Pre-WOR-309 this raised ``ValueError``; post-WOR-309
         the absence of a raise is the regression guard.
         """
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
-        with (
-            patch(
-                "worthless.proxy.config.read_fernet_key",
-                side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
-            ),
-            patch(
-                "worthless.cli.keystore.read_fernet_key",
-                side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
-            ),
-        ):
-            s = ProxySettings()
-            # Per CodeRabbit review on PR #112: keep ``validate()`` and the
-            # no-key state assertion INSIDE the patch context so any future
-            # re-introduction of a key check inside ``validate()`` is caught
-            # by this test against the same patched cascade.
-            assert s.fernet_key == bytearray()  # confirm no-key state
-            s.validate()  # MUST NOT raise — the proxy never decrypts
+        monkeypatch.setattr(
+            ProxySettings,
+            "_fernet_reader",
+            staticmethod(lambda: bytearray()),
+        )
+        s = ProxySettings()
+        assert s.fernet_key == bytearray()  # confirm no-key state
+        s.validate()  # MUST NOT raise — the proxy never decrypts
 
 
 # ===========================================================================

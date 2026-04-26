@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 from worthless.cli.keystore import read_fernet_key
 
@@ -70,12 +72,24 @@ def _read_fernet_key() -> bytearray:
 
 @dataclass
 class ProxySettings:
-    """Proxy configuration loaded from environment variables."""
+    """Proxy configuration loaded from environment variables.
+
+    The Fernet reader is exposed as a class-level callable
+    (:attr:`_fernet_reader`) so tests can swap it via
+    ``monkeypatch.setattr(ProxySettings, "_fernet_reader", ...)`` without
+    racing module-attribute patches against pytest-rerunfailures + xdist
+    + parenthesized-with on py3.10. See WOR-309 PR #112 for the trail.
+    """
+
+    #: Class-level Fernet reader hook. Tests patch this via
+    #: ``monkeypatch.setattr(ProxySettings, "_fernet_reader", staticmethod(fn))``.
+    #: Production callers should leave it alone.
+    _fernet_reader: ClassVar[Callable[[], bytearray]] = staticmethod(_read_fernet_key)
 
     db_path: str = field(
         default_factory=lambda: os.environ.get("WORTHLESS_DB_PATH", _default_db_path())
     )
-    fernet_key: bytearray = field(default_factory=lambda: _read_fernet_key())
+    fernet_key: bytearray = field(default_factory=lambda: ProxySettings._fernet_reader())
     default_rate_limit_rps: float = field(
         default_factory=lambda: float(os.environ.get("WORTHLESS_RATE_LIMIT_RPS", "100.0"))
     )
