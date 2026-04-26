@@ -2,8 +2,7 @@ import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
 export default defineConfig({
-  site: 'https://shacharm2.github.io',
-  base: '/worthless',
+  site: 'https://docs.wless.io',
   integrations: [
     starlight({
       title: 'Worthless',
