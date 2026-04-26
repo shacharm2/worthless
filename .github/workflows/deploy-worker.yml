@@ -88,6 +88,27 @@ jobs:
             echo "::warning title=Unsigned tag::Tag ${GITHUB_REF_NAME} is not GPG-signed. WOR-323 will make this fatal."
           fi
 
+      - name: Verify Worker source is present in this ref
+        # Fail fast with a clear message if dispatched against a ref that
+        # doesn't have install.sh / workers/worthless-sh/ (e.g., plain
+        # `main` before WOR-349 lands). Without this guard, the next step
+        # fails with a confusing `shasum: install.sh: No such file`.
+        run: |
+          if [ ! -f install.sh ] || [ ! -d workers/worthless-sh ]; then
+            cat >&2 <<'MSG'
+          ::error title=Worker source missing on this ref::
+          This workflow expects install.sh + workers/worthless-sh/ to exist
+          on the dispatched ref. They land with WOR-349. Until that PR
+          merges to main, dispatch this workflow with --ref pointing at
+          the WOR-349 feature branch:
+
+            gh workflow run deploy-worker.yml -R shacharm2/worthless \
+              -f target=preview \
+              --ref feature/wor-300-worker-implementation
+          MSG
+            exit 1
+          fi
+
       - name: Compute install.sh sha256
         id: sha
         run: |
@@ -169,7 +190,12 @@ jobs:
           # header. The body check catches a stale Wrangler bundle; the
           # header check catches a Worker code regression that detached
           # the header from the body. They MUST agree.
-          set -eu
+          #
+          # `pipefail` is load-bearing: without it a transient curl
+          # failure mid-pipe would let `shasum` hash empty input, and
+          # the workflow would fail with a misleading "sha differs"
+          # error instead of the real "curl failed" diagnostic.
+          set -euo pipefail
           BODY_SHA=$(curl --fail --silent --show-error --location \
             -H "User-Agent: curl/8.4.0" https://worthless.sh/ \
             | shasum -a 256 | awk '{print $1}')
