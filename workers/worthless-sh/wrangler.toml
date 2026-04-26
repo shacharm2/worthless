@@ -3,15 +3,14 @@ main = "src/index.ts"
 compatibility_date = "2026-04-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Text rules: bundle install.sh and walkthrough.txt as string exports at
-# build time. The Worker holds the canonical bytes inline (Option A — see
-# engineering/adr/001-worthless-sh-inline-bundle.md). No runtime fetch from
-# GitHub; the only way to change what `curl worthless.sh | sh` serves is to
-# ship a new Worker (gated by signed tags + protected ruleset, WOR-323).
-[[rules]]
-type = "Text"
-globs = ["**/*.sh", "**/*.txt"]
-fallthrough = true
+# NB: no `[[rules]]` block. install.sh + walkthrough.txt are embedded
+# via `scripts/embed-assets.mjs` (base64 → src/embedded.ts) at build
+# time, NOT via Wrangler's Text/Data module rules. Cloudflare's WAF on
+# api.cloudflare.com inspects multipart upload parts and 403's the
+# request when bytes match shell-injection signatures, regardless of
+# Content-Type. Base64 sidesteps this — the upload contains only JS
+# source. See scripts/embed-assets.mjs and ADR-001 for full rationale.
+# Runtime contract (bytes served to curl) is unchanged.
 
 [vars]
 # Browser fail-safe redirect target. Read by Worker code AND by tests

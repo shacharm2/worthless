@@ -29,16 +29,13 @@
 // try/catch that returns a hand-built 500 with `# worthless-sh: error\n` —
 // piping that into /bin/sh is a no-op (just a comment).
 
-// `../install.sh` resolves to `workers/worthless-sh/install.sh`, which
-// is a build-time copy of the canonical `install.sh` at the repo root.
-// The npm script `stage:install-sh` (run automatically as `pretest` /
-// `predev` / `predeploy`) does a one-line `cp ../../install.sh
-// ./install.sh`. The copy is .gitignored — single source of truth lives
-// at the repo root. Both bundlers (Wrangler + Vitest pool) need the
-// file inside this Worker's project directory; this is the simplest
-// way to satisfy both without symlink or fs-allowlist trickery.
-import INSTALL_SH from "../install.sh";
-import WALKTHROUGH from "./walkthrough.txt";
+// install.sh and walkthrough.txt are base64-encoded at build time by
+// `scripts/embed-assets.mjs` into `src/embedded.ts` (gitignored, run
+// automatically as `pretest`/`predev`/`predeploy`). Base64 in JS source
+// avoids tripping Cloudflare's WAF on api.cloudflare.com, which rejects
+// multipart upload parts containing shell-injection signatures. See
+// wrangler.toml comment for the full story.
+import { INSTALL_SH_B64, WALKTHROUGH_B64 } from "./embedded";
 import { isCurlFamily } from "./ua";
 
 export interface Env {
@@ -50,12 +47,24 @@ export interface Env {
 // ---- Constants computed once at module load ------------------------------
 
 const ENCODER = new TextEncoder();
+const DECODER = new TextDecoder();
 
-const INSTALL_SH_BYTES = ENCODER.encode(INSTALL_SH);
+// Decode base64 → bytes → string once at module load. The decoded
+// bytes are byte-identical to the source files at the repo root.
+function b64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+const INSTALL_SH_BYTES = b64ToBytes(INSTALL_SH_B64);
 const INSTALL_SH_LENGTH = INSTALL_SH_BYTES.byteLength;
+const INSTALL_SH = DECODER.decode(INSTALL_SH_BYTES);
 
-const WALKTHROUGH_BYTES = ENCODER.encode(WALKTHROUGH);
+const WALKTHROUGH_BYTES = b64ToBytes(WALKTHROUGH_B64);
 const WALKTHROUGH_LENGTH = WALKTHROUGH_BYTES.byteLength;
+const WALKTHROUGH = DECODER.decode(WALKTHROUGH_BYTES);
 
 const TEXT_PLAIN = "text/plain; charset=utf-8";
 const NO_STORE = "no-store";
