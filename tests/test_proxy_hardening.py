@@ -12,8 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from contextlib import ExitStack
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -24,7 +23,13 @@ import aiosqlite
 from worthless.adapters import registry
 from worthless.adapters.types import AdapterRequest, AdapterResponse
 from worthless.crypto.splitter import split_key_fp
-from worthless.proxy.app import _ALIAS_RE, _BAD_HEADER_CHARS, _extract_alias_and_path, create_app
+from worthless.proxy.app import (
+    _ALIAS_RE,
+    _AUTH_BODY,
+    _BAD_HEADER_CHARS,
+    _extract_alias_and_path,
+    create_app,
+)
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import ErrorResponse, gateway_error_response
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
@@ -567,6 +572,14 @@ class TestReconstructFailureZeroing:
                 )
 
         assert resp.status_code == 401
+        # Anti-enumeration: reconstruct-failure path must return the exact
+        # canonical 401 body — byte-identical to every other ``_uniform_401()``
+        # caller. Locks in the invariant alongside ``test_all_failure_modes_*``
+        # so a future divergence between the two ``except`` branches in
+        # app.py:370 / 392 is caught here.
+        assert resp.content == _AUTH_BODY, (
+            "reconstruct-failure 401 body diverged from canonical _uniform_401()"
+        )
         assert len(captured_plaintexts) == 1, "ipc.open should fire exactly once"
         plaintext_shard_b = captured_plaintexts[0]
         assert all(b == 0 for b in plaintext_shard_b), (
@@ -955,54 +968,38 @@ class TestAntiEnumeration:
         )
         responses.append(("unknown_endpoint", r))
 
-        # 7. Reconstruction failure (mock reconstruct_key_fp to raise)
-        # Belt-and-suspenders defenses against CI-only py3.10 xdist-loadscope
-        # ordering flakes:
-        #   (a) Patch BOTH reconstruct branches (`_fp` and plain) at BOTH the
-        #       proxy app binding AND the source module — 4 sites total.
-        #   (b) Swap the proxy's whole ``httpx_client`` for a MagicMock(spec=)
-        #       so even a single-method override race can't let send() reach
-        #       a real socket. Both ``build_request`` (sync, called first at
-        #       app.py:406) and ``send`` (async, app.py:414) raise loudly.
-        #   (c) Use ``ExitStack`` for explicit, unambiguous patch entry —
-        #       sidesteps any py3.10 parenthesized-with parser edge case.
+        # 7. Decrypt failure → uniform 401 (same _uniform_401() code path
+        # exercised by reconstruct failure, app.py:370 vs :392)
         #
-        # If the body-equality assertion below ever fires for this mode, the
-        # response is whatever upstream returned — that's the leak we need to
-        # catch. The sentinel exceptions surface the leak earlier with a clear
-        # message instead of letting the request silently leave the process.
-        original_client = proxy_app.state.httpx_client
-        sentinel_client = MagicMock(spec=httpx.AsyncClient)
-        sentinel_client.build_request = MagicMock(
-            side_effect=AssertionError(
-                "reconstruct_failure path must not reach upstream — "
-                "build_request was called, meaning reconstruct mocks missed"
-            )
-        )
-        sentinel_client.send = AsyncMock(
-            side_effect=AssertionError(
-                "reconstruct_failure path must not reach upstream — "
-                "send() was called, meaning reconstruct mocks missed"
-            )
-        )
-        proxy_app.state.httpx_client = sentinel_client
+        # Originally this mode patched ``reconstruct_key{,_fp}`` at four module
+        # binding sites (proxy.app + crypto.reconstruction × {plain, _fp}).
+        # That race was deterministically lost on py3.10.20 ubuntu under
+        # xdist-loadscope ordering — none of the 4 patches took effect there
+        # and the request flowed past the reconstruct guard. See PR #112
+        # commits f345292 / 11888a2 / cb88293 for the trail.
+        #
+        # The route handler returns ``_uniform_401()`` from BOTH the IPC
+        # failure branch (app.py:370, ``except Exception``) and the reconstruct
+        # failure branch (app.py:392). The byte-identical-401 invariant we
+        # care about here covers every path that returns ``_uniform_401()`` —
+        # both branches qualify.
+        #
+        # Trigger the IPC branch instead: ``FakeIPCSupervisor.fail_open_with``
+        # is one config call, no module-attribute patching, no name-resolution
+        # race. The dedicated reconstruct-failure path is still covered by
+        # ``test_shard_material_zeroed_on_reconstruct_failure`` (single patch
+        # site, not flaky).
+        ipc = proxy_app.state.ipc_supervisor
+        ipc.fail_open_with(exc_class=ValueError, message="tampered ciphertext")
         try:
-            with ExitStack() as stack:
-                for target in (
-                    "worthless.proxy.app.reconstruct_key_fp",
-                    "worthless.proxy.app.reconstruct_key",
-                    "worthless.crypto.reconstruction.reconstruct_key_fp",
-                    "worthless.crypto.reconstruction.reconstruct_key",
-                ):
-                    stack.enter_context(patch(target, side_effect=ValueError("tampered")))
-                r = await proxy_client.post(
-                    f"/{alias}/v1/chat/completions",
-                    headers={"authorization": f"Bearer {shard_a_utf8}"},
-                    content=b"{}",
-                )
+            r = await proxy_client.post(
+                f"/{alias}/v1/chat/completions",
+                headers={"authorization": f"Bearer {shard_a_utf8}"},
+                content=b"{}",
+            )
         finally:
-            proxy_app.state.httpx_client = original_client
-        responses.append(("reconstruct_failure", r))
+            ipc.clear_failures()
+        responses.append(("decrypt_failure", r))
 
         # Assert ALL return 401 with byte-identical bodies
         reference_label, reference = responses[0]
