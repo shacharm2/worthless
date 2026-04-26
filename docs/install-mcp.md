@@ -1,3 +1,8 @@
+---
+title: "Install — Claude Code, Cursor, or Windsurf"
+description: "Run the Worthless proxy locally and point your editor's SDK at it."
+---
+
 # Install -- Claude Code, Cursor, or Windsurf
 
 Run the Worthless proxy locally, then point your editor's SDK at it.
