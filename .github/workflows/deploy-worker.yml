@@ -152,7 +152,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           DEPLOY_TARGET: ${{ needs.verify.outputs.target }}
         run: |
-          npm run stage:install-sh
+          npm run embed:assets
           npx wrangler deploy \
             --env "${DEPLOY_TARGET}" \
             --var "SCRIPT_TAG:${GITHUB_REF_NAME}" \
