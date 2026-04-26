@@ -54,17 +54,25 @@ class TestReadFernetKeyCascade:
         result = _read_fernet_key()
         assert result == bytearray(b"env-key-value")
 
-    def test_returns_key_from_keyring(self) -> None:
-        with patch(
-            "worthless.cli.keystore.read_fernet_key",
-            return_value=bytearray(b"keyring-key"),
-        ):
-            # Patch at the call site in config.py
-            with patch(
+    def test_returns_key_from_keyring(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Defense in depth against py3.10 xdist-loadscope flake (see class
+        # docstring on TestProxySettingsKeyring): pin HOME so the keystore
+        # file fallback can't see a leaked ``~/.worthless/fernet.key`` if the
+        # proxy.config patch fails to apply on the CI ordering.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        with (
+            patch(
+                "worthless.cli.keystore.read_fernet_key",
+                return_value=bytearray(b"keyring-key"),
+            ),
+            patch(
                 "worthless.proxy.config.read_fernet_key",
                 return_value=bytearray(b"keyring-key"),
-            ):
-                result = _read_fernet_key()
+            ),
+        ):
+            result = _read_fernet_key()
         assert result == bytearray(b"keyring-key")
 
     def test_returns_empty_when_nothing_found(
@@ -169,7 +177,12 @@ class TestProxySettingsKeyring:
             ),
         ):
             s = ProxySettings()
-        s.validate()  # MUST NOT raise — the proxy never decrypts
+            # Per CodeRabbit review on PR #112: keep ``validate()`` and the
+            # no-key state assertion INSIDE the patch context so any future
+            # re-introduction of a key check inside ``validate()`` is caught
+            # by this test against the same patched cascade.
+            assert s.fernet_key == bytearray()  # confirm no-key state
+            s.validate()  # MUST NOT raise — the proxy never decrypts
 
 
 # ===========================================================================
