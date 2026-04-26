@@ -199,9 +199,19 @@ jobs:
           BODY_SHA=$(curl --fail --silent --show-error --location \
             -H "User-Agent: curl/8.4.0" https://worthless.sh/ \
             | shasum -a 256 | awk '{print $1}')
-          HEADER_SHA=$(curl --fail --silent --show-error --head \
-            -H "User-Agent: curl/8.4.0" https://worthless.sh/ \
-            | grep -i '^x-worthless-script-sha256:' \
+          # Header fetch uses GET + `-D - -o /dev/null` (dump headers,
+          # discard body) instead of `--head`. Defends against three
+          # things: (1) the Worker returning 405/404 on HEAD, (2)
+          # intermediate caches stripping headers from HEAD responses,
+          # (3) future symmetry if --location ever gets added (HEAD
+          # doesn't follow redirects, GET does — keeping both fetches
+          # GET means they see the same response chain). `head -n1`
+          # ensures we capture only the first matching header even if
+          # a redirect chain accidentally propagates it.
+          HEADER_SHA=$(curl --fail --silent --show-error --location \
+            -H "User-Agent: curl/8.4.0" \
+            -D - -o /dev/null https://worthless.sh/ \
+            | grep -i '^x-worthless-script-sha256:' | head -n1 \
             | awk '{print $2}' | tr -d '\r\n')
           echo "expected: ${EXPECTED_SHA}"
           echo "body:     ${BODY_SHA}"
