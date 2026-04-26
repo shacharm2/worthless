@@ -125,11 +125,24 @@ class TestFernetKeyEnv:
         s = ProxySettings()
         assert s.fernet_key == bytearray(b"abc123secret")
 
-    def test_fernet_env_empty_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fernet_env_empty_string(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # Defense in depth against CI py3.10 flake: CLI subprocess tests
+        # earlier in the same xdist loadscope group can call ``ensure_home()``
+        # without an explicit base_dir, leaving a real ``~/.worthless/fernet.key``
+        # on the runner. Pin HOME so the keystore file fallback resolves to an
+        # empty dir, and patch at both call sites so the cascade can't see it.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
         monkeypatch.setenv("WORTHLESS_FERNET_KEY", "")
-        with patch(
-            "worthless.proxy.config.read_fernet_key",
-            side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
+        with (
+            patch(
+                "worthless.proxy.config.read_fernet_key",
+                side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
+            ),
+            patch(
+                "worthless.cli.keystore.read_fernet_key",
+                side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
+            ),
         ):
             s = ProxySettings()
         assert s.fernet_key == bytearray()
