@@ -1,15 +1,10 @@
-name: Docs spike (Starlight build)
+name: Docs site (Starlight build)
+
+# PR-only build verification. Cloudflare Workers Static Assets handles
+# the actual deploy on every push to main that touches docs sources.
+# This job exists to fail PRs that would break the docs build.
 
 on:
-  push:
-    branches: [feature/starlight-spike]
-    paths:
-      - 'docs/**'
-      - 'src/content.config.ts'
-      - 'astro.config.mjs'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/docs-spike.yml'
   pull_request:
     paths:
       - 'docs/**'
@@ -17,6 +12,8 @@ on:
       - 'astro.config.mjs'
       - 'package.json'
       - 'package-lock.json'
+      - 'wrangler.jsonc'
+      - '.github/workflows/docs-spike.yml'
 
 permissions:
   contents: read
@@ -27,14 +24,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run build
-        # Cloudflare Pages handles deploy on its own;
-        # this CI job exists only to fail PRs that break the build.
