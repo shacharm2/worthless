@@ -543,8 +543,16 @@ class TestByteArrayZeroing:
 class TestReconstructFailureZeroing:
     @respx.mock
     async def test_shard_material_zeroed_on_reconstruct_failure(self, proxy_app, enrolled_alias):
-        """When reconstruct_key raises, the IPC plaintext is zeroed and 401 returned."""
-        alias, shard_a_utf8, _ = enrolled_alias
+        """When reconstruct_key raises, the IPC plaintext is zeroed and 401 returned.
+
+        Triggers the failure naturally instead of patching
+        ``worthless.proxy.app.reconstruct_key_fp`` — sidesteps the py3.10/3.13
+        xdist patch-state race that bit PR #112. Sending a wrong-length /
+        wrong-content shard_a means ``reconstruct_key_fp`` will fail the
+        commitment check (or earlier length check) and raise inside the
+        ``try`` block at app.py:392, exercising the same zeroing branch.
+        """
+        alias, _real_shard_a, _ = enrolled_alias
         captured_plaintexts: list[bytearray] = []
         fake_ipc = proxy_app.state.ipc_supervisor
         orig_open = fake_ipc.open
@@ -556,20 +564,20 @@ class TestReconstructFailureZeroing:
 
         fake_ipc.open = capturing_open
 
-        with patch(
-            "worthless.proxy.app.reconstruct_key_fp",
-            side_effect=Exception("tampered shard"),
-        ):
-            transport = httpx.ASGITransport(app=proxy_app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.post(
-                    f"/{alias}/v1/chat/completions",
-                    headers={
-                        "authorization": f"Bearer {shard_a_utf8}",
-                        "content-type": "application/json",
-                    },
-                    content=b'{"model": "gpt-4", "messages": []}',
-                )
+        # A non-empty bearer token that is NOT the real shard_a → XOR with
+        # plaintext_shard_b yields garbage → commitment HMAC mismatch →
+        # ``reconstruct_key_fp`` raises naturally. No mocks, no race.
+        wrong_shard_a = "sk-wrong-shard-a-deliberately-corrupted-aaaaaaaaaaaaaa"
+        transport = httpx.ASGITransport(app=proxy_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/{alias}/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {wrong_shard_a}",
+                    "content-type": "application/json",
+                },
+                content=b'{"model": "gpt-4", "messages": []}',
+            )
 
         assert resp.status_code == 401
         # Anti-enumeration: reconstruct-failure path must return the exact
