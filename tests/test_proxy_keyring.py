@@ -67,10 +67,25 @@ class TestReadFernetKeyCascade:
                 result = _read_fernet_key()
         assert result == bytearray(b"keyring-key")
 
-    def test_returns_empty_when_nothing_found(self) -> None:
-        with patch(
-            "worthless.proxy.config.read_fernet_key",
-            side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
+    def test_returns_empty_when_nothing_found(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Defense in depth against CI py3.10 flake: CLI subprocess tests
+        # earlier in the same xdist loadscope group can call ``ensure_home()``
+        # without an explicit base_dir, leaving a real ``~/.worthless/fernet.key``
+        # on the runner. Pin HOME so the keystore file fallback resolves to an
+        # empty dir, and patch at both call sites so the cascade can't see it.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
+        with (
+            patch(
+                "worthless.proxy.config.read_fernet_key",
+                side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
+            ),
+            patch(
+                "worthless.cli.keystore.read_fernet_key",
+                side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
+            ),
         ):
             result = _read_fernet_key()
         assert result == bytearray()
