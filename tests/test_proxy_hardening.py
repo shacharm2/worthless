@@ -898,6 +898,7 @@ class TestAntiEnumeration:
     async def test_all_failure_modes_return_byte_identical_401(
         self,
         proxy_client: httpx.AsyncClient,
+        proxy_app,
         enrolled_alias,
         proxy_settings: ProxySettings,
     ):
@@ -954,12 +955,48 @@ class TestAntiEnumeration:
         responses.append(("unknown_endpoint", r))
 
         # 7. Reconstruction failure (mock reconstruct_key_fp to raise)
-        with patch("worthless.proxy.app.reconstruct_key_fp", side_effect=ValueError("tampered")):
-            r = await proxy_client.post(
-                f"/{alias}/v1/chat/completions",
-                headers={"authorization": f"Bearer {shard_a_utf8}"},
-                content=b"{}",
+        # Belt-and-suspenders: patch BOTH reconstruct branches (`_fp` and the
+        # plain variant) at BOTH the proxy app binding AND the source module,
+        # and install a sentinel ``httpx_client.send`` that fails loudly if
+        # control ever escapes the reconstruction-failure path. Without this,
+        # a CI-only race on py3.10 ubuntu let one of the patches miss its
+        # call site, which silently let the request hit the real upstream
+        # and return an OpenAI-shaped 401 — breaking the byte-identical
+        # invariant in a way that was hard to diagnose.
+        async def _no_egress(*_args, **_kwargs):
+            raise AssertionError(
+                "reconstruct_failure path must not reach upstream — "
+                "the reconstruct mocks should have intercepted before send()"
             )
+
+        original_send = proxy_app.state.httpx_client.send
+        proxy_app.state.httpx_client.send = _no_egress
+        try:
+            with (
+                patch(
+                    "worthless.proxy.app.reconstruct_key_fp",
+                    side_effect=ValueError("tampered"),
+                ),
+                patch(
+                    "worthless.proxy.app.reconstruct_key",
+                    side_effect=ValueError("tampered"),
+                ),
+                patch(
+                    "worthless.crypto.reconstruction.reconstruct_key_fp",
+                    side_effect=ValueError("tampered"),
+                ),
+                patch(
+                    "worthless.crypto.reconstruction.reconstruct_key",
+                    side_effect=ValueError("tampered"),
+                ),
+            ):
+                r = await proxy_client.post(
+                    f"/{alias}/v1/chat/completions",
+                    headers={"authorization": f"Bearer {shard_a_utf8}"},
+                    content=b"{}",
+                )
+        finally:
+            proxy_app.state.httpx_client.send = original_send
         responses.append(("reconstruct_failure", r))
 
         # Assert ALL return 401 with byte-identical bodies
