@@ -84,14 +84,10 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
         except WorthlessError as exc:
             if exc.code != ErrorCode.KEY_NOT_FOUND:
                 raise
-            # ``Fernet.generate_key()`` is exactly
-            # ``base64.urlsafe_b64encode(os.urandom(32))`` — see the
-            # cryptography source. Inlining the equivalent lets us drop the
-            # module-scope ``from cryptography.fernet import Fernet`` import,
-            # which polluted the proxy import path
-            # (proxy.config → cli.keystore → cli.bootstrap → cryptography.fernet).
-            # The proxy never enrolls keys, so no proxy code path ever reaches
-            # here — and now no proxy boot loads the Fernet module either.
+            # Equivalent to ``Fernet.generate_key()`` (see cryptography
+            # source). Inlined so the proxy import path
+            # (proxy.config → cli.keystore → cli.bootstrap) never loads
+            # ``cryptography.fernet``; see ``crypto/__init__.py`` docstring.
             key = base64.urlsafe_b64encode(os.urandom(32))
             store_fernet_key(key, home_dir=home.base_dir)
         else:
