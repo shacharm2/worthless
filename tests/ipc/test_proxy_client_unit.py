@@ -17,6 +17,7 @@ import asyncio
 import importlib
 import pkgutil
 import resource
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -165,29 +166,37 @@ async def test_no_crypto_import_static() -> None:
     assert offenders == [], f"crypto imports remain in {app_py.name}: {offenders}"
 
 
-async def test_no_crypto_import_runtime(broken_ipc_client) -> None:
-    """#5 sys.modules snapshot diff: importing the proxy must not pull in crypto.
+def test_no_crypto_import_runtime() -> None:
+    """#5 subprocess snapshot: importing the proxy must not pull in crypto.
 
-    Proves: removes ``cryptography.fernet`` from ``sys.modules`` if loaded,
-    re-imports ``worthless.proxy.app`` (forcing the proxy import graph to
-    re-execute), then drives a failing IPC call. Asserts neither
-    ``cryptography.fernet`` nor ``worthless.crypto.splitter`` reappears in
-    ``sys.modules``. Closes the dynamic-load gap left by the static AST scan
-    (#4 above): the static scan only walks ``proxy/app.py`` source, so a
-    transitive import via some other module that *app.py* pulls in would
-    slip through. The reload-and-reimport pattern here catches that.
+    Spawns a fresh interpreter, imports ``worthless.proxy.app``, and
+    asserts neither ``cryptography.fernet`` nor ``worthless.crypto.splitter``
+    appears in ``sys.modules``. Closes the dynamic-load gap left by the
+    static AST scan (#4 above): the static scan only walks ``proxy/app.py``
+    source, so a transitive import via something app.py pulls in would
+    slip through.
+
+    Subprocess isolation matters: an in-process pop+reimport pollutes the
+    pytest session — it bypasses the autouse ``_session_fake_ipc_supervisor``
+    wrap on ``create_app``, breaking downstream tests in the same
+    xdist-loadscope group that build the proxy app via ``create_app``.
     """
-    sys.modules.pop("cryptography.fernet", None)
-    sys.modules.pop("worthless.crypto.splitter", None)
-    sys.modules.pop("worthless.proxy.app", None)
-    # Force the proxy module to re-execute its import graph from scratch.
-    importlib.import_module("worthless.proxy.app")
-    # Drive the failure path through the broken IPC client to confirm the
-    # error path also doesn't lazy-import crypto.
-    with pytest.raises(IPCProtocolError):
-        await broken_ipc_client.open(b"ct")
-    assert "cryptography.fernet" not in sys.modules
-    assert "worthless.crypto.splitter" not in sys.modules
+    probe = (
+        "import sys; "
+        "import worthless.proxy.app  # noqa: F401\n"
+        "banned = ['cryptography.fernet', 'worthless.crypto.splitter']\n"
+        "leaked = [m for m in banned if m in sys.modules]\n"
+        "sys.exit(0 if not leaked else 1)\n"
+    )
+    result = subprocess.run(  # noqa: S603 — args static, no shell
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"importing worthless.proxy.app pulled in banned modules; stderr={result.stderr.decode()!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

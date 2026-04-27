@@ -14,7 +14,8 @@ from cryptography.fernet import Fernet
 from hypothesis import HealthCheck, settings
 
 from worthless.cli.bootstrap import WorthlessHome, ensure_home
-from worthless.crypto import SplitResult, split_key
+from worthless.crypto import SplitResult
+from worthless.crypto.splitter import split_key
 from worthless.proxy import app as _proxy_app_module
 from worthless.storage.repository import ShardRepository, StoredShard
 
