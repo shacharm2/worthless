@@ -49,7 +49,7 @@ uv sync --extra dev --extra test
 uv run pytest
 ```
 
-Internal developer documentation lives in [`engineering/`](engineering/). Security invariants are in [`SECURITY_RULES.md`](SECURITY_RULES.md).
+Internal developer documentation lives in [`engineering/`](engineering/). Security invariants are in [`SECURITY.md`](SECURITY.md).
 
 ## Contributing
 
