@@ -105,11 +105,12 @@ class TestOpenReturnsBytearray:
         sup = FakeIPCSupervisor()
         await sup.connect()
         result = await sup.open(b"ct", key_id="alias-1")
-        # Strict bytearray identity — bytes is a subtype-related but NOT
-        # the same type. The proxy code path zero-fills via ``buf[:] =
-        # b"\x00" * len(buf)`` which is bytearray-only.
+        # Strict bytearray identity — the proxy code path zero-fills via
+        # ``buf[:] = b"\x00" * len(buf)`` which is bytearray-only. ``bytes``
+        # is NOT a subclass of ``bytearray`` (and vice-versa) in Py3, so
+        # ``type(result) is bytearray`` is the correct strict-identity check.
         assert isinstance(result, bytearray)
-        assert not isinstance(result, bytes) or type(result) is bytearray
+        assert type(result) is bytearray
 
     @pytest.mark.asyncio
     async def test_default_plaintext_returned(self) -> None:
@@ -246,13 +247,17 @@ class TestCallCounters:
         assert sup.open_calls == 3
 
     @pytest.mark.asyncio
-    async def test_open_counter_does_not_advance_on_failure(self) -> None:
-        """Failure path still counts the attempt — useful for retry assertions."""
+    async def test_open_counter_advances_even_on_failure(self) -> None:
+        """Failure path still counts the attempt — useful for retry assertions.
+
+        Counter increments at function entry, before the failure check, so a
+        Mock that raises still bumps ``open_calls``. Lets retry-policy tests
+        assert "we tried N times" without needing successful returns.
+        """
         sup = FakeIPCSupervisor()
         await sup.connect()
         sup.fail_open_with(IPCUnavailable, "down")
         for _ in range(2):
             with pytest.raises(IPCUnavailable):
                 await sup.open(b"ct", key_id="a")
-        # Documenting: counter increments at entry, before the failure check.
         assert sup.open_calls == 2

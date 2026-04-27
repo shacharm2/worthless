@@ -166,18 +166,24 @@ async def test_no_crypto_import_static() -> None:
 
 
 async def test_no_crypto_import_runtime(broken_ipc_client) -> None:
-    """#5 sys.modules snapshot diff: serving with broken IPC must not import crypto.
+    """#5 sys.modules snapshot diff: importing the proxy must not pull in crypto.
 
     Proves: removes ``cryptography.fernet`` from ``sys.modules`` if loaded,
-    drives a request via ``broken_ipc_client``, asserts crypto is not
-    re-imported as a side-effect. Closes the dynamic-load gap left by the
-    static AST scan.
+    re-imports ``worthless.proxy.app`` (forcing the proxy import graph to
+    re-execute), then drives a failing IPC call. Asserts neither
+    ``cryptography.fernet`` nor ``worthless.crypto.splitter`` reappears in
+    ``sys.modules``. Closes the dynamic-load gap left by the static AST scan
+    (#4 above): the static scan only walks ``proxy/app.py`` source, so a
+    transitive import via some other module that *app.py* pulls in would
+    slip through. The reload-and-reimport pattern here catches that.
     """
     sys.modules.pop("cryptography.fernet", None)
     sys.modules.pop("worthless.crypto.splitter", None)
-    # Drive the failure path; the broken client raises before any crypto
-    # could be imported. Importing ``worthless.proxy.app`` itself is what
-    # would re-pull the ban targets — see test #4.
+    sys.modules.pop("worthless.proxy.app", None)
+    # Force the proxy module to re-execute its import graph from scratch.
+    importlib.import_module("worthless.proxy.app")
+    # Drive the failure path through the broken IPC client to confirm the
+    # error path also doesn't lazy-import crypto.
     with pytest.raises(IPCProtocolError):
         await broken_ipc_client.open(b"ct")
     assert "cryptography.fernet" not in sys.modules
