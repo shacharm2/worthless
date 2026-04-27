@@ -1,15 +1,27 @@
-"""Tests for ``worthless.cli.sidecar_lifecycle`` — WOR-384 Phase A."""
+"""Tests for ``worthless.cli.sidecar_lifecycle`` — WOR-384 Phases A + B."""
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
+import secrets
 import stat
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from worthless.cli.sidecar_lifecycle import ShareFiles, split_to_tmpfs
+from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.sidecar_lifecycle import (
+    ShareFiles,
+    SidecarHandle,
+    spawn_sidecar,
+    split_to_tmpfs,
+)
 
 
 @pytest.fixture
@@ -31,6 +43,40 @@ def key() -> bytearray:
     that don't care about the XOR roundtrip — the dedicated XOR test uses
     non-uniform bytes to prove the split isn't degenerate."""
     return bytearray(b"A" * 44)
+
+
+class _FakeProc:
+    """Stand-in for ``subprocess.Popen`` used by env-capture tests.
+
+    Models a still-running child: ``poll()`` returns None, ``kill()``/``wait()``
+    are no-ops. Stdout/stderr are None so the production failure path's
+    ``communicate()`` is bypassed (it isn't reached on the success path
+    that env-capture tests exercise).
+    """
+
+    def __init__(self, pid: int = 12345) -> None:
+        self.pid = pid
+        self.stdout: object = None
+        self.stderr: object = None
+
+    def poll(self) -> int | None:
+        return None
+
+    def kill(self) -> None:  # pragma: no cover — never reached on success path
+        pass
+
+    def wait(self, timeout: float | None = None) -> int:  # pragma: no cover
+        return 0
+
+
+def _capturing_popen(captured: dict[str, dict[str, str]], pid: int = 12345) -> object:
+    """Return a Popen-shaped callable that records ``kwargs['env']``."""
+
+    def _fake_popen(*args: object, **kwargs: object) -> _FakeProc:
+        captured["env"] = dict(kwargs["env"])  # type: ignore[arg-type]
+        return _FakeProc(pid=pid)
+
+    return _fake_popen
 
 
 def test_split_to_tmpfs_creates_two_shares(home: Path, key: bytearray) -> None:
@@ -84,3 +130,131 @@ def test_split_to_tmpfs_does_not_log_share_bytes(
             arg_str = repr(arg)
             assert a_hex not in arg_str
             assert b_hex not in arg_str
+
+
+# ---------------------------------------------------------------------------
+# Phase B: spawn_sidecar tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_spawn_sidecar_returns_handle_with_running_process(home: Path) -> None:
+    """B1: spawn a real sidecar and verify the handle reflects a live process.
+
+    Uses a real Fernet key (not the uniform-byte ``key`` fixture) because the
+    sidecar's FernetBackend validates the reconstructed key on startup and
+    will exit rc=1 on a malformed key. Path is forced under /tmp so AF_UNIX's
+    104-byte sun_path limit on macOS doesn't trip.
+    """
+    # Force /tmp-rooted home so socket path stays under 104 bytes on macOS.
+    short_home = Path(tempfile.mkdtemp(prefix="w-", dir="/tmp")) / ".worthless"
+    short_home.mkdir()
+    fernet_key = bytearray(base64.urlsafe_b64encode(secrets.token_bytes(32)))
+    shares = split_to_tmpfs(fernet_key, short_home)
+    socket_path = shares.run_dir / "sc.sock"
+    if len(str(socket_path)) >= 104:
+        pytest.skip(f"tmp path too long for AF_UNIX (len={len(str(socket_path))} >= 104)")
+    handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+    try:
+        assert isinstance(handle, SidecarHandle)
+        assert handle.proc.poll() is None  # still running
+        assert handle.socket_path.exists()
+        assert handle.allowed_uid == os.getuid()
+        assert handle.shares is shares
+    finally:
+        handle.proc.terminate()
+        try:
+            handle.proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            handle.proc.kill()
+            handle.proc.wait(timeout=2.0)
+        if handle.socket_path.exists():
+            try:
+                handle.socket_path.unlink()
+            except OSError:
+                pass
+
+
+def test_spawn_sidecar_passes_current_uid_in_env(home: Path, key: bytearray) -> None:
+    """B2: env carries the caller-provided uid as the sidecar's allowlist."""
+    shares = split_to_tmpfs(key, home)
+    socket_path = shares.run_dir / "sidecar.sock"
+    captured: dict[str, dict[str, str]] = {}
+
+    with (
+        patch(
+            "worthless.cli.sidecar_lifecycle.subprocess.Popen",
+            _capturing_popen(captured),
+        ),
+        patch(
+            "worthless.cli.sidecar_lifecycle._wait_for_ready",
+            return_value=True,
+        ),
+    ):
+        handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+
+    assert handle.allowed_uid == os.getuid()
+    env = captured["env"]
+    assert env["WORTHLESS_SIDECAR_ALLOWED_UID"] == str(os.getuid())
+    assert env["WORTHLESS_SIDECAR_SOCKET"] == str(socket_path)
+    assert env["WORTHLESS_SIDECAR_SHARE_A"] == str(shares.share_a_path)
+    assert env["WORTHLESS_SIDECAR_SHARE_B"] == str(shares.share_b_path)
+
+
+def test_spawn_sidecar_times_out_with_wrtls_113(home: Path, key: bytearray) -> None:
+    """B3: a non-sidecar child that never binds raises WRTLS-113 and is reaped."""
+    shares = split_to_tmpfs(key, home)
+    socket_path = shares.run_dir / "sidecar.sock"
+
+    real_popen = subprocess.Popen
+    spawned: list[subprocess.Popen[bytes]] = []
+
+    def _bogus_popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        # Replace the sidecar invocation with a sleeper that won't bind.
+        proc = real_popen(  # noqa: S603 — args are static, no shell
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            env=kwargs.get("env"),
+            stdout=kwargs.get("stdout"),
+            stderr=kwargs.get("stderr"),
+        )
+        spawned.append(proc)
+        return proc
+
+    with patch("worthless.cli.sidecar_lifecycle.subprocess.Popen", _bogus_popen):
+        with pytest.raises(WorthlessError) as exc_info:
+            spawn_sidecar(
+                socket_path,
+                shares,
+                allowed_uid=os.getuid(),
+                ready_timeout=0.5,
+            )
+
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    assert exc_info.value.code.value == 113
+    # The bogus child must be reaped, not orphaned.
+    assert spawned, "Popen replacement was never invoked"
+    proc = spawned[0]
+    assert proc.poll() is not None, "bogus child still running after timeout"
+
+
+def test_spawn_sidecar_passes_drain_timeout_and_log_level(home: Path, key: bytearray) -> None:
+    """B4: drain_timeout default and WARNING log level land in the env."""
+    shares = split_to_tmpfs(key, home)
+    socket_path = shares.run_dir / "sidecar.sock"
+    captured: dict[str, dict[str, str]] = {}
+
+    with (
+        patch(
+            "worthless.cli.sidecar_lifecycle.subprocess.Popen",
+            _capturing_popen(captured, pid=67890),
+        ),
+        patch(
+            "worthless.cli.sidecar_lifecycle._wait_for_ready",
+            return_value=True,
+        ),
+    ):
+        spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+
+    env = captured["env"]
+    assert env["WORTHLESS_SIDECAR_DRAIN_TIMEOUT"] == "5.0"
+    assert env["WORTHLESS_LOG_LEVEL"] == "WARNING"
