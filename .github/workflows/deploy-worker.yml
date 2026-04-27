@@ -58,6 +58,24 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Verify tag GPG signature (fatal, tag-push only)
+        if: github.event_name == 'push'
+        # First step after `actions/checkout@<sha>` — runs BEFORE every
+        # other step in this job so no repo-supplied code path (composite
+        # actions, npm scripts, tag-derived inline shell) can execute
+        # against a malicious tag. If the tag isn't signed by the pinned
+        # maintainer key, this step exits non-zero and the workflow halts.
+        #
+        # The verify logic lives in .github/scripts/verify-tag.sh —
+        # single source of truth, called from both the `verify` and
+        # `deploy` jobs (deploy re-runs this independently rather than
+        # transitively trusting verify's outputs). Regression-tested by
+        # .github/workflows/verify-tag-test.yml.
+        env:
+          MAINTAINER_PUBKEY: ${{ vars.MAINTAINER_GPG_PUBKEY }}
+          MAINTAINER_FINGERPRINT: ${{ vars.MAINTAINER_GPG_FINGERPRINT }}
+        run: bash .github/scripts/verify-tag.sh
+
       - name: Resolve deploy target
         id: target
         # `inputs.target` and event-name routed through env vars (not
@@ -72,51 +90,6 @@ jobs:
           else
             echo "value=${INPUT_TARGET}" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Verify tag GPG signature (fatal, tag-push only)
-        if: github.event_name == 'push'
-        # Imports the maintainer's ASCII-armored public key from the
-        # MAINTAINER_GPG_PUBKEY repository *variable* (non-secret), pins
-        # the imported key by MAINTAINER_GPG_FINGERPRINT (40-char hex),
-        # then runs `git verify-tag`. Fails closed on: missing variable,
-        # malformed pubkey, fingerprint mismatch, unsigned tag, or signature
-        # from a key not in the imported keyring.
-        # The fingerprint pin is what defends against a Variable-swap
-        # attack — without it, an attacker who can write repo Variables
-        # could replace the pubkey with their own and sign tags themselves.
-        # Operator setup: workers/worthless-sh/DEPLOY.md §"Set up signed tags".
-        env:
-          MAINTAINER_PUBKEY: ${{ vars.MAINTAINER_GPG_PUBKEY }}
-          MAINTAINER_FPR: ${{ vars.MAINTAINER_GPG_FINGERPRINT }}
-        run: |
-          set -eu
-          if [ -z "${MAINTAINER_PUBKEY}" ] || [ -z "${MAINTAINER_FPR}" ]; then
-            echo "::error title=Missing maintainer trust anchors::Both MAINTAINER_GPG_PUBKEY and MAINTAINER_GPG_FINGERPRINT repo Variables must be set. See DEPLOY.md §'Set up signed tags'."
-            exit 1
-          fi
-          # Normalize the pinned fingerprint: gpg --fingerprint default
-          # output is space-separated and mixed-case; the colon-format
-          # output we'll compare against is no-spaces upper-case. Strip
-          # whitespace and uppercase so either input form works.
-          NORMALIZED_FPR=$(printf '%s' "${MAINTAINER_FPR}" | tr -d '[:space:]' | tr 'a-f' 'A-F')
-          if [ "${#NORMALIZED_FPR}" -ne 40 ]; then
-            echo "::error title=Bad fingerprint::MAINTAINER_GPG_FINGERPRINT must be 40 hex chars after stripping whitespace; got ${#NORMALIZED_FPR}."
-            exit 1
-          fi
-          GNUPGHOME=$(mktemp -d)
-          export GNUPGHOME
-          chmod 700 "$GNUPGHOME"
-          printf '%s' "${MAINTAINER_PUBKEY}" | gpg --batch --import
-          IMPORTED_FPR=$(gpg --batch --with-colons --fingerprint | awk -F: '/^fpr:/ {print $10; exit}')
-          if [ "${IMPORTED_FPR}" != "${NORMALIZED_FPR}" ]; then
-            echo "::error title=Fingerprint mismatch::Imported key fingerprint ${IMPORTED_FPR} does not match pinned MAINTAINER_GPG_FINGERPRINT ${NORMALIZED_FPR}. Variable was tampered with, or rotated without updating both Variables atomically."
-            exit 1
-          fi
-          if ! git verify-tag "${GITHUB_REF_NAME}"; then
-            echo "::error title=Unsigned or untrusted tag::Tag ${GITHUB_REF_NAME} did not verify against MAINTAINER_GPG_PUBKEY (fingerprint ${NORMALIZED_FPR})."
-            exit 1
-          fi
-          echo "Tag ${GITHUB_REF_NAME} verified against pinned fingerprint ${NORMALIZED_FPR}."
 
       - name: Compute install.sh sha256
         id: sha
@@ -174,9 +147,28 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          # Deploy job doesn't read git history; shallow clone is enough.
-          fetch-depth: 1
+          # Full history needed for the re-verify step below (`git
+          # verify-tag` requires the signed tag object reachable;
+          # shallow clone strips it).
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Re-verify tag GPG signature (defense-in-depth)
+        if: github.event_name == 'push'
+        # The verify job already checked the tag signature, but trust
+        # between jobs flows through `needs:` job-graph DAG, not through
+        # cryptographic artifacts. A future workflow refactor that splits
+        # jobs differently, an `actions: write` user who reruns just the
+        # deploy job from a previously-failed workflow, or a bug in the
+        # verify job that exits 0 incorrectly would all bypass the
+        # tag-signature gate. Re-running verification here closes that
+        # transitive-trust gap (~5s on a runner that already has gpg).
+        # Same script, same Variables, same outcome — single source of
+        # truth at .github/scripts/verify-tag.sh.
+        env:
+          MAINTAINER_PUBKEY: ${{ vars.MAINTAINER_GPG_PUBKEY }}
+          MAINTAINER_FINGERPRINT: ${{ vars.MAINTAINER_GPG_FINGERPRINT }}
+        run: bash .github/scripts/verify-tag.sh
 
       - name: Set up Node.js
         uses: ./.github/actions/setup-node-worker
@@ -222,32 +214,62 @@ jobs:
           #
           # All three MUST agree with the build-time hashes computed in the
           # verify job. Any mismatch fails the deploy.
-          set -eu
-          BODY_SHA=$(curl --fail --silent --show-error --location \
-            -H "User-Agent: curl/8.4.0" https://worthless.sh/ \
-            | shasum -a 256 | awk '{print $1}')
-          HEADER_SHA=$(curl --fail --silent --show-error --head \
-            -H "User-Agent: curl/8.4.0" https://worthless.sh/ \
-            | grep -i '^x-worthless-script-sha256:' \
-            | awk '{print $2}' | tr -d '\r\n')
-          WALKTHROUGH_SHA=$(curl --fail --silent --show-error --location \
-            -H "User-Agent: curl/8.4.0" 'https://worthless.sh/?explain=1' \
-            | shasum -a 256 | awk '{print $1}')
-          echo "install expected: ${EXPECTED_INSTALL_SHA}"
-          echo "install body:     ${BODY_SHA}"
-          echo "install header:   ${HEADER_SHA}"
-          echo "walkthrough expected: ${EXPECTED_WALKTHROUGH_SHA}"
-          echo "walkthrough body:     ${WALKTHROUGH_SHA}"
-          if [ "${BODY_SHA}" != "${EXPECTED_INSTALL_SHA}" ]; then
-            echo "::error::Deployed install.sh body sha256 differs from build artifact"
-            exit 1
-          fi
-          if [ "${HEADER_SHA}" != "${EXPECTED_INSTALL_SHA}" ]; then
-            echo "::error::Deployed install.sh header sha256 differs from build artifact"
-            exit 1
-          fi
-          if [ "${WALKTHROUGH_SHA}" != "${EXPECTED_WALKTHROUGH_SHA}" ]; then
-            echo "::error::Deployed walkthrough body sha256 differs from build artifact (possible direct-deploy bypass of CI)"
-            exit 1
-          fi
-          echo "Smoke test passed (install body, install header, walkthrough body)."
+          #
+          # Cache-bust + retry: even with the Worker emitting `Cache-Control:
+          # no-store`, Cloudflare edges propagate at slightly different rates
+          # after a `wrangler deploy`. We add a per-run query parameter that
+          # the Worker ignores (the only meaningful query trigger is
+          # `explain=1` per query-canonicalization tests) so each smoke
+          # request bypasses any cache layer that keys on URL. The 3× retry
+          # with exponential backoff covers an unlucky edge that still hasn't
+          # propagated.
+          set -euo pipefail
+          CACHE_BUST="_smoke=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          INSTALL_URL="https://worthless.sh/?${CACHE_BUST}"
+          WALKTHROUGH_URL="https://worthless.sh/?explain=1&${CACHE_BUST}"
+          NO_CACHE_HEADERS=(-H "Cache-Control: no-cache" -H "Pragma: no-cache")
+
+          run_smoke() {
+            local attempt="$1"
+            # Note: `--location` is intentionally NOT set on these curls.
+            # The production Worker MUST NOT redirect curl-family from
+            # `/` or `/?explain=1`; if a future Worker regression returns
+            # a 302, we want to hash the redirect bytes (catching the
+            # bug) rather than silently follow into attacker-controlled
+            # bytes.
+            BODY_SHA=$(curl --fail --silent --show-error \
+              "${NO_CACHE_HEADERS[@]}" -H "User-Agent: curl/8.4.0" \
+              "${INSTALL_URL}" \
+              | shasum -a 256 | awk '{print $1}')
+            HEADER_SHA=$(curl --fail --silent --show-error --head \
+              "${NO_CACHE_HEADERS[@]}" -H "User-Agent: curl/8.4.0" \
+              "${INSTALL_URL}" \
+              | grep -i '^x-worthless-script-sha256:' \
+              | awk '{print $2}' | tr -d '\r\n')
+            WALKTHROUGH_SHA=$(curl --fail --silent --show-error \
+              "${NO_CACHE_HEADERS[@]}" -H "User-Agent: curl/8.4.0" \
+              "${WALKTHROUGH_URL}" \
+              | shasum -a 256 | awk '{print $1}')
+            echo "[attempt ${attempt}] install expected: ${EXPECTED_INSTALL_SHA}"
+            echo "[attempt ${attempt}] install body:     ${BODY_SHA}"
+            echo "[attempt ${attempt}] install header:   ${HEADER_SHA}"
+            echo "[attempt ${attempt}] walkthrough expected: ${EXPECTED_WALKTHROUGH_SHA}"
+            echo "[attempt ${attempt}] walkthrough body:     ${WALKTHROUGH_SHA}"
+            [ "${BODY_SHA}" = "${EXPECTED_INSTALL_SHA}" ] \
+              && [ "${HEADER_SHA}" = "${EXPECTED_INSTALL_SHA}" ] \
+              && [ "${WALKTHROUGH_SHA}" = "${EXPECTED_WALKTHROUGH_SHA}" ]
+          }
+
+          for attempt in 1 2 3; do
+            if run_smoke "${attempt}"; then
+              echo "Smoke test passed on attempt ${attempt} (install body, install header, walkthrough body)."
+              exit 0
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              sleep_seconds=$((attempt * 10))
+              echo "Smoke mismatch on attempt ${attempt}; retrying in ${sleep_seconds}s..."
+              sleep "${sleep_seconds}"
+            fi
+          done
+          echo "::error::Smoke test failed across 3 attempts. Possible CDN cache lag, Worker regression, or direct-deploy bypass of CI."
+          exit 1
