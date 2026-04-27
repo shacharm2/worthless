@@ -1,6 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import { REDIRECT_URL, expectInstallScript } from "./_helpers.ts";
+import { INSTALL_SH_B64 } from "../src/embedded";
 
 // RED tests — response header contract and body integrity (H-01..H-08 from
 // security-audit/phase-2-pen-test-additions.md).
@@ -294,15 +295,36 @@ describe("server / framework banners are not disclosed (H-07)", () => {
 });
 
 describe("body integrity — install.sh shape and bounded size (H-08)", () => {
-  // H-08: until Phase 3 bundles install.sh as a static asset (ADR-001
-  // Option A) we cannot byte-compare. Two transitional invariants:
-  //   (a) The body IS recognisably the install script (shebang + Worthless
-  //       installer marker + size floor) — covered by expectInstallScript.
-  //   (b) The body is bounded by a size CEILING. Anything 10× expected is
-  //       a sign of corruption / template injection / appended attack
-  //       payload.
-  // Once Phase 3 lands, this file should add `import INSTALL_SH from
-  // "../../install.sh?raw"` and assert `expect(body).toBe(INSTALL_SH)`.
+  // H-08: byte-equality (the headline integrity contract) PLUS shape /
+  // size guards as belt-and-braces. They catch different failure modes:
+  //   (a) Byte-equality — substitution. Bundle drift, attacker who flips
+  //       a single byte, template-injection that re-emits a "valid" script.
+  //   (b) Shape (shebang + Worthless marker) — the served bytes are at
+  //       least syntactically the install script (catches truncation /
+  //       null body returned with 200).
+  //   (c) Size CEILING — corruption / appended payload. Surgical 50-byte
+  //       appends caught by the 20 KB tight ceiling, not the 100 KB upper.
+  // The shape and size assertions are intentionally kept after byte-equality
+  // landed — they pinpoint truncation vs substitution as different bugs.
+  // WOR-323 promoted byte-equality from the original "Phase 3 will add this"
+  // TODO. The bundle ships via scripts/embed-assets.mjs (base64 → embedded.ts)
+  // because of the CF WAF discovery in WOR-349 Phase 6.0; we decode the
+  // bundled blob here and compare against the served body.
+  it("install-script body byte-equals decoded INSTALL_SH_B64 (substitution guard)", async () => {
+    const res = await SELF.fetch("https://worthless.sh/", {
+      headers: { "user-agent": CURL_UA },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    // `atob` returns a binary string (one byte per char); install.sh has
+    // multi-byte UTF-8 (em-dashes etc.). Round-trip through TextDecoder.
+    const bin = atob(INSTALL_SH_B64);
+    const expected = new TextDecoder("utf-8").decode(
+      Uint8Array.from(bin, (c) => c.charCodeAt(0)),
+    );
+    expect(body).toBe(expected);
+  });
+
   it("install-script body matches canonical shape (shebang + marker + size floor)", async () => {
     const res = await SELF.fetch("https://worthless.sh/", {
       headers: { "user-agent": CURL_UA },

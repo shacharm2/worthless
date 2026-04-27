@@ -1,13 +1,15 @@
+== Verify the bytes match what the Worker serves ==
+  curl -sSL worthless.sh | sha256sum         # body hash
+  curl -sSI worthless.sh | grep -i sha256    # header value
+The two MUST match. Mismatch = abort and report.
+(This catches transit tampering. Not origin compromise — see README.)
+==================================================================
+
 Walkthrough for worthless install.sh
 =====================================
 
 What you would have piped into sh, in plain English. Read this first if
 you'd rather audit than execute.
-
-Verify the bytes you're reading match what gets served:
-  curl -sSL worthless.sh | sha256sum         # body hash
-  curl -sSI worthless.sh | grep -i sha256    # header value
-The two must match. If they don't, abort and report it.
 
 Source: https://github.com/shacharm2/worthless
 
