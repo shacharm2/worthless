@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
+import subprocess  # nosec B404 — required for sidecar subprocess lifecycle
 import sys
 import time
 from dataclasses import dataclass
@@ -94,7 +94,7 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
     # ``mkdir(mode=...)`` is umask-masked on POSIX; pin explicitly.
     run_dir.chmod(0o700)
 
-    result = split_key(bytes(fernet_key))
+    result = split_key(fernet_key)
     shard_a = result.shard_a
     shard_b = result.shard_b
 
@@ -201,7 +201,7 @@ def spawn_sidecar(
         "WORTHLESS_SIDECAR_DRAIN_TIMEOUT": str(drain_timeout),
         "WORTHLESS_LOG_LEVEL": "WARNING",
     }
-    proc = subprocess.Popen(  # noqa: S603 — args are static, no shell
+    proc = subprocess.Popen(  # noqa: S603  # nosec B603 — args are static, no shell
         [sys.executable, "-m", "worthless.sidecar"],
         env=env,
         stdout=subprocess.PIPE,

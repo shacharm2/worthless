@@ -277,3 +277,40 @@ def test_expected_buf_initialized_as_bytearray() -> None:
     # Direct verification: every buffer is actually all-zeros (mock-independent).
     for buf in zeroed_items:
         assert_zeroed(buf)
+
+
+# --- SR-01: split_key accepts bytearray without immutable copy (WOR-384) ---
+
+
+def test_split_key_accepts_bytearray(sample_api_key_bytes: bytes) -> None:
+    """SR-01: ``split_key`` must accept ``bytearray`` so callers holding
+    zeroable secret material (e.g. WOR-384 sidecar lifecycle) don't have
+    to ``bytes(...)``-cast — that cast leaves an unwipable copy of the
+    secret on the heap. Regression guard for Semgrep
+    ``sr01-key-material-not-bytearray``.
+    """
+    key_ba = bytearray(sample_api_key_bytes)
+    result = split_key(key_ba)
+
+    # Roundtrip succeeds against the original bytes.
+    reconstructed = bytes(a ^ b for a, b in zip(result.shard_a, result.shard_b, strict=True))
+    assert reconstructed == sample_api_key_bytes
+
+    # Caller's bytearray remains zeroable (the function did not consume it).
+    key_ba[:] = bytearray(len(key_ba))
+    assert all(b == 0 for b in key_ba)
+
+
+def test_split_key_bytearray_input_not_aliased(sample_api_key_bytes: bytes) -> None:
+    """Mutating the caller's bytearray after the call must not affect the
+    returned shards. Proves no aliasing between input buffer and shards.
+    """
+    key_ba = bytearray(sample_api_key_bytes)
+    result = split_key(key_ba)
+    shard_a_snapshot = bytes(result.shard_a)
+    shard_b_snapshot = bytes(result.shard_b)
+
+    key_ba[:] = bytearray(len(key_ba))  # zero the input AFTER split_key returned
+
+    assert bytes(result.shard_a) == shard_a_snapshot
+    assert bytes(result.shard_b) == shard_b_snapshot
