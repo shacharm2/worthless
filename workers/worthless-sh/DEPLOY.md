@@ -403,6 +403,13 @@ acknowledged before each release:
    surface it through a malicious workflow change. *Mitigation path:*
    Cloudflare OIDC for GHA — waiting on Cloudflare to ship it.
 
+7. **No alerting on `MAINTAINER_GPG_*` Variable changes.** The GitHub
+   audit log records every Variable change, but no notification fires
+   on update. An attacker with `gh` write who atomically swaps both
+   Variables leaves a trail but no real-time signal. *Mitigation path:*
+   wire the audit log into a notification channel before scaling
+   beyond ~10 deploys/year (brutus round-3 follow-up).
+
 For solo dev, **production environment required-reviewers stays at 0**
 (per WOR-330) — but the `worthless-sh-production` env's deployment-branch
 rule restricts it to `v*` tags only, so a malicious workflow_dispatch

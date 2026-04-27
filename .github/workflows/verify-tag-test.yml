@@ -17,15 +17,17 @@ name: Verify-tag fixture tests (WOR-323)
 on:
   pull_request:
     paths:
-      - ".github/workflows/deploy-worker.yml"
+      - ".github/scripts/verify-tag.sh"
       - ".github/scripts/test-verify-tag-multikey.sh"
       - ".github/workflows/verify-tag-test.yml"
+      - ".github/workflows/deploy-worker.yml"
   push:
     branches: [main]
     paths:
-      - ".github/workflows/deploy-worker.yml"
+      - ".github/scripts/verify-tag.sh"
       - ".github/scripts/test-verify-tag-multikey.sh"
       - ".github/workflows/verify-tag-test.yml"
+      - ".github/workflows/deploy-worker.yml"
   workflow_dispatch:
 
 permissions:
