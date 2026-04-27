@@ -30,7 +30,7 @@ Detects keys in your `.env`, splits them, starts a local proxy. No code changes.
 
 Piping a script from the internet into `sh` is a supply-chain risk. The
 Worker emits an `X-Worthless-Script-Sha256` header so you can confirm
-the bytes you piped weren't mangled in transit:
+the saved file matches what the Worker advertised at fetch time:
 
 ```bash
 # 1. Download.
@@ -47,12 +47,18 @@ less install.sh
 sh install.sh
 ```
 
-**What this catches:** MITM, cache corruption, transit tampering.
+**What this catches:** post-download local-file tampering (between
+`curl -o install.sh` and `sh install.sh`), CDN cache poisoning, and
+Worker regressions that detach the served body from the advertised
+header.
 
-**What this does NOT catch:** a compromised origin. The header and the
-body come from the same Worker; an attacker who controls the response
-controls both. Cryptographic origin attestation lands with cosign-signed
-release manifests — tracked in
+**What this does NOT catch:** transit MITM (TLS + HSTS already
+prevent that — the header/body match check would be redundant if
+that were the only threat), or a compromised origin. The header and
+the body come from the same Worker; an attacker who controls the
+response controls both, so the sha check is **not origin
+attestation**. Real cryptographic origin attestation lands with
+cosign-signed release manifests — tracked in
 [WOR-303](https://linear.app/plumbusai/issue/WOR-303).
 
 See [docs/install-security.md](docs/install-security.md) for trust roots

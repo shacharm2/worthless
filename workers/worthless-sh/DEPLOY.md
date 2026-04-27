@@ -95,10 +95,13 @@ repository **Variables** (not Secrets — public keys are public):
 - `MAINTAINER_GPG_PUBKEY` — ASCII-armored public key.
 - `MAINTAINER_GPG_FINGERPRINT` — 40-char hex fingerprint of the same key.
 
-The fingerprint is what defends against a Variable-swap attack: anyone with
-write access to repo Variables could otherwise replace the pubkey and sign
-tags themselves. The verify step refuses to proceed if the imported key's
-fingerprint doesn't match the pinned one.
+The fingerprint pin **raises the bar** against a Variable-swap attack —
+swapping the pubkey alone (without a matching fingerprint update) fails
+the verify step. It does NOT defeat a full Variable-swap by an attacker
+with `gh` write who atomically updates BOTH Variables; the audit-trail
+entries in GitHub's Settings → Security log are the operator-side
+detective control for that case. The verify step also rejects multi-key
+ASCII armor (decoy attack) before checking the fingerprint.
 
 #### One-time setup
 
@@ -366,9 +369,12 @@ acknowledged before each release:
    Worker emits a sha256 header that matches the body, but the *same
    origin* serves both. An attacker who controls the response controls
    both the body and the header. The integrity check in the README
-   defends against MITM / cache corruption *in transit*, NOT against a
-   compromised origin. *Mitigation path:* cosign-signed release
-   manifests (WOR-303), trust anchored in the GitHub Actions OIDC
+   catches **post-download local-file tampering** and **CDN cache
+   poisoning** (the realistic threats), NOT a compromised origin —
+   transit MITM is already prevented by TLS + HSTS, and same-origin
+   attestation is impossible by construction. *Mitigation path:*
+   cosign-signed release manifests (WOR-303), trust anchored in the
+   GitHub Actions OIDC
    identity, separate from the Cloudflare deploy path.
 
 3. **No SLSA / Sigstore provenance.** Same root as #2 — until WOR-303
@@ -379,14 +385,15 @@ acknowledged before each release:
 4. **CDN cache propagation window.** After a successful deploy, there
    is a sub-minute window where Cloudflare's edge nodes may serve the
    *previous* bundle while origin serves the new one. The post-deploy
-   smoke test runs once and may catch the new bundle on every edge it
-   probes; an unlucky probe could fail-positive briefly. Re-run the
-   workflow's smoke step on suspected cache miss.
+   smoke test retries 3× with exponential backoff and uses a per-run
+   cache-buster query; this catches typical edge-propagation lag but
+   cannot defend against a sustained cache poisoning attack. Re-run
+   the workflow's smoke step on suspected cache mismatch.
 
 5. **Pubkey rotation atomicity.** `MAINTAINER_GPG_PUBKEY` and
-   `MAINTAINER_GPG_FINGERPRINT` must be updated *atomically* (Linear's
-   API does not transactionally bind them). A push that lands between
-   updating one Variable but not the other would fail the verify step
+   `MAINTAINER_GPG_FINGERPRINT` must be updated *atomically* (GitHub's
+   Variables API does not transactionally bind them). A push that lands
+   between updating one Variable but not the other would fail the verify step
    with "Fingerprint mismatch" — recoverable, but operators should
    pause tag pushes during rotation.
 
