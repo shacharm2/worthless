@@ -8,6 +8,18 @@ from pathlib import Path
 
 from worthless.cli.keystore import read_fernet_key
 
+#: Capabilities the proxy expects from the sidecar HELLO frame (WOR-309).
+#: Caps shrinking across reconnects is fatal — see C3 in
+#: ``.research/10-security-signoff.md``.
+DEFAULT_SIDECAR_CAPS: frozenset[str] = frozenset({"open", "seal", "attest"})
+
+#: IPC protocol version (msgpack envelope schema). Bump on breaking changes.
+DEFAULT_SIDECAR_PROTOCOL_VERSION: int = 1
+
+#: Default Unix Domain Socket path. Single-container deployment puts the
+#: socket on a tmpfs volume shared by the proxy and sidecar uids.
+DEFAULT_SIDECAR_SOCKET_PATH: str = "/run/worthless/sidecar.sock"
+
 
 def _default_db_path() -> str:
     return str(Path.home() / ".worthless" / "worthless.db")
@@ -58,12 +70,26 @@ def _read_fernet_key() -> bytearray:
 
 @dataclass
 class ProxySettings:
-    """Proxy configuration loaded from environment variables."""
+    """Proxy configuration loaded from environment variables.
+
+    The Fernet reader is exposed as a class-level callable
+    (:attr:`_fernet_reader`) so tests can swap it via
+    ``monkeypatch.setattr(ProxySettings, "_fernet_reader", ...)`` without
+    racing module-attribute patches against pytest-rerunfailures + xdist
+    + parenthesized-with on py3.10. See WOR-309 PR #112 for the trail.
+    """
+
+    # Class-level Fernet reader hook. Tests patch this via
+    # ``monkeypatch.setattr(ProxySettings, "_fernet_reader", staticmethod(fn))``.
+    # Intentionally unannotated so the dataclass machinery doesn't treat it
+    # as an instance field, AND pyright resolves the staticmethod descriptor
+    # correctly through the class. Production callers should leave it alone.
+    _fernet_reader = staticmethod(_read_fernet_key)
 
     db_path: str = field(
         default_factory=lambda: os.environ.get("WORTHLESS_DB_PATH", _default_db_path())
     )
-    fernet_key: bytearray = field(default_factory=lambda: _read_fernet_key())
+    fernet_key: bytearray = field(default_factory=lambda: ProxySettings._fernet_reader())
     default_rate_limit_rps: float = field(
         default_factory=lambda: float(os.environ.get("WORTHLESS_RATE_LIMIT_RPS", "100.0"))
     )
@@ -74,12 +100,32 @@ class ProxySettings:
         default_factory=lambda: float(os.environ.get("WORTHLESS_STREAMING_TIMEOUT", "300.0"))
     )
     allow_insecure: bool = field(default_factory=lambda: _env_bool("WORTHLESS_ALLOW_INSECURE"))
+    sidecar_socket_path: str = field(
+        default_factory=lambda: os.environ.get(
+            "WORTHLESS_SIDECAR_SOCKET", DEFAULT_SIDECAR_SOCKET_PATH
+        )
+    )
+    sidecar_protocol_version: int = field(
+        default_factory=lambda: int(
+            os.environ.get(
+                "WORTHLESS_SIDECAR_PROTOCOL_VERSION", str(DEFAULT_SIDECAR_PROTOCOL_VERSION)
+            )
+        )
+    )
+    sidecar_expected_caps: frozenset[str] = field(default_factory=lambda: DEFAULT_SIDECAR_CAPS)
+    sidecar_max_concurrency: int = field(
+        default_factory=lambda: int(os.environ.get("WORTHLESS_SIDECAR_MAX_CONCURRENCY", "32"))
+    )
+    sidecar_request_timeout_s: float = field(
+        default_factory=lambda: float(os.environ.get("WORTHLESS_SIDECAR_REQUEST_TIMEOUT", "2.0"))
+    )
 
     def validate(self) -> None:
-        """Raise if required settings are missing."""
-        if len(self.fernet_key) == 0:
-            raise ValueError(
-                "Fernet key not available. "
-                "Set WORTHLESS_FERNET_KEY or check OS keyring, "
-                "or verify entrypoint.sh ran successfully in Docker."
-            )
+        """Raise if required settings are missing.
+
+        WOR-309: ``fernet_key`` is no longer required at proxy boot. The
+        sidecar holds the key; the proxy only reads ciphertext-at-rest and
+        delegates ``open()`` over IPC. Existing setups still load the key
+        for backwards-compat (e.g. CLI flows reused by the proxy container)
+        but the proxy itself never decrypts.
+        """

@@ -14,7 +14,7 @@ from worthless.cli.console import get_console
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.cli.dotenv_rewriter import remove_env_key, rewrite_env_key
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
-from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp
+from worthless.crypto.reconstruction import reconstruct_key, reconstruct_key_fp
 from worthless.crypto.types import zero_buf
 from worthless.storage.repository import (
     EnrollmentRecord,

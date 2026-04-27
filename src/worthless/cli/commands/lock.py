@@ -24,8 +24,10 @@ from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sani
 from worthless.cli.key_patterns import detect_prefix
 from worthless.cli.commands.up import _resolve_port
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
-from worthless.crypto.splitter import (
+from worthless.crypto.reconstruction import (
     _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
+)
+from worthless.crypto.splitter import (
     derive_shard_a_fp,
     split_key_fp,
 )

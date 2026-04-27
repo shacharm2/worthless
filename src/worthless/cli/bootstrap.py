@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import sqlite3
 import time
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Generator
-
-from cryptography.fernet import Fernet
 
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.cli.keystore import migrate_file_to_keyring, read_fernet_key, store_fernet_key
@@ -85,7 +84,11 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
         except WorthlessError as exc:
             if exc.code != ErrorCode.KEY_NOT_FOUND:
                 raise
-            key = Fernet.generate_key()
+            # Equivalent to ``Fernet.generate_key()`` (see cryptography
+            # source). Inlined so the proxy import path
+            # (proxy.config → cli.keystore → cli.bootstrap) never loads
+            # ``cryptography.fernet``; see ``crypto/__init__.py`` docstring.
+            key = base64.urlsafe_b64encode(os.urandom(32))
             store_fernet_key(key, home_dir=home.base_dir)
         else:
             migrate_file_to_keyring(home.base_dir)
