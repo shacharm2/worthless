@@ -1,8 +1,9 @@
 # Deploy Runbook — `worthless.sh` Cloudflare Worker
 
-Operator runbook for the install-script Worker. Covers one-time setup,
-per-release procedure, rollback, and pre-WOR-323 caveats. Source of
-truth for "what do I do when the deploy is on fire" lives here.
+Operator runbook for the install-script Worker. Covers one-time setup
+(including signed-tag GPG anchors), per-release procedure, token
+rotation, rollback, and known residual risks. Source of truth for
+"what do I do when the deploy is on fire" lives here.
 
 ---
 
@@ -46,8 +47,8 @@ Create a **scoped** token (NOT the global account token):
 - **Client IP filter:** GitHub Actions IP ranges (optional, hardening)
 - **TTL:** 90 days, calendared rotation
 
-Per-WOR-323: rotate to a Workers-only OIDC-issued short-lived token
-once Cloudflare exposes one for GHA.
+Future hardening: when Cloudflare ships OIDC for GHA, swap to
+short-lived issued tokens — see "Known residual risks" §6.
 
 ### 3. GitHub repository setup
 
@@ -84,7 +85,75 @@ Settings → Rules → Rulesets:
    - Require status checks: `Tests`, `Install Docker (bare-Ubuntu integration)`,
      and (post-Phase 6) `Worker vitest` (WOR-339)
 
-WOR-323 ships these rulesets as IaC; until then, configure via UI.
+Configure via UI; IaC for rulesets is deferred (post-WOR-323).
+
+### 4. Set up signed tags
+
+The deploy workflow's GPG-verify step is fail-closed and requires two
+repository **Variables** (not Secrets — public keys are public):
+
+- `MAINTAINER_GPG_PUBKEY` — ASCII-armored public key.
+- `MAINTAINER_GPG_FINGERPRINT` — 40-char hex fingerprint of the same key.
+
+The fingerprint is what defends against a Variable-swap attack: anyone with
+write access to repo Variables could otherwise replace the pubkey and sign
+tags themselves. The verify step refuses to proceed if the imported key's
+fingerprint doesn't match the pinned one.
+
+#### One-time setup
+
+```bash
+# (a) Generate an ed25519 key, or repurpose an existing one.
+gpg --full-generate-key                       # choose ECC → ed25519
+gpg --list-secret-keys --keyid-format=long    # capture the long KEYID
+
+# (b) Export the ASCII-armored public key.
+gpg --armor --export <KEYID> > /tmp/maintainer.pub
+
+# (c) Capture the fingerprint (no spaces, uppercase hex).
+gpg --batch --with-colons --fingerprint <KEYID> \
+  | awk -F: '/^fpr:/ {print $10; exit}'
+
+# (d) Configure local git to sign tags + commits.
+git config --global user.signingkey <KEYID>
+git config --global tag.gpgSign true
+git config --global commit.gpgsign true
+
+# (e) Upload the same pubkey to your GitHub user profile so signed
+# commits show "Verified" in the UI:
+# https://github.com/settings/keys → New GPG key → paste /tmp/maintainer.pub
+```
+
+Then in the repo's Settings → Secrets and variables → Actions →
+**Variables** tab:
+
+| Variable | Value |
+|---|---|
+| `MAINTAINER_GPG_PUBKEY` | the contents of `/tmp/maintainer.pub` |
+| `MAINTAINER_GPG_FINGERPRINT` | the 40-char hex fingerprint from step (c) |
+
+#### Verifying the setup
+
+Push a test signed tag against a sandbox branch:
+
+```bash
+git tag -s v0.0.0-verify-test -m "test"
+git push origin v0.0.0-verify-test
+gh run watch
+# Verify step should print: "Tag v0.0.0-verify-test verified against pinned fingerprint <FPR>."
+git push --delete origin v0.0.0-verify-test
+git tag -d v0.0.0-verify-test
+```
+
+Negative test: push an unsigned tag from the same sandbox branch — verify
+step must exit non-zero with `::error title=Unsigned or untrusted tag::…`.
+
+#### Rotation cadence
+
+Rotate the GPG key on compromise, on maintainer departure, or
+proactively every 12–24 months. **Both** Variables MUST update atomically
+— the fingerprint is what gates the new pubkey. Tags signed during the
+rotation window must be re-signed against the new key before push.
 
 ---
 
@@ -136,6 +205,64 @@ curl -sSI -A "Mozilla/5.0" "${PREVIEW_URL}/" | grep -i location  # → 302 to wl
 ```
 
 If preview is good, push the production tag.
+
+---
+
+## Token rotation runbook
+
+Cloudflare API tokens age into compromise risk. Server-side TTL is the
+primary control; the runbook is the backup.
+
+### When
+
+- **Every 90 days**, enforced by the Cloudflare token's server-side
+  expiry (set on creation). When the token expires, the next deploy
+  fails fast — that is the rotation reminder. Don't rely on a calendar.
+- Immediately on suspected compromise (lost laptop, leaked log line,
+  ex-maintainer access).
+- On maintainer departure.
+
+### How — preview token
+
+The preview token can be account-wide; preview deploys cannot reach
+production routes.
+
+1. Cloudflare dashboard → My Profile → API Tokens → "Create Token".
+2. Template: "Edit Cloudflare Workers".
+3. Permissions: `Account → Workers Scripts → Edit`. Add `Zone →
+   Workers Routes → Edit` if needed.
+4. Account resources: Include → your account only.
+5. Zone resources: All zones.
+6. **TTL: 90 days.** Calendared expiry forces rotation.
+7. Settings → Environments → `worthless-sh-preview` → paste new token
+   into `CLOUDFLARE_API_TOKEN`.
+8. Trigger `gh workflow run deploy-worker.yml -f target=preview` to
+   confirm new token works.
+9. Delete the old token in Cloudflare → API Tokens.
+
+### How — production token
+
+The production token must be **Worker-only + zone-only** so a token leak
+cannot pivot to other Cloudflare resources.
+
+1. Cloudflare dashboard → My Profile → API Tokens → "Create Token".
+2. Custom token (not the template — the template is too broad).
+3. Permissions: `Account → Workers Scripts → Edit` ONLY (no DNS, no
+   Account Settings, no Page Rules).
+4. Account resources: Include → your account only.
+5. **Zone resources: Include → `worthless.sh` only** (not "All zones").
+6. **TTL: 90 days.**
+7. Settings → Environments → `worthless-sh-production` → paste new
+   token into `CLOUDFLARE_API_TOKEN`.
+8. Cannot test via dispatch (production is tag-only); push a no-op
+   patch tag to verify (or wait for the next legitimate release).
+9. Delete the old token in Cloudflare → API Tokens.
+
+### Audit
+
+- Cloudflare → Audit Logs: shows token issuance and use.
+- GitHub → Settings → Security log: shows env-secret changes.
+- Both should be reviewed monthly.
 
 ---
 
@@ -220,26 +347,59 @@ curl -sSL https://worthless.sh/.well-known/security.txt | head -10
 
 ---
 
-## Pre-WOR-323 caveats
+## Known residual risks (post-WOR-323)
 
-The Phase 5 workflow ships with three soft-fails that WOR-323 hardens
-into fatal checks:
+WOR-323 closed the original three soft-fails (GPG verify is now fatal
+with fingerprint pinning; production deploy is tag-only with no
+workflow_dispatch path; preview/production tokens are scoped). The
+following residual risks are NOT covered by WOR-323 and should be
+acknowledged before each release:
 
-1. **Tag-signature verification is non-fatal.** A `::warning::` is logged
-   when `git tag --verify <tag>` fails. WOR-323 imports the maintainer
-   keyring as a workflow step and makes this fatal.
+1. **Software signing key on a maintainer laptop.** The GPG key that
+   signs `v*` tags lives on disk, unprotected by hardware. Compromise of
+   the maintainer machine = compromise of the release pipeline.
+   *Mitigation path:* hardware-backed keys (YubiKey + GPG smartcard) on
+   the maintainer's primary device. Tracked as a follow-up; not gating
+   v1.1.
 
-2. **No SLSA / Sigstore provenance.** WOR-303 (post-v1.1) adds
-   `sigstore-github-generator` to publish a signed release manifest with
-   `{tag, commit, install.sh sha256, worker bundle sha256}`.
+2. **No origin attestation (TOFU on `X-Worthless-Script-Sha256`).** The
+   Worker emits a sha256 header that matches the body, but the *same
+   origin* serves both. An attacker who controls the response controls
+   both the body and the header. The integrity check in the README
+   defends against MITM / cache corruption *in transit*, NOT against a
+   compromised origin. *Mitigation path:* cosign-signed release
+   manifests (WOR-303), trust anchored in the GitHub Actions OIDC
+   identity, separate from the Cloudflare deploy path.
 
-3. **CLOUDFLARE_API_TOKEN is account-scoped, not OIDC.** When Cloudflare
-   ships OIDC for GHA, WOR-323 swaps to short-lived issued tokens.
+3. **No SLSA / Sigstore provenance.** Same root as #2 — until WOR-303
+   lands there is no third-party-verifiable record of *which CI run
+   produced these bytes*. Auditors today must trust git history + the
+   deploy log alignment.
 
-Until WOR-323 lands, the **production environment must be set with 0
-required reviewers + solo-dev allowlist** so a single compromised
-maintainer credential doesn't auto-ship malicious bytes. See
-`security-audit/threat-model-worthless-sh.md` finding F-12.
+4. **CDN cache propagation window.** After a successful deploy, there
+   is a sub-minute window where Cloudflare's edge nodes may serve the
+   *previous* bundle while origin serves the new one. The post-deploy
+   smoke test runs once and may catch the new bundle on every edge it
+   probes; an unlucky probe could fail-positive briefly. Re-run the
+   workflow's smoke step on suspected cache miss.
+
+5. **Pubkey rotation atomicity.** `MAINTAINER_GPG_PUBKEY` and
+   `MAINTAINER_GPG_FINGERPRINT` must be updated *atomically* (Linear's
+   API does not transactionally bind them). A push that lands between
+   updating one Variable but not the other would fail the verify step
+   with "Fingerprint mismatch" — recoverable, but operators should
+   pause tag pushes during rotation.
+
+6. **Cloudflare token at rest in GitHub.** The token is stored in
+   GitHub Actions Secrets, encrypted at rest and not exfiltrable from
+   the Actions runner UI. A repo compromise (admin write) would still
+   surface it through a malicious workflow change. *Mitigation path:*
+   Cloudflare OIDC for GHA — waiting on Cloudflare to ship it.
+
+For solo dev, **production environment required-reviewers stays at 0**
+(per WOR-330) — but the `worthless-sh-production` env's deployment-branch
+rule restricts it to `v*` tags only, so a malicious workflow_dispatch
+cannot cut a production deploy without a signed tag.
 
 ---
 
