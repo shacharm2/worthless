@@ -1,25 +1,24 @@
 name: Deploy Worker (worthless-sh)
 
-# Tag-triggered deploy of the install-script Worker. WOR-349 Phase 5.
+# Tag-triggered deploy of the install-script Worker. WOR-349 Phase 5,
+# hardened by WOR-323.
 #
 # Trigger surfaces:
-#   - Push of a `v*` tag (signed) → production deploy.
-#   - workflow_dispatch with target=preview → deploys to
+#   - Push of a signed `v*` tag → production deploy. GPG signature is
+#     verified against MAINTAINER_GPG_PUBKEY pinned by
+#     MAINTAINER_GPG_FINGERPRINT (both repo Variables); fail-closed.
+#   - workflow_dispatch (target=preview only) → deploys to
 #     worthless-sh-preview.<account>.workers.dev for end-to-end smoke
-#     before tagging.
-#   - workflow_dispatch with target=production → emergency rollback /
-#     re-deploy of the current main commit; bypasses tag-signature
-#     verification with a documented warning.
+#     before tagging. Production deploys deliberately do NOT have a
+#     manual-dispatch path; rollback is via re-tagging a known-good
+#     commit (see DEPLOY.md §Rollback).
 #
 # Cross-references:
-#   - WOR-323 — deploy hardening (signed-tag verification, scoped
-#     Cloudflare token, Actions environment with secret scoping). Phase 5
-#     of WOR-349 ships the workflow shape; WOR-323 hardens it before the
-#     first production tag.
 #   - WOR-374 — Phase 6 raw-curl integration (runs against the preview
 #     URL produced by this workflow's preview path).
-#   - workers/worthless-sh/DEPLOY.md — operator runbook (one-time
-#     Cloudflare/GitHub setup, per-release procedure, rollback).
+#   - WOR-303 — cosign / SLSA provenance (out of scope for WOR-323).
+#   - workers/worthless-sh/DEPLOY.md — operator runbook (signed-tag
+#     setup, token rotation, residual risks).
 
 on:
   push:
@@ -27,11 +26,10 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Deploy target"
+        description: "Deploy target (preview only — production is tag-triggered, see DEPLOY.md §Rollback)"
         type: choice
         options:
           - preview
-          - production
         default: preview
 
 permissions:
@@ -49,6 +47,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       install_sha256: ${{ steps.sha.outputs.value }}
+      walkthrough_sha256: ${{ steps.walkthrough_sha.outputs.value }}
       target: ${{ steps.target.outputs.value }}
     steps:
       - name: Check out repository
@@ -74,19 +73,50 @@ jobs:
             echo "value=${INPUT_TARGET}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Verify tag is GPG-signed (tag-push only)
+      - name: Verify tag GPG signature (fatal, tag-push only)
         if: github.event_name == 'push'
+        # Imports the maintainer's ASCII-armored public key from the
+        # MAINTAINER_GPG_PUBKEY repository *variable* (non-secret), pins
+        # the imported key by MAINTAINER_GPG_FINGERPRINT (40-char hex),
+        # then runs `git verify-tag`. Fails closed on: missing variable,
+        # malformed pubkey, fingerprint mismatch, unsigned tag, or signature
+        # from a key not in the imported keyring.
+        # The fingerprint pin is what defends against a Variable-swap
+        # attack — without it, an attacker who can write repo Variables
+        # could replace the pubkey with their own and sign tags themselves.
+        # Operator setup: workers/worthless-sh/DEPLOY.md §"Set up signed tags".
+        env:
+          MAINTAINER_PUBKEY: ${{ vars.MAINTAINER_GPG_PUBKEY }}
+          MAINTAINER_FPR: ${{ vars.MAINTAINER_GPG_FINGERPRINT }}
         run: |
-          # WOR-323 will: import the maintainer keyring as a workflow step,
-          # then make the verify-blob check fatal. Until then, surface a
-          # warning so we can dogfood Phase 5 without blocking on Phase 6
-          # of WOR-323. Shipping a soft-fail here is documented in
-          # workers/worthless-sh/DEPLOY.md §"Pre-WOR-323 caveats".
-          if git tag --verify "${GITHUB_REF_NAME}" 2>&1; then
-            echo "Tag ${GITHUB_REF_NAME} is GPG-signed (verified)."
-          else
-            echo "::warning title=Unsigned tag::Tag ${GITHUB_REF_NAME} is not GPG-signed. WOR-323 will make this fatal."
+          set -eu
+          if [ -z "${MAINTAINER_PUBKEY}" ] || [ -z "${MAINTAINER_FPR}" ]; then
+            echo "::error title=Missing maintainer trust anchors::Both MAINTAINER_GPG_PUBKEY and MAINTAINER_GPG_FINGERPRINT repo Variables must be set. See DEPLOY.md §'Set up signed tags'."
+            exit 1
           fi
+          # Normalize the pinned fingerprint: gpg --fingerprint default
+          # output is space-separated and mixed-case; the colon-format
+          # output we'll compare against is no-spaces upper-case. Strip
+          # whitespace and uppercase so either input form works.
+          NORMALIZED_FPR=$(printf '%s' "${MAINTAINER_FPR}" | tr -d '[:space:]' | tr 'a-f' 'A-F')
+          if [ "${#NORMALIZED_FPR}" -ne 40 ]; then
+            echo "::error title=Bad fingerprint::MAINTAINER_GPG_FINGERPRINT must be 40 hex chars after stripping whitespace; got ${#NORMALIZED_FPR}."
+            exit 1
+          fi
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
+          chmod 700 "$GNUPGHOME"
+          printf '%s' "${MAINTAINER_PUBKEY}" | gpg --batch --import
+          IMPORTED_FPR=$(gpg --batch --with-colons --fingerprint | awk -F: '/^fpr:/ {print $10; exit}')
+          if [ "${IMPORTED_FPR}" != "${NORMALIZED_FPR}" ]; then
+            echo "::error title=Fingerprint mismatch::Imported key fingerprint ${IMPORTED_FPR} does not match pinned MAINTAINER_GPG_FINGERPRINT ${NORMALIZED_FPR}. Variable was tampered with, or rotated without updating both Variables atomically."
+            exit 1
+          fi
+          if ! git verify-tag "${GITHUB_REF_NAME}"; then
+            echo "::error title=Unsigned or untrusted tag::Tag ${GITHUB_REF_NAME} did not verify against MAINTAINER_GPG_PUBKEY (fingerprint ${NORMALIZED_FPR})."
+            exit 1
+          fi
+          echo "Tag ${GITHUB_REF_NAME} verified against pinned fingerprint ${NORMALIZED_FPR}."
 
       - name: Compute install.sh sha256
         id: sha
@@ -98,6 +128,19 @@ jobs:
           SHA=$(shasum -a 256 install.sh | awk '{print $1}')
           echo "value=${SHA}" >> "$GITHUB_OUTPUT"
           echo "install.sh sha256: ${SHA}"
+
+      - name: Compute walkthrough.txt sha256
+        id: walkthrough_sha
+        run: |
+          # The walkthrough served at `?explain=1` is bundled the same way
+          # (base64 → embedded.ts → decoded at module load → served as-is).
+          # The smoke step asserts the deployed Worker serves bytes whose
+          # sha256 equals this value — closes the gap where an attacker
+          # with the Cloudflare token could deploy a modified bundle
+          # without going through this CI job.
+          SHA=$(shasum -a 256 workers/worthless-sh/src/walkthrough.txt | awk '{print $1}')
+          echo "value=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "walkthrough.txt sha256: ${SHA}"
 
       - name: Set up Node.js
         uses: ./.github/actions/setup-node-worker
@@ -116,10 +159,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment:
-      # Actions environment scopes secrets and (when WOR-323 lands) gates
-      # production deploys behind required-reviewer rules. The preview
-      # URL cannot be templated here (`environment.url` does not allow
-      # `secrets.*`); see DEPLOY.md for the actual workers.dev URL.
+      # Actions environment scopes secrets per target. Production gating
+      # by required reviewers stays at 0 for solo dev (WOR-330) but the
+      # `worthless-sh-production` env's deployment-branch rule restricts
+      # it to `v*` tags only — see DEPLOY.md §"Set up signed tags".
+      # The preview URL cannot be templated here (`environment.url` does
+      # not allow `secrets.*`); see DEPLOY.md for the actual workers.dev URL.
       name: worthless-sh-${{ needs.verify.outputs.target }}
       url: >-
         ${{ needs.verify.outputs.target == 'production' && 'https://worthless.sh/' || 'https://dash.cloudflare.com/' }}
@@ -161,14 +206,22 @@ jobs:
       - name: Smoke-test deployed Worker (production only)
         if: needs.verify.outputs.target == 'production'
         env:
-          EXPECTED_SHA: ${{ needs.verify.outputs.install_sha256 }}
+          EXPECTED_INSTALL_SHA: ${{ needs.verify.outputs.install_sha256 }}
+          EXPECTED_WALKTHROUGH_SHA: ${{ needs.verify.outputs.walkthrough_sha256 }}
           DEPLOY_TARGET: ${{ needs.verify.outputs.target }}
         run: |
-          # Verify the deployed Worker serves install.sh with matching
-          # sha256 via BOTH the body and the X-Worthless-Script-Sha256
-          # header. The body check catches a stale Wrangler bundle; the
-          # header check catches a Worker code regression that detached
-          # the header from the body. They MUST agree.
+          # Three deployed-bytes invariants:
+          #
+          #   1. install.sh body sha256 — catches a stale Wrangler bundle.
+          #   2. install.sh X-Worthless-Script-Sha256 header — catches a
+          #      Worker regression that detached the header from the body.
+          #   3. walkthrough body sha256 — closes the gap where an attacker
+          #      with the Cloudflare token could deploy a modified bundle
+          #      directly, bypassing this CI job. CI byte-equality alone
+          #      wouldn't notice; checking the live URL does.
+          #
+          # All three MUST agree with the build-time hashes computed in the
+          # verify job. Any mismatch fails the deploy.
           set -eu
           BODY_SHA=$(curl --fail --silent --show-error --location \
             -H "User-Agent: curl/8.4.0" https://worthless.sh/ \
@@ -177,15 +230,24 @@ jobs:
             -H "User-Agent: curl/8.4.0" https://worthless.sh/ \
             | grep -i '^x-worthless-script-sha256:' \
             | awk '{print $2}' | tr -d '\r\n')
-          echo "expected: ${EXPECTED_SHA}"
-          echo "body:     ${BODY_SHA}"
-          echo "header:   ${HEADER_SHA}"
-          if [ "${BODY_SHA}" != "${EXPECTED_SHA}" ]; then
-            echo "::error::Deployed body sha256 differs from build artifact"
+          WALKTHROUGH_SHA=$(curl --fail --silent --show-error --location \
+            -H "User-Agent: curl/8.4.0" 'https://worthless.sh/?explain=1' \
+            | shasum -a 256 | awk '{print $1}')
+          echo "install expected: ${EXPECTED_INSTALL_SHA}"
+          echo "install body:     ${BODY_SHA}"
+          echo "install header:   ${HEADER_SHA}"
+          echo "walkthrough expected: ${EXPECTED_WALKTHROUGH_SHA}"
+          echo "walkthrough body:     ${WALKTHROUGH_SHA}"
+          if [ "${BODY_SHA}" != "${EXPECTED_INSTALL_SHA}" ]; then
+            echo "::error::Deployed install.sh body sha256 differs from build artifact"
             exit 1
           fi
-          if [ "${HEADER_SHA}" != "${EXPECTED_SHA}" ]; then
-            echo "::error::Deployed header sha256 differs from build artifact"
+          if [ "${HEADER_SHA}" != "${EXPECTED_INSTALL_SHA}" ]; then
+            echo "::error::Deployed install.sh header sha256 differs from build artifact"
             exit 1
           fi
-          echo "Smoke test passed."
+          if [ "${WALKTHROUGH_SHA}" != "${EXPECTED_WALKTHROUGH_SHA}" ]; then
+            echo "::error::Deployed walkthrough body sha256 differs from build artifact (possible direct-deploy bypass of CI)"
+            exit 1
+          fi
+          echo "Smoke test passed (install body, install header, walkthrough body)."
