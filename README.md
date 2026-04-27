@@ -26,15 +26,34 @@ worthless
 
 Detects keys in your `.env`, splits them, starts a local proxy. No code changes.
 
-### Verify before running
+### Integrity check (transit, not origin)
 
-Piping a script from the internet into `sh` is a supply-chain risk. Read it first:
+Piping a script from the internet into `sh` is a supply-chain risk. The
+Worker emits an `X-Worthless-Script-Sha256` header so you can confirm
+the bytes you piped weren't mangled in transit:
 
 ```bash
+# 1. Download.
 curl -sSL https://worthless.sh -o install.sh
-less install.sh                                   # inspect, then run
+
+# 2. Body sha matches the header advertised by the Worker.
+echo "$(curl -sSI https://worthless.sh | grep -i 'x-worthless-script-sha256' | awk '{print $2}' | tr -d '\r')  install.sh" \
+  | sha256sum -c -
+
+# 3. (Optional) read it.
+less install.sh
+
+# 4. Run.
 sh install.sh
 ```
+
+**What this catches:** MITM, cache corruption, transit tampering.
+
+**What this does NOT catch:** a compromised origin. The header and the
+body come from the same Worker; an attacker who controls the response
+controls both. Cryptographic origin attestation lands with cosign-signed
+release manifests — tracked in
+[WOR-303](https://linear.app/plumbusai/issue/WOR-303).
 
 See [docs/install-security.md](docs/install-security.md) for trust roots
 (what the installer talks to and what it verifies) and the kill-switch
