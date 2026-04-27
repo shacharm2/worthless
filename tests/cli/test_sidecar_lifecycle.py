@@ -19,6 +19,7 @@ from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.sidecar_lifecycle import (
     ShareFiles,
     SidecarHandle,
+    shutdown_sidecar,
     spawn_sidecar,
     split_to_tmpfs,
 )
@@ -67,6 +68,45 @@ class _FakeProc:
 
     def wait(self, timeout: float | None = None) -> int:  # pragma: no cover
         return 0
+
+
+class _FakeShutdownProc:
+    """Stand-in Popen for Phase-C shutdown tests.
+
+    Models a child that responds to ``terminate()``/``kill()`` deterministically
+    without a real process. Set ``terminate_hangs=True`` to simulate a child
+    that ignores SIGTERM — ``wait()`` will then raise ``TimeoutExpired`` until
+    ``kill()`` is called, after which it returns 0.
+    """
+
+    def __init__(self, pid: int = 12345, terminate_hangs: bool = False) -> None:
+        self.pid = pid
+        self.stdout: object = None
+        self.stderr: object = None
+        self._terminate_hangs = terminate_hangs
+        self._exit_code: int | None = None
+        self.terminate_called = False
+        self.kill_called = False
+        self.wait_timeouts: list[float | None] = []
+
+    def poll(self) -> int | None:
+        return self._exit_code
+
+    def terminate(self) -> None:
+        self.terminate_called = True
+        if not self._terminate_hangs:
+            self._exit_code = 0
+
+    def kill(self) -> None:
+        self.kill_called = True
+        self._exit_code = -9
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_timeouts.append(timeout)
+        if self._exit_code is None:
+            # Caller is doing the SIGTERM grace wait but the child is hung.
+            raise subprocess.TimeoutExpired(cmd="fake-sidecar", timeout=timeout or 0.0)
+        return self._exit_code
 
 
 def _capturing_popen(captured: dict[str, dict[str, str]], pid: int = 12345) -> object:
@@ -258,3 +298,84 @@ def test_spawn_sidecar_passes_drain_timeout_and_log_level(home: Path, key: bytea
     env = captured["env"]
     assert env["WORTHLESS_SIDECAR_DRAIN_TIMEOUT"] == "5.0"
     assert env["WORTHLESS_LOG_LEVEL"] == "WARNING"
+
+
+# ---------------------------------------------------------------------------
+# Phase C: shutdown_sidecar tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_shutdown_sidecar_terminates_and_unlinks() -> None:
+    """C1: SIGTERM the sidecar, then verify all on-disk artifacts are gone."""
+    short_home = Path(tempfile.mkdtemp(prefix="w-", dir="/tmp")) / ".worthless"
+    short_home.mkdir()
+    fernet_key = bytearray(base64.urlsafe_b64encode(secrets.token_bytes(32)))
+    shares = split_to_tmpfs(fernet_key, short_home)
+    socket_path = shares.run_dir / "sc.sock"
+    if len(str(socket_path)) >= 104:
+        pytest.skip(f"tmp path too long for AF_UNIX (len={len(str(socket_path))} >= 104)")
+    handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+
+    shutdown_sidecar(handle)
+
+    assert handle.proc.poll() is not None, "process still running after shutdown"
+    assert not handle.shares.share_a_path.exists()
+    assert not handle.shares.share_b_path.exists()
+    assert not handle.socket_path.exists()
+    assert not handle.shares.run_dir.exists()
+
+
+def test_shutdown_sidecar_sigkills_after_grace_window(home: Path, key: bytearray) -> None:
+    """C2: a child that ignores SIGTERM is escalated to SIGKILL."""
+    shares = split_to_tmpfs(key, home)
+    handle = SidecarHandle(
+        proc=_FakeShutdownProc(terminate_hangs=True),  # type: ignore[arg-type]
+        socket_path=shares.run_dir / "sc.sock",
+        shares=shares,
+        allowed_uid=os.getuid(),
+        drain_timeout=0.25,
+    )
+    shutdown_sidecar(handle)
+    assert handle.proc.terminate_called  # type: ignore[attr-defined]
+    assert handle.proc.kill_called  # type: ignore[attr-defined]
+    assert handle.proc.wait_timeouts[0] == 0.25  # type: ignore[attr-defined]
+    # SR-02 must hold even when the SIGKILL leg fires — zeroing happens after
+    # the kill, not on the graceful-terminate branch only.
+    assert all(b == 0 for b in handle.shares.shard_a)
+    assert all(b == 0 for b in handle.shares.shard_b)
+
+
+def test_shutdown_sidecar_zeroes_share_bytearrays(home: Path, key: bytearray) -> None:
+    """C3 (SR-02): both shard bytearrays are all-zero after shutdown."""
+    shares = split_to_tmpfs(key, home)
+    handle = SidecarHandle(
+        proc=_FakeShutdownProc(),  # type: ignore[arg-type]
+        socket_path=shares.run_dir / "sc.sock",
+        shares=shares,
+        allowed_uid=os.getuid(),
+        drain_timeout=5.0,
+    )
+    # Pre-shutdown sanity: both shards carry non-zero content.
+    assert any(b != 0 for b in handle.shares.shard_a)
+    assert any(b != 0 for b in handle.shares.shard_b)
+
+    shutdown_sidecar(handle)
+
+    assert all(b == 0 for b in handle.shares.shard_a), "shard_a not zeroed"
+    assert all(b == 0 for b in handle.shares.shard_b), "shard_b not zeroed"
+
+
+def test_shutdown_sidecar_is_idempotent(home: Path, key: bytearray) -> None:
+    """C4: calling shutdown twice is safe — files already gone, mem already zeroed."""
+    shares = split_to_tmpfs(key, home)
+    handle = SidecarHandle(
+        proc=_FakeShutdownProc(),  # type: ignore[arg-type]
+        socket_path=shares.run_dir / "sc.sock",
+        shares=shares,
+        allowed_uid=os.getuid(),
+        drain_timeout=5.0,
+    )
+    shutdown_sidecar(handle)
+    # Second call must not raise.
+    shutdown_sidecar(handle)

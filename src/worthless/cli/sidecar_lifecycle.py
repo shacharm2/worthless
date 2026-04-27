@@ -1,14 +1,17 @@
-"""Sidecar lifecycle helpers (WOR-384 Phases A + B).
+"""Sidecar lifecycle helpers (WOR-384 Phases A + B + C).
 
 Phase A: ``split_to_tmpfs`` plus the ``ShareFiles`` dataclass.
 Phase B: ``spawn_sidecar`` plus the ``SidecarHandle`` dataclass — launches
 ``python -m worthless.sidecar`` with the env contract from
 ``src/worthless/sidecar/__main__.py`` and waits for ready.
-Phases C (shutdown/zeroing), D (up integration), and E land in follow-up
-tickets — keep this module narrow.
+Phase C: ``shutdown_sidecar`` — symmetric teardown that signals, unlinks
+on-disk artifacts, and zeros share bytearrays (SR-02).
+Phase D (``worthless up`` wiring + WRTLS-112 SIDECAR_CRASHED) and Phase E
+(refactor + docs) follow on the same branch.
 
 Security rules touched here:
 - SR-01: shard buffers are ``bytearray`` (mutable, zeroable).
+- SR-02: ``shutdown_sidecar`` zeros shard buffers via ``zero_buf``.
 - SR-04: never log share bytes; only log the run-dir path.
 """
 
@@ -24,6 +27,7 @@ from pathlib import Path
 
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.crypto.splitter import split_key
+from worthless.crypto.types import zero_buf
 
 _logger = logging.getLogger("worthless.cli.sidecar_lifecycle")
 
@@ -127,12 +131,18 @@ class SidecarHandle:
     for terminating the process and zeroing the share bytes (Phase C). This
     dataclass deliberately does not implement ``__enter__``/``__exit__`` —
     cleanup ordering matters and will be wired explicitly by Phase D.
+
+    ``drain_timeout`` is the value passed to ``spawn_sidecar`` and forwarded
+    to the sidecar via ``WORTHLESS_SIDECAR_DRAIN_TIMEOUT``. Phase C reads it
+    back to size the SIGTERM grace window so shutdown matches the drain
+    budget the sidecar was actually configured with.
     """
 
     proc: subprocess.Popen[bytes]
     socket_path: Path
     shares: ShareFiles
     allowed_uid: int
+    drain_timeout: float
 
 
 def _wait_for_ready(
@@ -225,4 +235,90 @@ def spawn_sidecar(
         socket_path=socket_path,
         shares=shares,
         allowed_uid=allowed_uid,
+        drain_timeout=drain_timeout,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase C: shutdown_sidecar — graceful teardown + SR-02 zeroing
+# ---------------------------------------------------------------------------
+
+
+# SIGTERM grace = the sidecar's actual drain budget (read from the handle so
+# a non-default ``drain_timeout`` to ``spawn_sidecar`` survives to teardown).
+# SIGKILL follow-up only needs long enough for the kernel to reap.
+_SHUTDOWN_KILL_GRACE_S = 2.0
+
+
+def shutdown_sidecar(handle: SidecarHandle) -> None:
+    """Terminate the sidecar and clean up its on-disk state.
+
+    Steps, in order:
+
+    1. SIGTERM the process; wait up to ``handle.drain_timeout`` seconds for
+       a graceful exit (matches the ``WORTHLESS_SIDECAR_DRAIN_TIMEOUT`` value
+       Phase B forwarded to the sidecar — so a custom drain budget survives
+       to teardown).
+    2. SIGKILL if still alive after the grace window; wait
+       ``_SHUTDOWN_KILL_GRACE_S`` for the kernel to reap.
+    3. Best-effort unlink of ``share_a.bin``, ``share_b.bin``, and the
+       sidecar socket inode.
+    4. Best-effort ``rmdir`` of the per-pid run dir.
+    5. Zero the ``shard_a`` and ``shard_b`` bytearrays in memory (SR-02).
+
+    Idempotent: every step tolerates the "already done" state — a second
+    call after a successful first call MUST NOT raise.
+
+    Args:
+        handle: The :class:`SidecarHandle` returned by :func:`spawn_sidecar`.
+    """
+    proc = handle.proc
+
+    # 1+2. Stop the process. Guard each step on liveness so the second
+    # invocation (idempotency) skips signaling a corpse.
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=handle.drain_timeout)
+        except subprocess.TimeoutExpired:
+            # Drain budget exhausted — escalate.
+            proc.kill()
+            try:
+                proc.wait(timeout=_SHUTDOWN_KILL_GRACE_S)
+            except subprocess.TimeoutExpired:
+                # Kernel didn't reap in time; nothing more we can do here.
+                # Phase D's polling loop will surface the runaway via WRTLS-112.
+                pass
+
+    # 3. Unlink on-disk artifacts. ``missing_ok=True`` handles the second
+    # call gracefully; a stray OSError (e.g., EBUSY) is logged-and-swallowed
+    # so the in-memory zeroing in step 5 still runs.
+    for path in (
+        handle.shares.share_a_path,
+        handle.shares.share_b_path,
+        handle.socket_path,
+    ):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            # User state still on disk after teardown — visibility matters.
+            _logger.warning("shutdown_sidecar: could not unlink %s", path)
+
+    # 4. Remove the per-pid run dir. ``rmdir`` only succeeds when empty,
+    # which is the expected state after step 3.
+    try:
+        handle.shares.run_dir.rmdir()
+    except FileNotFoundError:
+        # Idempotent re-call — already cleaned up. Silent.
+        pass
+    except OSError:
+        # Not empty (something dropped a file in there) → user state on disk.
+        _logger.warning(
+            "shutdown_sidecar: could not rmdir %s (run dir not empty)",
+            handle.shares.run_dir,
+        )
+
+    # 5. SR-02: zero the in-memory shard buffers. ``zero_buf`` is idempotent
+    # (writing zeros over already-zero bytes is a no-op).
+    zero_buf(handle.shares.shard_a)
+    zero_buf(handle.shares.shard_b)
