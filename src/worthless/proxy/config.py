@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar
 
 from worthless.cli.keystore import read_fernet_key
 
@@ -81,10 +79,12 @@ class ProxySettings:
     + parenthesized-with on py3.10. See WOR-309 PR #112 for the trail.
     """
 
-    #: Class-level Fernet reader hook. Tests patch this via
-    #: ``monkeypatch.setattr(ProxySettings, "_fernet_reader", staticmethod(fn))``.
-    #: Production callers should leave it alone.
-    _fernet_reader: ClassVar[Callable[[], bytearray]] = staticmethod(_read_fernet_key)
+    # Class-level Fernet reader hook. Tests patch this via
+    # ``monkeypatch.setattr(ProxySettings, "_fernet_reader", staticmethod(fn))``.
+    # Intentionally unannotated so the dataclass machinery doesn't treat it
+    # as an instance field, AND pyright resolves the staticmethod descriptor
+    # correctly through the class. Production callers should leave it alone.
+    _fernet_reader = staticmethod(_read_fernet_key)
 
     db_path: str = field(
         default_factory=lambda: os.environ.get("WORTHLESS_DB_PATH", _default_db_path())
