@@ -573,3 +573,85 @@ class TestFernetKeyZeroedAfterSplit:
         assert all(b == 0 for b in captured), (
             "SR-02 violation: fernet_key not zeroed when split_to_tmpfs raised"
         )
+
+
+# ---------------------------------------------------------------------------
+# QA #7 — Signal handlers must be installed BEFORE spawn (no orphan on
+# SIGTERM during spawn window)
+# ---------------------------------------------------------------------------
+
+
+class TestSignalHandlersBeforeSpawn:
+    def test_sigterm_handler_installed_before_spawn_sidecar(self, home: WorthlessHome) -> None:
+        """If SIGTERM arrives during ``spawn_sidecar``, the parent must NOT
+        get terminated by Python's default signal action (which would
+        orphan the spawned subprocess). The fix: install our SIGTERM
+        handler in ``_start_foreground`` BEFORE ``spawn_sidecar`` runs,
+        rather than waiting until ``_supervise_proxy_with_sidecar``.
+
+        Regression guard: capture the SIGTERM handler at the moment
+        ``spawn_sidecar`` is invoked. Must not be ``signal.SIG_DFL`` (the
+        default 'terminate process' behavior) — must already be our
+        custom handler.
+        """
+        import signal as signal_mod  # local alias to avoid shadowing
+
+        from worthless.cli.commands import up as up_mod
+
+        # Reset SIGTERM to default so the test sees a known baseline if
+        # nothing in the production code installs a handler.
+        prev_sigterm = signal_mod.signal(signal_mod.SIGTERM, signal_mod.SIG_DFL)
+
+        captured_handler_at_spawn: list[Any] = []
+        sidecar_proc = _FakeSidecarProc()
+
+        def fake_spawn_sidecar(
+            socket_path: Path,
+            shares: ShareFiles,
+            allowed_uid: int,
+            **_: Any,
+        ) -> SidecarHandle:
+            # Capture the SIGTERM handler at the moment of spawn.
+            captured_handler_at_spawn.append(signal_mod.getsignal(signal_mod.SIGTERM))
+            return _make_handle(sidecar_proc, shares.run_dir)
+
+        proxy_proc = _FakeProxyProc(poll_sequence=[None, 0])
+
+        try:
+            with (
+                patch.object(up_mod, "spawn_sidecar", fake_spawn_sidecar),
+                patch.object(
+                    up_mod,
+                    "spawn_proxy",
+                    lambda *, env, port: (proxy_proc, port),
+                ),
+                patch.object(up_mod, "poll_health_pid", return_value=proxy_proc.pid),
+                patch.object(up_mod, "write_pid"),
+                patch.object(
+                    up_mod,
+                    "_upgrade_pidfile_if_trusted",
+                    return_value=proxy_proc.pid,
+                ),
+                patch.object(up_mod, "shutdown_sidecar"),
+            ):
+                up_mod._start_foreground(
+                    home=home,
+                    proxy_env={
+                        "WORTHLESS_DB_PATH": "x",
+                        "WORTHLESS_HOME": str(home.base_dir),
+                    },
+                    port=8787,
+                    pid_file=home.base_dir / "proxy.pid",
+                    console=MagicMock(),
+                )
+        finally:
+            # Restore the handler the test environment had before us.
+            signal_mod.signal(signal_mod.SIGTERM, prev_sigterm)
+
+        assert len(captured_handler_at_spawn) == 1
+        handler = captured_handler_at_spawn[0]
+        # Must NOT be the default — that's the orphan-creating behavior.
+        assert handler is not signal_mod.SIG_DFL, (
+            "SIGTERM handler is signal.SIG_DFL at spawn_sidecar time; SIGTERM "
+            "during spawn would terminate parent and orphan the sidecar PID"
+        )

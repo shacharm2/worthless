@@ -182,78 +182,102 @@ def _start_foreground(
     — clean, error, or signal — the proxy is terminated first, then the
     sidecar (cleanup ordering matters).
     """
-    # Step 1: split the Fernet key to tmpfs. ``home.fernet_key`` returns a
-    # ``bytearray`` (SR-01); pass it through directly — never cast to
-    # ``bytes``, the reconstruct buffer must remain zeroable.
-    fernet_key = home.fernet_key
+
+    # Pre-spawn signal handlers (QA #7): SIGTERM during ``spawn_sidecar``
+    # or ``spawn_proxy`` would otherwise hit Python's default ``SIG_DFL``
+    # action and terminate the parent before we hold a Popen handle —
+    # leaving the freshly-spawned sidecar/proxy as orphans. Install a
+    # KeyboardInterrupt-raising handler now so a signal during the spawn
+    # window propagates through the existing ``except BaseException``
+    # cleanup below. ``_supervise_proxy_with_sidecar`` later replaces these
+    # with its flag-based handler (clean in-loop shutdown). Originals are
+    # restored in the outer ``finally`` so we don't leak handlers past
+    # this function's lifetime.
+    def _spawn_window_signal_handler(_signum=None, _frame=None) -> None:
+        raise KeyboardInterrupt
+
+    prev_sigint = signal.signal(signal.SIGINT, _spawn_window_signal_handler)
+    prev_sigterm = (
+        signal.signal(signal.SIGTERM, _spawn_window_signal_handler) if not IS_WINDOWS else None
+    )
+
     try:
-        shares = split_to_tmpfs(fernet_key, home.base_dir)
-    finally:
-        # SR-02: zero the plaintext Fernet key. The shares are now on disk
-        # and held in ``shares.shard_a/b`` bytearrays (zeroed by
-        # ``shutdown_sidecar`` later). The original key is no longer needed
-        # in this process — wipe it now so it can't be lifted from a memory
-        # dump for the rest of the session. Runs on success AND on
-        # split_to_tmpfs failure.
-        fernet_key[:] = bytearray(len(fernet_key))
-
-    # Step 2: spawn the sidecar. Same UID = no sudo dance (Phase 0 decision).
-    handle: SidecarHandle | None = None
-    try:
-        socket_path = shares.run_dir / "sidecar.sock"
-        handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
-
-        # Step 3: wire the socket path into the proxy env. We mutate
-        # ``proxy_env`` in place rather than extending ``build_proxy_env``
-        # (per /plan decision 7) so the sidecar location lives next to the
-        # spawn rather than being computed twice.
-        proxy_env["WORTHLESS_SIDECAR_SOCKET"] = str(handle.socket_path)
-
-        # Step 4: spawn the proxy.
+        # Step 1: split the Fernet key to tmpfs. ``home.fernet_key`` returns
+        # a ``bytearray`` (SR-01); pass it through directly — never cast to
+        # ``bytes``, the reconstruct buffer must remain zeroable.
+        fernet_key = home.fernet_key
         try:
-            proxy, actual_port = spawn_proxy(env=proxy_env, port=port)
-        except Exception as exc:
-            console.print_error(
-                WorthlessError(
-                    ErrorCode.PROXY_UNREACHABLE,
-                    sanitize_exception(exc, generic="failed to start proxy"),
-                )
-            )
-            raise typer.Exit(code=1) from exc
+            shares = split_to_tmpfs(fernet_key, home.base_dir)
+        finally:
+            # SR-02: zero the plaintext Fernet key. The shares are now on
+            # disk and held in ``shares.shard_a/b`` bytearrays (zeroed by
+            # ``shutdown_sidecar`` later). The original key is no longer
+            # needed in this process — wipe it now so it can't be lifted
+            # from a memory dump for the rest of the session. Runs on
+            # success AND on split_to_tmpfs failure.
+            fernet_key[:] = bytearray(len(fernet_key))
 
-        _supervise_proxy_with_sidecar(
-            proxy=proxy,
-            handle=handle,
-            actual_port=actual_port,
-            pid_file=pid_file,
-            console=console,
-        )
-    except BaseException:
-        # Step 5: on any failure after sidecar is up, tear down so we leave
-        # no orphan PID, no orphan shares, no orphan socket. ``handle is
-        # None`` means ``spawn_sidecar`` itself raised — the share files
-        # remain on disk, so unlink them (and the run dir) directly. SR-02:
-        # in BOTH branches the in-memory shard bytearrays must be zeroed
-        # before the exception propagates, otherwise a transient spawn
-        # failure leaks plaintext shard material in process memory for the
-        # rest of the session. ``shutdown_sidecar`` handles zeroing on the
-        # success-then-failure path; here we mirror it for the
-        # spawn-failure-before-handle path.
-        if handle is not None:
-            shutdown_sidecar(handle)
-        else:
-            for path in (shares.share_a_path, shares.share_b_path):
+        # Step 2: spawn the sidecar. Same UID = no sudo dance (Phase 0 decision).
+        handle: SidecarHandle | None = None
+        try:
+            socket_path = shares.run_dir / "sidecar.sock"
+            handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+
+            # Step 3: wire the socket path into the proxy env. We mutate
+            # ``proxy_env`` in place rather than extending ``build_proxy_env``
+            # (per /plan decision 7) so the sidecar location lives next to the
+            # spawn rather than being computed twice.
+            proxy_env["WORTHLESS_SIDECAR_SOCKET"] = str(handle.socket_path)
+
+            # Step 4: spawn the proxy.
+            try:
+                proxy, actual_port = spawn_proxy(env=proxy_env, port=port)
+            except Exception as exc:
+                console.print_error(
+                    WorthlessError(
+                        ErrorCode.PROXY_UNREACHABLE,
+                        sanitize_exception(exc, generic="failed to start proxy"),
+                    )
+                )
+                raise typer.Exit(code=1) from exc
+
+            _supervise_proxy_with_sidecar(
+                proxy=proxy,
+                handle=handle,
+                actual_port=actual_port,
+                pid_file=pid_file,
+                console=console,
+            )
+        except BaseException:
+            # Step 5: on any failure after sidecar is up, tear down so we
+            # leave no orphan PID, no orphan shares, no orphan socket.
+            # ``handle is None`` means ``spawn_sidecar`` itself raised — the
+            # share files remain on disk, so unlink them (and the run dir)
+            # directly. SR-02: in BOTH branches the in-memory shard bytearrays
+            # must be zeroed before the exception propagates.
+            if handle is not None:
+                shutdown_sidecar(handle)
+            else:
+                for path in (shares.share_a_path, shares.share_b_path):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 try:
-                    path.unlink(missing_ok=True)
+                    shares.run_dir.rmdir()
                 except OSError:
                     pass
-            try:
-                shares.run_dir.rmdir()
-            except OSError:
-                pass
-            zero_buf(shares.shard_a)
-            zero_buf(shares.shard_b)
-        raise
+                zero_buf(shares.shard_a)
+                zero_buf(shares.shard_b)
+            raise
+    finally:
+        # Restore signal handlers we replaced at function entry.
+        # ``_supervise_proxy_with_sidecar`` may have overwritten them; this
+        # restores whatever the caller had installed before us so we don't
+        # leak our handlers past ``_start_foreground``'s lifetime.
+        signal.signal(signal.SIGINT, prev_sigint)
+        if prev_sigterm is not None:
+            signal.signal(signal.SIGTERM, prev_sigterm)
 
 
 def _supervise_proxy_with_sidecar(
