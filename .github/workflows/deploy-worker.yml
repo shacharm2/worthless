@@ -221,8 +221,9 @@ jobs:
           # the Worker ignores (the only meaningful query trigger is
           # `explain=1` per query-canonicalization tests) so each smoke
           # request bypasses any cache layer that keys on URL. The 3× retry
-          # with exponential backoff covers an unlucky edge that still hasn't
-          # propagated.
+          # with linear backoff (10s, 20s) covers an unlucky edge that still
+          # hasn't propagated; total max wait is 30s, sized to typical CF
+          # edge propagation.
           set -euo pipefail
           CACHE_BUST="_smoke=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           INSTALL_URL="https://worthless.sh/?${CACHE_BUST}"

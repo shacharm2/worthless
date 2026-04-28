@@ -289,21 +289,20 @@ identified.
 
 ### 2. Re-deploy a known-good tag (~2 minutes)
 
-```bash
-gh workflow run deploy-worker.yml -f target=production
-# (uses the workflow's default of last-good main commit, NOT the tagged ref)
-```
-
-Or re-tag the last-good commit:
+Production deploys are tag-only — there is no `workflow_dispatch` path
+into production (the dispatch trigger only offers `preview`). Rollback
+is by re-tagging a known-good commit and pushing the new signed tag:
 
 ```bash
-git checkout v0.3.0      # the last-good tag
+git checkout v0.3.0      # the last-good tag (or its commit sha)
 git tag -s v0.3.2-rollback-of-v0.3.1 -m "Roll back v0.3.1 — see <incident>"
 git push origin v0.3.2-rollback-of-v0.3.1
 ```
 
 Convention: rollback tags are clearly named so the audit trail shows
-intent.
+intent. The deploy workflow's GPG-verify step gates the rollback tag
+the same way it gates a forward release — sign with the maintainer
+key whose fingerprint matches `MAINTAINER_GPG_FINGERPRINT`.
 
 ### 3. Domain compromise (~5 minutes, last resort)
 
@@ -385,10 +384,10 @@ acknowledged before each release:
 4. **CDN cache propagation window.** After a successful deploy, there
    is a sub-minute window where Cloudflare's edge nodes may serve the
    *previous* bundle while origin serves the new one. The post-deploy
-   smoke test retries 3× with exponential backoff and uses a per-run
-   cache-buster query; this catches typical edge-propagation lag but
-   cannot defend against a sustained cache poisoning attack. Re-run
-   the workflow's smoke step on suspected cache mismatch.
+   smoke test retries 3× with linear backoff (10s, 20s; 30s total) and
+   uses a per-run cache-buster query; this catches typical edge-
+   propagation lag but cannot defend against a sustained cache poisoning
+   attack. Re-run the workflow's smoke step on suspected cache mismatch.
 
 5. **Pubkey rotation atomicity.** `MAINTAINER_GPG_PUBKEY` and
    `MAINTAINER_GPG_FINGERPRINT` must be updated *atomically* (GitHub's

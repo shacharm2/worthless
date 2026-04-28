@@ -49,6 +49,10 @@ fi
 GNUPGHOME=$(mktemp -d)
 export GNUPGHOME
 chmod 700 "$GNUPGHOME"
+# Clean up the temp keyring on any exit path. Without this, every verify
+# invocation (verify job + deploy job + every PR run of the test harness)
+# leaves a directory in /tmp; on long-running runners this accumulates.
+trap 'rm -rf "$GNUPGHOME"' EXIT
 printf '%s' "${MAINTAINER_PUBKEY}" | gpg --batch --import
 
 # Reject multi-key armor (decoy attack). If MAINTAINER_GPG_PUBKEY is
