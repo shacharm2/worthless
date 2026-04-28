@@ -655,3 +655,123 @@ class TestSignalHandlersBeforeSpawn:
             "SIGTERM handler is signal.SIG_DFL at spawn_sidecar time; SIGTERM "
             "during spawn would terminate parent and orphan the sidecar PID"
         )
+
+
+# ---------------------------------------------------------------------------
+# QA #4 — Concurrent ``worthless up`` invocations must serialize via flock,
+# not race on the pidfile (where the second invocation could overwrite the
+# first's PID, then unlink it on its own cleanup, leaving the first running
+# without a pidfile).
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentUpLock:
+    def test_concurrent_up_fails_fast_when_lock_held(self, home: WorthlessHome) -> None:
+        """Pre-acquire ``~/.worthless/.up.lock`` from the test process via
+        ``fcntl.flock``, then call ``_start_foreground``. It must NOT
+        spawn anything — must fail fast with ``WRTLS-105 LOCK_IN_PROGRESS``
+        and a clear "another worthless up in progress" message.
+
+        flock semantics on Linux + macOS: separate ``open()`` calls within
+        the same process produce distinct open file descriptions, so
+        contention IS detected even though the lock holder and the would-
+        be acquirer share a PID.
+        """
+        import fcntl
+
+        from worthless.cli.commands import up as up_mod
+
+        lock_path = home.base_dir / ".up.lock"
+
+        # Pre-acquire the lock from the test, simulating an in-flight
+        # ``worthless up`` instance.
+        with lock_path.open("a") as held_lock:
+            fcntl.flock(held_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            # The patches below would let _start_foreground succeed if the
+            # lock didn't intervene — proves the failure is from the lock,
+            # not from spawn errors.
+            spawn_called: list[str] = []
+
+            def _should_not_spawn(*args, **kwargs):
+                spawn_called.append("sidecar")
+                raise AssertionError(
+                    "spawn_sidecar called despite held .up.lock — lock-fast-fail not in place"
+                )
+
+            with (
+                patch.object(up_mod, "spawn_sidecar", _should_not_spawn),
+                patch.object(up_mod, "spawn_proxy", _should_not_spawn),
+            ):
+                with pytest.raises(WorthlessError) as exc_info:
+                    up_mod._start_foreground(
+                        home=home,
+                        proxy_env={
+                            "WORTHLESS_DB_PATH": "x",
+                            "WORTHLESS_HOME": str(home.base_dir),
+                        },
+                        port=8787,
+                        pid_file=home.base_dir / "proxy.pid",
+                        console=MagicMock(),
+                    )
+
+            assert exc_info.value.code == ErrorCode.LOCK_IN_PROGRESS
+            msg = str(exc_info.value).lower()
+            assert "in progress" in msg or "already" in msg or "lock" in msg, (
+                f"Expected lock-held message, got: {exc_info.value!s}"
+            )
+            assert spawn_called == [], (
+                "Lock check ran AFTER spawn — fast-fail must happen BEFORE any subprocess work"
+            )
+
+    def test_lock_released_after_normal_completion(self, home: WorthlessHome) -> None:
+        """After ``_start_foreground`` returns normally (proxy stops),
+        the .up.lock must be released so a subsequent ``worthless up``
+        invocation can acquire it. Drives a fast clean exit (proxy
+        ``poll_sequence=[None, 0]``) and asserts the lock is acquirable
+        afterward.
+        """
+        import fcntl
+
+        from worthless.cli.commands import up as up_mod
+
+        sidecar_proc = _FakeSidecarProc()
+        proxy_proc = _FakeProxyProc(poll_sequence=[None, 0])
+
+        with (
+            patch.object(
+                up_mod,
+                "spawn_sidecar",
+                lambda socket_path, shares, allowed_uid, **_: _make_handle(
+                    sidecar_proc, shares.run_dir
+                ),
+            ),
+            patch.object(
+                up_mod,
+                "spawn_proxy",
+                lambda *, env, port: (proxy_proc, port),
+            ),
+            patch.object(up_mod, "poll_health_pid", return_value=proxy_proc.pid),
+            patch.object(up_mod, "write_pid"),
+            patch.object(up_mod, "_upgrade_pidfile_if_trusted", return_value=proxy_proc.pid),
+            patch.object(up_mod, "shutdown_sidecar"),
+        ):
+            up_mod._start_foreground(
+                home=home,
+                proxy_env={
+                    "WORTHLESS_DB_PATH": "x",
+                    "WORTHLESS_HOME": str(home.base_dir),
+                },
+                port=8787,
+                pid_file=home.base_dir / "proxy.pid",
+                console=MagicMock(),
+            )
+
+        # _start_foreground returned. Lock must be released.
+        lock_path = home.base_dir / ".up.lock"
+        assert lock_path.exists(), "lock file should still exist (only the lock is released)"
+
+        # Should be able to acquire EX lock now — proves prior holder released.
+        with lock_path.open("a") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)

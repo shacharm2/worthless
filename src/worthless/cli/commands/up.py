@@ -9,8 +9,15 @@ from __future__ import annotations
 import os
 import signal
 import subprocess  # nosec B404 — required for daemon process management
+import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
+
+if sys.platform != "win32":
+    import fcntl
+else:  # pragma: no cover — fail_if_windows gates before flock is reached
+    fcntl = None  # type: ignore[assignment]
 
 import typer
 
@@ -49,6 +56,63 @@ from worthless.crypto.types import zero_buf
 # Phase D: poll cadence for the foreground supervisor. ``time.sleep`` is
 # interrupted by signals, so ``_shutdown`` flips within one tick of Ctrl+C.
 _FOREGROUND_POLL_INTERVAL_S = 0.5
+
+# QA #4: filename of the per-home flock that serializes ``worthless up``
+# foreground sessions. Living-but-empty file at ``~/.worthless/.up.lock``;
+# the OS-level flock (held for the foreground session lifetime) is the
+# actual serialization primitive.
+_UP_LOCK_FILENAME = ".up.lock"
+
+
+@contextmanager
+def _foreground_lock(home_dir: Path):
+    """Serialize concurrent ``worthless up`` invocations via flock.
+
+    Without this, two concurrent invocations both pass the initial
+    pidfile check and race: invocation B's later ``write_pid`` overwrites
+    A's, then B's port-bind failure runs cleanup that ``unlink``s the
+    pidfile A just wrote — leaving A running with no pidfile (and
+    ``worthless down`` unable to find it).
+
+    Implementation: ``LOCK_EX | LOCK_NB`` on ``~/.worthless/.up.lock``
+    held for the entire foreground session. Concurrent acquirer fails
+    fast with WRTLS-105 LOCK_IN_PROGRESS — clear, actionable, and BEFORE
+    any subprocess work.
+
+    Windows is gated upstream by ``fail_if_windows()`` so flock is never
+    reached there; this CM is a no-op when ``fcntl`` is None.
+    """
+    if fcntl is None:  # pragma: no cover — Windows-only branch, gated upstream
+        yield
+        return
+
+    lock_path = home_dir / _UP_LOCK_FILENAME
+    # Append-mode opens (or creates if missing) without truncating. Note:
+    # ``rm ~/.worthless/.up.lock`` mid-session would let a concurrent
+    # acquirer create a fresh inode and bypass our lock. This is out of
+    # threat model — an attacker with write access to ``~/.worthless/``
+    # already has far worse capabilities (read shards, kill the daemon).
+    fp = lock_path.open("a")  # noqa: SIM115 — explicit close in finally below
+    try:
+        try:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise WorthlessError(
+                ErrorCode.LOCK_IN_PROGRESS,
+                f"another `worthless up` is already in progress (lock held at {lock_path})",
+            ) from exc
+        try:
+            yield
+        finally:
+            # Closing the fd auto-releases the lock on POSIX, but
+            # explicit unlock is clearer and survives any caller that
+            # might keep the fd alive past the CM (defense-in-depth).
+            try:
+                fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        fp.close()
 
 
 def _resolve_port(port_arg: int | None) -> int:
@@ -181,6 +245,38 @@ def _start_foreground(
     it as :attr:`ErrorCode.SIDECAR_CRASHED` (WRTLS-112). On any exit path
     — clean, error, or signal — the proxy is terminated first, then the
     sidecar (cleanup ordering matters).
+
+    Concurrent ``worthless up`` invocations are serialized via flock on
+    ``~/.worthless/.up.lock`` (QA #4). The second invocation fails fast
+    with WRTLS-105 LOCK_IN_PROGRESS rather than racing on the pidfile.
+    """
+    # Acquire the foreground lock for the entire session lifetime. flock
+    # auto-releases when the file is closed (or on process exit if we
+    # crash). A concurrent invocation that finds the lock held raises
+    # WRTLS-105 immediately — BEFORE any subprocess work — saving spawn
+    # cycles and preventing the "B unlinks A's pidfile" failure mode.
+    with _foreground_lock(home.base_dir):
+        _start_foreground_locked(
+            home=home,
+            proxy_env=proxy_env,
+            port=port,
+            pid_file=pid_file,
+            console=console,
+        )
+
+
+def _start_foreground_locked(
+    *,
+    home: WorthlessHome,
+    proxy_env: dict[str, str],
+    port: int,
+    pid_file: Path,
+    console,
+) -> None:
+    """Foreground body — runs only while ``_foreground_lock`` is held.
+
+    Extracted so the lock acquisition stays a thin envelope around an
+    otherwise-unchanged Phase D body.
     """
 
     # Pre-spawn signal handlers (QA #7): SIGTERM during ``spawn_sidecar``
