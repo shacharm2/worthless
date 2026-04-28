@@ -1,7 +1,9 @@
 name: Worker wire-level attacks (raw-socket UA probes)
 
-# Wire-level coverage for the 9 runtime-defended attack shapes from
-# WOR-374, paired with the `it.fails` regression sentinels in
+# Wire-level coverage for the 9 runtime-defended attack sentinels from
+# WOR-374 (8 unique byte sequences — two sentinels share input bytes,
+# see scripts/wire-attack-probes.py docstring), paired with the
+# `it.fails` regression sentinels in
 # `workers/worthless-sh/test/ua-edge-cases.test.ts`. WOR-349 Phase 6.3.
 #
 # Why a separate workflow from worker-url-smoke.yml:

@@ -16,7 +16,9 @@ Three things sit between "Worker code passes vitest" and "real users curl this t
    container).
 2. **Adversarial wire shapes** — does the Worker stay safe under raw-byte
    UA attacks past curl/undici validation? Already covered automated by
-   `worker-wire-attacks.yml` (9 shapes from WOR-374, byte-for-byte
+   `worker-wire-attacks.yml` (8 unique byte sequences covering the 9
+   sentinels from WOR-374 — two sentinels share input bytes, see
+   `scripts/wire-attack-probes.py` docstring — byte-for-byte
    mirrored from `ua-edge-cases.test.ts`).
 3. **Lived-in maintainer experience** — does the install actually feel
    right on real OSes? PATH guidance correct? Walkthrough copy useful?
@@ -32,8 +34,8 @@ This file is item 3.
 - [ ] `worker-url-smoke.yml` workflow_dispatch against the preview URL
       passed
 - [ ] `worker-wire-attacks.yml` workflow_dispatch against the preview
-      URL passed (exits 0 with "All 9 wire-attack probes passed safety
-      invariants")
+      URL passed (exits 0 with "All 8 wire-attack byte sequences passed
+      safety invariants")
 - [ ] You have at least two real OS targets ready (see matrix below)
 
 ## Target matrix

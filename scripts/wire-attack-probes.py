@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Raw-socket wire-level probes for the worthless.sh Worker.
 
-Sends 9 adversarial User-Agent shapes to the deployed Worker via a TLS
-socket — bypassing curl/undici/http.client header validation — and
-asserts the Worker's defenses hold on the wire. Companion to
-``workers/worthless-sh/test/ua-edge-cases.test.ts`` regression
+Sends 8 distinct adversarial User-Agent byte sequences (the unit suite
+in ``workers/worthless-sh/test/ua-edge-cases.test.ts`` carries 9
+``it.fails`` sentinels — two of them assert different response-side
+invariants on the same input UA, which collapses to 8 unique bytes
+on the wire) to the deployed Worker via a TLS socket — bypassing
+curl/undici/http.client header validation — and asserts the Worker's
+defenses hold on the wire. Companion to the unit-test regression
 sentinels (which alarm if vitest's runtime layer ever loosens) and to
 WOR-374 (this file is the wire-level coverage referenced from there).
 
@@ -47,14 +50,17 @@ from urllib.parse import urlparse
 
 # Each tuple is (label, ua-bytes). Bytes match the unit-test sentinels
 # in ``workers/worthless-sh/test/ua-edge-cases.test.ts`` byte-for-byte.
+# The unit suite's two CRLF response-header sentinels (`X-Inject not
+# present` + `no header value contains pwned/CR/LF`) test the SAME
+# input UA bytes; ``assert_invariants`` checks both response-side
+# invariants per probe, so the wire side carries one entry not two.
 PROBES: list[tuple[str, bytes]] = [
     ("U-03 leading whitespace", b"  curl/8.4.0"),
     ("U-03 trailing tab", b"curl/8.4.0\t"),
     ("U-03 leading tab", b"\tcurl/8.4.0"),
     ("U-07 CRLF injection (safe-redirect)", b"curl/8.4.0\r\nX-Inject: 1"),
     ("U-07 LF-only injection (safe-redirect)", b"curl/8.4.0\nX-Inject: 1"),
-    ("U-07 CRLF response-header check #1", b"curl/8.4.0\r\nX-Inject: pwned"),
-    ("U-07 CRLF response-header check #2", b"curl/8.4.0\r\nX-Inject: pwned"),
+    ("U-07 CRLF response-header (X-Inject + pwned reflection)", b"curl/8.4.0\r\nX-Inject: pwned"),
     ("gap-3 NUL polyglot Mozilla", b"curl/8.4.0\x00Mozilla/5.0"),
     ("gap-3 NUL polyglot trailing junk", b"curl/8.4.0\x00\x00\x00"),
 ]
@@ -162,7 +168,7 @@ def main() -> int:
         for line in failures:
             print(f"  - {line}")
         return 1
-    print(f"All {len(PROBES)} wire-attack probes passed safety invariants.")
+    print(f"All {len(PROBES)} wire-attack byte sequences passed safety invariants.")
     return 0
 
 
