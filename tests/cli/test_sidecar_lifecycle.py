@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import logging
 import os
 import secrets
@@ -379,3 +380,61 @@ def test_shutdown_sidecar_is_idempotent(home: Path, key: bytearray) -> None:
     shutdown_sidecar(handle)
     # Second call must not raise.
     shutdown_sidecar(handle)
+
+
+# ---------------------------------------------------------------------------
+# CodeRabbit regression guards (PR #116 review)
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_sidecar_unlinks_stale_socket_before_spawn(home: Path, key: bytearray) -> None:
+    """Stale socket inode at the target path must be removed before spawn —
+    otherwise ``_wait_for_ready`` returns True instantly on the leftover
+    file and the new sidecar's bind would race against it.
+    """
+    shares = split_to_tmpfs(key, home)
+    socket_path = shares.run_dir / "sidecar.sock"
+    socket_path.write_bytes(b"")  # pre-create the stale inode
+    captured: dict[str, dict[str, str]] = {}
+
+    with (
+        patch(
+            "worthless.cli.sidecar_lifecycle.subprocess.Popen",
+            _capturing_popen(captured),
+        ),
+        patch(
+            "worthless.cli.sidecar_lifecycle._wait_for_ready",
+            return_value=True,
+        ),
+    ):
+        # Should NOT raise — the stale inode is unlinked, then spawn proceeds.
+        spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+
+    # Popen was reached → unlink succeeded.
+    assert "env" in captured
+
+
+def test_split_to_tmpfs_cleans_up_on_write_failure(
+    home: Path, key: bytearray, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If ``_write_share`` raises mid-sequence (e.g., disk-full on share_b),
+    no half-state must survive: share_a is unlinked, run dir is removed,
+    and the original exception propagates.
+    """
+    call_count = {"n": 0}
+    real_write_share = importlib.import_module("worthless.cli.sidecar_lifecycle")._write_share
+
+    def _flaky_write(path: Path, data: bytearray) -> None:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            real_write_share(path, data)
+            return
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("worthless.cli.sidecar_lifecycle._write_share", _flaky_write)
+
+    with pytest.raises(OSError, match="No space left"):
+        split_to_tmpfs(key, home)
+
+    run_dir = home / "run" / str(os.getpid())
+    assert not run_dir.exists(), "run_dir not cleaned up after partial-write failure"

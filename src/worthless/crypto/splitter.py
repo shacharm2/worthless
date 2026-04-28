@@ -218,7 +218,7 @@ def split_key(api_key: bytes | bytearray) -> SplitResult:
     mask = bytearray(secrets.token_bytes(len(api_key)))
     shard_a = bytearray(a ^ b for a, b in zip(api_key, mask, strict=True))
 
-    commitment, nonce = _make_commitment(bytearray(api_key))
+    commitment, nonce = _make_commitment(api_key)
 
     return SplitResult(
         shard_a=shard_a,

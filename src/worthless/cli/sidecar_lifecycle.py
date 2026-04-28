@@ -94,14 +94,30 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
     # ``mkdir(mode=...)`` is umask-masked on POSIX; pin explicitly.
     run_dir.chmod(0o700)
 
-    result = split_key(fernet_key)
-    shard_a = result.shard_a
-    shard_b = result.shard_b
-
     share_a_path = run_dir / _SHARE_A_NAME
     share_b_path = run_dir / _SHARE_B_NAME
-    _write_share(share_a_path, shard_a)
-    _write_share(share_b_path, shard_b)
+
+    # If anything past mkdir fails (split_key / disk-full / signal mid-write),
+    # leave no half-state on disk — unlink any partial shares and remove the
+    # run dir before re-raising. Cleanup itself is best-effort so it can't
+    # mask the original exception.
+    try:
+        result = split_key(fernet_key)
+        shard_a = result.shard_a
+        shard_b = result.shard_b
+        _write_share(share_a_path, shard_a)
+        _write_share(share_b_path, shard_b)
+    except BaseException:
+        for path in (share_a_path, share_b_path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            run_dir.rmdir()
+        except OSError:
+            pass
+        raise
 
     # SR-04: log only the run dir path, never share bytes.
     _logger.debug("split_to_tmpfs: wrote shares under run_dir=%s", run_dir)
@@ -192,6 +208,22 @@ def spawn_sidecar(
     Raises:
         WorthlessError: WRTLS-113 if the sidecar does not become ready.
     """
+    # A stale socket inode at the target path would make ``_wait_for_ready``
+    # return True before the new sidecar has bound (false positive). The
+    # per-pid run dir is created with ``mkdir(exist_ok=False)`` so this is
+    # already extremely unlikely, but unlink-if-exists is cheap belt-and-braces
+    # and cooperates with future Phase 4 crash-recovery flows.
+    if socket_path.exists():
+        try:
+            socket_path.unlink()
+        except OSError:
+            # Couldn't clear the stale socket; bail before we spawn a child
+            # that would race against an unmovable inode.
+            raise WorthlessError(
+                ErrorCode.SIDECAR_NOT_READY,
+                f"stale socket at {socket_path} could not be removed",
+            ) from None
+
     env = {
         **os.environ,
         "WORTHLESS_SIDECAR_SOCKET": str(socket_path),
@@ -277,12 +309,20 @@ def shutdown_sidecar(handle: SidecarHandle) -> None:
     # 1+2. Stop the process. Guard each step on liveness so the second
     # invocation (idempotency) skips signaling a corpse.
     if proc.poll() is None:
-        proc.terminate()
+        # Race: child can exit between poll() and signal. ProcessLookupError
+        # on a vanished pid is benign — proceed to wait + cleanup either way.
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
         try:
             proc.wait(timeout=handle.drain_timeout)
         except subprocess.TimeoutExpired:
             # Drain budget exhausted — escalate.
-            proc.kill()
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
             try:
                 proc.wait(timeout=_SHUTDOWN_KILL_GRACE_S)
             except subprocess.TimeoutExpired:
