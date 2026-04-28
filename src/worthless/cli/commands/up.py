@@ -399,6 +399,13 @@ def _supervise_proxy_with_sidecar(
 
     # Signal handler ONLY sets a flag — all cleanup in main thread.
     # This avoids reentrant wait() calls and blocking I/O in handlers.
+    #
+    # WOR-384 fix-11/11 (Jenny CONCERN #5): the supervisor INTENTIONALLY
+    # overwrites the spawn-window handler installed by ``_start_foreground``
+    # (see fix-3/8 — KbdInt-raising). The supervisor owns shutdown signals
+    # from here on; the outer ``finally`` in ``_start_foreground`` restores
+    # whatever the caller had before us. Net: caller sees no leaked handler
+    # past ``_start_foreground``'s lifetime.
     _shutdown = False
 
     def _on_signal(_signum=None, _frame=None):
@@ -450,6 +457,15 @@ def _supervise_proxy_with_sidecar(
     # Phase D: also watch the sidecar. If it dies first, flag the crash
     # and break — the cleanup block below will still tear down the proxy
     # before we surface WRTLS-112.
+    #
+    # WOR-384 fix-11/11 (Jenny CONCERN #6): if BOTH die in the same tick,
+    # ``proxy.poll() is None`` evaluates first and (proxy already dead)
+    # exits the loop without setting ``sidecar_crashed``. User sees a
+    # clean exit instead of WRTLS-112. Acceptable: a sidecar crash that
+    # propagates to proxy death within ``_FOREGROUND_POLL_INTERVAL_S``
+    # (500 ms) is functionally indistinguishable from a clean exit at
+    # this layer. If we ever want strict attribution, swap the loop
+    # order so sidecar is checked first.
     sidecar_crashed = False
     while proxy.poll() is None and not _shutdown:
         if handle.proc.poll() is not None:
@@ -505,9 +521,12 @@ def register_up_commands(app: typer.Typer) -> None:
         # Phase D: daemon mode is foreground-only until WOR-387 wires the
         # sidecar into the daemon path. Reject early with a clear hint
         # rather than silently spawning a proxy without a sidecar.
+        # WOR-384 fix-11/11: ``DAEMON_NOT_SUPPORTED`` (114) instead of
+        # ``PLATFORM_UNSUPPORTED`` (110) — the platform is fine, just the
+        # mode isn't wired yet. Right code → right debug direction.
         if daemon:
             raise WorthlessError(
-                ErrorCode.PLATFORM_UNSUPPORTED,
+                ErrorCode.DAEMON_NOT_SUPPORTED,
                 "daemon mode not yet supported with sidecar — use foreground "
                 "(`worthless up` without `-d`). Daemon support is tracked by WOR-387.",
             )

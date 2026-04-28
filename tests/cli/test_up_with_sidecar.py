@@ -466,6 +466,10 @@ class TestDaemonModeRejected:
         # Must mention daemon and foreground in some form.
         assert "daemon" in out.lower()
         assert "foreground" in out.lower()
+        # WOR-384 fix-11/11: pin the numeric error code so a future change
+        # to the rejection's ErrorCode surfaces explicitly. Was substring-
+        # only before — would silently couple to the wrong code (Jenny CONCERN #4).
+        assert "WRTLS-114" in out, f"Expected WRTLS-114 (DAEMON_NOT_SUPPORTED), got: {out!r}"
 
 
 # ---------------------------------------------------------------------------
