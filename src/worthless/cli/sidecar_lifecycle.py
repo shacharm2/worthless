@@ -240,11 +240,24 @@ def spawn_sidecar(
         stderr=subprocess.PIPE,
     )
 
-    deadline = time.monotonic() + ready_timeout
-    ready = _wait_for_ready(proc, socket_path, deadline)
-    if not ready:
-        # Failure path: kill the child, drain stdout+stderr with a deadline
-        # (one call, no SIGPIPE risk), unlink any half-formed socket inode.
+    # Single cleanup envelope around the wait (QA #2): if anything raises
+    # — WRTLS-113 timeout below, KeyboardInterrupt from the poll loop's
+    # ``time.sleep``, SIGTERM-mapped-to-KbdInt from the spawn-window handler
+    # the caller installed, OR any other ``BaseException`` — we MUST reap
+    # the child Popen before propagating, otherwise the caller's
+    # ``handle is None`` branch only sees the share files and the spawned
+    # sidecar PID is leaked as an orphan.
+    try:
+        deadline = time.monotonic() + ready_timeout
+        ready = _wait_for_ready(proc, socket_path, deadline)
+        if not ready:
+            raise WorthlessError(
+                ErrorCode.SIDECAR_NOT_READY,
+                f"sidecar did not become ready within {ready_timeout}s",
+            )
+    except BaseException:
+        # Kill the child, drain stdout+stderr with a deadline (one call,
+        # no SIGPIPE risk), unlink any half-formed socket inode.
         if proc.poll() is None:
             proc.kill()
         try:
@@ -256,10 +269,7 @@ def spawn_sidecar(
                 socket_path.unlink()
         except OSError:
             pass
-        raise WorthlessError(
-            ErrorCode.SIDECAR_NOT_READY,
-            f"sidecar did not become ready within {ready_timeout}s",
-        )
+        raise
 
     _logger.debug("spawn_sidecar: pid=%d socket=%s", proc.pid, socket_path)
     return SidecarHandle(

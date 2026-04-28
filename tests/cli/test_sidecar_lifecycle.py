@@ -438,3 +438,76 @@ def test_split_to_tmpfs_cleans_up_on_write_failure(
 
     run_dir = home / "run" / str(os.getpid())
     assert not run_dir.exists(), "run_dir not cleaned up after partial-write failure"
+
+
+# ---------------------------------------------------------------------------
+# QA #2 — spawn_sidecar must reap the child if interrupted during
+# _wait_for_ready (e.g., SIGINT mid-poll, BaseException from any source)
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_sidecar_reaps_child_on_keyboardinterrupt_during_wait(
+    home: Path, key: bytearray
+) -> None:
+    """Regression guard for QA #2: if ``_wait_for_ready`` raises (e.g.,
+    SIGINT mid-poll causes ``time.sleep`` to raise ``KeyboardInterrupt``),
+    the child Popen we just created must be killed and reaped before
+    propagating — otherwise the exception leaves an orphan sidecar PID
+    that the caller cannot clean up (caller's ``handle is None`` branch
+    only knows about share files on disk).
+    """
+    shares = split_to_tmpfs(key, home)
+    socket_path = shares.run_dir / "sidecar.sock"
+
+    # Track kill + communicate on a fake Popen.
+    class _SpawnFakeProc:
+        def __init__(self) -> None:
+            self.pid = 33333
+            self.stdout: object = None
+            self.stderr: object = None
+            self._exit_code: int | None = None
+            self.kill_called = False
+            self.communicate_called = False
+
+        def poll(self) -> int | None:
+            return self._exit_code
+
+        def kill(self) -> None:
+            self.kill_called = True
+            self._exit_code = -9
+
+        def wait(self, timeout: float | None = None) -> int:  # pragma: no cover
+            return self._exit_code or 0
+
+        def communicate(
+            self, input: object = None, timeout: float | None = None
+        ) -> tuple[bytes, bytes]:
+            self.communicate_called = True
+            return (b"", b"")
+
+    fake_proc = _SpawnFakeProc()
+
+    def _interrupt_during_wait(*_args: object, **_kwargs: object) -> bool:
+        raise KeyboardInterrupt
+
+    with (
+        patch(
+            "worthless.cli.sidecar_lifecycle.subprocess.Popen",
+            return_value=fake_proc,
+        ),
+        patch(
+            "worthless.cli.sidecar_lifecycle._wait_for_ready",
+            side_effect=_interrupt_during_wait,
+        ),
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+
+    assert fake_proc.kill_called, (
+        "spawn_sidecar leaked the child Popen on KeyboardInterrupt during wait — "
+        "kill() was never called, child PID is now an orphan"
+    )
+    assert fake_proc.communicate_called, (
+        "spawn_sidecar killed the child but did not communicate() to drain "
+        "pipes / reap — could leave a zombie"
+    )
