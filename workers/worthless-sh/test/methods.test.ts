@@ -84,6 +84,65 @@ describe("HEAD returns headers without a body (M-01)", () => {
     const body = await res.text();
     expect(body.length).toBe(0);
   });
+
+  // M-01 short-response Content-Length parity: regression coverage for the
+  // HEAD-contract bug CodeRabbit flagged on PR #117. Pre-fix, 404/414/503
+  // paths went through `respond()` without setting Content-Length (or
+  // bypassed `respond()` entirely), so HEAD requests on those paths
+  // returned headers WITHOUT the Content-Length that GET would emit.
+  // RFC 9110 §15.4 requires HEAD's headers to mirror GET. These tests
+  // assert that parity on each error path.
+
+  it("HEAD on 404 path returns Content-Length matching what GET returned", async () => {
+    const url = "https://worthless.sh/nope-not-a-real-path";
+    const [headRes, getRes] = await Promise.all([
+      SELF.fetch(url, { method: "HEAD", headers: { "user-agent": CURL_UA } }),
+      SELF.fetch(url, { method: "GET", headers: { "user-agent": CURL_UA } }),
+    ]);
+    expect(headRes.status).toBe(404);
+    expect(headRes.status).toBe(getRes.status);
+    expect(headRes.headers.get("content-length")).toBe(
+      getRes.headers.get("content-length"),
+    );
+    expect(headRes.headers.get("content-length")).not.toBeNull();
+    const body = await headRes.text();
+    expect(body.length).toBe(0);
+  });
+
+  it("HEAD on 414 (long path) returns Content-Length matching GET", async () => {
+    // Path > PATH_MAX_LENGTH (4096) triggers the long-path guard.
+    const url = "https://worthless.sh/" + "a".repeat(5000);
+    const [headRes, getRes] = await Promise.all([
+      SELF.fetch(url, { method: "HEAD", headers: { "user-agent": CURL_UA } }),
+      SELF.fetch(url, { method: "GET", headers: { "user-agent": CURL_UA } }),
+    ]);
+    expect(headRes.status).toBe(414);
+    expect(headRes.status).toBe(getRes.status);
+    expect(headRes.headers.get("content-length")).toBe(
+      getRes.headers.get("content-length"),
+    );
+    expect(headRes.headers.get("content-length")).not.toBeNull();
+    const body = await headRes.text();
+    expect(body.length).toBe(0);
+  });
+
+  it("HEAD on 503 (bad-input) returns Content-Length matching GET", async () => {
+    // Malformed Range header trips refuseBadInput → 503. Pre-fix this
+    // path bypassed respond() and returned a body for HEAD.
+    const headers = { "user-agent": CURL_UA, range: "garbage-not-bytes" };
+    const [headRes, getRes] = await Promise.all([
+      SELF.fetch("https://worthless.sh/", { method: "HEAD", headers }),
+      SELF.fetch("https://worthless.sh/", { method: "GET", headers }),
+    ]);
+    expect(headRes.status).toBe(503);
+    expect(headRes.status).toBe(getRes.status);
+    expect(headRes.headers.get("content-length")).toBe(
+      getRes.headers.get("content-length"),
+    );
+    expect(headRes.headers.get("content-length")).not.toBeNull();
+    const body = await headRes.text();
+    expect(body.length).toBe(0);
+  });
 });
 
 describe("write methods return 405 and never serve the script (M-02)", () => {
