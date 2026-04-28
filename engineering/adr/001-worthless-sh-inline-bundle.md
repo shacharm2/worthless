@@ -30,7 +30,7 @@ Per threat model findings F-12, F-34, F-35 — **A alone is not enough** if atta
 2. **Deploy-time tag signature verification** in the GitHub Action — before `wrangler deploy`, verify the tag ref is signed and matches expected maintainer keys. Abort deploy if not.
 3. **Actions environment with required reviewers** for `worthless-sh-production` deploy. Short-lived scoped Cloudflare token, not account-scoped. (Same env name as referenced in `deploy-worker.yml`; `-prod` was the original placeholder text in the ADR draft.)
 4. **Worker response headers** for post-deploy verification by auditors:
-   ```
+   ```text
    X-Worthless-Script-Sha256: <hex>
    X-Worthless-Script-Tag: v0.3.0
    X-Worthless-Script-Commit: <full sha>

@@ -41,6 +41,27 @@ const FORCED_ERROR_INPUTS: ReadonlyArray<{
       headers: { "user-agent": "curl/8.4.0", range: "bytes=abc-xyz" },
     },
   },
+  // Per CodeRabbit (PR #117): regression coverage that the tightened
+  // VALID_RANGE_VALUE regex catches malformed inputs the old
+  // `[0-9 ,\-]+` form would have silently accepted.
+  {
+    label: "malformed Range header (bytes=-- only hyphens)",
+    init: {
+      headers: { "user-agent": "curl/8.4.0", range: "bytes=--" },
+    },
+  },
+  {
+    label: "malformed Range header (bytes=, empty range)",
+    init: {
+      headers: { "user-agent": "curl/8.4.0", range: "bytes=," },
+    },
+  },
+  {
+    label: "malformed Range header (bytes=0-1-2 too many hyphens)",
+    init: {
+      headers: { "user-agent": "curl/8.4.0", range: "bytes=0-1-2" },
+    },
+  },
   {
     label: "absurd Accept-Encoding (1000 codings)",
     init: {

@@ -42,6 +42,12 @@ export interface Env {
   REDIRECT_URL: string;
   SCRIPT_TAG: string;
   SCRIPT_COMMIT: string;
+  // URL of the GitHub Actions run that built+deployed this Worker.
+  // Injected at deploy time via `wrangler deploy --var SCRIPT_BUILD_PROVENANCE:...`
+  // from deploy-worker.yml; falls back to wrangler.toml dev placeholders
+  // for `npm run dev` and tests. Surfaced as the
+  // `X-Worthless-Build-Provenance` response header per ADR-001.
+  SCRIPT_BUILD_PROVENANCE: string;
 }
 
 // ---- Constants computed once at module load ------------------------------
@@ -163,6 +169,7 @@ function buildInstallHeaders(env: Env, sha: string): Headers {
   h.set("X-Worthless-Script-Sha256", sha);
   h.set("X-Worthless-Script-Tag", env.SCRIPT_TAG);
   h.set("X-Worthless-Script-Commit", env.SCRIPT_COMMIT);
+  h.set("X-Worthless-Build-Provenance", env.SCRIPT_BUILD_PROVENANCE);
   // Defence-in-depth: even though browsers never see this content (UA gate
   // routes them to the redirect), pin a strict CSP to neutralise any sniffer
   // that ignores nosniff.
@@ -238,7 +245,15 @@ const PATH_MAX_LENGTH = 4096;
 // Range header is structurally `bytes=<spec>` per RFC 9110 §14.2. We
 // ignore Range entirely on the install path (R-01), but a malformed
 // value like `bytes=abc-xyz` is a probe — fail fast.
-const VALID_RANGE_VALUE = /^bytes=[0-9 ,\-]+$/;
+// RFC 9110 §14.1.2 byte-range-set: a non-empty list of byte-range-spec
+// (`first-pos "-" last-pos?`) or suffix-byte-range-spec (`"-" suffix-len`)
+// separated by `,`. This regex tightens the previous `[0-9 ,\-]+` form
+// which accepted clearly malformed inputs like `bytes=--`, `bytes=,`,
+// and `bytes=0-1-2`. The Worker doesn't actually serve byte ranges
+// (R-01 always returns the full body) — this guard exists so
+// refuseBadInput's intent (reject malformed Range headers) matches its
+// implementation.
+const VALID_RANGE_VALUE = /^bytes=(\d+-\d*|-\d+)(,(\d+-\d*|-\d+))*$/;
 
 // Accept-Encoding with hundreds of codings is a DoS / oddity. Real
 // clients send 1–4 codings.

@@ -21,6 +21,7 @@ REDIRECT_URL = "https://wless.io"
 # pipeline (Phase 5 / WOR-323) overrides these per release.
 SCRIPT_TAG = "v0.0.0-dev"
 SCRIPT_COMMIT = "0000000000000000000000000000000000000000"
+SCRIPT_BUILD_PROVENANCE = "dev-build"
 
 # Bare `[vars]` is read by vitest's pool; named envs by `wrangler deploy --env`.
 # Wrangler 4 does NOT inherit top-level vars into env blocks, so the
@@ -33,6 +34,7 @@ name = "worthless-sh-preview"
 REDIRECT_URL = "https://wless.io"
 SCRIPT_TAG = "preview"
 SCRIPT_COMMIT = "preview"
+SCRIPT_BUILD_PROVENANCE = "preview-build"
 
 [env.production]
 name = "worthless-sh"

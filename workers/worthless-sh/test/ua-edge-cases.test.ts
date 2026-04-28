@@ -182,9 +182,13 @@ describe("length attacks do not panic the isolate (U-05)", () => {
     const res = await SELF.fetch("https://worthless.sh/", {
       headers: { "user-agent": ua },
     });
-    // Either 200 (script — same prefix) or 302 (safe — composite-rejection
-    // kicked in). Crucially, NOT 5xx — the isolate must not panic.
-    expect([200, 302]).toContain(res.status);
+    // The UA has the canonical `curl/` prefix and contains no composite
+    // markers (`(),;`) or browser/bot tokens (Mozilla/WebKit/Bot/etc.),
+    // so it MUST classify as curl-family and serve the script. A 302
+    // here would be a classifier-over-block regression on legitimate
+    // long-curl-family UAs. Crucially, also NOT 5xx — the isolate must
+    // not panic on 64KB header values.
+    expect(res.status).toBe(200);
   });
 
   it("64KB junk UA (no curl prefix) classifies the same as a short junk UA", async () => {

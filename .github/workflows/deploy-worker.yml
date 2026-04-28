@@ -215,12 +215,19 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           DEPLOY_TARGET: ${{ needs.verify.outputs.target }}
         run: |
+          # Build provenance — URL of the GitHub Actions run that produced
+          # this deploy. Surfaced as the X-Worthless-Build-Provenance
+          # response header per ADR-001 §"Required additions" #4 so an
+          # auditor verifying a deployed bundle can pivot from the served
+          # response back to the exact CI run + logs that built it.
+          PROVENANCE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           npm run embed:assets
           npx wrangler deploy \
             --config wrangler.toml \
             --env "${DEPLOY_TARGET}" \
             --var "SCRIPT_TAG:${GITHUB_REF_NAME}" \
-            --var "SCRIPT_COMMIT:${GITHUB_SHA}"
+            --var "SCRIPT_COMMIT:${GITHUB_SHA}" \
+            --var "SCRIPT_BUILD_PROVENANCE:${PROVENANCE_URL}"
 
       - name: Smoke-test deployed Worker (production only)
         if: needs.verify.outputs.target == 'production'
