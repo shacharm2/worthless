@@ -1,3 +1,8 @@
+---
+title: "Install Security"
+description: "Supply-chain model for the curl|sh installer."
+---
+
 # Install Security
 
 Supply-chain model for `curl -sSL https://worthless.sh | sh`: which hosts

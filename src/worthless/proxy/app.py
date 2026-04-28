@@ -29,7 +29,7 @@ from starlette.middleware.cors import CORSMiddleware
 from worthless.adapters.registry import get_adapter
 from worthless.adapters.types import INTERNAL_HEADER_PREFIX
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp, secure_key
-from worthless.proxy.config import ProxySettings
+from worthless.proxy.config import DeployMode, ProxySettings
 from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
 from worthless.proxy.metering import (
     StreamingUsageCollector,
@@ -71,6 +71,16 @@ def _uniform_401() -> Response:
         headers=_AUTH_HEADERS,
         media_type="application/json",
     )
+
+
+def _scheme_is_trusted(request: Request, settings: ProxySettings) -> bool:
+    # PUBLIC: scope["scheme"] reflects forwarded proto only when uvicorn's
+    # --forwarded-allow-ips already gated the peer; otherwise the raw socket scheme.
+    if settings.deploy_mode is DeployMode.LOOPBACK:
+        return True
+    if settings.deploy_mode is DeployMode.LAN:
+        return True
+    return request.scope.get("scheme", "http") == "https"
 
 
 def _extract_shard_a(request: Request) -> bytearray | None:
@@ -287,10 +297,8 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             return _uniform_401()
         alias, clean_path = parsed
 
-        if not settings.allow_insecure:
-            proto = request.scope.get("scheme", "http")
-            if proto != "https":
-                return _uniform_401()
+        if not _scheme_is_trusted(request, settings):
+            return _uniform_401()
 
         # Reject null/CR/LF in header keys or values
         for key, value in request.headers.items():

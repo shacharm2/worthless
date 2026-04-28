@@ -24,6 +24,23 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    # LOAD-BEARING — DO NOT add `production` to `options` below.
+    #
+    # The verify steps at the `verify` and `deploy` jobs guard with
+    # `if: github.event_name == 'push'` so they intentionally skip GPG
+    # signature verification on `workflow_dispatch` runs. That skip is
+    # ONLY safe because dispatch is restricted to `target=preview` here
+    # — production deploys are tag-only, so the only path to production
+    # is a signed `v*` tag push that triggers verify.
+    #
+    # Adding `production` back to `options` (innocent-looking 1-line
+    # change) silently re-opens dispatch-to-production with NO signature
+    # check. CodeRabbit, actionlint, zizmor, vitest, pytest — none catch
+    # it. WOR-406 tracks the structural pytest assertion that will catch
+    # it if this comment is ever ignored.
+    #
+    # Background: WOR-323 ("Non-obvious couplings for future contributors"
+    # → coupling #1) for the full threat model.
     inputs:
       target:
         description: "Deploy target (preview only — production is tag-triggered, see DEPLOY.md §Rollback)"
@@ -184,6 +201,15 @@ jobs:
         # SCRIPT_TAG / SCRIPT_COMMIT inject via --var so the verifiability
         # headers point at the deployed git ref, not the wrangler.toml
         # placeholders.
+        #
+        # `--config wrangler.toml` is REQUIRED. The repo root has its
+        # own `wrangler.jsonc` (PR #113, the docs.wless.io Astro site
+        # auto-deployed by Cloudflare Workers Builds). Wrangler 4 walks
+        # up looking for config and finds the docs-site `.jsonc` first;
+        # without `--config` it would fail with "No environment named
+        # 'production'" because that's the worthless-sh worker config,
+        # not the docs config. The two Workers (worthless-sh here,
+        # worthless-docs at root) are entirely separate deploy paths.
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -191,6 +217,7 @@ jobs:
         run: |
           npm run embed:assets
           npx wrangler deploy \
+            --config wrangler.toml \
             --env "${DEPLOY_TARGET}" \
             --var "SCRIPT_TAG:${GITHUB_REF_NAME}" \
             --var "SCRIPT_COMMIT:${GITHUB_SHA}"
@@ -242,10 +269,18 @@ jobs:
               "${NO_CACHE_HEADERS[@]}" -H "User-Agent: curl/8.4.0" \
               "${INSTALL_URL}" \
               | shasum -a 256 | awk '{print $1}')
-            HEADER_SHA=$(curl --fail --silent --show-error --head \
+            # Header fetch uses GET + `-D - -o /dev/null` (dump headers,
+            # discard body) instead of `--head`. Defends against (1)
+            # workerd 405/404 on HEAD, (2) intermediate caches stripping
+            # headers from HEAD responses, (3) symmetric response chain
+            # with the body fetch above. `--location` deliberately
+            # omitted (see body-fetch comment). `head -n1` captures only
+            # the first matching header in case a future regression
+            # emits the header twice.
+            HEADER_SHA=$(curl --fail --silent --show-error \
               "${NO_CACHE_HEADERS[@]}" -H "User-Agent: curl/8.4.0" \
-              "${INSTALL_URL}" \
-              | grep -i '^x-worthless-script-sha256:' \
+              -D - -o /dev/null "${INSTALL_URL}" \
+              | grep -i '^x-worthless-script-sha256:' | head -n1 \
               | awk '{print $2}' | tr -d '\r\n')
             WALKTHROUGH_SHA=$(curl --fail --silent --show-error \
               "${NO_CACHE_HEADERS[@]}" -H "User-Agent: curl/8.4.0" \

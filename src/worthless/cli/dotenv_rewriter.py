@@ -710,11 +710,90 @@ def remove_env_key(env_path: Path, var_name: str) -> None:
     )
 
 
+def _validate_rewrite_args(
+    updates: dict[str, str],
+    additions: dict[str, str] | None,
+    removals: set[str] | None,
+) -> None:
+    for var_name in updates:
+        _validate_var_name(var_name)
+    for value in updates.values():
+        _validate_value(value)
+    if additions:
+        for var_name in additions:
+            _validate_var_name(var_name)
+        for value in additions.values():
+            _validate_value(value)
+    if removals:
+        for var_name in removals:
+            _validate_var_name(var_name)
+
+    # Per CodeRabbit nitpick: reject overlapping keys across the three sets.
+    # `updates ∩ removals` would update then delete the same key — silent
+    # mangling. `additions ∩ removals` is similarly nonsense. `updates ∩
+    # additions` is ambiguous (which value wins?). Refuse deterministically
+    # so callers get a clear error rather than a surprising rewrite.
+    update_keys = set(updates)
+    addition_keys = set(additions) if additions else set()
+    removal_keys = set(removals) if removals else set()
+
+    if update_keys and removal_keys:
+        overlap = update_keys & removal_keys
+        if overlap:
+            raise ValueError(
+                f"updates and removals overlap (key would be updated then "
+                f"deleted): {sorted(overlap)!r}"
+            )
+    if addition_keys and removal_keys:
+        overlap = addition_keys & removal_keys
+        if overlap:
+            raise ValueError(
+                f"additions and removals overlap (key would be added then "
+                f"deleted): {sorted(overlap)!r}"
+            )
+    if update_keys and addition_keys:
+        overlap = update_keys & addition_keys
+        if overlap:
+            raise ValueError(
+                f"updates and additions overlap (ambiguous: which value wins?): {sorted(overlap)!r}"
+            )
+
+
+def _apply_updates(lines: list[_LogicalLine], updates: dict[str, str], env_path: Path) -> None:
+    matched: set[str] = set()
+    for idx, line in enumerate(lines):
+        if line.key in updates:
+            lines[idx] = _LogicalLine(
+                raw=_rebuild_assignment_preserving_format(line.raw, updates[line.key]),
+                key=line.key,
+                has_export=line.has_export,
+            )
+            matched.add(line.key)
+    missing = set(updates) - matched
+    if missing:
+        raise KeyError(f"Variable(s) not found in {env_path}: {sorted(missing)!r}")
+
+
+def _append_additions(lines: list[_LogicalLine], additions: dict[str, str], eol: bytes) -> None:
+    if lines and not lines[-1].raw.endswith((b"\n", b"\r\n")):
+        last = lines[-1]
+        lines[-1] = _LogicalLine(raw=last.raw + eol, key=last.key, has_export=last.has_export)
+    for var_name, value in additions.items():
+        lines.append(
+            _LogicalLine(
+                raw=_format_assignment(var_name, value, has_export=False, eol=eol),
+                key=var_name,
+                has_export=False,
+            )
+        )
+
+
 def rewrite_env_keys(
     env_path: Path,
     updates: dict[str, str],
     *,
     additions: dict[str, str] | None = None,
+    removals: set[str] | None = None,
     _hook_before_replace: Callable[[], None] | None = None,
 ) -> None:
     """Atomically replace N keys in *env_path* via one ``safe_rewrite`` call.
@@ -728,21 +807,18 @@ def rewrite_env_keys(
     iteration order. They are a clean insert and must not already exist
     as keys in the file.
 
+    *removals* (optional) drop matching keys from the file. Missing
+    removal targets are silently ignored — consistent with
+    :func:`remove_env_key`. Used by transactional unlock to delete
+    proxy ``*_BASE_URL`` lines in the same atomic write that restores
+    plaintext keys.
+
     *_hook_before_replace* is forwarded to :func:`safe_rewrite`; the
     lock command binds a closure that runs reconstruct-and-verify for
     every shard under an exclusive SQLite flock before the rename.
     """
-    for var_name in updates:
-        _validate_var_name(var_name)
-    for value in updates.values():
-        _validate_value(value)
-    if additions:
-        for var_name in additions:
-            _validate_var_name(var_name)
-        for value in additions.values():
-            _validate_value(value)
-
-    if not updates and not additions:
+    _validate_rewrite_args(updates, additions, removals)
+    if not updates and not additions and not removals:
         return
 
     existing = _safe_read_existing_bytes(env_path)
@@ -750,37 +826,11 @@ def rewrite_env_keys(
     eol = _detect_eol(stripped)
     lines = _split_logical_lines(stripped)
 
-    matched: set[str] = set()
-    for idx, line in enumerate(lines):
-        if line.key in updates:
-            new_value = updates[line.key]
-            lines[idx] = _LogicalLine(
-                raw=_rebuild_assignment_preserving_format(line.raw, new_value),
-                key=line.key,
-                has_export=line.has_export,
-            )
-            matched.add(line.key)
-
-    missing = set(updates) - matched
-    if missing:
-        raise KeyError(f"Variable(s) not found in {env_path}: {sorted(missing)!r}")
-
+    _apply_updates(lines, updates, env_path)
+    if removals:
+        lines = [line for line in lines if line.key not in removals]
     if additions:
-        if lines and not lines[-1].raw.endswith((b"\n", b"\r\n")):
-            last = lines[-1]
-            lines[-1] = _LogicalLine(
-                raw=last.raw + eol,
-                key=last.key,
-                has_export=last.has_export,
-            )
-        for var_name, value in additions.items():
-            lines.append(
-                _LogicalLine(
-                    raw=_format_assignment(var_name, value, has_export=False, eol=eol),
-                    key=var_name,
-                    has_export=False,
-                )
-            )
+        _append_additions(lines, additions, eol)
 
     new_content = _restore_bom(_serialize_lines(lines), had_bom)
     if new_content == existing:

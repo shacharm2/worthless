@@ -24,7 +24,7 @@ from worthless.adapters import registry
 from worthless.adapters.types import AdapterRequest, AdapterResponse
 from worthless.crypto.splitter import split_key_fp
 from worthless.proxy.app import _ALIAS_RE, _BAD_HEADER_CHARS, _extract_alias_and_path, create_app
-from worthless.proxy.config import ProxySettings
+from worthless.proxy.config import DeployMode, ProxySettings
 from worthless.proxy.errors import ErrorResponse, gateway_error_response
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 from worthless.storage.repository import EncryptedShard, StoredShard
@@ -931,7 +931,13 @@ class TestAntiEnumeration:
         self, proxy_settings: ProxySettings, repo, enrolled_alias
     ):
         """TLS enforcement failure returns the same 401 as other failure modes."""
-        tls_settings = replace(proxy_settings, allow_insecure=False)
+        tls_settings = replace(
+            proxy_settings,
+            allow_insecure=False,
+            deploy_mode=DeployMode.PUBLIC,
+            host="0.0.0.0",  # noqa: S104 — testing public-mode bind/TLS contract
+            trusted_proxies=("10.0.0.0/8",),
+        )
         app = create_app(tls_settings)
         db = await aiosqlite.connect(proxy_settings.db_path)
         try:

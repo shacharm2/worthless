@@ -42,8 +42,14 @@ REDIRECT_URL = "https://wless.io"
 # SCRIPT_TAG and SCRIPT_COMMIT are injected at deploy time by the
 # .github/workflows/deploy-worker.yml workflow via `wrangler deploy --var`.
 
-# Production route — wired in WOR-300 when DNS is live (WOR-323 hardening
-# blocks the first production tag push; uncomment after that lands).
-# [[env.production.routes]]
-# pattern = "worthless.sh/*"
-# zone_name = "worthless.sh"
+# Production route — wired in WOR-300 now that DNS is live (AAAA on
+# apex `@` → `100::`, Proxied, added 2026-04-28) and WOR-323 hardening
+# has landed in this branch. Wrangler claims `worthless.sh/*` for this
+# Worker on the first production tag push that survives the fail-closed
+# GPG verify gate. Until MAINTAINER_GPG_PUBKEY + MAINTAINER_GPG_FINGERPRINT
+# repo Variables are set (tracked in WOR-401), any v* tag push fails
+# closed at .github/scripts/verify-tag.sh — deploy never runs, route
+# never claims.
+[[env.production.routes]]
+pattern = "worthless.sh/*"
+zone_name = "worthless.sh"

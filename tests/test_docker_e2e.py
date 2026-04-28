@@ -112,6 +112,8 @@ def container(docker_image: str) -> tuple[str, int]:
             "-p",
             "127.0.0.1::8787",
             "-e",
+            "WORTHLESS_DEPLOY_MODE=lan",
+            "-e",
             "WORTHLESS_ALLOW_INSECURE=true",
             "--read-only",
             "--tmpfs",
@@ -152,6 +154,8 @@ def persistent_container(docker_image: str) -> tuple[str, int, str]:
             "-p",
             "127.0.0.1::8787",
             "-e",
+            "WORTHLESS_DEPLOY_MODE=lan",
+            "-e",
             "WORTHLESS_ALLOW_INSECURE=true",
             "-v",
             f"{vol}:/data",
@@ -187,7 +191,7 @@ def compose_stack(docker_image: str) -> tuple[str, str]:
 
     created_env = False
     if not env_file.exists():
-        env_file.write_text("WORTHLESS_ALLOW_INSECURE=true\n")
+        env_file.write_text("WORTHLESS_DEPLOY_MODE=lan\nWORTHLESS_ALLOW_INSECURE=true\n")
         created_env = True
 
     # Override port to dynamic to avoid bind conflicts

@@ -1,3 +1,8 @@
+---
+title: "Security Model"
+description: "Threat model, architectural invariants, known limitations."
+---
+
 # Worthless Security
 
 Threat model, architectural invariants, known limitations, and residual risk for

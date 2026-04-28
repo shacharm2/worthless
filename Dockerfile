@@ -34,5 +34,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 
 USER worthless
 
+# Bind/host live in entrypoint.sh — don't re-add `--host` here, it bypasses deploy_mode.
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]
-CMD ["sh", "-c", "exec uvicorn worthless.proxy.app:create_app --factory --host 0.0.0.0 --port ${PORT}"]
