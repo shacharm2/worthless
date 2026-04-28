@@ -56,7 +56,7 @@ repos:
     rev: v2.4.2
     hooks:
       - id: codespell
-        args: ["--skip=*.lock,*.json", "--ignore-words-list=shard,shards,te"]
+        args: ["--skip=*.lock,*.json", "--ignore-words-list=shard,shards,te,fpr"]
 
   # Pyright: static type checking (basic mode src/, strict on crypto/)
   - repo: local

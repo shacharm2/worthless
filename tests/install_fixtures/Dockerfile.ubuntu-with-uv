@@ -13,7 +13,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Pre-install uv to $HOME/.local/bin (same place install.sh would put it).
-RUN sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' \
+# Pin to the SAME version install.sh pins via UV_VERSION (currently 0.11.7).
+# Without the version pin, this fixture installs whatever Astral has released
+# at "latest", which drifts away from install.sh's pinned UV_VERSION as new
+# uv releases land — install.sh then re-installs the pinned version and the
+# verify_uv_reuse.sh assertion (uv hash stable) fails.
+# Bump in lockstep when install.sh's UV_VERSION changes; the procedure is
+# in tests/install_fixtures/MANUAL_SMOKE.md §"Bumping UV_VERSION".
+RUN sh -c 'curl -LsSf https://astral.sh/uv/0.11.7/install.sh | sh' \
     && test -x "$HOME/.local/bin/uv"
 
 RUN ! command -v python3 \

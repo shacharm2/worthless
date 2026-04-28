@@ -65,6 +65,11 @@ recomputed from the live Astral CDN — not copied from release notes.
   curl -sSL "https://astral.sh/uv/${NEW}/install.sh" | sha256sum
   ```
 - [ ] Edit `install.sh`: update `UV_VERSION` and `ASTRAL_INSTALLER_SHA256` together in one commit
+- [ ] Edit `tests/install_fixtures/Dockerfile.ubuntu-with-uv`: bump the pinned
+      `https://astral.sh/uv/<VERSION>/install.sh` URL to match the new `UV_VERSION`.
+      Without this lockstep bump, the `ubuntu-with-uv` fixture pre-installs
+      a version that no longer matches install.sh's pin, install.sh re-installs,
+      and `verify_uv_reuse.sh` fails because the uv hash changed.
 - [ ] Re-run `pytest -m docker tests/test_install_docker.py` to confirm the bare-Ubuntu E2E still passes with the new pair
 
 Never accept a SHA256 from a pull request without re-fetching yourself.
