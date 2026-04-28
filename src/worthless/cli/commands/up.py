@@ -44,6 +44,7 @@ from worthless.cli.sidecar_lifecycle import (
     spawn_sidecar,
     split_to_tmpfs,
 )
+from worthless.crypto.types import zero_buf
 
 # Phase D: poll cadence for the foreground supervisor. ``time.sleep`` is
 # interrupted by signals, so ``_shutdown`` flips within one tick of Ctrl+C.
@@ -231,7 +232,13 @@ def _start_foreground(
         # Step 5: on any failure after sidecar is up, tear down so we leave
         # no orphan PID, no orphan shares, no orphan socket. ``handle is
         # None`` means ``spawn_sidecar`` itself raised — the share files
-        # remain on disk, so unlink them (and the run dir) directly.
+        # remain on disk, so unlink them (and the run dir) directly. SR-02:
+        # in BOTH branches the in-memory shard bytearrays must be zeroed
+        # before the exception propagates, otherwise a transient spawn
+        # failure leaks plaintext shard material in process memory for the
+        # rest of the session. ``shutdown_sidecar`` handles zeroing on the
+        # success-then-failure path; here we mirror it for the
+        # spawn-failure-before-handle path.
         if handle is not None:
             shutdown_sidecar(handle)
         else:
@@ -244,6 +251,8 @@ def _start_foreground(
                 shares.run_dir.rmdir()
             except OSError:
                 pass
+            zero_buf(shares.shard_a)
+            zero_buf(shares.shard_b)
         raise
 
 

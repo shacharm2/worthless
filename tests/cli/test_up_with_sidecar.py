@@ -466,6 +466,74 @@ class TestFernetKeyZeroedAfterSplit:
             f"first byte = {captured[0]}"
         )
 
+    def test_shares_zeroed_when_spawn_sidecar_fails(self, home: WorthlessHome) -> None:
+        """SR-02 nice-to-have: when ``spawn_sidecar`` raises (handle is
+        None), the failure-path cleanup unlinks the share files from disk
+        but the bytearrays in the captured ``ShareFiles`` object are still
+        on the stack with plaintext shard material. They must be zeroed
+        before the exception propagates — otherwise a transient sidecar
+        spawn failure leaks half the key in process memory.
+
+        Mirrors what ``shutdown_sidecar`` does on the success path (Phase C
+        zeroing); this fix extends the same guarantee to the spawn-failure
+        fallback that runs BEFORE a handle exists.
+        """
+        from worthless.cli.commands import up as up_mod
+
+        captured_shares: list[ShareFiles] = []
+
+        def fake_split(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
+            run_dir = home_dir / "run" / str(os.getpid())
+            run_dir.mkdir(parents=True, exist_ok=True)
+            shares = ShareFiles(
+                share_a_path=run_dir / "share_a.bin",
+                share_b_path=run_dir / "share_b.bin",
+                shard_a=bytearray(b"\xab" * 22),  # non-zero
+                shard_b=bytearray(b"\xcd" * 22),  # non-zero
+                run_dir=run_dir,
+            )
+            captured_shares.append(shares)
+            return shares
+
+        def fake_spawn_raises(
+            socket_path: Path,
+            shares: ShareFiles,
+            allowed_uid: int,
+            **_: Any,
+        ) -> SidecarHandle:
+            raise WorthlessError(
+                ErrorCode.SIDECAR_NOT_READY,
+                "test: simulated spawn failure",
+            )
+
+        with (
+            patch.object(up_mod, "split_to_tmpfs", fake_split),
+            patch.object(up_mod, "spawn_sidecar", fake_spawn_raises),
+        ):
+            with pytest.raises(WorthlessError) as exc_info:
+                up_mod._start_foreground(
+                    home=home,
+                    proxy_env={
+                        "WORTHLESS_DB_PATH": "x",
+                        "WORTHLESS_HOME": str(home.base_dir),
+                    },
+                    port=8787,
+                    pid_file=home.base_dir / "proxy.pid",
+                    console=MagicMock(),
+                )
+
+        assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+        assert len(captured_shares) == 1
+        shares = captured_shares[0]
+        assert all(b == 0 for b in shares.shard_a), (
+            f"SR-02 violation: shard_a not zeroed on spawn failure: "
+            f"first byte = {shares.shard_a[0]:02x}"
+        )
+        assert all(b == 0 for b in shares.shard_b), (
+            f"SR-02 violation: shard_b not zeroed on spawn failure: "
+            f"first byte = {shares.shard_b[0]:02x}"
+        )
+
     def test_fernet_key_zeroed_even_when_split_to_tmpfs_raises(self, home: WorthlessHome) -> None:
         """SR-02: the zeroing must run on the failure path too. If
         ``split_to_tmpfs`` raises (e.g., disk full mid-write), the original
