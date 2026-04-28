@@ -250,19 +250,51 @@ def _start_foreground(
     ``~/.worthless/.up.lock`` (QA #4). The second invocation fails fast
     with WRTLS-105 LOCK_IN_PROGRESS rather than racing on the pidfile.
     """
-    # Acquire the foreground lock for the entire session lifetime. flock
-    # auto-releases when the file is closed (or on process exit if we
-    # crash). A concurrent invocation that finds the lock held raises
-    # WRTLS-105 immediately — BEFORE any subprocess work — saving spawn
-    # cycles and preventing the "B unlinks A's pidfile" failure mode.
-    with _foreground_lock(home.base_dir):
-        _start_foreground_locked(
-            home=home,
-            proxy_env=proxy_env,
-            port=port,
-            pid_file=pid_file,
-            console=console,
-        )
+
+    # Security panel C-2: install spawn-window signal handlers BEFORE
+    # ``_foreground_lock`` acquisition. If SIGTERM/SIGHUP arrives between
+    # lock-acquire and handler-install (the previous structure), Python's
+    # default ``SIG_DFL`` action terminates the parent — the lockfile fd
+    # closes (releasing flock) but any in-flight key read leaves an
+    # unzeroed copy on the heap. Installing here shrinks that window to
+    # the minimum.
+    #
+    # Chaos #7: SIGHUP is added alongside SIGINT/SIGTERM. Default SIGHUP
+    # action is terminate (orphaning children); we want graceful shutdown
+    # the same way Ctrl+C / SIGTERM trigger it.
+    def _spawn_window_signal_handler(_signum=None, _frame=None) -> None:
+        raise KeyboardInterrupt
+
+    prev_sigint = signal.signal(signal.SIGINT, _spawn_window_signal_handler)
+    prev_sigterm = (
+        signal.signal(signal.SIGTERM, _spawn_window_signal_handler) if not IS_WINDOWS else None
+    )
+    prev_sighup = (
+        signal.signal(signal.SIGHUP, _spawn_window_signal_handler) if not IS_WINDOWS else None
+    )
+
+    try:
+        # Acquire the foreground lock for the entire session lifetime.
+        # flock auto-releases when the file is closed (or on process exit
+        # if we crash). A concurrent invocation that finds the lock held
+        # raises WRTLS-105 immediately — BEFORE any subprocess work.
+        with _foreground_lock(home.base_dir):
+            _start_foreground_locked(
+                home=home,
+                proxy_env=proxy_env,
+                port=port,
+                pid_file=pid_file,
+                console=console,
+            )
+    finally:
+        # Restore prior handlers regardless of how we exit. The supervisor
+        # may have replaced these mid-flight with its flag-based handler
+        # (intentional shadow); we restore the caller's originals.
+        signal.signal(signal.SIGINT, prev_sigint)
+        if prev_sigterm is not None:
+            signal.signal(signal.SIGTERM, prev_sigterm)
+        if prev_sighup is not None:
+            signal.signal(signal.SIGHUP, prev_sighup)
 
 
 def _start_foreground_locked(
@@ -279,101 +311,81 @@ def _start_foreground_locked(
     otherwise-unchanged Phase D body.
     """
 
-    # Pre-spawn signal handlers (QA #7): SIGTERM during ``spawn_sidecar``
-    # or ``spawn_proxy`` would otherwise hit Python's default ``SIG_DFL``
-    # action and terminate the parent before we hold a Popen handle —
-    # leaving the freshly-spawned sidecar/proxy as orphans. Install a
-    # KeyboardInterrupt-raising handler now so a signal during the spawn
-    # window propagates through the existing ``except BaseException``
-    # cleanup below. ``_supervise_proxy_with_sidecar`` later replaces these
-    # with its flag-based handler (clean in-loop shutdown). Originals are
-    # restored in the outer ``finally`` so we don't leak handlers past
-    # this function's lifetime.
-    def _spawn_window_signal_handler(_signum=None, _frame=None) -> None:
-        raise KeyboardInterrupt
+    # Spawn-window signal handlers (SIGINT/SIGTERM/SIGHUP raising
+    # KeyboardInterrupt) are installed by the outer ``_start_foreground``
+    # before lock acquisition — see security panel C-2. The supervisor
+    # below replaces them with a flag-based handler once both children
+    # are up; ``_start_foreground``'s outer finally restores the caller's
+    # prior handlers either way.
 
-    prev_sigint = signal.signal(signal.SIGINT, _spawn_window_signal_handler)
-    prev_sigterm = (
-        signal.signal(signal.SIGTERM, _spawn_window_signal_handler) if not IS_WINDOWS else None
-    )
-
+    # Step 1: split the Fernet key to tmpfs. ``home.fernet_key`` returns
+    # a ``bytearray`` (SR-01); pass it through directly — never cast to
+    # ``bytes``, the reconstruct buffer must remain zeroable.
+    fernet_key = home.fernet_key
     try:
-        # Step 1: split the Fernet key to tmpfs. ``home.fernet_key`` returns
-        # a ``bytearray`` (SR-01); pass it through directly — never cast to
-        # ``bytes``, the reconstruct buffer must remain zeroable.
-        fernet_key = home.fernet_key
+        shares = split_to_tmpfs(fernet_key, home.base_dir)
+    finally:
+        # SR-02: zero the plaintext Fernet key. The shares are now on
+        # disk and held in ``shares.shard_a/b`` bytearrays (zeroed by
+        # ``shutdown_sidecar`` later). The original key is no longer
+        # needed in this process — wipe it now so it can't be lifted
+        # from a memory dump for the rest of the session. Runs on
+        # success AND on split_to_tmpfs failure.
+        fernet_key[:] = bytearray(len(fernet_key))
+
+    # Step 2: spawn the sidecar. Same UID = no sudo dance (Phase 0 decision).
+    handle: SidecarHandle | None = None
+    try:
+        socket_path = shares.run_dir / "sidecar.sock"
+        handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+
+        # Step 3: wire the socket path into the proxy env. We mutate
+        # ``proxy_env`` in place rather than extending ``build_proxy_env``
+        # (per /plan decision 7) so the sidecar location lives next to the
+        # spawn rather than being computed twice.
+        proxy_env["WORTHLESS_SIDECAR_SOCKET"] = str(handle.socket_path)
+
+        # Step 4: spawn the proxy.
         try:
-            shares = split_to_tmpfs(fernet_key, home.base_dir)
-        finally:
-            # SR-02: zero the plaintext Fernet key. The shares are now on
-            # disk and held in ``shares.shard_a/b`` bytearrays (zeroed by
-            # ``shutdown_sidecar`` later). The original key is no longer
-            # needed in this process — wipe it now so it can't be lifted
-            # from a memory dump for the rest of the session. Runs on
-            # success AND on split_to_tmpfs failure.
-            fernet_key[:] = bytearray(len(fernet_key))
-
-        # Step 2: spawn the sidecar. Same UID = no sudo dance (Phase 0 decision).
-        handle: SidecarHandle | None = None
-        try:
-            socket_path = shares.run_dir / "sidecar.sock"
-            handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
-
-            # Step 3: wire the socket path into the proxy env. We mutate
-            # ``proxy_env`` in place rather than extending ``build_proxy_env``
-            # (per /plan decision 7) so the sidecar location lives next to the
-            # spawn rather than being computed twice.
-            proxy_env["WORTHLESS_SIDECAR_SOCKET"] = str(handle.socket_path)
-
-            # Step 4: spawn the proxy.
-            try:
-                proxy, actual_port = spawn_proxy(env=proxy_env, port=port)
-            except Exception as exc:
-                console.print_error(
-                    WorthlessError(
-                        ErrorCode.PROXY_UNREACHABLE,
-                        sanitize_exception(exc, generic="failed to start proxy"),
-                    )
+            proxy, actual_port = spawn_proxy(env=proxy_env, port=port)
+        except Exception as exc:
+            console.print_error(
+                WorthlessError(
+                    ErrorCode.PROXY_UNREACHABLE,
+                    sanitize_exception(exc, generic="failed to start proxy"),
                 )
-                raise typer.Exit(code=1) from exc
-
-            _supervise_proxy_with_sidecar(
-                proxy=proxy,
-                handle=handle,
-                actual_port=actual_port,
-                pid_file=pid_file,
-                console=console,
             )
-        except BaseException:
-            # Step 5: on any failure after sidecar is up, tear down so we
-            # leave no orphan PID, no orphan shares, no orphan socket.
-            # ``handle is None`` means ``spawn_sidecar`` itself raised — the
-            # share files remain on disk, so unlink them (and the run dir)
-            # directly. SR-02: in BOTH branches the in-memory shard bytearrays
-            # must be zeroed before the exception propagates.
-            if handle is not None:
-                shutdown_sidecar(handle)
-            else:
-                for path in (shares.share_a_path, shares.share_b_path):
-                    try:
-                        path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+            raise typer.Exit(code=1) from exc
+
+        _supervise_proxy_with_sidecar(
+            proxy=proxy,
+            handle=handle,
+            actual_port=actual_port,
+            pid_file=pid_file,
+            console=console,
+        )
+    except BaseException:
+        # Step 5: on any failure after sidecar is up, tear down so we
+        # leave no orphan PID, no orphan shares, no orphan socket.
+        # ``handle is None`` means ``spawn_sidecar`` itself raised — the
+        # share files remain on disk, so unlink them (and the run dir)
+        # directly. SR-02: in BOTH branches the in-memory shard bytearrays
+        # must be zeroed before the exception propagates.
+        if handle is not None:
+            shutdown_sidecar(handle)
+        else:
+            for path in (shares.share_a_path, shares.share_b_path):
                 try:
-                    shares.run_dir.rmdir()
+                    path.unlink(missing_ok=True)
                 except OSError:
                     pass
-                zero_buf(shares.shard_a)
-                zero_buf(shares.shard_b)
-            raise
-    finally:
-        # Restore signal handlers we replaced at function entry.
-        # ``_supervise_proxy_with_sidecar`` may have overwritten them; this
-        # restores whatever the caller had installed before us so we don't
-        # leak our handlers past ``_start_foreground``'s lifetime.
-        signal.signal(signal.SIGINT, prev_sigint)
-        if prev_sigterm is not None:
-            signal.signal(signal.SIGTERM, prev_sigterm)
+            try:
+                shares.run_dir.rmdir()
+            except OSError:
+                pass
+            zero_buf(shares.shard_a)
+            zero_buf(shares.shard_b)
+        raise
 
 
 def _supervise_proxy_with_sidecar(

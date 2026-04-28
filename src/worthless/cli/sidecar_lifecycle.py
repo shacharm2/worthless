@@ -92,6 +92,18 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
         expected to keep alive until Phase-C shutdown zeroes them.
     """
     run_dir = home_dir / _RUN_SUBDIR / str(os.getpid())
+    # Security panel C-1: ``parents=True`` creates the intermediate
+    # ``~/.worthless/run/`` dir with the process umask masking the mode
+    # arg — on a default umask 0o022 system that lands at 0o755,
+    # world-traversable. The leaf <pid>/ dir is 0o700 so share files are
+    # safe by Unix semantics, BUT a world-traversable parent leaks live
+    # session PIDs to any local user, enabling targeted ptrace/proc-mem
+    # attacks on the sidecar (which holds plaintext shard B). Pin both
+    # the parent AND the leaf to 0o700 explicitly.
+    parent_run_dir = home_dir / _RUN_SUBDIR
+    parent_run_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    parent_run_dir.chmod(0o700)
+
     # If a directory already exists at our pid path, it's stale by physics:
     # POSIX guarantees PID uniqueness while the holder is alive, so any
     # prior occupant of this PID is dead (the kernel doesn't recycle a PID
@@ -106,7 +118,7 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
             run_dir,
         )
         shutil.rmtree(run_dir, ignore_errors=True)
-    run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    run_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
     # ``mkdir(mode=...)`` is umask-masked on POSIX; pin explicitly.
     run_dir.chmod(0o700)
 

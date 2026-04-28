@@ -19,6 +19,7 @@ runner integration is covered by the existing ``test_cli_up.py``.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -862,3 +863,136 @@ class TestConcurrentUpLock:
         with lock_path.open("a") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------------------
+# Expert panel must-fix items
+# ---------------------------------------------------------------------------
+
+
+class TestExpertPanelMustFix:
+    def test_sighup_handler_installed_alongside_sigint_sigterm(self, home: WorthlessHome) -> None:
+        """Chaos panel #7: default SIGHUP terminates the parent → orphans.
+        SIGHUP must be handled the same as SIGINT/SIGTERM (graceful shutdown).
+        """
+        import signal as signal_mod
+
+        from worthless.cli.commands import up as up_mod
+
+        prev_sighup = signal_mod.signal(signal_mod.SIGHUP, signal_mod.SIG_DFL)
+
+        captured: list[Any] = []
+        sidecar_proc = _FakeSidecarProc()
+
+        def fake_spawn_sidecar(
+            socket_path: Path, shares: ShareFiles, allowed_uid: int, **_: Any
+        ) -> SidecarHandle:
+            captured.append(signal_mod.getsignal(signal_mod.SIGHUP))
+            return _make_handle(sidecar_proc, shares.run_dir)
+
+        proxy_proc = _FakeProxyProc(poll_sequence=[None, 0])
+
+        try:
+            with (
+                patch.object(up_mod, "spawn_sidecar", fake_spawn_sidecar),
+                patch.object(up_mod, "spawn_proxy", lambda *, env, port: (proxy_proc, port)),
+                patch.object(up_mod, "poll_health_pid", return_value=proxy_proc.pid),
+                patch.object(up_mod, "write_pid"),
+                patch.object(up_mod, "_upgrade_pidfile_if_trusted", return_value=proxy_proc.pid),
+                patch.object(up_mod, "shutdown_sidecar"),
+            ):
+                up_mod._start_foreground(
+                    home=home,
+                    proxy_env={
+                        "WORTHLESS_DB_PATH": "x",
+                        "WORTHLESS_HOME": str(home.base_dir),
+                    },
+                    port=8787,
+                    pid_file=home.base_dir / "proxy.pid",
+                    console=MagicMock(),
+                )
+        finally:
+            signal_mod.signal(signal_mod.SIGHUP, prev_sighup)
+
+        assert len(captured) == 1
+        handler = captured[0]
+        assert handler is not signal_mod.SIG_DFL, (
+            "SIGHUP handler is signal.SIG_DFL at spawn time — terminal hangup "
+            "would terminate parent without cleanup"
+        )
+
+    def test_signal_handlers_installed_BEFORE_foreground_lock(self, home: WorthlessHome) -> None:
+        """Security panel C-2: signal handlers must be installed BEFORE
+        ``_foreground_lock`` acquisition. If SIGTERM arrives during the
+        lock-acquire window with default SIG_DFL still active, the parent
+        dies — closing the lockfile fd (releasing flock) but leaving the
+        flow with no spawn-window protection. Move handlers to BEFORE the
+        lock CM so the gap doesn't exist.
+        """
+        import signal as signal_mod
+
+        from worthless.cli.commands import up as up_mod
+
+        prev_sigterm = signal_mod.signal(signal_mod.SIGTERM, signal_mod.SIG_DFL)
+
+        captured: list[Any] = []
+
+        @contextmanager
+        def spy_foreground_lock(home_dir: Path):
+            # Capture the SIGTERM handler at the moment lock acquisition
+            # would START. Pre-fix: handler is SIG_DFL here. Post-fix: it's
+            # our spawn-window handler.
+            captured.append(signal_mod.getsignal(signal_mod.SIGTERM))
+            yield
+
+        try:
+            with patch.object(up_mod, "_foreground_lock", spy_foreground_lock):
+                with patch.object(
+                    up_mod,
+                    "_start_foreground_locked",
+                    lambda **kwargs: None,  # no-op; we only care about lock-time state
+                ):
+                    up_mod._start_foreground(
+                        home=home,
+                        proxy_env={
+                            "WORTHLESS_DB_PATH": "x",
+                            "WORTHLESS_HOME": str(home.base_dir),
+                        },
+                        port=8787,
+                        pid_file=home.base_dir / "proxy.pid",
+                        console=MagicMock(),
+                    )
+        finally:
+            signal_mod.signal(signal_mod.SIGTERM, prev_sigterm)
+
+        assert len(captured) == 1
+        handler = captured[0]
+        assert handler is not signal_mod.SIG_DFL, (
+            "SIGTERM handler is signal.SIG_DFL at lock-acquisition time — "
+            "the spawn-window handler isn't installed early enough"
+        )
+
+
+def test_run_parent_dir_has_0700_perms(tmp_path: Path) -> None:
+    """Security panel C-1: ``~/.worthless/run/`` (the PARENT of the per-pid
+    run dir) must be 0o700, not the umask-default 0o755. A world-traversable
+    parent leaks live session PIDs to any local user — enabling targeted
+    ptrace/proc-mem attacks on the sidecar (which holds plaintext shard B).
+    """
+    import stat as stat_mod
+
+    from worthless.cli.sidecar_lifecycle import split_to_tmpfs
+
+    home_dir = tmp_path / ".worthless"
+    home_dir.mkdir()
+    fernet_key = bytearray(b"A" * 44)
+
+    split_to_tmpfs(fernet_key, home_dir)
+
+    parent_run_dir = home_dir / "run"
+    assert parent_run_dir.exists()
+    parent_mode = stat_mod.S_IMODE(parent_run_dir.stat().st_mode)
+    assert parent_mode == 0o700, (
+        f"~/.worthless/run/ is mode {oct(parent_mode)}, expected 0o700. "
+        "Parent dir leaks live session PIDs to other local users."
+    )
