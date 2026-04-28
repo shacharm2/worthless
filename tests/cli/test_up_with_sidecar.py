@@ -375,14 +375,28 @@ class TestOrphanCleanupOnInitFailure:
     def test_up_cleans_up_orphan_state_when_init_fails_post_spawn(
         self, home: WorthlessHome
     ) -> None:
+        """Jenny REJECT #2: the original D4 only asserted
+        ``len(shutdown_calls) == 1``. A buggy ``shutdown_sidecar(None)``
+        call would have passed. This tightened version asserts:
+
+        1. ``shutdown_sidecar`` is called EXACTLY once.
+        2. It receives the SAME handle ``spawn_sidecar`` returned (identity
+           check, not just truthiness).
+        3. The cleanup actually removes the run dir on disk (not just
+           records the function call) — the fake ``shutdown_sidecar``
+           performs a real ``rmtree`` so the assertion is observable.
+        """
         from worthless.cli.commands import up as up_mod
 
         sidecar_proc = _FakeSidecarProc()
+        spawned_handles: list[SidecarHandle] = []
 
         def fake_spawn_sidecar(
             socket_path: Path, shares: ShareFiles, allowed_uid: int, **_: Any
         ) -> SidecarHandle:
-            return _make_handle(sidecar_proc, shares.run_dir)
+            handle = _make_handle(sidecar_proc, shares.run_dir)
+            spawned_handles.append(handle)
+            return handle
 
         def fake_spawn_proxy(*, env: dict[str, str], port: int) -> tuple[Any, int]:
             raise RuntimeError("simulated proxy spawn failure")
@@ -391,6 +405,13 @@ class TestOrphanCleanupOnInitFailure:
 
         def fake_shutdown_sidecar(handle: SidecarHandle) -> None:
             shutdown_calls.append(handle)
+            # Perform REAL cleanup so the run-dir-gone assertion below is
+            # not vacuous — a buggy production path that skipped the call
+            # entirely would leave the dir in place and the assertion
+            # would catch it.
+            import shutil as _shutil
+
+            _shutil.rmtree(handle.shares.run_dir, ignore_errors=True)
 
         with (
             patch.object(up_mod, "spawn_sidecar", fake_spawn_sidecar),
@@ -406,8 +427,21 @@ class TestOrphanCleanupOnInitFailure:
                     console=MagicMock(),
                 )
 
+        # 1. Exactly one shutdown call.
         assert len(shutdown_calls) == 1, (
-            "shutdown_sidecar must be invoked exactly once when proxy spawn fails"
+            f"shutdown_sidecar must be invoked exactly once, got {len(shutdown_calls)}"
+        )
+        # 2. With the SAME handle spawn_sidecar returned (identity, not equality).
+        assert len(spawned_handles) == 1
+        assert shutdown_calls[0] is spawned_handles[0], (
+            "shutdown_sidecar was called with a different handle than the one "
+            "spawn_sidecar returned — the cleanup path lost track of the live "
+            "subprocess"
+        )
+        # 3. The cleanup actually removed the run dir on disk.
+        assert not spawned_handles[0].shares.run_dir.exists(), (
+            f"run dir {spawned_handles[0].shares.run_dir} survived shutdown — "
+            "cleanup is recording the call but not performing it"
         )
 
 
