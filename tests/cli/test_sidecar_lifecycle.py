@@ -600,3 +600,46 @@ def test_wait_for_ready_blocks_until_listen_not_just_bind() -> None:
     finally:
         exit_signal.set()
         thread.join(timeout=3.0)
+
+
+# ---------------------------------------------------------------------------
+# QA #3 — Stale run dir from a prior crashed session must auto-recover,
+# not raise FileExistsError as an unstructured stack trace.
+# ---------------------------------------------------------------------------
+
+
+def test_split_to_tmpfs_recovers_from_stale_run_dir(
+    home: Path, key: bytearray, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Pre-create a stale run dir at our pid path with leftover content.
+    ``split_to_tmpfs`` must clean it up and proceed — not raise.
+
+    POSIX guarantees PID uniqueness while the holder is alive. So if
+    ``~/.worthless/run/<my_pid>/`` exists when this process starts, the
+    previous holder of this PID is by definition dead — the dir is stale
+    and safe to remove. Pre-fix: ``split_to_tmpfs`` raised
+    ``FileExistsError`` (a raw OSError). Post-fix: we log a warning and
+    clean the stale dir before retrying mkdir.
+    """
+    import logging as _logging
+
+    stale_run_dir = home / "run" / str(os.getpid())
+    stale_run_dir.mkdir(parents=True)
+    (stale_run_dir / "share_a.bin").write_bytes(b"stale-stale-stale")
+    (stale_run_dir / "share_b.bin").write_bytes(b"prior-prior-prior")
+    (stale_run_dir / "sidecar.sock").write_bytes(b"")
+
+    caplog.set_level(_logging.WARNING, logger="worthless")
+
+    shares = split_to_tmpfs(key, home)
+
+    assert shares.share_a_path.exists()
+    assert shares.share_b_path.exists()
+    assert shares.share_a_path.read_bytes() != b"stale-stale-stale"
+    assert shares.share_b_path.read_bytes() != b"prior-prior-prior"
+    assert not (stale_run_dir / "sidecar.sock").exists()
+
+    warning_messages = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("stale" in msg.lower() for msg in warning_messages), (
+        f"Expected stale-recovery warning, got: {warning_messages!r}"
+    )
