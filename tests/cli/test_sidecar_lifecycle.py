@@ -511,3 +511,92 @@ def test_spawn_sidecar_reaps_child_on_keyboardinterrupt_during_wait(
         "spawn_sidecar killed the child but did not communicate() to drain "
         "pipes / reap — could leave a zombie"
     )
+
+
+# ---------------------------------------------------------------------------
+# QA #1 (CRITICAL) — bind/listen race
+#
+# The sidecar uses asyncio.start_unix_server which calls bind() and listen()
+# as separate syscalls. Between them, socket_path.exists() returns True but
+# connect() fails with ECONNREFUSED. Pre-fix _wait_for_ready returns True at
+# the bind moment — proxy's first IPC call can hit ECONNREFUSED. Fix: use a
+# connect() probe so we only return True after listen() has run.
+#
+# This test reproduces the race deterministically by holding the bind/listen
+# window open for 500ms in a worker thread, then verifying _wait_for_ready
+# does NOT return until listen() actually runs.
+# ---------------------------------------------------------------------------
+
+
+def test_wait_for_ready_blocks_until_listen_not_just_bind() -> None:
+    """Real-OS race repro for QA #1: the bind/listen window. Holds the
+    window open for 500ms in a worker thread; ``_wait_for_ready`` must
+    NOT return True until the worker calls ``listen()``.
+    """
+    import socket as socket_mod
+    import tempfile as _tempfile
+    import threading
+    import time
+    from unittest.mock import MagicMock as _MagicMock
+
+    from worthless.cli.sidecar_lifecycle import _wait_for_ready
+
+    # /tmp-rooted to dodge AF_UNIX 104-byte sun_path limit on macOS.
+    tmp_dir = Path(_tempfile.mkdtemp(prefix="wlr-", dir="/tmp"))  # noqa: S108
+    sock_path = tmp_dir / "race.sock"
+    bind_done = threading.Event()
+    listen_done = threading.Event()
+    exit_signal = threading.Event()
+
+    def fake_sidecar() -> None:
+        s = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+        try:
+            s.bind(str(sock_path))
+            bind_done.set()
+            # Hold the bind/listen window open. Pre-fix _wait_for_ready
+            # would return True during this window because exists() is True
+            # but connect() would fail with ECONNREFUSED.
+            time.sleep(0.5)
+            s.listen(5)
+            listen_done.set()
+            # Stay alive long enough for connect() probes to succeed.
+            exit_signal.wait(timeout=3.0)
+        finally:
+            try:
+                s.close()
+            except OSError:
+                pass
+            try:
+                sock_path.unlink()
+            except OSError:
+                pass
+
+    thread = threading.Thread(target=fake_sidecar, daemon=True)
+    thread.start()
+
+    try:
+        # Wait for bind so the socket inode exists.
+        assert bind_done.wait(timeout=2.0), "fake sidecar never bound"
+        assert sock_path.exists(), "socket inode missing post-bind"
+        assert not listen_done.is_set(), "listen() already fired — race window not held"
+
+        # Now call _wait_for_ready. Must block until listen() actually runs.
+        fake_proc = _MagicMock()
+        fake_proc.poll.return_value = None
+
+        start = time.monotonic()
+        ready = _wait_for_ready(fake_proc, sock_path, deadline=start + 2.0)
+        elapsed = time.monotonic() - start
+
+        assert ready is True, "_wait_for_ready timed out"
+        # Pre-fix: returns within ~50ms of bind (one poll tick) — race is open.
+        # Post-fix: connect() probe waits for listen() — elapsed >= 0.4s.
+        assert elapsed >= 0.4, (
+            f"_wait_for_ready returned at {elapsed:.3f}s, before listen() "
+            "fired at 0.5s. The bind/listen race is OPEN — proxy first "
+            "IPC call would hit ECONNREFUSED."
+        )
+        assert listen_done.is_set(), "_wait_for_ready returned but listen() never ran"
+    finally:
+        exit_signal.set()
+        thread.join(timeout=3.0)

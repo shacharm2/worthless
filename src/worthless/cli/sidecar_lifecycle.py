@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import subprocess  # nosec B404 — required for sidecar subprocess lifecycle
 import sys
 import time
@@ -161,21 +162,58 @@ class SidecarHandle:
     drain_timeout: float
 
 
+def _can_connect(socket_path: Path) -> bool:
+    """True iff a connect() to *socket_path* succeeds.
+
+    The socket inode appears at ``bind()`` time, BEFORE ``listen()`` —
+    using ``socket_path.exists()`` as a ready signal opens a window where
+    the proxy's first IPC ``connect()`` would hit ``ECONNREFUSED``. A
+    successful ``connect()`` is the only ready signal that proves
+    ``listen()`` has been called.
+
+    Probe is cheap: AF_UNIX socket creation, 0.1 s timeout, immediate
+    close. The sidecar's accept loop sees a connect-then-disconnect (no
+    payload sent), which is benign.
+    """
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    except OSError:
+        return False
+    try:
+        sock.settimeout(0.1)
+        try:
+            sock.connect(str(socket_path))
+        except OSError:
+            return False
+        return True
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
 def _wait_for_ready(
     proc: subprocess.Popen[bytes],
     socket_path: Path,
     deadline: float,
 ) -> bool:
-    """Poll until ``socket_path`` exists or the child exits.
+    """Poll until ``socket_path`` is bound AND listening, or the child exits.
 
-    Socket inode is the canonical ready signal — same as
-    ``tests/ipc/conftest.py::subprocess_sidecar``. We deliberately do NOT
-    parse stdout: PIPE buffers ~64 KB of kernel data, and ``readline()``
-    blocks until newline-or-EOF, which would deadlock if the sidecar ever
-    grew chatty before binding.
+    Uses a ``connect()`` probe rather than ``socket_path.exists()``: the
+    inode appears at ``bind()`` time, but the proxy's first IPC call
+    fails with ``ECONNREFUSED`` until ``listen()`` has run. The race
+    window is microseconds in the happy case but real on busy systems —
+    a connect-probe closes it deterministically.
+
+    We deliberately do NOT parse stdout: PIPE buffers ~64 KB of kernel
+    data, and ``readline()`` blocks until newline-or-EOF, which would
+    deadlock if the sidecar ever grew chatty before binding.
     """
     while time.monotonic() < deadline:
-        if socket_path.exists():
+        # Cheap fast-fail before the more expensive connect-probe: if the
+        # inode doesn't exist yet, neither does the listening socket.
+        if socket_path.exists() and _can_connect(socket_path):
             return True
         if proc.poll() is not None:
             return False
