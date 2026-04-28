@@ -52,11 +52,14 @@ const CURL_FAMILY_PREFIXES = [
 //   - parens / comma / semicolon: composite-UA grammar markers (real
 //     curl-family UAs use space-and-slash only)
 //   - browser/bot identifier substrings: `Mozilla`, `WebKit`, `Gecko`,
-//     `Chrome`, `Safari`, `Firefox`, `Edge`, `Opera`, `OPR`, `bot`/`Bot`,
-//     `spider`/`Spider`, `crawl`/`Crawl` — case-sensitive (the legitimate
-//     curl space doesn't include these in any casing).
+//     `Chrome`, `Safari`, `Firefox`, `Edge`, `Opera`, `OPR`, `Bot`,
+//     `Spider`, `Crawl`. Matched **case-insensitive** because attackers
+//     can vary case to bypass the rejection (e.g. `curl/8.4.0 mozilla/5.0`
+//     would otherwise fall through this check). Legitimate curl-family
+//     library tokens — `OpenSSL`, `zlib`, `nghttp2`, etc. — don't
+//     collide with these substrings in any casing.
 const COMPOSITE_REJECT =
-  /[(),;]|Mozilla|WebKit|Gecko|Chrome|Safari|Firefox|Edge|Opera|OPR|Bot|bot|Spider|spider|Crawl|crawl/;
+  /[(),;]|Mozilla|WebKit|Gecko|Chrome|Safari|Firefox|Edge|Opera|OPR|Bot|Spider|Crawl/i;
 
 /**
  * Classify a User-Agent header value as curl-family or not.

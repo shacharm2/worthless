@@ -56,6 +56,15 @@ const SAFE_REDIRECT_UAS: ReadonlyArray<{ label: string; ua: string }> = [
     label: "U-08 wget + bingbot composite",
     ua: "Wget/1.21.4 (compatible; bingbot/2.0)",
   },
+  // U-08 case-variant bypass — CodeRabbit Major flagged that
+  // `curl/8.4.0 mozilla/5.0` (lowercase 'm') previously fell through the
+  // composite-rejection regex (which was case-sensitive) and got
+  // classified as curl-family. The regex is now case-insensitive; this
+  // case + a few siblings lock that in.
+  { label: "U-08 case-variant lowercase mozilla", ua: "curl/8.4.0 mozilla/5.0" },
+  { label: "U-08 case-variant uppercase BOT", ua: "curl/8.4.0 BOT" },
+  { label: "U-08 case-variant SPIDER", ua: "curl/8.4.0 SPIDER/1.0" },
+  { label: "U-08 case-variant chRoMe", ua: "curl/8.4.0 chRoMe/100" },
 ];
 
 // Runtime-defended attack shapes — tests use `it.fails()` so they pass
