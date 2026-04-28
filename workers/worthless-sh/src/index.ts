@@ -263,10 +263,12 @@ function refuseBadInput(req: Request): Response | null {
     (ae !== null && ae.split(",").length > ACCEPT_ENCODING_MAX_CODINGS);
 
   if (!bad) return null;
-  return new Response("# worthless-sh: bad-input\n", {
-    status: 503,
-    headers: buildShortResponseHeaders(),
-  });
+  return respond(
+    req.method === "HEAD",
+    503,
+    buildShortResponseHeaders(),
+    "# worthless-sh: bad-input\n",
+  );
 }
 
 // ---- HEAD-aware response helper -----------------------------------------
@@ -285,6 +287,15 @@ function respond(
   headers: Headers,
   bodyText: string | null,
 ): Response {
+  // RFC 9110 §15.4: HEAD MUST return the same headers as GET, including
+  // Content-Length matching what GET would have served. Set it from the
+  // bodyText byte length (UTF-8 can be multi-byte) UNLESS the caller
+  // already chose a value — buildInstallHeaders / buildWalkthroughHeaders /
+  // buildRedirectHeaders / buildSecurityTxtHeaders all pin their own
+  // Content-Length and we must not stomp on those.
+  if (bodyText !== null && !headers.has("Content-Length")) {
+    headers.set("Content-Length", String(ENCODER.encode(bodyText).byteLength));
+  }
   if (isHead || bodyText === null) {
     return new Response(null, { status, headers });
   }
@@ -396,11 +407,15 @@ export default {
       // Catastrophic failure path. Emit a shell-safe body — a single
       // comment line — so a `curl | sh` pipeline gets a no-op rather than
       // Cloudflare's default HTML error page (which contains `<` and `>`,
-      // both valid shell redirection operators).
-      return new Response("# worthless-sh: error\n", {
-        status: 500,
-        headers: buildShortResponseHeaders(),
-      });
+      // both valid shell redirection operators). Routed through
+      // `respond()` so HEAD on the error path correctly returns no body
+      // with a matching Content-Length header.
+      return respond(
+        req.method === "HEAD",
+        500,
+        buildShortResponseHeaders(),
+        "# worthless-sh: error\n",
+      );
     }
   },
 } satisfies ExportedHandler<Env>;
