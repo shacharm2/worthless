@@ -80,6 +80,11 @@ def send_raw(host: str, port: int, path: str, ua_bytes: bytes) -> tuple[int, byt
     the bytes (e.g. edge closes connection on garbled request line).
     """
     ctx = ssl.create_default_context()
+    # Belt-and-braces TLS minimum: Python 3.10+ already defaults to
+    # TLSv1.2 here, but pinning explicitly satisfies CodeQL's static
+    # rule and makes the floor visible without relying on Python
+    # version defaults shifting.
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     request = (
         f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: ".encode("ascii")
         + ua_bytes
@@ -148,7 +153,7 @@ def main() -> int:
     for label, ua in PROBES:
         try:
             status, head, body = send_raw(host, port, path, ua)
-        except (OSError, ssl.SSLError, RuntimeError) as exc:
+        except (OSError, ssl.SSLError, RuntimeError, ValueError) as exc:
             # Wire-layer rejection (edge closed, TLS error) is a SAFE
             # outcome — the bytes never reached the Worker, no exploit
             # possible. Record and continue.
