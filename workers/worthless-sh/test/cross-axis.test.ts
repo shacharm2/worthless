@@ -61,6 +61,12 @@ describe("Method × Path — strictest rule wins (chaos §4 #1, #2, #8)", () => 
     // can be called cross-origin.
     const res = await SELF.fetch("https://worthless.sh/admin", {
       method: "OPTIONS",
+      // `redirect: "manual"` keeps a 302 response observable so the
+      // assertions below can distinguish 302 (P-01 contract) from a
+      // followed-then-rewritten response. Default fetch mode is
+      // "follow", which would replace a 302 with the redirect target
+      // and lose status info.
+      redirect: "manual",
       headers: {
         "user-agent": BROWSER_UA,
         origin: "https://attacker.example",

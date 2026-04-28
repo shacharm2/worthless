@@ -36,6 +36,13 @@ SCRIPT_COMMIT = "preview"
 
 [env.production]
 name = "worthless-sh"
+# Disable the *.workers.dev fallback subdomain for production.
+# Without this, the Worker is also reachable at
+# `worthless-sh.<account>.workers.dev` — a parallel surface that
+# bypasses the worthless.sh route, security headers anchored at
+# the apex, and any zone-level WAF rules. Production must only be
+# reachable via the worthless.sh route.
+workers_dev = false
 
 [env.production.vars]
 REDIRECT_URL = "https://wless.io"
