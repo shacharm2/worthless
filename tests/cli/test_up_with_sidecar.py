@@ -316,6 +316,55 @@ class TestSidecarCrashDetected:
         # Proxy must be torn down BEFORE the error escapes.
         assert events.index("proxy.terminate") < events.index("shutdown_sidecar")
 
+    def test_sidecar_crash_during_health_poll_surfaces_wrtls_112_not_104(
+        self, home: WorthlessHome
+    ) -> None:
+        """Jenny REJECT #1: if the sidecar dies during the 15-second
+        ``poll_health_pid`` window (between proxy spawn and the supervisor
+        loop start), the OLD code raised ``WRTLS-104 PROXY_UNREACHABLE``
+        — wrong direction for the user's debug effort.
+
+        The fix: before declaring the proxy unreachable, check
+        ``handle.proc.poll() is not None``. If the sidecar is the dead
+        party, surface ``WRTLS-112 SIDECAR_CRASHED`` instead.
+        """
+        from worthless.cli.commands import up as up_mod
+
+        # Proxy looks alive (no crash on the proxy side); sidecar is DEAD.
+        proxy_proc = _FakeProxyProc(poll_sequence=[None, None])
+        sidecar_proc = _FakeSidecarProc()
+        sidecar_proc._exit_code = 7  # type: ignore[attr-defined]  # sidecar crashed
+
+        def fake_spawn_sidecar(
+            socket_path: Path, shares: ShareFiles, allowed_uid: int, **_: Any
+        ) -> SidecarHandle:
+            return _make_handle(sidecar_proc, shares.run_dir)
+
+        with (
+            patch.object(up_mod, "spawn_sidecar", fake_spawn_sidecar),
+            patch.object(up_mod, "spawn_proxy", lambda *, env, port: (proxy_proc, port)),
+            # poll_health_pid returns None — proxy never became healthy.
+            # Pre-fix: this triggers WRTLS-104. Post-fix: we check the
+            # sidecar first, see it's dead, and raise WRTLS-112 instead.
+            patch.object(up_mod, "poll_health_pid", return_value=None),
+            patch.object(up_mod, "write_pid"),
+            patch.object(up_mod, "shutdown_sidecar"),
+            patch("time.sleep"),
+        ):
+            with pytest.raises(WorthlessError) as excinfo:
+                up_mod._start_foreground(
+                    home=home,
+                    proxy_env={"WORTHLESS_DB_PATH": "x", "WORTHLESS_HOME": str(home.base_dir)},
+                    port=8787,
+                    pid_file=home.base_dir / "proxy.pid",
+                    console=MagicMock(),
+                )
+
+        assert excinfo.value.code == ErrorCode.SIDECAR_CRASHED, (
+            f"sidecar-died-during-health-poll must surface WRTLS-112, "
+            f"got {excinfo.value.code.name} (WRTLS-{excinfo.value.code.value})"
+        )
+
 
 # ---------------------------------------------------------------------------
 # D4 — orphan cleanup if proxy spawn fails after sidecar is up

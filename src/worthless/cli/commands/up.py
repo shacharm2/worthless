@@ -418,6 +418,19 @@ def _supervise_proxy_with_sidecar(
             proxy.kill()
             proxy.wait(timeout=2)  # reap after kill to prevent zombies
         pid_file.unlink(missing_ok=True)
+
+        # Jenny REJECT #1: before attributing this to the proxy, check
+        # whether the SIDECAR is actually the dead party. A sidecar crash
+        # during the 15-second health-poll window manifests upstream as
+        # "proxy never became healthy" — but the right error is WRTLS-112,
+        # not WRTLS-104. Wrong code → wrong debug direction for the user.
+        # Sidecar teardown still happens via the outer try/except.
+        if handle.proc.poll() is not None:
+            raise WorthlessError(
+                ErrorCode.SIDECAR_CRASHED,
+                "sidecar terminated unexpectedly during proxy health check",
+            )
+
         # Sidecar teardown happens via the outer try/except in _start_foreground.
         console.print_error(
             WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
