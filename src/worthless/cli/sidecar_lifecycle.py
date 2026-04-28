@@ -154,6 +154,11 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
 
 _READY_POLL_INTERVAL_S = 0.05
 
+# AF_UNIX ``sockaddr_un.sun_path`` is char[104] on macOS, char[108] on Linux.
+# Cap at the smaller (104) for portability. The string + null terminator
+# must fit, so usable strings are at most 103 bytes on macOS.
+_AF_UNIX_SUN_PATH_LIMIT = 104
+
 
 @dataclass
 class SidecarHandle:
@@ -259,8 +264,25 @@ def spawn_sidecar(
             ``WORTHLESS_SIDECAR_DRAIN_TIMEOUT``.
 
     Raises:
-        WorthlessError: WRTLS-113 if the sidecar does not become ready.
+        WorthlessError: WRTLS-113 if the path is too long for AF_UNIX or
+            the sidecar does not become ready.
     """
+    # AF_UNIX ``sun_path`` is 104 bytes on macOS and 108 on Linux. We cap
+    # at 104 (the lower) for portability — minus 1 for the null terminator,
+    # so paths up to 103 bytes are accepted. Pre-check this BEFORE Popen:
+    # an oversized path makes the sidecar's ``bind()`` fail with
+    # ``ENAMETOOLONG``, the sidecar exits, and ``_wait_for_ready`` returns
+    # False — surfaced as a misleading "did not become ready" timeout. Eager
+    # validation surfaces the real cause and saves the spawn cycle.
+    encoded_path = str(socket_path).encode()
+    if len(encoded_path) >= _AF_UNIX_SUN_PATH_LIMIT:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"socket path too long for AF_UNIX "
+            f"({len(encoded_path)} bytes; max {_AF_UNIX_SUN_PATH_LIMIT - 1}): "
+            f"{socket_path}",
+        )
+
     # A stale socket inode at the target path would make ``_wait_for_ready``
     # return True before the new sidecar has bound (false positive). The
     # per-pid run dir is created with ``mkdir(exist_ok=False)`` so this is

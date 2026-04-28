@@ -120,6 +120,20 @@ def _capturing_popen(captured: dict[str, dict[str, str]], pid: int = 12345) -> o
     return _fake_popen
 
 
+def _short_socket_path() -> Path:
+    """Return a short, /tmp-rooted AF_UNIX socket path.
+
+    macOS pytest ``tmp_path`` lives under ``/private/var/folders/.../`` —
+    typically 90+ bytes — so ``shares.run_dir / "sidecar.sock"`` exceeds
+    the 104-byte ``sun_path`` limit. Production code (post WOR-384 fix
+    7/8) validates that limit and raises WRTLS-113 before ``Popen``,
+    which short-circuits any test that wanted to exercise the body.
+    Tests that don't care about the path semantically should use this
+    helper to get a short, unique path under ``/tmp``.
+    """
+    return Path(tempfile.mkdtemp(prefix="wlr-test-", dir="/tmp")) / "sc.sock"  # noqa: S108
+
+
 def test_split_to_tmpfs_creates_two_shares(home: Path, key: bytearray) -> None:
     shares = split_to_tmpfs(key, home)
     assert shares.share_a_path.exists()
@@ -219,7 +233,7 @@ def test_spawn_sidecar_returns_handle_with_running_process(home: Path) -> None:
 def test_spawn_sidecar_passes_current_uid_in_env(home: Path, key: bytearray) -> None:
     """B2: env carries the caller-provided uid as the sidecar's allowlist."""
     shares = split_to_tmpfs(key, home)
-    socket_path = shares.run_dir / "sidecar.sock"
+    socket_path = _short_socket_path()
     captured: dict[str, dict[str, str]] = {}
 
     with (
@@ -245,7 +259,7 @@ def test_spawn_sidecar_passes_current_uid_in_env(home: Path, key: bytearray) -> 
 def test_spawn_sidecar_times_out_with_wrtls_113(home: Path, key: bytearray) -> None:
     """B3: a non-sidecar child that never binds raises WRTLS-113 and is reaped."""
     shares = split_to_tmpfs(key, home)
-    socket_path = shares.run_dir / "sidecar.sock"
+    socket_path = _short_socket_path()
 
     real_popen = subprocess.Popen
     spawned: list[subprocess.Popen[bytes]] = []
@@ -281,7 +295,7 @@ def test_spawn_sidecar_times_out_with_wrtls_113(home: Path, key: bytearray) -> N
 def test_spawn_sidecar_passes_drain_timeout_and_log_level(home: Path, key: bytearray) -> None:
     """B4: drain_timeout default and WARNING log level land in the env."""
     shares = split_to_tmpfs(key, home)
-    socket_path = shares.run_dir / "sidecar.sock"
+    socket_path = _short_socket_path()
     captured: dict[str, dict[str, str]] = {}
 
     with (
@@ -393,7 +407,7 @@ def test_spawn_sidecar_unlinks_stale_socket_before_spawn(home: Path, key: bytear
     file and the new sidecar's bind would race against it.
     """
     shares = split_to_tmpfs(key, home)
-    socket_path = shares.run_dir / "sidecar.sock"
+    socket_path = _short_socket_path()
     socket_path.write_bytes(b"")  # pre-create the stale inode
     captured: dict[str, dict[str, str]] = {}
 
@@ -457,7 +471,7 @@ def test_spawn_sidecar_reaps_child_on_keyboardinterrupt_during_wait(
     only knows about share files on disk).
     """
     shares = split_to_tmpfs(key, home)
-    socket_path = shares.run_dir / "sidecar.sock"
+    socket_path = _short_socket_path()
 
     # Track kill + communicate on a fake Popen.
     class _SpawnFakeProc:
@@ -643,3 +657,67 @@ def test_split_to_tmpfs_recovers_from_stale_run_dir(
     assert any("stale" in msg.lower() for msg in warning_messages), (
         f"Expected stale-recovery warning, got: {warning_messages!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# QA #5 — AF_UNIX sun_path 104-byte limit (macOS) must be validated BEFORE
+# spawn so the user gets a clear error rather than a confusing WRTLS-113
+# "sidecar did not become ready" timeout when bind() actually failed with
+# ENAMETOOLONG.
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_sidecar_rejects_oversized_socket_path(home: Path, key: bytearray) -> None:
+    """``sockaddr_un.sun_path`` is 104 bytes on macOS / 108 on Linux. A
+    long ``$HOME`` + ``run/<pid>/sidecar.sock`` can exceed this. Pre-fix:
+    sidecar's ``bind()`` fails with ``ENAMETOOLONG``, sidecar exits, and
+    ``_wait_for_ready`` returns False — surfaced as the misleading
+    WRTLS-113 "did not become ready". Post-fix: ``spawn_sidecar``
+    validates the path BEFORE ``Popen`` and raises WRTLS-113 with an
+    explicit "AF_UNIX path too long" message — no subprocess spawned,
+    no time wasted.
+    """
+    shares = split_to_tmpfs(key, home)
+    # Construct a deliberately oversized path. We don't need the parent
+    # dirs to actually exist — the validation must happen BEFORE Popen.
+    oversized_dir = Path("/tmp") / ("x" * 110)  # noqa: S108
+    oversized_path = oversized_dir / "sidecar.sock"
+    assert len(str(oversized_path).encode()) > 104, (
+        f"test bug: oversized path is only {len(str(oversized_path).encode())} bytes"
+    )
+
+    with pytest.raises(WorthlessError) as exc_info:
+        spawn_sidecar(oversized_path, shares, allowed_uid=os.getuid())
+
+    # Right error code + clear, actionable message.
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    msg = str(exc_info.value).lower()
+    assert "too long" in msg or "af_unix" in msg or "sun_path" in msg, (
+        f"Expected AF_UNIX-too-long message, got: {exc_info.value!s}"
+    )
+
+
+def test_spawn_sidecar_accepts_path_within_limit(
+    home: Path, key: bytearray, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Boundary check: a path of exactly 100 bytes (well under 104) must
+    NOT trigger the validator. We patch ``Popen`` and ``_wait_for_ready``
+    so this is a pure validator test (no real subprocess).
+    """
+    from unittest.mock import MagicMock, patch as _patch
+
+    shares = split_to_tmpfs(key, home)
+    short_path = Path("/tmp/wlr-100/sidecar.sock")  # noqa: S108
+    assert len(str(short_path).encode()) <= 100
+
+    fake_proc = MagicMock()
+    fake_proc.poll.return_value = None
+    fake_proc.pid = 99999
+
+    with (
+        _patch("worthless.cli.sidecar_lifecycle.subprocess.Popen", return_value=fake_proc),
+        _patch("worthless.cli.sidecar_lifecycle._wait_for_ready", return_value=True),
+    ):
+        # Must NOT raise — path is well within the limit.
+        handle = spawn_sidecar(short_path, shares, allowed_uid=os.getuid())
+        assert handle.socket_path == short_path
