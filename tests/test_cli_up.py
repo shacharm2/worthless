@@ -150,9 +150,9 @@ class TestUpPidFileErrorBranches:
 class TestUpDaemonFlow:
     """up --daemon currently rejects with WRTLS-110 (Phase D: foreground only).
 
-    Daemon support with the sidecar is tracked by WOR-387 / Phase 4. Until
-    that lands, ``-d`` raises before any subprocess is spawned, so callers
-    cannot accidentally end up with a running proxy that has no sidecar.
+    Daemon + sidecar IPC handle inheritance is unsolved. Until that lands,
+    ``-d`` raises before any subprocess is spawned, so callers cannot
+    accidentally end up with a running proxy that has no sidecar.
     """
 
     def test_daemon_mode_rejected(self, home_with_key) -> None:
@@ -241,10 +241,10 @@ class TestUpErrorBranches:
         assert "WRTLS" in result.output
         mock_proxy.terminate.assert_called()
 
-    # Phase D: daemon-spawn-failure and daemon-health-timeout cases collapse
-    # into the single "daemon rejected" path (covered by
-    # ``TestUpDaemonFlow::test_daemon_mode_rejected``). Reinstated when
-    # WOR-387 wires the sidecar into daemon mode.
+    # Daemon-spawn-failure and daemon-health-timeout cases collapse into the
+    # single "daemon rejected" path (covered by
+    # ``TestUpDaemonFlow::test_daemon_mode_rejected``). Reinstate when
+    # daemon + sidecar IPC handle inheritance lands.
 
 
 class TestUpStalePidReclaim:

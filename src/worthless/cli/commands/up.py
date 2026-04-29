@@ -482,14 +482,14 @@ def register_up_commands(app: typer.Typer) -> None:
 
         actual_port = _resolve_port(port)
 
-        # Daemon + sidecar IPC handle inheritance is unsolved (WOR-387).
-        # Reject early — silently spawning a proxy without a sidecar would
-        # break the gate-before-reconstruct invariant.
+        # Daemon + sidecar IPC handle inheritance is unsolved. Reject
+        # early — silently spawning a proxy without a sidecar would break
+        # the gate-before-reconstruct invariant.
         if daemon:
             raise WorthlessError(
                 ErrorCode.DAEMON_NOT_SUPPORTED,
                 "daemon mode not yet supported with sidecar — use foreground "
-                "(`worthless up` without `-d`). Daemon support is tracked by WOR-387.",
+                "(`worthless up` without `-d`).",
             )
 
         # Check PID file for existing proxy
