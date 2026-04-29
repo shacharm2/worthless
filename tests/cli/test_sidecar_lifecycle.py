@@ -405,16 +405,33 @@ def test_spawn_sidecar_unlinks_stale_socket_before_spawn(home: Path, key: bytear
     """Stale socket inode at the target path must be removed before spawn —
     otherwise ``_wait_for_ready`` returns True instantly on the leftover
     file and the new sidecar's bind would race against it.
+
+    Anti-vacuity: capture ``socket_path.exists()`` at the EXACT moment
+    Popen is invoked. The previous version of this test asserted only
+    that Popen was reached, which would pass even if production skipped
+    the unlink entirely. Capturing the filesystem state at Popen-time
+    proves the unlink ran BEFORE Popen. Mutating production to remove
+    the unlink (lines 309-323 of sidecar_lifecycle.py) makes
+    ``inode_exists_at_popen`` True and the test fails.
     """
     shares = split_to_tmpfs(key, home)
     socket_path = _short_socket_path()
     socket_path.write_bytes(b"")  # pre-create the stale inode
-    captured: dict[str, dict[str, str]] = {}
+    assert socket_path.exists(), "test invariant: stale inode must be present pre-call"
+
+    captured: dict[str, object] = {}
+
+    def _inode_checking_popen(*args: object, **kwargs: object) -> _FakeProc:
+        # Snapshot filesystem state at the moment subprocess.Popen is
+        # invoked — that's the production contract boundary.
+        captured["env"] = dict(kwargs["env"])  # type: ignore[arg-type]
+        captured["inode_exists_at_popen"] = socket_path.exists()
+        return _FakeProc()
 
     with (
         patch(
             "worthless.cli.sidecar_lifecycle.subprocess.Popen",
-            _capturing_popen(captured),
+            _inode_checking_popen,
         ),
         patch(
             "worthless.cli.sidecar_lifecycle._wait_for_ready",
@@ -424,8 +441,13 @@ def test_spawn_sidecar_unlinks_stale_socket_before_spawn(home: Path, key: bytear
         # Should NOT raise — the stale inode is unlinked, then spawn proceeds.
         spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
 
-    # Popen was reached → unlink succeeded.
-    assert "env" in captured
+    assert "env" in captured, "spawn_sidecar never reached Popen"
+    assert captured["inode_exists_at_popen"] is False, (
+        "spawn_sidecar invoked Popen WITHOUT unlinking the stale socket inode "
+        "first — _wait_for_ready would race against the leftover file. "
+        "If this assertion fails, the pre-Popen unlink-if-exists block in "
+        "spawn_sidecar was bypassed or removed."
+    )
 
 
 def test_split_to_tmpfs_cleans_up_on_write_failure(
