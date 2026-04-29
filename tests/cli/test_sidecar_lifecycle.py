@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from cryptography.fernet import Fernet
 
 import worthless.cli.sidecar_lifecycle as _sidecar_lifecycle
 from worthless.cli.errors import ErrorCode, WorthlessError
@@ -28,6 +29,7 @@ from worthless.cli.sidecar_lifecycle import (
     spawn_sidecar,
     split_to_tmpfs,
 )
+from worthless.ipc.client import IPCClient
 
 
 @pytest.fixture
@@ -348,22 +350,10 @@ def test_shutdown_sidecar_terminates_and_unlinks() -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_lifecycle_seal_open_roundtrip_through_real_sidecar() -> None:
-    """End-to-end: split_to_tmpfs → spawn_sidecar → IPC seal/open → shutdown_sidecar.
-
-    Proves the WHOLE WOR-384 lifecycle produces a working sidecar:
-    the share files written by split_to_tmpfs reconstruct INTO a Fernet key
-    that the sidecar's FernetBackend successfully uses for seal/open.
-    Without this test, every other Phase B/C test only proves "process
-    spawns, socket binds" — never that the cryptographic plumbing actually
-    works through the lifecycle wiring.
-
-    Exercises the entire CLI-side surface: split, spawn, supervise via
-    IPC client, then orderly teardown.
+    """End-to-end: split → spawn → IPC seal/open → shutdown. Proves the
+    share files reconstruct into a Fernet key the sidecar can actually use,
+    not just that a process spawns and a socket binds.
     """
-    from cryptography.fernet import Fernet
-
-    from worthless.ipc.client import IPCClient
-
     with tempfile.TemporaryDirectory(prefix="w-", dir="/tmp") as tmp_dir_str:  # noqa: S108
         short_home = Path(tmp_dir_str) / ".worthless"
         short_home.mkdir()
@@ -380,14 +370,10 @@ async def test_lifecycle_seal_open_roundtrip_through_real_sidecar() -> None:
             async with IPCClient(socket_path) as client:
                 ciphertext = await client.seal(plaintext)
                 roundtripped = await client.open(ciphertext)
-            assert roundtripped == plaintext, (
-                "IPC seal/open roundtrip failed — share files reconstruct, "
-                "but the resulting Fernet key does not actually encrypt/decrypt"
-            )
-            # Anti-vacuity: ciphertext is real Fernet output (starts with magic
-            # 0x80 version byte after base64 decode). A no-op backend that
-            # echoed plaintext would fail this check.
-            assert ciphertext != plaintext, "sidecar returned plaintext — not really sealing"
+            assert roundtripped == plaintext
+            # Anti-vacuity: a no-op backend that echoed plaintext back would
+            # pass the roundtrip check above; this asserts real sealing.
+            assert ciphertext != plaintext
         finally:
             shutdown_sidecar(handle)
             assert handle.proc.poll() is not None
