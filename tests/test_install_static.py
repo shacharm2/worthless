@@ -131,6 +131,21 @@ def test_smoke_test_uses_uv_run_version(install_text: str) -> None:
     assert "uv run worthless" in install_text or "worthless --version" in install_text, (
         "install.sh must smoke-test via 'uv run worthless --version' (PATH-independent)"
     )
-    assert "worthless lock" not in install_text, (
+    # Scope the "no stateful smoke" invariant to the smoke_test() function
+    # body. The user-facing post-install banner legitimately mentions
+    # `worthless lock` as a "Try it" hint — that is not a smoke-test action,
+    # and a whole-script grep falsely flagged it. Pin the structural
+    # contract: the function exists AND its body contains no `worthless lock`.
+    smoke_match = re.search(
+        r"^smoke_test\(\)\s*\{(.+?)^\}",
+        install_text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert smoke_match is not None, (
+        "could not locate `smoke_test()` function in install.sh — "
+        "test needs updating if the function was renamed"
+    )
+    smoke_body = smoke_match.group(1)
+    assert "worthless lock" not in smoke_body, (
         "Do NOT smoke-test with 'worthless lock' — too stateful for an installer"
     )
