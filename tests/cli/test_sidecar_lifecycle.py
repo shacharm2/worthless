@@ -600,10 +600,21 @@ def test_spawn_sidecar_reaps_child_on_keyboardinterrupt_during_wait(
 # ---------------------------------------------------------------------------
 
 
-def test_wait_for_ready_blocks_until_listen_not_just_bind() -> None:
+def test_wait_for_ready_blocks_until_listen_not_just_bind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Real-OS race repro for QA #1: the bind/listen window. Holds the
     window open for 500ms in a worker thread; ``_wait_for_ready`` must
     NOT return True until the worker calls ``listen()``.
+
+    Structural assertion (anti-flake): instead of timing-anchored
+    ``elapsed >= 0.4`` (scheduler-sensitive on busy CI), we spy on
+    ``_can_connect`` and require at least one probe to return False
+    BEFORE the listen-completed return value of True. Pre-fix
+    (``socket_path.exists()`` only): the first probe returns True
+    immediately, no False is ever observed, the assertion fails.
+    Post-fix: probes return False during the bind/listen window and
+    only flip True after ``listen()`` runs.
     """
     import socket as socket_mod
     import tempfile as _tempfile
@@ -611,6 +622,7 @@ def test_wait_for_ready_blocks_until_listen_not_just_bind() -> None:
     import time
     from unittest.mock import MagicMock as _MagicMock
 
+    import worthless.cli.sidecar_lifecycle as _sclm
     from worthless.cli.sidecar_lifecycle import _wait_for_ready
 
     # /tmp-rooted to dodge AF_UNIX 104-byte sun_path limit on macOS.
@@ -643,6 +655,19 @@ def test_wait_for_ready_blocks_until_listen_not_just_bind() -> None:
             except OSError:
                 pass
 
+    # Spy on _can_connect: every call records its return value. Anti-flake
+    # structural check below requires at least one False (= probe ran
+    # during the pre-listen window).
+    real_can_connect = _sclm._can_connect
+    probe_results: list[bool] = []
+
+    def _spying_can_connect(path: Path) -> bool:
+        result = real_can_connect(path)
+        probe_results.append(result)
+        return result
+
+    monkeypatch.setattr(_sclm, "_can_connect", _spying_can_connect)
+
     thread = threading.Thread(target=fake_sidecar, daemon=True)
     thread.start()
 
@@ -656,19 +681,26 @@ def test_wait_for_ready_blocks_until_listen_not_just_bind() -> None:
         fake_proc = _MagicMock()
         fake_proc.poll.return_value = None
 
-        start = time.monotonic()
-        ready = _wait_for_ready(fake_proc, sock_path, deadline=start + 2.0)
-        elapsed = time.monotonic() - start
+        ready = _wait_for_ready(fake_proc, sock_path, deadline=time.monotonic() + 2.0)
 
         assert ready is True, "_wait_for_ready timed out"
-        # Pre-fix: returns within ~50ms of bind (one poll tick) — race is open.
-        # Post-fix: connect() probe waits for listen() — elapsed >= 0.4s.
-        assert elapsed >= 0.4, (
-            f"_wait_for_ready returned at {elapsed:.3f}s, before listen() "
-            "fired at 0.5s. The bind/listen race is OPEN — proxy first "
-            "IPC call would hit ECONNREFUSED."
-        )
         assert listen_done.is_set(), "_wait_for_ready returned but listen() never ran"
+        # Structural anti-flake check: at least one probe MUST have returned
+        # False during the 500ms bind/listen hold. Pre-fix (exists()-only)
+        # would return True on the first probe and bail — never seeing False.
+        # Post-fix uses connect() and observes ECONNREFUSED until listen().
+        assert any(r is False for r in probe_results), (
+            f"_wait_for_ready never observed a non-ready probe (probe_results="
+            f"{probe_results}). The bind/listen race is OPEN — production "
+            "appears to be using socket_path.exists() instead of connect-probing."
+        )
+        # And the final probe (the one that returned True) must come AFTER
+        # at least one False — sanity check that the False-then-True sequence
+        # is what got us out, not a single instant True.
+        assert probe_results[-1] is True, (
+            f"_wait_for_ready returned ready=True but the last probe was False "
+            f"(probe_results={probe_results}) — control flow inconsistency"
+        )
     finally:
         exit_signal.set()
         thread.join(timeout=3.0)
