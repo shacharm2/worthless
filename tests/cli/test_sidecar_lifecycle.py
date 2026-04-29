@@ -7,15 +7,19 @@ import importlib
 import logging
 import os
 import secrets
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+import worthless.cli.sidecar_lifecycle as _sidecar_lifecycle
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.sidecar_lifecycle import (
     ShareFiles,
@@ -402,28 +406,18 @@ def test_shutdown_sidecar_is_idempotent(home: Path, key: bytearray) -> None:
 
 
 def test_spawn_sidecar_unlinks_stale_socket_before_spawn(home: Path, key: bytearray) -> None:
-    """Stale socket inode at the target path must be removed before spawn —
-    otherwise ``_wait_for_ready`` returns True instantly on the leftover
-    file and the new sidecar's bind would race against it.
-
-    Anti-vacuity: capture ``socket_path.exists()`` at the EXACT moment
-    Popen is invoked. The previous version of this test asserted only
-    that Popen was reached, which would pass even if production skipped
-    the unlink entirely. Capturing the filesystem state at Popen-time
-    proves the unlink ran BEFORE Popen. Mutating production to remove
-    the unlink (lines 309-323 of sidecar_lifecycle.py) makes
-    ``inode_exists_at_popen`` True and the test fails.
+    """Stale socket inode must be unlinked before Popen — otherwise the new
+    sidecar's bind races against the leftover and ``_wait_for_ready`` can
+    return True on the wrong inode.
     """
     shares = split_to_tmpfs(key, home)
     socket_path = _short_socket_path()
-    socket_path.write_bytes(b"")  # pre-create the stale inode
-    assert socket_path.exists(), "test invariant: stale inode must be present pre-call"
+    socket_path.write_bytes(b"")
+    assert socket_path.exists()
 
     captured: dict[str, object] = {}
 
     def _inode_checking_popen(*args: object, **kwargs: object) -> _FakeProc:
-        # Snapshot filesystem state at the moment subprocess.Popen is
-        # invoked — that's the production contract boundary.
         captured["env"] = dict(kwargs["env"])  # type: ignore[arg-type]
         captured["inode_exists_at_popen"] = socket_path.exists()
         return _FakeProc()
@@ -438,15 +432,11 @@ def test_spawn_sidecar_unlinks_stale_socket_before_spawn(home: Path, key: bytear
             return_value=True,
         ),
     ):
-        # Should NOT raise — the stale inode is unlinked, then spawn proceeds.
         spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
 
-    assert "env" in captured, "spawn_sidecar never reached Popen"
+    assert "env" in captured
     assert captured["inode_exists_at_popen"] is False, (
-        "spawn_sidecar invoked Popen WITHOUT unlinking the stale socket inode "
-        "first — _wait_for_ready would race against the leftover file. "
-        "If this assertion fails, the pre-Popen unlink-if-exists block in "
-        "spawn_sidecar was bypassed or removed."
+        "Popen invoked with stale inode still present"
     )
 
 
@@ -479,19 +469,13 @@ def test_split_to_tmpfs_cleans_up_on_write_failure(
 def test_split_to_tmpfs_zeroes_shards_when_write_fails(
     home: Path, key: bytearray, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """SR-02: when ``_write_share`` raises mid-sequence, the shard bytearrays
-    ``split_key`` already produced must be zeroed before the exception
-    propagates — otherwise a stack-frame handler upstream (or a dump tool
-    attached during incident response) can read plaintext shard bytes from
-    the heap, even though the disk artifacts are gone.
+    """SR-02: shard bytearrays must be zeroed before split_to_tmpfs re-raises
+    on partial-write failure — disk cleanup alone leaves plaintext on the heap.
     """
     captured: list[bytearray] = []
     real_write_share = importlib.import_module("worthless.cli.sidecar_lifecycle")._write_share
 
     def _flaky_write(path: Path, data: bytearray) -> None:
-        # Capture each shard bytearray reference as ``_write_share`` is
-        # invoked. After ``split_to_tmpfs`` raises, these are the live
-        # objects SR-02 requires to be zeroed.
         captured.append(data)
         if len(captured) == 1:
             real_write_share(path, data)
@@ -503,13 +487,9 @@ def test_split_to_tmpfs_zeroes_shards_when_write_fails(
     with pytest.raises(OSError, match="No space left"):
         split_to_tmpfs(key, home)
 
-    assert len(captured) == 2, "test invariant: _flaky_write must see both shards"
-    for i, shard in enumerate(captured):
-        assert all(b == 0 for b in shard), (
-            f"shard {'A' if i == 0 else 'B'} still contains non-zero bytes "
-            "after split_to_tmpfs raised — SR-02 zeroing is missing in the "
-            "except branch of split_to_tmpfs"
-        )
+    assert len(captured) == 2
+    for shard in captured:
+        assert all(b == 0 for b in shard)
 
 
 # ---------------------------------------------------------------------------
@@ -603,107 +583,73 @@ def test_spawn_sidecar_reaps_child_on_keyboardinterrupt_during_wait(
 def test_wait_for_ready_blocks_until_listen_not_just_bind(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Real-OS race repro for QA #1: the bind/listen window. Holds the
-    window open for 500ms in a worker thread; ``_wait_for_ready`` must
-    NOT return True until the worker calls ``listen()``.
-
-    Structural assertion (anti-flake): instead of timing-anchored
-    ``elapsed >= 0.4`` (scheduler-sensitive on busy CI), we spy on
-    ``_can_connect`` and require at least one probe to return False
-    BEFORE the listen-completed return value of True. Pre-fix
-    (``socket_path.exists()`` only): the first probe returns True
-    immediately, no False is ever observed, the assertion fails.
-    Post-fix: probes return False during the bind/listen window and
-    only flip True after ``listen()`` runs.
+    """Real-OS race repro: worker holds the bind/listen window for 500ms;
+    _wait_for_ready must NOT return True until ``listen()`` actually runs.
     """
-    import socket as socket_mod
-    import tempfile as _tempfile
-    import threading
-    import time
-    from unittest.mock import MagicMock as _MagicMock
-
-    import worthless.cli.sidecar_lifecycle as _sclm
-    from worthless.cli.sidecar_lifecycle import _wait_for_ready
-
     # /tmp-rooted to dodge AF_UNIX 104-byte sun_path limit on macOS.
-    tmp_dir = Path(_tempfile.mkdtemp(prefix="wlr-", dir="/tmp"))  # noqa: S108
-    sock_path = tmp_dir / "race.sock"
-    bind_done = threading.Event()
-    listen_done = threading.Event()
-    exit_signal = threading.Event()
+    with tempfile.TemporaryDirectory(prefix="wlr-", dir="/tmp") as tmp_dir_str:  # noqa: S108
+        sock_path = Path(tmp_dir_str) / "race.sock"
+        bind_done = threading.Event()
+        listen_done = threading.Event()
+        exit_signal = threading.Event()
 
-    def fake_sidecar() -> None:
-        s = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+        def fake_sidecar() -> None:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                s.bind(str(sock_path))
+                bind_done.set()
+                # connect() fails with ECONNREFUSED in this window even though
+                # the inode exists.
+                time.sleep(0.5)
+                s.listen(5)
+                listen_done.set()
+                exit_signal.wait(timeout=3.0)
+            finally:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+                try:
+                    sock_path.unlink()
+                except OSError:
+                    pass
+
+        # Anti-flake structural check: spy on _can_connect; at least one
+        # probe must return False (= we polled during the pre-listen window).
+        real_can_connect = _sidecar_lifecycle._can_connect
+        probe_results: list[bool] = []
+
+        def _spying_can_connect(path: Path) -> bool:
+            result = real_can_connect(path)
+            probe_results.append(result)
+            return result
+
+        monkeypatch.setattr(_sidecar_lifecycle, "_can_connect", _spying_can_connect)
+
+        thread = threading.Thread(target=fake_sidecar, daemon=True)
+        thread.start()
+
         try:
-            s.bind(str(sock_path))
-            bind_done.set()
-            # Hold the bind/listen window open. Pre-fix _wait_for_ready
-            # would return True during this window because exists() is True
-            # but connect() would fail with ECONNREFUSED.
-            time.sleep(0.5)
-            s.listen(5)
-            listen_done.set()
-            # Stay alive long enough for connect() probes to succeed.
-            exit_signal.wait(timeout=3.0)
+            assert bind_done.wait(timeout=2.0)
+            assert sock_path.exists()
+            assert not listen_done.is_set()
+
+            fake_proc = MagicMock()
+            fake_proc.poll.return_value = None
+
+            ready = _sidecar_lifecycle._wait_for_ready(
+                fake_proc, sock_path, deadline=time.monotonic() + 2.0
+            )
+
+            assert ready is True
+            assert listen_done.is_set()
+            assert any(r is False for r in probe_results), (
+                f"no probe observed pre-listen window (probe_results={probe_results})"
+            )
+            assert probe_results[-1] is True
         finally:
-            try:
-                s.close()
-            except OSError:
-                pass
-            try:
-                sock_path.unlink()
-            except OSError:
-                pass
-
-    # Spy on _can_connect: every call records its return value. Anti-flake
-    # structural check below requires at least one False (= probe ran
-    # during the pre-listen window).
-    real_can_connect = _sclm._can_connect
-    probe_results: list[bool] = []
-
-    def _spying_can_connect(path: Path) -> bool:
-        result = real_can_connect(path)
-        probe_results.append(result)
-        return result
-
-    monkeypatch.setattr(_sclm, "_can_connect", _spying_can_connect)
-
-    thread = threading.Thread(target=fake_sidecar, daemon=True)
-    thread.start()
-
-    try:
-        # Wait for bind so the socket inode exists.
-        assert bind_done.wait(timeout=2.0), "fake sidecar never bound"
-        assert sock_path.exists(), "socket inode missing post-bind"
-        assert not listen_done.is_set(), "listen() already fired — race window not held"
-
-        # Now call _wait_for_ready. Must block until listen() actually runs.
-        fake_proc = _MagicMock()
-        fake_proc.poll.return_value = None
-
-        ready = _wait_for_ready(fake_proc, sock_path, deadline=time.monotonic() + 2.0)
-
-        assert ready is True, "_wait_for_ready timed out"
-        assert listen_done.is_set(), "_wait_for_ready returned but listen() never ran"
-        # Structural anti-flake check: at least one probe MUST have returned
-        # False during the 500ms bind/listen hold. Pre-fix (exists()-only)
-        # would return True on the first probe and bail — never seeing False.
-        # Post-fix uses connect() and observes ECONNREFUSED until listen().
-        assert any(r is False for r in probe_results), (
-            f"_wait_for_ready never observed a non-ready probe (probe_results="
-            f"{probe_results}). The bind/listen race is OPEN — production "
-            "appears to be using socket_path.exists() instead of connect-probing."
-        )
-        # And the final probe (the one that returned True) must come AFTER
-        # at least one False — sanity check that the False-then-True sequence
-        # is what got us out, not a single instant True.
-        assert probe_results[-1] is True, (
-            f"_wait_for_ready returned ready=True but the last probe was False "
-            f"(probe_results={probe_results}) — control flow inconsistency"
-        )
-    finally:
-        exit_signal.set()
-        thread.join(timeout=3.0)
+            exit_signal.set()
+            thread.join(timeout=3.0)
 
 
 # ---------------------------------------------------------------------------
