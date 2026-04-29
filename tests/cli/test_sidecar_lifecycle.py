@@ -193,6 +193,39 @@ def test_split_to_tmpfs_does_not_log_share_bytes(
             assert b_hex not in arg_str
 
 
+@pytest.mark.integration
+def test_spawn_and_shutdown_do_not_log_share_bytes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """SR-04: spawn_sidecar + shutdown_sidecar log paths/PIDs only, not share bytes.
+
+    Regression guard against a future debug print that accidentally interpolates
+    a shard buffer. Drives the full lifecycle and scans every captured record.
+    """
+    caplog.set_level(logging.DEBUG, logger="worthless")
+    with tempfile.TemporaryDirectory(prefix="w-", dir="/tmp") as tmp_dir_str:  # noqa: S108
+        short_home = Path(tmp_dir_str) / ".worthless"
+        short_home.mkdir()
+        fernet_key = bytearray(Fernet.generate_key())
+        shares = split_to_tmpfs(fernet_key, short_home)
+        a_hex = shares.share_a_path.read_bytes().hex()
+        b_hex = shares.share_b_path.read_bytes().hex()
+        socket_path = shares.run_dir / "sc.sock"
+        if len(str(socket_path)) >= 104:
+            pytest.skip(f"tmp path too long for AF_UNIX (len={len(str(socket_path))} >= 104)")
+        handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+        shutdown_sidecar(handle)
+
+    for record in caplog.records:
+        msg = record.getMessage()
+        assert a_hex not in msg, f"share_a hex leaked in log: {msg!r}"
+        assert b_hex not in msg, f"share_b hex leaked in log: {msg!r}"
+        for arg in record.args or ():
+            arg_str = repr(arg)
+            assert a_hex not in arg_str
+            assert b_hex not in arg_str
+
+
 # ---------------------------------------------------------------------------
 # Phase B: spawn_sidecar tests
 # ---------------------------------------------------------------------------
