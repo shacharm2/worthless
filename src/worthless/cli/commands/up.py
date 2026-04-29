@@ -53,14 +53,12 @@ from worthless.cli.sidecar_lifecycle import (
 )
 from worthless.crypto.types import zero_buf
 
-# Phase D: poll cadence for the foreground supervisor. ``time.sleep`` is
-# interrupted by signals, so ``_shutdown`` flips within one tick of Ctrl+C.
+# Poll cadence for the foreground supervisor. ``time.sleep`` is interrupted
+# by signals, so ``_shutdown`` flips within one tick of Ctrl+C.
 _FOREGROUND_POLL_INTERVAL_S = 0.5
 
-# QA #4: filename of the per-home flock that serializes ``worthless up``
-# foreground sessions. Living-but-empty file at ``~/.worthless/.up.lock``;
-# the OS-level flock (held for the foreground session lifetime) is the
-# actual serialization primitive.
+# Per-home flock file: empty marker; the OS-level flock held for the session
+# lifetime is the actual serialization primitive against concurrent ``up``.
 _UP_LOCK_FILENAME = ".up.lock"
 
 
@@ -240,28 +238,21 @@ def _start_foreground(
 ) -> None:
     """Start sidecar + proxy in foreground (blocks until SIGINT/SIGTERM).
 
-    Phase D: spawns the sidecar BEFORE the proxy, wires the socket path
-    into ``proxy_env``, and detects mid-session sidecar crash, surfacing
-    it as :attr:`ErrorCode.SIDECAR_CRASHED` (WRTLS-112). On any exit path
-    — clean, error, or signal — the proxy is terminated first, then the
-    sidecar (cleanup ordering matters).
+    Sidecar spawns BEFORE the proxy. Mid-session sidecar crash surfaces as
+    WRTLS-112. On any exit path the proxy is terminated first, then the
+    sidecar.
 
     Concurrent ``worthless up`` invocations are serialized via flock on
-    ``~/.worthless/.up.lock`` (QA #4). The second invocation fails fast
-    with WRTLS-105 LOCK_IN_PROGRESS rather than racing on the pidfile.
+    ``~/.worthless/.up.lock`` — the second invocation fails fast with
+    WRTLS-105 instead of racing on the pidfile.
     """
 
-    # Security panel C-2: install spawn-window signal handlers BEFORE
-    # ``_foreground_lock`` acquisition. If SIGTERM/SIGHUP arrives between
-    # lock-acquire and handler-install (the previous structure), Python's
-    # default ``SIG_DFL`` action terminates the parent — the lockfile fd
-    # closes (releasing flock) but any in-flight key read leaves an
-    # unzeroed copy on the heap. Installing here shrinks that window to
-    # the minimum.
-    #
-    # Chaos #7: SIGHUP is added alongside SIGINT/SIGTERM. Default SIGHUP
-    # action is terminate (orphaning children); we want graceful shutdown
-    # the same way Ctrl+C / SIGTERM trigger it.
+    # Spawn-window signal handlers MUST be installed BEFORE
+    # ``_foreground_lock`` acquisition. A signal arriving between
+    # lock-acquire and handler-install would default-terminate the parent —
+    # closing the lockfile fd cleanly but leaving any in-flight key read
+    # un-zeroed on the heap. SIGHUP is included so a parent-shell hangup
+    # triggers graceful teardown rather than orphaning children.
     def _spawn_window_signal_handler(_signum=None, _frame=None) -> None:
         raise KeyboardInterrupt
 
@@ -305,47 +296,29 @@ def _start_foreground_locked(
     pid_file: Path,
     console,
 ) -> None:
-    """Foreground body — runs only while ``_foreground_lock`` is held.
+    """Foreground body — runs only while ``_foreground_lock`` is held."""
+    # Spawn-window signal handlers are installed by the outer
+    # ``_start_foreground`` before lock acquisition. ``_supervise_proxy_with_sidecar``
+    # replaces them once both children are up; the outer finally restores
+    # the caller's prior handlers either way.
 
-    Extracted so the lock acquisition stays a thin envelope around an
-    otherwise-unchanged Phase D body.
-    """
-
-    # Spawn-window signal handlers (SIGINT/SIGTERM/SIGHUP raising
-    # KeyboardInterrupt) are installed by the outer ``_start_foreground``
-    # before lock acquisition — see security panel C-2. The supervisor
-    # below replaces them with a flag-based handler once both children
-    # are up; ``_start_foreground``'s outer finally restores the caller's
-    # prior handlers either way.
-
-    # Step 1: split the Fernet key to tmpfs. ``home.fernet_key`` returns
-    # a ``bytearray`` (SR-01); pass it through directly — never cast to
-    # ``bytes``, the reconstruct buffer must remain zeroable.
+    # SR-01: ``home.fernet_key`` returns a bytearray; pass through directly
+    # so the reconstruct buffer stays zeroable.
     fernet_key = home.fernet_key
     try:
         shares = split_to_tmpfs(fernet_key, home.base_dir)
     finally:
-        # SR-02: zero the plaintext Fernet key. The shares are now on
-        # disk and held in ``shares.shard_a/b`` bytearrays (zeroed by
-        # ``shutdown_sidecar`` later). The original key is no longer
-        # needed in this process — wipe it now so it can't be lifted
-        # from a memory dump for the rest of the session. Runs on
-        # success AND on split_to_tmpfs failure.
+        # SR-02: wipe the plaintext key now — it's no longer needed in this
+        # process and shouldn't sit in heap for the rest of the session.
         fernet_key[:] = bytearray(len(fernet_key))
 
-    # Step 2: spawn the sidecar. Same UID = no sudo dance (Phase 0 decision).
     handle: SidecarHandle | None = None
     try:
         socket_path = shares.run_dir / "sidecar.sock"
         handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
 
-        # Step 3: wire the socket path into the proxy env. We mutate
-        # ``proxy_env`` in place rather than extending ``build_proxy_env``
-        # (per /plan decision 7) so the sidecar location lives next to the
-        # spawn rather than being computed twice.
         proxy_env["WORTHLESS_SIDECAR_SOCKET"] = str(handle.socket_path)
 
-        # Step 4: spawn the proxy.
         try:
             proxy, actual_port = spawn_proxy(env=proxy_env, port=port)
         except Exception as exc:
@@ -365,12 +338,9 @@ def _start_foreground_locked(
             console=console,
         )
     except BaseException:
-        # Step 5: on any failure after sidecar is up, tear down so we
-        # leave no orphan PID, no orphan shares, no orphan socket.
-        # ``handle is None`` means ``spawn_sidecar`` itself raised — the
-        # share files remain on disk, so unlink them (and the run dir)
-        # directly. SR-02: in BOTH branches the in-memory shard bytearrays
-        # must be zeroed before the exception propagates.
+        # Tear down on any failure: ``handle is None`` means spawn_sidecar
+        # itself raised — we still have shares on disk to clean up. SR-02:
+        # both branches zero shard bytearrays before re-raising.
         if handle is not None:
             shutdown_sidecar(handle)
         else:
@@ -398,26 +368,19 @@ def _supervise_proxy_with_sidecar(
 ) -> None:
     """Run the foreground supervisor loop once both processes are up.
 
-    Wired by :func:`_start_foreground`. Split out so the spawn-and-cleanup
-    layer stays readable. On a clean exit the proxy is terminated first,
-    then ``shutdown_sidecar`` (Phase C) is called; on a sidecar crash the
-    proxy is still terminated first, then ``shutdown_sidecar`` runs, then
-    we raise WRTLS-112.
+    Wired by :func:`_start_foreground`. On every exit path the proxy is
+    terminated first, then ``shutdown_sidecar`` runs. A sidecar crash
+    raises WRTLS-112 after both processes are reaped.
     """
     # Write PID file immediately so a racing second invocation has
     # something to detect. Rewrite below once /healthz reports the
     # authoritative PID.
     write_pid(pid_file, proxy.pid, actual_port)
 
-    # Signal handler ONLY sets a flag — all cleanup in main thread.
-    # This avoids reentrant wait() calls and blocking I/O in handlers.
-    #
-    # WOR-384 fix-11/11 (Jenny CONCERN #5): the supervisor INTENTIONALLY
-    # overwrites the spawn-window handler installed by ``_start_foreground``
-    # (see fix-3/8 — KbdInt-raising). The supervisor owns shutdown signals
-    # from here on; the outer ``finally`` in ``_start_foreground`` restores
-    # whatever the caller had before us. Net: caller sees no leaked handler
-    # past ``_start_foreground``'s lifetime.
+    # Flag-only signal handlers: avoids reentrant wait() and blocking I/O
+    # inside the handler. Replaces the spawn-window KbdInt handler that
+    # ``_start_foreground`` installed; the outer finally restores the
+    # caller's prior handlers when we return.
     _shutdown = False
 
     def _on_signal(_signum=None, _frame=None):
@@ -438,12 +401,9 @@ def _supervise_proxy_with_sidecar(
             proxy.wait(timeout=2)  # reap after kill to prevent zombies
         pid_file.unlink(missing_ok=True)
 
-        # Jenny REJECT #1: before attributing this to the proxy, check
-        # whether the SIDECAR is actually the dead party. A sidecar crash
-        # during the 15-second health-poll window manifests upstream as
-        # "proxy never became healthy" — but the right error is WRTLS-112,
-        # not WRTLS-104. Wrong code → wrong debug direction for the user.
-        # Sidecar teardown still happens via the outer try/except.
+        # A sidecar crash during the health-poll window also surfaces as
+        # "proxy never healthy" upstream. Check who actually died so the
+        # error code points the user in the right direction.
         if handle.proc.poll() is not None:
             raise WorthlessError(
                 ErrorCode.SIDECAR_CRASHED,
@@ -466,18 +426,10 @@ def _supervise_proxy_with_sidecar(
 
     console.print_success(f"Proxy running on 127.0.0.1:{actual_port} (Ctrl+C to stop)")
 
-    # Phase D: also watch the sidecar. If it dies first, flag the crash
-    # and break — the cleanup block below will still tear down the proxy
-    # before we surface WRTLS-112.
-    #
-    # WOR-384 fix-11/11 (Jenny CONCERN #6): if BOTH die in the same tick,
-    # ``proxy.poll() is None`` evaluates first and (proxy already dead)
-    # exits the loop without setting ``sidecar_crashed``. User sees a
-    # clean exit instead of WRTLS-112. Acceptable: a sidecar crash that
-    # propagates to proxy death within ``_FOREGROUND_POLL_INTERVAL_S``
-    # (500 ms) is functionally indistinguishable from a clean exit at
-    # this layer. If we ever want strict attribution, swap the loop
-    # order so sidecar is checked first.
+    # Watch both processes. If BOTH die in the same tick, ``proxy.poll()``
+    # short-circuits the loop (proxy dead → exit) and we miss attribution
+    # to the sidecar — acceptable since the user-visible failure is the
+    # same. Swap the order if strict attribution is ever needed.
     sidecar_crashed = False
     while proxy.poll() is None and not _shutdown:
         if handle.proc.poll() is not None:
@@ -530,12 +482,9 @@ def register_up_commands(app: typer.Typer) -> None:
 
         actual_port = _resolve_port(port)
 
-        # Phase D: daemon mode is foreground-only until WOR-387 wires the
-        # sidecar into the daemon path. Reject early with a clear hint
-        # rather than silently spawning a proxy without a sidecar.
-        # WOR-384 fix-11/11: ``DAEMON_NOT_SUPPORTED`` (114) instead of
-        # ``PLATFORM_UNSUPPORTED`` (110) — the platform is fine, just the
-        # mode isn't wired yet. Right code → right debug direction.
+        # Daemon + sidecar IPC handle inheritance is unsolved (WOR-387).
+        # Reject early — silently spawning a proxy without a sidecar would
+        # break the gate-before-reconstruct invariant.
         if daemon:
             raise WorthlessError(
                 ErrorCode.DAEMON_NOT_SUPPORTED,

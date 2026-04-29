@@ -197,41 +197,40 @@ def test_split_to_tmpfs_does_not_log_share_bytes(
 
 
 @pytest.mark.integration
-def test_spawn_sidecar_returns_handle_with_running_process(home: Path) -> None:
+def test_spawn_sidecar_returns_handle_with_running_process() -> None:
     """B1: spawn a real sidecar and verify the handle reflects a live process.
 
     Uses a real Fernet key (not the uniform-byte ``key`` fixture) because the
-    sidecar's FernetBackend validates the reconstructed key on startup and
-    will exit rc=1 on a malformed key. Path is forced under /tmp so AF_UNIX's
-    104-byte sun_path limit on macOS doesn't trip.
+    sidecar's FernetBackend validates the reconstructed key on startup.
+    /tmp-rooted home keeps the socket path under AF_UNIX's 104-byte limit.
     """
-    # Force /tmp-rooted home so socket path stays under 104 bytes on macOS.
-    short_home = Path(tempfile.mkdtemp(prefix="w-", dir="/tmp")) / ".worthless"
-    short_home.mkdir()
-    fernet_key = bytearray(base64.urlsafe_b64encode(secrets.token_bytes(32)))
-    shares = split_to_tmpfs(fernet_key, short_home)
-    socket_path = shares.run_dir / "sc.sock"
-    if len(str(socket_path)) >= 104:
-        pytest.skip(f"tmp path too long for AF_UNIX (len={len(str(socket_path))} >= 104)")
-    handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
-    try:
-        assert isinstance(handle, SidecarHandle)
-        assert handle.proc.poll() is None  # still running
-        assert handle.socket_path.exists()
-        assert handle.allowed_uid == os.getuid()
-        assert handle.shares is shares
-    finally:
-        handle.proc.terminate()
+    with tempfile.TemporaryDirectory(prefix="w-", dir="/tmp") as tmp_dir_str:  # noqa: S108
+        short_home = Path(tmp_dir_str) / ".worthless"
+        short_home.mkdir()
+        fernet_key = bytearray(base64.urlsafe_b64encode(secrets.token_bytes(32)))
+        shares = split_to_tmpfs(fernet_key, short_home)
+        socket_path = shares.run_dir / "sc.sock"
+        if len(str(socket_path)) >= 104:
+            pytest.skip(f"tmp path too long for AF_UNIX (len={len(str(socket_path))} >= 104)")
+        handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
         try:
-            handle.proc.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            handle.proc.kill()
-            handle.proc.wait(timeout=2.0)
-        if handle.socket_path.exists():
+            assert isinstance(handle, SidecarHandle)
+            assert handle.proc.poll() is None
+            assert handle.socket_path.exists()
+            assert handle.allowed_uid == os.getuid()
+            assert handle.shares is shares
+        finally:
+            handle.proc.terminate()
             try:
-                handle.socket_path.unlink()
-            except OSError:
-                pass
+                handle.proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                handle.proc.kill()
+                handle.proc.wait(timeout=2.0)
+            if handle.socket_path.exists():
+                try:
+                    handle.socket_path.unlink()
+                except OSError:
+                    pass
 
 
 def test_spawn_sidecar_passes_current_uid_in_env(home: Path, key: bytearray) -> None:
@@ -327,22 +326,23 @@ def test_spawn_sidecar_passes_drain_timeout_and_log_level(home: Path, key: bytea
 @pytest.mark.integration
 def test_shutdown_sidecar_terminates_and_unlinks() -> None:
     """C1: SIGTERM the sidecar, then verify all on-disk artifacts are gone."""
-    short_home = Path(tempfile.mkdtemp(prefix="w-", dir="/tmp")) / ".worthless"
-    short_home.mkdir()
-    fernet_key = bytearray(base64.urlsafe_b64encode(secrets.token_bytes(32)))
-    shares = split_to_tmpfs(fernet_key, short_home)
-    socket_path = shares.run_dir / "sc.sock"
-    if len(str(socket_path)) >= 104:
-        pytest.skip(f"tmp path too long for AF_UNIX (len={len(str(socket_path))} >= 104)")
-    handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+    with tempfile.TemporaryDirectory(prefix="w-", dir="/tmp") as tmp_dir_str:  # noqa: S108
+        short_home = Path(tmp_dir_str) / ".worthless"
+        short_home.mkdir()
+        fernet_key = bytearray(base64.urlsafe_b64encode(secrets.token_bytes(32)))
+        shares = split_to_tmpfs(fernet_key, short_home)
+        socket_path = shares.run_dir / "sc.sock"
+        if len(str(socket_path)) >= 104:
+            pytest.skip(f"tmp path too long for AF_UNIX (len={len(str(socket_path))} >= 104)")
+        handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
 
-    shutdown_sidecar(handle)
+        shutdown_sidecar(handle)
 
-    assert handle.proc.poll() is not None, "process still running after shutdown"
-    assert not handle.shares.share_a_path.exists()
-    assert not handle.shares.share_b_path.exists()
-    assert not handle.socket_path.exists()
-    assert not handle.shares.run_dir.exists()
+        assert handle.proc.poll() is not None, "process still running after shutdown"
+        assert not handle.shares.share_a_path.exists()
+        assert not handle.shares.share_b_path.exists()
+        assert not handle.socket_path.exists()
+        assert not handle.shares.run_dir.exists()
 
 
 def test_shutdown_sidecar_sigkills_after_grace_window(home: Path, key: bytearray) -> None:

@@ -1,18 +1,10 @@
-"""Sidecar lifecycle helpers (WOR-384 Phases A + B + C).
+"""Sidecar lifecycle: split the Fernet key to per-PID share files, spawn the
+sidecar subprocess with an env contract, and tear it all down (zeroing
+share bytearrays) on any exit path.
 
-Phase A: ``split_to_tmpfs`` plus the ``ShareFiles`` dataclass.
-Phase B: ``spawn_sidecar`` plus the ``SidecarHandle`` dataclass — launches
-``python -m worthless.sidecar`` with the env contract from
-``src/worthless/sidecar/__main__.py`` and waits for ready.
-Phase C: ``shutdown_sidecar`` — symmetric teardown that signals, unlinks
-on-disk artifacts, and zeros share bytearrays (SR-02).
-Phase D (``worthless up`` wiring + WRTLS-112 SIDECAR_CRASHED) and Phase E
-(refactor + docs) follow on the same branch.
-
-Security rules touched here:
-- SR-01: shard buffers are ``bytearray`` (mutable, zeroable).
-- SR-02: ``shutdown_sidecar`` zeros shard buffers via ``zero_buf``.
-- SR-04: never log share bytes; only log the run-dir path.
+Security rules: SR-01 (bytearray, not bytes), SR-02 (explicit zero_buf on
+shard buffers at shutdown and on every failure path), SR-04 (never log
+share bytes — only the run-dir path).
 """
 
 from __future__ import annotations
@@ -33,8 +25,6 @@ from worthless.crypto.types import zero_buf
 
 _logger = logging.getLogger("worthless.cli.sidecar_lifecycle")
 
-# On-disk layout under the Worthless home dir. Phases B (spawn) and C
-# (shutdown) import these so the layout has a single source of truth.
 _RUN_SUBDIR = "run"
 _SHARE_A_NAME = "share_a.bin"
 _SHARE_B_NAME = "share_b.bin"
@@ -44,10 +34,9 @@ _SHARE_B_NAME = "share_b.bin"
 class ShareFiles:
     """Handle returned by :func:`split_to_tmpfs`.
 
-    The bytearrays remain in memory so Phase C (shutdown) can zero them
+    The bytearrays stay in memory so :func:`shutdown_sidecar` can zero them
     after the sidecar terminates. Callers MUST NOT mutate ``shard_a`` or
-    ``shard_b`` before shutdown — they back the live shares on disk and
-    are also the buffers Phase C will overwrite with zeros.
+    ``shard_b`` before shutdown — they back the live shares on disk.
     """
 
     share_a_path: Path
@@ -88,29 +77,19 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
         home_dir: The Worthless home dir (typically ``~/.worthless``).
 
     Returns:
-        A :class:`ShareFiles` handle whose bytearrays the caller is
-        expected to keep alive until Phase-C shutdown zeroes them.
+        A :class:`ShareFiles` handle whose bytearrays the caller must keep
+        alive until :func:`shutdown_sidecar` zeroes them.
     """
     run_dir = home_dir / _RUN_SUBDIR / str(os.getpid())
-    # Security panel C-1: ``parents=True`` creates the intermediate
-    # ``~/.worthless/run/`` dir with the process umask masking the mode
-    # arg — on a default umask 0o022 system that lands at 0o755,
-    # world-traversable. The leaf <pid>/ dir is 0o700 so share files are
-    # safe by Unix semantics, BUT a world-traversable parent leaks live
-    # session PIDs to any local user, enabling targeted ptrace/proc-mem
-    # attacks on the sidecar (which holds plaintext shard B). Pin both
-    # the parent AND the leaf to 0o700 explicitly.
+    # Pin the parent dir to 0o700 too: ``parents=True`` lands at umask-masked
+    # 0o755 on default systems. A world-traversable parent leaks live session
+    # PIDs to any local user (ptrace target enumeration).
     parent_run_dir = home_dir / _RUN_SUBDIR
     parent_run_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     parent_run_dir.chmod(0o700)
 
-    # If a directory already exists at our pid path, it's stale by physics:
-    # POSIX guarantees PID uniqueness while the holder is alive, so any
-    # prior occupant of this PID is dead (the kernel doesn't recycle a PID
-    # until its owner has been reaped). Treat any leftover as the residue
-    # of a crashed prior session — log a warning so the user knows we
-    # cleaned up, then nuke + retry mkdir. Without this, ``worthless up``
-    # would crash with a raw ``FileExistsError`` stack trace.
+    # POSIX guarantees PID uniqueness while the holder is alive, so any dir
+    # already at our PID path is the residue of a crashed prior session.
     if run_dir.exists():
         _logger.warning(
             "split_to_tmpfs: removing stale run dir %s (likely from a "
@@ -164,7 +143,7 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
 
 
 # ---------------------------------------------------------------------------
-# Phase B: spawn_sidecar + SidecarHandle (WRTLS-113 SIDECAR_NOT_READY)
+# spawn_sidecar (WRTLS-113 SIDECAR_NOT_READY) + SidecarHandle
 # ---------------------------------------------------------------------------
 
 
@@ -180,15 +159,12 @@ _AF_UNIX_SUN_PATH_LIMIT = 104
 class SidecarHandle:
     """Live handle to a spawned sidecar subprocess.
 
-    The caller owns the lifecycle: Phase D's ``up`` command is responsible
-    for terminating the process and zeroing the share bytes (Phase C). This
-    dataclass deliberately does not implement ``__enter__``/``__exit__`` —
-    cleanup ordering matters and will be wired explicitly by Phase D.
+    The caller owns the lifecycle. No ``__enter__``/``__exit__`` —
+    cleanup ordering matters and is wired explicitly by callers.
 
-    ``drain_timeout`` is the value passed to ``spawn_sidecar`` and forwarded
-    to the sidecar via ``WORTHLESS_SIDECAR_DRAIN_TIMEOUT``. Phase C reads it
-    back to size the SIGTERM grace window so shutdown matches the drain
-    budget the sidecar was actually configured with.
+    ``drain_timeout`` is forwarded to the sidecar via
+    ``WORTHLESS_SIDECAR_DRAIN_TIMEOUT`` and read back by
+    :func:`shutdown_sidecar` to size the SIGTERM grace window.
     """
 
     proc: subprocess.Popen[bytes]
@@ -283,13 +259,9 @@ def spawn_sidecar(
         WorthlessError: WRTLS-113 if the path is too long for AF_UNIX or
             the sidecar does not become ready.
     """
-    # AF_UNIX ``sun_path`` is 104 bytes on macOS and 108 on Linux. We cap
-    # at 104 (the lower) for portability — minus 1 for the null terminator,
-    # so paths up to 103 bytes are accepted. Pre-check this BEFORE Popen:
-    # an oversized path makes the sidecar's ``bind()`` fail with
-    # ``ENAMETOOLONG``, the sidecar exits, and ``_wait_for_ready`` returns
-    # False — surfaced as a misleading "did not become ready" timeout. Eager
-    # validation surfaces the real cause and saves the spawn cycle.
+    # AF_UNIX sun_path is 104 on macOS, 108 on Linux. Eager check surfaces
+    # the real cause; otherwise the sidecar's bind() fails with ENAMETOOLONG
+    # and we'd report a misleading "did not become ready" timeout.
     encoded_path = str(socket_path).encode()
     if len(encoded_path) >= _AF_UNIX_SUN_PATH_LIMIT:
         raise WorthlessError(
@@ -299,11 +271,8 @@ def spawn_sidecar(
             f"{socket_path}",
         )
 
-    # A stale socket inode at the target path would make ``_wait_for_ready``
-    # return True before the new sidecar has bound (false positive). The
-    # per-pid run dir is created with ``mkdir(exist_ok=False)`` so this is
-    # already extremely unlikely, but unlink-if-exists is cheap belt-and-braces
-    # and cooperates with future Phase 4 crash-recovery flows.
+    # A stale socket inode at the target path would make _wait_for_ready
+    # return True against the leftover before the new sidecar binds.
     if socket_path.exists():
         try:
             socket_path.unlink()
@@ -331,13 +300,9 @@ def spawn_sidecar(
         stderr=subprocess.PIPE,
     )
 
-    # Single cleanup envelope around the wait (QA #2): if anything raises
-    # — WRTLS-113 timeout below, KeyboardInterrupt from the poll loop's
-    # ``time.sleep``, SIGTERM-mapped-to-KbdInt from the spawn-window handler
-    # the caller installed, OR any other ``BaseException`` — we MUST reap
-    # the child Popen before propagating, otherwise the caller's
-    # ``handle is None`` branch only sees the share files and the spawned
-    # sidecar PID is leaked as an orphan.
+    # Reap the child on ANY BaseException — WRTLS-113 timeout, KeyboardInterrupt
+    # from the poll loop, signal-mapped-to-KbdInt — otherwise the spawned
+    # sidecar PID leaks as an orphan the caller can't see.
     try:
         deadline = time.monotonic() + ready_timeout
         ready = _wait_for_ready(proc, socket_path, deadline)
@@ -373,12 +338,10 @@ def spawn_sidecar(
 
 
 # ---------------------------------------------------------------------------
-# Phase C: shutdown_sidecar — graceful teardown + SR-02 zeroing
+# shutdown_sidecar — graceful teardown + SR-02 zeroing
 # ---------------------------------------------------------------------------
 
 
-# SIGTERM grace = the sidecar's actual drain budget (read from the handle so
-# a non-default ``drain_timeout`` to ``spawn_sidecar`` survives to teardown).
 # SIGKILL follow-up only needs long enough for the kernel to reap.
 _SHUTDOWN_KILL_GRACE_S = 2.0
 
@@ -389,29 +352,21 @@ def shutdown_sidecar(handle: SidecarHandle) -> None:
     Steps, in order:
 
     1. SIGTERM the process; wait up to ``handle.drain_timeout`` seconds for
-       a graceful exit (matches the ``WORTHLESS_SIDECAR_DRAIN_TIMEOUT`` value
-       Phase B forwarded to the sidecar — so a custom drain budget survives
-       to teardown).
-    2. SIGKILL if still alive after the grace window; wait
-       ``_SHUTDOWN_KILL_GRACE_S`` for the kernel to reap.
+       a graceful exit, matching the drain budget the sidecar was started with.
+    2. SIGKILL if still alive after the grace window; wait for the kernel
+       to reap.
     3. Best-effort unlink of ``share_a.bin``, ``share_b.bin``, and the
        sidecar socket inode.
     4. Best-effort ``rmdir`` of the per-pid run dir.
     5. Zero the ``shard_a`` and ``shard_b`` bytearrays in memory (SR-02).
 
-    Idempotent: every step tolerates the "already done" state — a second
-    call after a successful first call MUST NOT raise.
-
-    Args:
-        handle: The :class:`SidecarHandle` returned by :func:`spawn_sidecar`.
+    Idempotent: a second call after a successful first call MUST NOT raise.
     """
     proc = handle.proc
 
-    # 1+2. Stop the process. Guard each step on liveness so the second
-    # invocation (idempotency) skips signaling a corpse.
     if proc.poll() is None:
-        # Race: child can exit between poll() and signal. ProcessLookupError
-        # on a vanished pid is benign — proceed to wait + cleanup either way.
+        # The child can exit between poll() and signal — ProcessLookupError
+        # is benign; proceed to wait + cleanup either way.
         try:
             proc.terminate()
         except ProcessLookupError:
@@ -419,7 +374,6 @@ def shutdown_sidecar(handle: SidecarHandle) -> None:
         try:
             proc.wait(timeout=handle.drain_timeout)
         except subprocess.TimeoutExpired:
-            # Drain budget exhausted — escalate.
             try:
                 proc.kill()
             except ProcessLookupError:
@@ -427,13 +381,10 @@ def shutdown_sidecar(handle: SidecarHandle) -> None:
             try:
                 proc.wait(timeout=_SHUTDOWN_KILL_GRACE_S)
             except subprocess.TimeoutExpired:
-                # Kernel didn't reap in time; nothing more we can do here.
-                # Phase D's polling loop will surface the runaway via WRTLS-112.
+                # Kernel didn't reap; the up.py supervisor surfaces this as
+                # WRTLS-112 if the runaway persists.
                 pass
 
-    # 3. Unlink on-disk artifacts. ``missing_ok=True`` handles the second
-    # call gracefully; a stray OSError (e.g., EBUSY) is logged-and-swallowed
-    # so the in-memory zeroing in step 5 still runs.
     for path in (
         handle.shares.share_a_path,
         handle.shares.share_b_path,
@@ -442,24 +393,18 @@ def shutdown_sidecar(handle: SidecarHandle) -> None:
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            # User state still on disk after teardown — visibility matters.
             _logger.warning("shutdown_sidecar: could not unlink %s", path)
 
-    # 4. Remove the per-pid run dir. ``rmdir`` only succeeds when empty,
-    # which is the expected state after step 3.
     try:
         handle.shares.run_dir.rmdir()
     except FileNotFoundError:
-        # Idempotent re-call — already cleaned up. Silent.
         pass
     except OSError:
-        # Not empty (something dropped a file in there) → user state on disk.
         _logger.warning(
             "shutdown_sidecar: could not rmdir %s (run dir not empty)",
             handle.shares.run_dir,
         )
 
-    # 5. SR-02: zero the in-memory shard buffers. ``zero_buf`` is idempotent
-    # (writing zeros over already-zero bytes is a no-op).
+    # SR-02: zero in-memory shard buffers. Idempotent on re-call.
     zero_buf(handle.shares.shard_a)
     zero_buf(handle.shares.shard_b)
