@@ -454,6 +454,42 @@ def test_split_to_tmpfs_cleans_up_on_write_failure(
     assert not run_dir.exists(), "run_dir not cleaned up after partial-write failure"
 
 
+def test_split_to_tmpfs_zeroes_shards_when_write_fails(
+    home: Path, key: bytearray, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SR-02: when ``_write_share`` raises mid-sequence, the shard bytearrays
+    ``split_key`` already produced must be zeroed before the exception
+    propagates — otherwise a stack-frame handler upstream (or a dump tool
+    attached during incident response) can read plaintext shard bytes from
+    the heap, even though the disk artifacts are gone.
+    """
+    captured: list[bytearray] = []
+    real_write_share = importlib.import_module("worthless.cli.sidecar_lifecycle")._write_share
+
+    def _flaky_write(path: Path, data: bytearray) -> None:
+        # Capture each shard bytearray reference as ``_write_share`` is
+        # invoked. After ``split_to_tmpfs`` raises, these are the live
+        # objects SR-02 requires to be zeroed.
+        captured.append(data)
+        if len(captured) == 1:
+            real_write_share(path, data)
+            return
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("worthless.cli.sidecar_lifecycle._write_share", _flaky_write)
+
+    with pytest.raises(OSError, match="No space left"):
+        split_to_tmpfs(key, home)
+
+    assert len(captured) == 2, "test invariant: _flaky_write must see both shards"
+    for i, shard in enumerate(captured):
+        assert all(b == 0 for b in shard), (
+            f"shard {'A' if i == 0 else 'B'} still contains non-zero bytes "
+            "after split_to_tmpfs raised — SR-02 zeroing is missing in the "
+            "except branch of split_to_tmpfs"
+        )
+
+
 # ---------------------------------------------------------------------------
 # QA #2 — spawn_sidecar must reap the child if interrupted during
 # _wait_for_ready (e.g., SIGINT mid-poll, BaseException from any source)

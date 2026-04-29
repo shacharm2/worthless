@@ -129,6 +129,11 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
     # leave no half-state on disk — unlink any partial shares and remove the
     # run dir before re-raising. Cleanup itself is best-effort so it can't
     # mask the original exception.
+    # Pre-declare so the SR-02 zero-loop in the except branch sees the names
+    # whether or not ``split_key`` succeeded — and so a future rename of the
+    # locals fails loudly (NameError) instead of silently skipping zeroing.
+    shard_a: bytearray | None = None
+    shard_b: bytearray | None = None
     try:
         result = split_key(fernet_key)
         shard_a = result.shard_a
@@ -145,6 +150,12 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
             run_dir.rmdir()
         except OSError:
             pass
+        # SR-02: zero plaintext shard bytearrays so a stack-frame handler
+        # upstream (or a memory dump during incident response) can't read
+        # the secret material we just produced.
+        for shard in (shard_a, shard_b):
+            if shard is not None:
+                zero_buf(shard)
         raise
 
     # SR-04: log only the run dir path, never share bytes.
