@@ -419,7 +419,16 @@ class TestOrphanCleanupOnInitFailure:
             patch.object(up_mod, "spawn_proxy", fake_spawn_proxy),
             patch.object(up_mod, "shutdown_sidecar", fake_shutdown_sidecar),
         ):
-            with pytest.raises((typer.Exit, RuntimeError, WorthlessError)):
+            # Production at up.py:349-358 wraps spawn_proxy failures as
+            # ``raise typer.Exit(code=1) from exc`` after printing a
+            # WorthlessError(PROXY_UNREACHABLE) to the console. The actual
+            # propagating exception is typer.Exit; the original RuntimeError
+            # is preserved as __cause__. Asserting the narrow type + the
+            # cause chain catches three regressions in one breath:
+            #   - swallowing the proxy failure silently (no Exit raised)
+            #   - losing the cause chain (debug context vanishes)
+            #   - re-raising the raw RuntimeError instead of typer.Exit
+            with pytest.raises(typer.Exit) as excinfo:
                 up_mod._start_foreground(
                     home=home,
                     proxy_env={"WORTHLESS_DB_PATH": "x", "WORTHLESS_HOME": str(home.base_dir)},
@@ -427,6 +436,19 @@ class TestOrphanCleanupOnInitFailure:
                     pid_file=home.base_dir / "proxy.pid",
                     console=MagicMock(),
                 )
+
+        assert excinfo.value.exit_code == 1, (
+            f"expected typer.Exit(code=1) for proxy spawn failure, got "
+            f"exit_code={excinfo.value.exit_code}"
+        )
+        cause = excinfo.value.__cause__
+        assert isinstance(cause, RuntimeError), (
+            f"typer.Exit.__cause__ should be the original RuntimeError from "
+            f"spawn_proxy, got {type(cause).__name__}: {cause!r}"
+        )
+        assert "simulated proxy spawn failure" in str(cause), (
+            f"cause chain lost the original error message: {cause!r}"
+        )
 
         # 1. Exactly one shutdown call.
         assert len(shutdown_calls) == 1, (
