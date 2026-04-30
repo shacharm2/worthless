@@ -277,3 +277,27 @@ def test_expected_buf_initialized_as_bytearray() -> None:
     # Direct verification: every buffer is actually all-zeros (mock-independent).
     for buf in zeroed_items:
         assert_zeroed(buf)
+
+
+# --- SR-01: split_key accepts bytearray without immutable copy (WOR-384) ---
+
+
+def test_split_key_accepts_bytearray_without_aliasing(sample_api_key_bytes: bytes) -> None:
+    """SR-01 regression guard (WOR-384): ``split_key`` must accept
+    ``bytearray`` so callers holding zeroable secret material don't need
+    a ``bytes(...)`` cast — that cast leaves an unwipable copy of the
+    secret on the heap. Mutating the input after the call must not
+    affect the returned shards (no aliasing implies the input buffer
+    also remains independently mutable/zeroable).
+    """
+    key_ba = bytearray(sample_api_key_bytes)
+    result = split_key(key_ba)
+    shard_a_snapshot = bytes(result.shard_a)
+
+    key_ba[:] = bytearray(len(key_ba))  # zero input post-call
+
+    # Aliasing check (also proves caller's buffer remained mutable).
+    assert bytes(result.shard_a) == shard_a_snapshot
+    # Roundtrip correctness against the original bytes.
+    reconstructed = bytes(a ^ b for a, b in zip(result.shard_a, result.shard_b, strict=True))
+    assert reconstructed == sample_api_key_bytes

@@ -38,7 +38,12 @@ def detect_provider(api_key: str) -> str | None:
     return None
 
 
-ENTROPY_THRESHOLD: float = 4.5
+# Lowered from 4.5 to 3.9 after a real OpenRouter key (entropy 4.118) was
+# rejected as a placeholder. 3.9 still catches `sk-your-key-here` (3.03),
+# uniform repetitions like `sk-aaa...` (0.88), the WRTLS-decoy pattern
+# (3.63), and `sk-PLACEHOLDER_VALUE` (3.74) — while admitting legitimate
+# provider keys with structured bodies in the 4.0-5.0 entropy band.
+ENTROPY_THRESHOLD: float = 3.9
 
 
 def detect_prefix(api_key: str, provider: str) -> str:

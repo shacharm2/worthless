@@ -195,11 +195,16 @@ def derive_shard_a_fp(
     return bytearray((prefix + "".join(shard_a_chars)).encode("utf-8"))
 
 
-def split_key(api_key: bytes) -> SplitResult:
+def split_key(api_key: bytes | bytearray) -> SplitResult:
     """Split an API key into two XOR shards with an HMAC commitment.
 
+    Accepts ``bytes`` (existing callers) or ``bytearray`` (SR-01-compliant
+    callers that own a zeroable buffer of secret material). The body never
+    casts to ``bytes`` internally, so passing a ``bytearray`` does not
+    create an immutable copy of the secret on the heap.
+
     Args:
-        api_key: The raw API key bytes to split.
+        api_key: The raw API key bytes/bytearray to split.
 
     Returns:
         A SplitResult containing shard_a, shard_b, commitment, and nonce.
@@ -213,7 +218,7 @@ def split_key(api_key: bytes) -> SplitResult:
     mask = bytearray(secrets.token_bytes(len(api_key)))
     shard_a = bytearray(a ^ b for a, b in zip(api_key, mask, strict=True))
 
-    commitment, nonce = _make_commitment(bytearray(api_key))
+    commitment, nonce = _make_commitment(api_key)
 
     return SplitResult(
         shard_a=shard_a,

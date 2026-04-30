@@ -28,6 +28,56 @@ from worthless.cli.process import create_liveness_pipe
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _stub_sidecar_lifecycle(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Stub ``split_to_tmpfs`` + ``spawn_sidecar`` + ``shutdown_sidecar`` so
+    wrap tests don't try to launch a real sidecar subprocess.
+
+    After WOR-309, ``wrap`` spawns the sidecar before the proxy. The full
+    lifecycle is covered by ``tests/cli/test_sidecar_lifecycle.py`` — here
+    we stub to no-op fakes and yield a recorder dict so individual tests can
+    assert call ordering (e.g., that shutdown_sidecar fired on cleanup).
+    """
+    from pathlib import Path
+    from unittest.mock import MagicMock as _MagicMock
+
+    fake_run_dir = Path("/tmp/wor-test-run")  # noqa: S108
+    fake_socket = fake_run_dir / "sidecar.sock"
+    fake_shares = _MagicMock(
+        run_dir=fake_run_dir,
+        share_a_path=fake_run_dir / "share_a.bin",
+        share_b_path=fake_run_dir / "share_b.bin",
+        shard_a=bytearray(32),
+        shard_b=bytearray(32),
+    )
+    fake_handle = _MagicMock(
+        socket_path=fake_socket,
+        shares=fake_shares,
+        allowed_uid=os.getuid(),
+        proc=_MagicMock(pid=99999, poll=lambda: 0),
+    )
+
+    calls: dict = {"shutdown_count": 0, "shutdown_handle": None}
+
+    def _record_shutdown(handle):
+        calls["shutdown_count"] += 1
+        calls["shutdown_handle"] = handle
+
+    monkeypatch.setattr(
+        "worthless.cli.commands.wrap.split_to_tmpfs",
+        lambda _key, _home: fake_shares,
+    )
+    monkeypatch.setattr(
+        "worthless.cli.commands.wrap.spawn_sidecar",
+        lambda _socket, _shares, **_kw: fake_handle,
+    )
+    monkeypatch.setattr(
+        "worthless.cli.commands.wrap.shutdown_sidecar",
+        _record_shutdown,
+    )
+    return calls
+
+
 class TestWrapEnvInjection:
     """wrap injects BASE_URL env vars for enrolled providers."""
 
@@ -146,6 +196,134 @@ class TestWrapNoKeys:
         assert aliases == []
 
 
+class TestWrapLifecycleOrdering:
+    """Pin the wrap startup contract: sidecar spawns BEFORE proxy, and the
+    proxy is handed the sidecar's socket path via WORTHLESS_SIDECAR_SOCKET.
+
+    Regression target: the wrap command shipped without sidecar spawn at all
+    (worthless-r67t — proxy refused to bind because no IPC peer was running).
+    The 36 stubbed tests in this file all passed because they don't assert
+    ordering or env threading. This class is the canary that fires if anyone
+    drops the spawn_sidecar call or forgets to thread the socket path.
+    """
+
+    def test_spawn_sidecar_runs_before_spawn_proxy(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """spawn_sidecar must be invoked strictly before spawn_proxy."""
+        from pathlib import Path
+        from unittest.mock import MagicMock as _MagicMock
+
+        order: list[str] = []
+
+        # Override the autouse fixture's stubs to record call order.
+        fake_run_dir = Path("/tmp/wor-test-run-order")  # noqa: S108
+        fake_socket = fake_run_dir / "sidecar.sock"
+        fake_shares = _MagicMock(
+            run_dir=fake_run_dir,
+            share_a_path=fake_run_dir / "share_a.bin",
+            share_b_path=fake_run_dir / "share_b.bin",
+            shard_a=bytearray(32),
+            shard_b=bytearray(32),
+        )
+        fake_handle = _MagicMock(
+            socket_path=fake_socket,
+            shares=fake_shares,
+            allowed_uid=os.getuid(),
+            proc=_MagicMock(pid=99999, poll=lambda: 0),
+        )
+
+        def _record_split(_key, _home):
+            order.append("split_to_tmpfs")
+            return fake_shares
+
+        def _record_spawn_sidecar(_socket, _shares, **_kw):
+            order.append("spawn_sidecar")
+            return fake_handle
+
+        def _record_spawn_proxy(**_kw):
+            order.append("spawn_proxy")
+            mock_proxy = MagicMock()
+            mock_proxy.poll.return_value = None
+            mock_proxy.wait.return_value = 0
+            return (mock_proxy, 9999)
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.split_to_tmpfs", _record_split)
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_sidecar", _record_spawn_sidecar)
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _record_spawn_proxy)
+        # Health poll fails so we exit cleanly without running the child.
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: False)
+
+        runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+
+        assert order[:3] == ["split_to_tmpfs", "spawn_sidecar", "spawn_proxy"], (
+            f"wrong startup order: {order}. Expected split_to_tmpfs → spawn_sidecar → spawn_proxy."
+        )
+
+    def test_proxy_env_contains_sidecar_socket(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """spawn_proxy must receive WORTHLESS_SIDECAR_SOCKET pointing to the
+        sidecar's actual socket path. Without this, the proxy can't connect
+        to the sidecar's IPC peer and refuses to bind."""
+        from pathlib import Path
+        from unittest.mock import MagicMock as _MagicMock
+
+        fake_socket = Path("/tmp/wor-test-run-env/sidecar.sock")  # noqa: S108
+        fake_shares = _MagicMock(
+            run_dir=fake_socket.parent,
+            share_a_path=fake_socket.parent / "share_a.bin",
+            share_b_path=fake_socket.parent / "share_b.bin",
+            shard_a=bytearray(32),
+            shard_b=bytearray(32),
+        )
+        fake_handle = _MagicMock(
+            socket_path=fake_socket,
+            shares=fake_shares,
+            allowed_uid=os.getuid(),
+            proc=_MagicMock(pid=99999, poll=lambda: 0),
+        )
+
+        captured_proxy_env: dict = {}
+
+        def _capture_spawn_proxy(**kw):
+            captured_proxy_env.update(kw.get("env", {}))
+            mock_proxy = MagicMock()
+            mock_proxy.poll.return_value = None
+            mock_proxy.wait.return_value = 0
+            return (mock_proxy, 9999)
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.split_to_tmpfs",
+            lambda _key, _home: fake_shares,
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.spawn_sidecar",
+            lambda _socket, _shares, **_kw: fake_handle,
+        )
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _capture_spawn_proxy)
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: False)
+
+        runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+
+        assert "WORTHLESS_SIDECAR_SOCKET" in captured_proxy_env, (
+            f"proxy env must include WORTHLESS_SIDECAR_SOCKET, got keys: "
+            f"{sorted(captured_proxy_env)}"
+        )
+        assert captured_proxy_env["WORTHLESS_SIDECAR_SOCKET"] == str(fake_socket), (
+            f"socket path mismatch: env={captured_proxy_env['WORTHLESS_SIDECAR_SOCKET']!r}, "
+            f"expected={str(fake_socket)!r}"
+        )
+
+
 class TestWrapLivenessPipe:
     """wrap creates liveness pipe for proxy death detection."""
 
@@ -185,9 +363,12 @@ class TestWrapHealthTimeout:
     """wrap cleans up proxy when poll_health times out."""
 
     def test_health_timeout_cleans_proxy(
-        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+        self,
+        home_with_key,
+        monkeypatch: pytest.MonkeyPatch,
+        _stub_sidecar_lifecycle: dict,
     ) -> None:
-        """When poll_health returns False, proxy is terminated and exit 1."""
+        """When poll_health returns False, proxy AND sidecar are torn down."""
         mock_proxy = MagicMock()
         mock_proxy.poll.return_value = None
         mock_proxy.wait.return_value = 0
@@ -209,6 +390,8 @@ class TestWrapHealthTimeout:
         assert result.exit_code == 1
         assert "healthy" in result.output.lower() or "health" in result.output.lower()
         mock_proxy.terminate.assert_called()
+        # _cleanup_lifecycle must shut down the sidecar after the proxy.
+        assert _stub_sidecar_lifecycle["shutdown_count"] == 1
 
 
 class TestWrapChildSpawnFailure:
