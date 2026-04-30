@@ -21,8 +21,13 @@ if [ ! -f "$FERNET_PATH" ]; then
   chmod 0400 "$FERNET_PATH"
 fi
 
-# Pass Fernet key via file descriptor (not env var — env is visible in /proc)
+# Pass Fernet key via file descriptor (not env var — env is visible in /proc).
+# deploy/start.py reads it back to drive the lifecycle setup.
 exec 3< "$FERNET_PATH"
 export WORTHLESS_FERNET_FD=3
 
-exec "$@"
+# Single-container post-WOR-309 lifecycle: deploy/start.py runs split_to_tmpfs +
+# spawn_sidecar and then execs uvicorn so tini supervises both processes as
+# siblings. Plain ``exec "$@"`` (just uvicorn) was the legacy path; the proxy
+# now requires an IPC peer and refuses to start without one.
+exec python /deploy/start.py

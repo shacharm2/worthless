@@ -20,6 +20,7 @@ COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin/worthless /usr/local/bin/worthless
 COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/uvicorn
 COPY deploy/entrypoint.sh /entrypoint.sh
+COPY deploy/start.py /deploy/start.py
 
 ENV WORTHLESS_HOME=/data \
     WORTHLESS_DB_PATH=/data/worthless.db \
@@ -35,4 +36,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 USER worthless
 
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]
-CMD ["sh", "-c", "exec uvicorn worthless.proxy.app:create_app --factory --host 0.0.0.0 --port ${PORT}"]
+# No CMD: deploy/start.py runs the full lifecycle (split + spawn sidecar +
+# exec uvicorn) — overriding the command would skip sidecar spawn and break
+# the proxy's IPC contract.
