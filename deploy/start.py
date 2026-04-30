@@ -6,10 +6,9 @@ Mirrors the lifecycle that ``worthless up`` runs in the foreground:
 3. ``spawn_sidecar`` -> ``python -m worthless.sidecar`` listening on a Unix socket
 4. ``os.execvp`` uvicorn with the right env contract
 
-After WOR-309, the proxy refuses to start without an IPC peer; tini supervises
-both children so SIGTERM propagates correctly. We do NOT call into the
-foreground supervisor (no signal flag, no health-poll wrapper) — that's the
-``worthless up`` user-facing flow. Containers want a flat process tree where
+tini supervises both children so SIGTERM propagates correctly. We do NOT call
+into the foreground supervisor (no signal flag, no health-poll wrapper) — that's
+the ``worthless up`` user-facing flow. Containers want a flat process tree where
 tini is PID 1 and both sidecar + uvicorn are siblings.
 
 Env contract on entry (set by ``deploy/entrypoint.sh``):
@@ -26,11 +25,11 @@ inheritance subtlety needed.
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 from worthless.cli.bootstrap import ensure_home
 from worthless.cli.sidecar_lifecycle import spawn_sidecar, split_to_tmpfs
+from worthless.crypto.types import zero_buf
 
 
 def _socket_path(run_dir: Path) -> Path:
@@ -43,25 +42,39 @@ def main() -> None:
     home = ensure_home(home_dir)
     port = os.environ.get("PORT", "8787")
 
-    # Step 1: split fernet key to per-PID share files.
     fernet_key = home.fernet_key
-    shares = split_to_tmpfs(fernet_key, home.base_dir)
+    try:
+        shares = split_to_tmpfs(fernet_key, home.base_dir)
+    finally:
+        # SR-02: fernet bytes are no longer needed once split into shares.
+        zero_buf(fernet_key)
 
-    # Step 2: spawn the sidecar; tini will reap it on SIGTERM.
     socket_path = _socket_path(shares.run_dir)
-    handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
-    # Detach from the handle's lifecycle. tini supervises the sidecar
-    # process directly via the parent-child relationship; we don't want a
-    # Python-side handle holding it open through the exec below.
-    _ = handle  # keep for type checkers; not used after exec
+    try:
+        spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+    except BaseException:
+        # Mirror up.py's failure path: unlink share files, rmdir run_dir,
+        # zero shard bytearrays, then re-raise.
+        for path in (shares.share_a_path, shares.share_b_path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            shares.run_dir.rmdir()
+        except OSError:
+            pass
+        zero_buf(shares.shard_a)
+        zero_buf(shares.shard_b)
+        raise
 
-    # Step 3: thread the socket path into uvicorn's env so the proxy's
-    # IPCSupervisor can connect on lifespan startup.
+    # Sidecar has read the share files from disk; in-memory shard buffers
+    # in this process are redundant. Zero before exec replaces the process.
+    zero_buf(shares.shard_a)
+    zero_buf(shares.shard_b)
+
     os.environ["WORTHLESS_SIDECAR_SOCKET"] = str(socket_path)
 
-    # Step 4: replace this process with uvicorn. tini sees the proxy as a
-    # direct child; sidecar is also a direct child of tini. SIGTERM hits
-    # both via the process group.
     uvicorn_argv = [
         "uvicorn",
         "worthless.proxy.app:create_app",
@@ -77,4 +90,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    sys.exit(1)  # unreachable; execvp replaces the process

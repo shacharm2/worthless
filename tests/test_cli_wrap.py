@@ -29,14 +29,14 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def _stub_sidecar_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+def _stub_sidecar_lifecycle(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Stub ``split_to_tmpfs`` + ``spawn_sidecar`` + ``shutdown_sidecar`` so
     wrap tests don't try to launch a real sidecar subprocess.
 
-    After WOR-309, ``wrap`` spawns the sidecar before the proxy. These tests
-    care about the proxy/child paths, not the sidecar lifecycle (covered by
-    ``tests/cli/test_sidecar_lifecycle.py``). Stub the helpers to no-op
-    fakes so the tests stay focused on what they assert.
+    After WOR-309, ``wrap`` spawns the sidecar before the proxy. The full
+    lifecycle is covered by ``tests/cli/test_sidecar_lifecycle.py`` — here
+    we stub to no-op fakes and yield a recorder dict so individual tests can
+    assert call ordering (e.g., that shutdown_sidecar fired on cleanup).
     """
     from pathlib import Path
     from unittest.mock import MagicMock as _MagicMock
@@ -57,6 +57,12 @@ def _stub_sidecar_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
         proc=_MagicMock(pid=99999, poll=lambda: 0),
     )
 
+    calls: dict = {"shutdown_count": 0, "shutdown_handle": None}
+
+    def _record_shutdown(handle):
+        calls["shutdown_count"] += 1
+        calls["shutdown_handle"] = handle
+
     monkeypatch.setattr(
         "worthless.cli.commands.wrap.split_to_tmpfs",
         lambda _key, _home: fake_shares,
@@ -67,8 +73,9 @@ def _stub_sidecar_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         "worthless.cli.commands.wrap.shutdown_sidecar",
-        lambda _handle: None,
+        _record_shutdown,
     )
+    return calls
 
 
 class TestWrapEnvInjection:
@@ -228,9 +235,12 @@ class TestWrapHealthTimeout:
     """wrap cleans up proxy when poll_health times out."""
 
     def test_health_timeout_cleans_proxy(
-        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+        self,
+        home_with_key,
+        monkeypatch: pytest.MonkeyPatch,
+        _stub_sidecar_lifecycle: dict,
     ) -> None:
-        """When poll_health returns False, proxy is terminated and exit 1."""
+        """When poll_health returns False, proxy AND sidecar are torn down."""
         mock_proxy = MagicMock()
         mock_proxy.poll.return_value = None
         mock_proxy.wait.return_value = 0
@@ -252,6 +262,8 @@ class TestWrapHealthTimeout:
         assert result.exit_code == 1
         assert "healthy" in result.output.lower() or "health" in result.output.lower()
         mock_proxy.terminate.assert_called()
+        # _cleanup_lifecycle must shut down the sidecar after the proxy.
+        assert _stub_sidecar_lifecycle["shutdown_count"] == 1
 
 
 class TestWrapChildSpawnFailure:

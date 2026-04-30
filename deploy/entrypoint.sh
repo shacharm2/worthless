@@ -26,8 +26,8 @@ fi
 exec 3< "$FERNET_PATH"
 export WORTHLESS_FERNET_FD=3
 
-# Single-container post-WOR-309 lifecycle: deploy/start.py runs split_to_tmpfs +
+# Single-container lifecycle: deploy/start.py runs split_to_tmpfs +
 # spawn_sidecar and then execs uvicorn so tini supervises both processes as
-# siblings. Plain ``exec "$@"`` (just uvicorn) was the legacy path; the proxy
-# now requires an IPC peer and refuses to start without one.
+# siblings. The proxy requires an IPC peer and refuses to start without one,
+# so a plain ``exec uvicorn`` would never bind.
 exec python /deploy/start.py

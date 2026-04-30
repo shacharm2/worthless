@@ -182,8 +182,8 @@ def register_wrap_commands(app: typer.Typer) -> None:
         # Suppress core dumps
         disable_core_dumps()
 
-        # Spawn the sidecar before the proxy: post-WOR-309 the proxy refuses
-        # to start without an IPC peer. Mirrors ``up.py``'s ordering.
+        # The proxy refuses to start without an IPC peer, so the sidecar
+        # must come up first. ``up.py`` uses the same ordering.
         sidecar: SidecarHandle | None = None
         try:
             shares = split_to_tmpfs(home.fernet_key, home.base_dir)
