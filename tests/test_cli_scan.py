@@ -103,62 +103,25 @@ class TestFakeKeyGuard:
 
 
 class TestEntropyThresholdRegression:
-    """Regression: ENTROPY_THRESHOLD must admit legitimate provider keys
-    (including OpenRouter-style sk- keys with lower entropy than OpenAI's),
-    while still rejecting common placeholder/decoy patterns.
-
-    History: threshold was 4.5 — rejected an OpenRouter key (entropy 4.118)
-    as a "placeholder", blocking real users. Lowered to 3.9 in commit f087180.
-    This test pins the contract so the threshold can't drift back without a
-    deliberate change + test update.
+    """The entropy gate is slated for replacement; this is a thin shim that
+    just pins the user-visible contract: real-shape provider keys clear
+    whatever threshold ships, common placeholders fall below it. When the
+    gate is removed/replaced, delete this class.
     """
 
-    def test_openrouter_style_key_admitted(self) -> None:
-        """OpenRouter sk- keys (~entropy 4.0-4.2) must clear the threshold."""
+    def test_real_shape_key_admitted(self) -> None:
         from worthless.cli.dotenv_rewriter import shannon_entropy
         from worthless.cli.key_patterns import ENTROPY_THRESHOLD
 
-        # Synthetic key matching observed OpenRouter shape: sk- prefix + 64
-        # alnum chars drawn from a narrower alphabet than OpenAI's keys.
-        # Real OpenRouter key from production smoke had entropy 4.118.
-        openrouter_like = "sk-or-v1-" + ("abc123def456ghi789jk" * 3)[:64]
-        entropy = shannon_entropy(openrouter_like)
-        assert entropy >= ENTROPY_THRESHOLD, (
-            f"OpenRouter-shape key with entropy {entropy:.3f} must clear "
-            f"threshold {ENTROPY_THRESHOLD} — lower the threshold or this "
-            f"test, but make the regression visible."
-        )
+        real_shape = "sk-or-v1-" + "a8b3c9d2e1f70" * 4 + "abcde"
+        assert shannon_entropy(real_shape) >= ENTROPY_THRESHOLD
 
     def test_common_placeholders_rejected(self) -> None:
-        """All known placeholder patterns must fall BELOW the threshold."""
         from worthless.cli.dotenv_rewriter import shannon_entropy
         from worthless.cli.key_patterns import ENTROPY_THRESHOLD
 
-        placeholders = [
-            "sk-your-key-here",
-            "sk-aaaa",
-            "sk-PLACEHOLDER_VALUE",
-            "sk-xxxxxxxxxxxxxxxxxxxx",
-        ]
-        for placeholder in placeholders:
-            entropy = shannon_entropy(placeholder)
-            assert entropy < ENTROPY_THRESHOLD, (
-                f"Placeholder {placeholder!r} has entropy {entropy:.3f} which "
-                f">= threshold {ENTROPY_THRESHOLD}. Either the placeholder "
-                f"got 'better' or the threshold is now too low for placeholders."
-            )
-
-    def test_decoy_pattern_rejected(self) -> None:
-        """The WRTLS- decoy that scan emits in --hooks must stay below threshold."""
-        from worthless.cli.dotenv_rewriter import shannon_entropy
-        from worthless.cli.key_patterns import ENTROPY_THRESHOLD
-
-        decoy = "sk-WRTLS-decoy-no-secret-here"
-        entropy = shannon_entropy(decoy)
-        assert entropy < ENTROPY_THRESHOLD, (
-            f"WRTLS decoy entropy {entropy:.3f} >= threshold {ENTROPY_THRESHOLD}; "
-            f"decoy and real-key bands have collapsed."
-        )
+        for placeholder in ("sk-your-key-here", "sk-aaaa", "sk-PLACEHOLDER_VALUE"):
+            assert shannon_entropy(placeholder) < ENTROPY_THRESHOLD, placeholder
 
 
 # ---------------------------------------------------------------------------

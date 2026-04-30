@@ -19,6 +19,7 @@ by reading the diff.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -80,6 +81,43 @@ class TestDeployStartZeroizesOnSuccess:
 
         assert fake_fernet == bytearray(len(fake_fernet)), (
             f"SR-02 violation: fernet key bytes not zeroed, got {bytes(fake_fernet)!r}"
+        )
+
+    def test_sidecar_socket_env_set_before_execvp(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exec'd uvicorn process MUST see WORTHLESS_SIDECAR_SOCKET in
+        its environment, otherwise the proxy can't find its IPC peer and
+        refuses to bind. This is the deploy-side analogue of the wrap bug
+        that became worthless-r67t."""
+        fake_shares = _make_fake_shares(b"a" * 8, b"b" * 8)
+        fake_home = MagicMock(
+            fernet_key=bytearray(b"x" * 32),
+            base_dir=Path("/tmp/wor-test-home"),  # noqa: S108
+        )
+
+        env_at_execvp: dict = {}
+
+        def _capture_env_at_execvp(*_a):
+            # Snapshot at exec time — that's the env the new process inherits.
+            env_at_execvp.update(os.environ)
+
+        monkeypatch.setattr(deploy_start_module, "ensure_home", lambda _: fake_home)
+        monkeypatch.setattr(deploy_start_module, "split_to_tmpfs", lambda _k, _h: fake_shares)
+        monkeypatch.setattr(deploy_start_module, "spawn_sidecar", lambda *_a, **_kw: MagicMock())
+        monkeypatch.setattr(deploy_start_module.os, "execvp", _capture_env_at_execvp)
+
+        deploy_start_module.main()
+
+        assert "WORTHLESS_SIDECAR_SOCKET" in env_at_execvp, (
+            "exec'd uvicorn missing WORTHLESS_SIDECAR_SOCKET — proxy can't "
+            "find IPC peer, will refuse to bind. Same bug class as worthless-r67t."
+        )
+        assert env_at_execvp["WORTHLESS_SIDECAR_SOCKET"] == str(
+            fake_shares.run_dir / "sidecar.sock"
+        ), (
+            f"socket path mismatch: env={env_at_execvp['WORTHLESS_SIDECAR_SOCKET']!r}, "
+            f"expected={fake_shares.run_dir / 'sidecar.sock'!r}"
         )
 
     def test_shards_zeroed_before_execvp(
