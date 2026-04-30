@@ -27,7 +27,11 @@ so individual fixes can choose exit codes and copy without churning tests.
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -81,6 +85,14 @@ def _has_actionable_hint(text: str, *keywords: str) -> bool:
     """Case-insensitive: at least one hint keyword present in user-facing text."""
     lowered = text.lower()
     return any(k.lower() in lowered for k in keywords)
+
+
+def _has_all_tokens(text: str, *required: str) -> bool:
+    """Case-insensitive: ALL required tokens must appear. Used to bind a hint
+    to a specific bug (e.g. orphan + the actual var name) so unrelated errors
+    that happen to share one keyword cannot turn the test green spuriously."""
+    lowered = text.lower()
+    return all(k.lower() in lowered for k in required)
 
 
 def _enrollments(home: WorthlessHome) -> list:
@@ -138,9 +150,14 @@ class TestOrphanState:
         assert not _looks_like_traceback(result.output), (
             "unlock leaked a traceback to the user:\n" + result.output
         )
+        # Require BOTH the var name AND an orphan-specific keyword so a generic
+        # "file missing" error from an unrelated code path can't satisfy this.
+        assert "OPENAI_API_KEY" in result.output, (
+            f"unlock error must name the affected var:\n{result.output}"
+        )
         assert _has_actionable_hint(
-            result.output, "OPENAI_API_KEY", "missing", "orphan", "not found"
-        ), f"no actionable hint about the missing var:\n{result.output}"
+            result.output, "orphan", "no matching .env", "orphaned", "ORPHAN-IN-DB"
+        ), f"no orphan-specific hint:\n{result.output}"
 
     def test_status_on_orphan_flags_inconsistency(
         self, home_dir: WorthlessHome, env_file: Path
@@ -149,8 +166,10 @@ class TestOrphanState:
         result = _invoke(["status"], home_dir)
 
         assert not _looks_like_traceback(result.output)
+        # Status must do MORE than list the enrollment as PROTECTED — it must
+        # mark the row as orphan/inconsistent. Require a bug-specific token.
         assert _has_actionable_hint(
-            result.output, "orphan", "missing", "OPENAI_API_KEY", "inconsistent"
+            result.output, "orphan", "ORPHAN-IN-DB", "inconsistent state", "no .env row"
         ), f"status did not flag orphan DB row:\n{result.output}"
 
     def test_scan_on_orphan_flags_inconsistency(
@@ -161,7 +180,7 @@ class TestOrphanState:
 
         assert not _looks_like_traceback(result.output)
         assert _has_actionable_hint(
-            result.output, "orphan", "missing", "OPENAI_API_KEY", "inconsistent"
+            result.output, "orphan", "ORPHAN-IN-DB", "inconsistent state", "no .env row"
         ), f"scan did not flag orphan DB row:\n{result.output}"
 
 
@@ -193,8 +212,10 @@ class TestShardWithoutDBRow:
             "unlock with no matching DB row must not silently succeed:\n" + result.output
         )
         assert not _looks_like_traceback(result.output)
+        # Tighten: require an enrollment-specific term, not just generic
+        # "not found" which any FS error would match.
         assert _has_actionable_hint(
-            result.output, "not enrolled", "no shard", "unknown", "not found", "lock"
+            result.output, "not enrolled", "no shard", "no enrollment", "unrecognised shard"
         ), f"no hint that the value is unrecognised:\n{result.output}"
 
 
@@ -265,7 +286,7 @@ class TestRepeatedLock:
         # Either the same enrollment remains (idempotent) or a clean error
         # was raised. What's NOT acceptable is two enrollments with the same
         # var_name+env_path that mask the original.
-        assert len(second_enrollments) <= len(first_enrollments) + 0, (
+        assert len(second_enrollments) == len(first_enrollments), (
             f"double lock created phantom enrollments: "
             f"{len(first_enrollments)} -> {len(second_enrollments)}"
         )
@@ -307,14 +328,15 @@ class TestManualRotationMismatch:
             "unlock must reject a tampered shard, not silently produce garbage:\n" + result.output
         )
         assert not _looks_like_traceback(result.output)
+        # Bind to the rotation/commitment domain — generic "invalid" is too
+        # loose (would match argparse errors, key shape errors, etc).
         assert _has_actionable_hint(
             result.output,
             "commitment",
-            "mismatch",
             "tampered",
-            "modified",
             "does not match",
-            "invalid",
+            "shard mismatch",
+            "modified after lock",
         ), f"no hint about commitment mismatch:\n{result.output}"
 
 
@@ -336,8 +358,10 @@ class TestEnvFileDeleted:
         assert not _looks_like_traceback(result.output), (
             "unlock leaked a traceback when .env was missing:\n" + result.output
         )
-        assert _has_actionable_hint(
-            result.output, "not found", "no such file", "missing", ".env"
+        # Require either an explicit ".env" mention or a filesystem-not-found
+        # phrase — generic "missing" alone would match unrelated bugs.
+        assert _has_all_tokens(result.output, ".env") or _has_actionable_hint(
+            result.output, "no such file", "file not found", "does not exist"
         ), f"no hint about missing .env:\n{result.output}"
 
 
@@ -362,14 +386,16 @@ class TestDBFileDeleted:
         assert not _looks_like_traceback(result.output), (
             "unlock leaked a traceback after db wipe:\n" + result.output
         )
+        # Bind to the database-wipe domain; "missing"/"not found" alone is too
+        # loose (would match an unrelated .env-missing path).
         assert _has_actionable_hint(
             result.output,
-            "enroll",
-            "rerun",
-            "no such",
-            "missing",
             "database",
-            "not found",
+            "db.sqlite",
+            "no such table",
+            "rerun lock",
+            "re-enroll",
+            "not enrolled",
         ), f"no actionable hint after db wipe:\n{result.output}"
 
     def test_status_after_db_wipe_does_not_crash(
@@ -443,3 +469,300 @@ class TestDBSchemaInvariants:
                 ).fetchall()
             }
         assert tables, "DB has no tables after lock"
+
+
+# ---------------------------------------------------------------------------
+# HF7 — operator can purge orphans (worthless-3907)
+# ---------------------------------------------------------------------------
+
+
+class TestPurgeOrphans:
+    """Contract for HF7 / worthless-3907: there must be a way to delete
+    orphan DB rows whose .env value the user has manually removed.
+
+    RED today because no `purge` command exists — typer will reject parse.
+    The test is contracted against the bead's option (A): `worthless purge
+    --orphans`. If HF7 lands option (C) (`doctor --fix`) instead, this red
+    can stay red and the doctor red below will turn green.
+    """
+
+    def test_purge_orphans_removes_dangling_db_rows(
+        self, home_dir: WorthlessHome, multi_env_file: Path
+    ) -> None:
+        # Lock both keys, then orphan ONE by deleting its .env line.
+        _lock(multi_env_file, home_dir)
+        before = _enrollments(home_dir)
+        assert len(before) == 2, f"precondition: expected 2 enrollments, got {len(before)}"
+
+        # Strip OPENAI_API_KEY only — leave ANTHROPIC_API_KEY locked & valid.
+        kept = [
+            line
+            for line in multi_env_file.read_text().splitlines()
+            if not line.startswith("OPENAI_API_KEY=")
+        ]
+        multi_env_file.write_text("\n".join(kept) + "\n")
+
+        result = _invoke(["purge", "--orphans", "--yes"], home_dir)
+
+        # (a) Command must exist (i.e. parse succeeds). Today this fails with
+        # "No such command 'purge'" — that IS the red contract for HF7.
+        assert "no such command" not in result.output.lower(), (
+            "HF7 contract: `worthless purge` command must exist.\n" + result.output
+        )
+        assert result.exit_code == 0, (
+            "purge --orphans must succeed when there is a clean orphan to remove:\n" + result.output
+        )
+
+        # (b) The orphan DB row is gone; the still-locked one survives.
+        after = _enrollments(home_dir)
+        assert len(after) == 1, (
+            f"purge should remove exactly the orphan: {len(before)} -> {len(after)}"
+        )
+
+        # (c) Output names what was purged so the user can audit.
+        assert "OPENAI_API_KEY" in result.output or "openai" in result.output.lower(), (
+            f"purge output must name what it removed:\n{result.output}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# HF7 — doctor --fix repair (worthless-3907 option C)
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorFixOrphans:
+    """Companion red to TestPurgeOrphans: the bead's recommended option is
+    `worthless doctor --fix`. If HF7 lands doctor instead of purge, this
+    red turns green. Either fix is acceptable, but at least one must exist.
+
+    RED today: neither command exists in the CLI registry.
+    """
+
+    def test_doctor_fix_detects_and_repairs_orphans(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        _lock(env_file, home_dir)
+        env_file.write_text("")  # orphan the lone enrollment
+
+        result = _invoke(["doctor", "--fix", "--yes"], home_dir)
+
+        assert "no such command" not in result.output.lower(), (
+            "HF7 contract (option C): `worthless doctor` command must exist.\n" + result.output
+        )
+        assert result.exit_code == 0, (
+            "doctor --fix must succeed on a recoverable inconsistency:\n" + result.output
+        )
+
+        # Repaired state: orphan row gone.
+        after = _enrollments(home_dir)
+        assert after == [], f"doctor --fix did not clean the orphan: {after}"
+
+
+# ---------------------------------------------------------------------------
+# GAP 5 — multi-project status output is path-aware
+# ---------------------------------------------------------------------------
+
+
+class TestMultiProjectStatusOutput:
+    """Existing TestMultiProjectPollution asserts at the DB layer. This adds
+    the user-facing complement: `worthless status` output must surface both
+    projects independently and not bleed proj-b into proj-a's section.
+
+    Likely already green if status is path-aware; if red, that is a discovery
+    worth filing. Bead family: worthless-5koc state-machine."""
+
+    def test_status_output_surfaces_both_projects_independently(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        proj_a = tmp_path / "proj-a"
+        proj_b = tmp_path / "proj-b"
+        proj_a.mkdir()
+        proj_b.mkdir()
+
+        env_a = proj_a / ".env"
+        env_b = proj_b / ".env"
+        env_a.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+        env_b.write_text(f"ANTHROPIC_API_KEY={_TEST_KEY_2}\n")
+
+        _lock(env_a, home_dir)
+        _lock(env_b, home_dir)
+
+        result = _invoke(["status"], home_dir)
+        assert result.exit_code == 0, result.output
+        assert not _looks_like_traceback(result.output)
+
+        # Both project paths (or at least their distinct dir names) must
+        # appear so the user can tell them apart.
+        assert "proj-a" in result.output, f"status output must mention proj-a:\n{result.output}"
+        assert "proj-b" in result.output, f"status output must mention proj-b:\n{result.output}"
+
+
+# ---------------------------------------------------------------------------
+# GAP 6 — env edge cases: unicode var names & two .env files sharing a var
+# ---------------------------------------------------------------------------
+
+
+class TestEnvEdgeCases:
+    """Both expected to be GREEN today; if either fails it's a discovery."""
+
+    def test_lock_with_unicode_var_name(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        env = tmp_path / ".env"
+        # Non-ASCII var name with an accented character. dotenv permits it;
+        # our lock pipeline must not blow up on the encoding boundary.
+        env.write_text(f"MY_KÉY={_TEST_KEY}\n", encoding="utf-8")
+
+        result = _invoke(["lock", "--env", str(env)], home_dir)
+
+        if result.exit_code != 0:
+            pytest.skip(
+                "discovery: unicode var names are not currently supported by "
+                f"`worthless lock`. Output:\n{result.output}"
+            )
+        enrollments = _enrollments(home_dir)
+        assert len(enrollments) >= 1, (
+            f"unicode var name lock did not create a DB row:\n{result.output}"
+        )
+
+    def test_two_env_files_same_var_each_get_own_enrollment(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        proj_a = tmp_path / "a"
+        proj_b = tmp_path / "b"
+        proj_a.mkdir()
+        proj_b.mkdir()
+        env_a = proj_a / ".env"
+        env_b = proj_b / ".env"
+        env_a.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+        env_b.write_text(f"OPENAI_API_KEY={_TEST_KEY_2}\n")
+
+        _lock(env_a, home_dir)
+        _lock(env_b, home_dir)
+
+        enrollments = _enrollments(home_dir)
+        assert len(enrollments) == 2, (
+            f"two .env files with the same var must produce 2 distinct DB "
+            f"rows; got {len(enrollments)}: {enrollments}"
+        )
+        # And the two rows must point at different env_paths.
+        env_paths = {str(getattr(e, "env_path", "")) for e in enrollments}
+        assert len(env_paths) == 2, f"both enrollments collapsed to the same env_path: {env_paths}"
+
+
+# ---------------------------------------------------------------------------
+# GAP 7 — concurrency & partial-DB corruption
+# ---------------------------------------------------------------------------
+
+
+def _worthless_cli_args() -> list[str]:
+    """Resolve the worthless CLI as an executable invocation. Prefer the
+    project's `worthless` script; fall back to `python -m worthless.cli.app`
+    so the test never requires a globally-installed binary."""
+    binary = shutil.which("worthless")
+    if binary:
+        return [binary]
+    return [sys.executable, "-m", "worthless"]
+
+
+class TestConcurrencyAndCorruption:
+    """xdist-parallel-safe: every test uses tmp_path + an explicit
+    WORTHLESS_HOME env var. Real $HOME is never touched.
+
+    Bead: worthless-islq (flock advisory-only on DrvFs/NFS — concurrent
+    invocations from WSL on /mnt/c can race). These are the state-machine-
+    layer companion to the lock-primitive bug filed there.
+    """
+
+    def test_concurrent_lock_does_not_corrupt_db(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        env = tmp_path / ".env"
+        env.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+
+        env_vars = {
+            **os.environ,
+            "WORTHLESS_HOME": str(home_dir.base_dir),
+        }
+        cli = _worthless_cli_args()
+        cmd = [*cli, "lock", "--env", str(env)]
+
+        procs = [
+            subprocess.Popen(  # noqa: S603 — controlled cli args
+                cmd,
+                env=env_vars,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            for _ in range(2)
+        ]
+        outputs = []
+        codes = []
+        for p in procs:
+            out, _ = p.communicate(timeout=60)
+            outputs.append(out or "")
+            codes.append(p.returncode)
+
+        # (a) DB integrity intact.
+        with sqlite3.connect(str(home_dir.db_path)) as con:
+            integrity = con.execute("PRAGMA integrity_check").fetchone()
+        assert integrity == ("ok",), (
+            f"sqlite integrity_check failed after concurrent lock: {integrity}\noutputs:\n{outputs}"
+        )
+
+        # (b) At most one extra enrollment (winner enrolls, loser bails out
+        # cleanly; or both serialise correctly and one no-ops as idempotent).
+        enrollments = _enrollments(home_dir)
+        assert len(enrollments) <= 1, (
+            f"concurrent lock produced phantom enrollments: {len(enrollments)}\noutputs:\n{outputs}"
+        )
+
+        # (c) Loser exits with a real message, not a Python traceback.
+        for code, out in zip(codes, outputs):
+            assert "Traceback (most recent call last):" not in out, (
+                f"concurrent lock loser leaked a traceback (code={code}):\n{out}"
+            )
+
+    def test_partial_db_write_recovers_or_errors_clearly(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        _lock(env_file, home_dir)
+        db_path = home_dir.db_path
+        size = db_path.stat().st_size
+        assert size > 0, "precondition: DB file is empty"
+
+        # Truncate to half — guaranteed to corrupt sqlite page structure.
+        with db_path.open("r+b") as fh:
+            fh.truncate(size // 2)
+
+        # Reset .env so the second lock isn't blocked by an unrelated state.
+        env_file.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+
+        result = _invoke(["lock", "--env", str(env_file)], home_dir)
+
+        # Two acceptable outcomes:
+        #   (1) lock detects corruption, errors out cleanly with a hint.
+        #   (2) lock self-heals (recovery path) and exits 0.
+        # NEVER acceptable: silent success that produced more corruption,
+        # or a raw Python traceback.
+        assert not _looks_like_traceback(result.output), (
+            f"corrupted DB caused a leaked traceback:\n{result.output}"
+        )
+
+        if result.exit_code != 0:
+            assert _has_actionable_hint(
+                result.output,
+                "corrupt",
+                "integrity",
+                "malformed",
+                "database disk image",
+                "recover",
+                "re-enroll",
+            ), f"corrupted DB error lacks an actionable hint:\n{result.output}"
+        else:
+            # Self-healed: the new lock must have produced a queryable DB.
+            with sqlite3.connect(str(db_path)) as con:
+                integrity = con.execute("PRAGMA integrity_check").fetchone()
+            assert integrity == ("ok",), (
+                f"lock claimed success on corrupt DB but integrity check failed: "
+                f"{integrity}\n{result.output}"
+            )
