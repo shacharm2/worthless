@@ -72,14 +72,14 @@ def _parse_toml_to_entries(raw: dict) -> dict[str, ProviderEntry]:
     return out
 
 
-def _load_bundled() -> dict[str, ProviderEntry]:
+def load_bundled() -> dict[str, ProviderEntry]:
     """Load ``src/worthless/providers.toml`` shipped with the package."""
     bundle_text = resources.files("worthless").joinpath("providers.toml").read_text()
     parsed = tomllib.loads(bundle_text)
     return _parse_toml_to_entries(parsed)
 
 
-def _load_user() -> dict[str, ProviderEntry]:
+def load_user() -> dict[str, ProviderEntry]:
     """Load the optional user override, returning {} on any failure mode."""
     path = _user_registry_path()
     if not path.is_file():
@@ -98,11 +98,20 @@ def _load_user() -> dict[str, ProviderEntry]:
 
 def load_registry() -> dict[str, ProviderEntry]:
     """Return the merged registry: bundled with user-override layered on top."""
-    bundled = _load_bundled()
-    user = _load_user()
-    return {**bundled, **user}
+    return {**load_bundled(), **load_user()}
 
 
 def lookup_by_url(url: str) -> ProviderEntry | None:
     """Return the entry for a given URL, or ``None`` if unknown."""
     return load_registry().get(url)
+
+
+def bundled_names() -> set[str]:
+    """Return the set of names registered in the bundled file (used to refuse
+    name collisions when registering a user provider)."""
+    return {e.name for e in load_bundled().values()}
+
+
+def user_registry_path() -> Path:
+    """Public accessor for ``~/.worthless/providers.toml``."""
+    return _user_registry_path()
