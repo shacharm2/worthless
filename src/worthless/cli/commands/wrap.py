@@ -27,6 +27,12 @@ from worthless.cli.process import (
     poll_health,
     spawn_proxy,
 )
+from worthless.cli.sidecar_lifecycle import (
+    SidecarHandle,
+    shutdown_sidecar,
+    spawn_sidecar,
+    split_to_tmpfs,
+)
 from worthless.storage.repository import ShardRepository
 
 logger = logging.getLogger(__name__)
@@ -121,6 +127,35 @@ def _cleanup_proxy(
         proxy.wait(timeout=2)
 
 
+def _cleanup_lifecycle(
+    proxy: subprocess.Popen | None,
+    write_fd: int | None,
+    sidecar: SidecarHandle | None,
+) -> None:
+    """Tear down proxy and sidecar in the correct order.
+
+    Proxy first so any in-flight upstream forwards complete; then sidecar.
+    Mirrors ``_supervise_proxy_with_sidecar``'s shutdown ordering in
+    ``up.py``. Each step is best-effort — a failure in one must not block
+    the other.
+    """
+    if proxy is not None:
+        try:
+            _cleanup_proxy(proxy, write_fd)
+        except Exception:  # noqa: S110 — best-effort cleanup; sidecar shutdown still required  # nosec B110
+            pass
+    elif write_fd is not None:
+        try:
+            os.close(write_fd)
+        except OSError:
+            pass
+    if sidecar is not None:
+        try:
+            shutdown_sidecar(sidecar)
+        except Exception:  # noqa: S110 — best-effort cleanup  # nosec B110
+            pass
+
+
 def register_wrap_commands(app: typer.Typer) -> None:
     """Register the ``wrap`` command on the Typer app."""
 
@@ -147,11 +182,26 @@ def register_wrap_commands(app: typer.Typer) -> None:
         # Suppress core dumps
         disable_core_dumps()
 
+        # Spawn the sidecar before the proxy: post-WOR-309 the proxy refuses
+        # to start without an IPC peer. Mirrors ``up.py``'s ordering.
+        sidecar: SidecarHandle | None = None
+        try:
+            shares = split_to_tmpfs(home.fernet_key, home.base_dir)
+            socket_path = shares.run_dir / "sidecar.sock"
+            sidecar = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+        except Exception as exc:
+            _cleanup_lifecycle(proxy=None, write_fd=None, sidecar=sidecar)
+            raise WorthlessError(
+                ErrorCode.PROXY_UNREACHABLE,
+                sanitize_exception(exc, generic="failed to start sidecar"),
+            ) from exc
+
         # Create liveness pipe
         read_fd, write_fd = create_liveness_pipe()
 
-        # Build proxy environment
+        # Build proxy environment with the sidecar socket path threaded in.
         proxy_env = build_proxy_env(home)
+        proxy_env["WORTHLESS_SIDECAR_SOCKET"] = str(sidecar.socket_path)
 
         # Spawn proxy on random port
         try:
@@ -162,7 +212,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
             )
         except Exception as exc:
             os.close(read_fd)
-            os.close(write_fd)
+            _cleanup_lifecycle(proxy=None, write_fd=write_fd, sidecar=sidecar)
             raise WorthlessError(
                 ErrorCode.PROXY_UNREACHABLE,
                 sanitize_exception(exc, generic="failed to start proxy"),
@@ -174,7 +224,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
         # Poll health
         healthy = poll_health(port, timeout=15.0)
         if not healthy:
-            _cleanup_proxy(proxy, write_fd)
+            _cleanup_lifecycle(proxy=proxy, write_fd=write_fd, sidecar=sidecar)
             raise WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
 
         # Build child env with BASE_URL injection
@@ -189,7 +239,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
                 **popen_platform_kwargs(detach=True),
             )
         except Exception as exc:
-            _cleanup_proxy(proxy, write_fd)
+            _cleanup_lifecycle(proxy=proxy, write_fd=write_fd, sidecar=sidecar)
             raise WorthlessError(
                 ErrorCode.WRAP_CHILD_FAILED,
                 sanitize_exception(exc, generic="failed to start child process"),
@@ -227,7 +277,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
         except Exception:  # noqa: S110 — best-effort summary  # nosec B110
             pass
 
-        # Clean up proxy
-        _cleanup_proxy(proxy, write_fd)
+        # Clean up proxy first, then sidecar (mirrors ``up.py`` ordering).
+        _cleanup_lifecycle(proxy=proxy, write_fd=write_fd, sidecar=sidecar)
 
         raise typer.Exit(code=exit_code)

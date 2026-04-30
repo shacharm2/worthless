@@ -28,6 +28,49 @@ from worthless.cli.process import create_liveness_pipe
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _stub_sidecar_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub ``split_to_tmpfs`` + ``spawn_sidecar`` + ``shutdown_sidecar`` so
+    wrap tests don't try to launch a real sidecar subprocess.
+
+    After WOR-309, ``wrap`` spawns the sidecar before the proxy. These tests
+    care about the proxy/child paths, not the sidecar lifecycle (covered by
+    ``tests/cli/test_sidecar_lifecycle.py``). Stub the helpers to no-op
+    fakes so the tests stay focused on what they assert.
+    """
+    from pathlib import Path
+    from unittest.mock import MagicMock as _MagicMock
+
+    fake_run_dir = Path("/tmp/wor-test-run")  # noqa: S108
+    fake_socket = fake_run_dir / "sidecar.sock"
+    fake_shares = _MagicMock(
+        run_dir=fake_run_dir,
+        share_a_path=fake_run_dir / "share_a.bin",
+        share_b_path=fake_run_dir / "share_b.bin",
+        shard_a=bytearray(32),
+        shard_b=bytearray(32),
+    )
+    fake_handle = _MagicMock(
+        socket_path=fake_socket,
+        shares=fake_shares,
+        allowed_uid=os.getuid(),
+        proc=_MagicMock(pid=99999, poll=lambda: 0),
+    )
+
+    monkeypatch.setattr(
+        "worthless.cli.commands.wrap.split_to_tmpfs",
+        lambda _key, _home: fake_shares,
+    )
+    monkeypatch.setattr(
+        "worthless.cli.commands.wrap.spawn_sidecar",
+        lambda _socket, _shares, **_kw: fake_handle,
+    )
+    monkeypatch.setattr(
+        "worthless.cli.commands.wrap.shutdown_sidecar",
+        lambda _handle: None,
+    )
+
+
 class TestWrapEnvInjection:
     """wrap injects BASE_URL env vars for enrolled providers."""
 
