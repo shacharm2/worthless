@@ -35,6 +35,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from dotenv import dotenv_values
 from typer.testing import CliRunner
 
 from worthless.cli.app import app
@@ -71,8 +72,6 @@ def _lock(env_file: Path, home: WorthlessHome) -> None:
 
 
 def _dotenv_value(env_file: Path, var: str) -> str | None:
-    from dotenv import dotenv_values
-
     return dotenv_values(env_file).get(var)
 
 
@@ -420,7 +419,9 @@ class TestDBFileDeleted:
 
 class TestPartialUnlock:
     """Locking two keys then unlocking one must restore exactly one and
-    leave the other locked. Tests the cross-row state machine."""
+    leave the other locked. Tests the cross-row state machine via the
+    real CLI surface (`unlock --alias <id>`); there is no `--var` flag.
+    """
 
     def test_partial_unlock_leaves_other_var_locked(
         self, home_dir: WorthlessHome, multi_env_file: Path
@@ -428,23 +429,33 @@ class TestPartialUnlock:
         _lock(multi_env_file, home_dir)
         locked_anthropic = _dotenv_value(multi_env_file, "ANTHROPIC_API_KEY")
 
-        # Unlock only OPENAI_API_KEY.
+        # Resolve the alias for OPENAI_API_KEY — unlock takes --alias, not
+        # --var. Looking it up via the enrollments table is the same path
+        # status uses; no test-only DB hackery.
+        enrollments = _enrollments(home_dir)
+        openai_alias = next(
+            (e.key_alias for e in enrollments if e.var_name == "OPENAI_API_KEY"),
+            None,
+        )
+        assert openai_alias, f"precondition: OPENAI_API_KEY enrollment missing: {enrollments}"
+
         result = _invoke(
-            ["unlock", "--env", str(multi_env_file), "--var", "OPENAI_API_KEY"],
+            ["unlock", "--env", str(multi_env_file), "--alias", openai_alias],
             home_dir,
         )
         assert not _looks_like_traceback(result.output), result.output
+        assert result.exit_code == 0, f"unlock --alias failed:\n{result.output}"
 
         restored_openai = _dotenv_value(multi_env_file, "OPENAI_API_KEY")
         still_locked = _dotenv_value(multi_env_file, "ANTHROPIC_API_KEY")
 
-        # Per-key unlock must restore the original openai key.
+        # Per-alias unlock must restore the original openai key.
         assert restored_openai == _TEST_KEY, (
             f"OPENAI_API_KEY not restored on partial unlock: {restored_openai!r}"
         )
         # Anthropic must still be the shard-A from the lock step.
         assert still_locked == locked_anthropic, (
-            "ANTHROPIC_API_KEY changed despite unlock --var=OPENAI_API_KEY: "
+            f"ANTHROPIC_API_KEY changed despite unlock --alias={openai_alias}: "
             f"{locked_anthropic!r} -> {still_locked!r}"
         )
 
@@ -709,11 +720,14 @@ class TestConcurrencyAndCorruption:
             f"sqlite integrity_check failed after concurrent lock: {integrity}\noutputs:\n{outputs}"
         )
 
-        # (b) At most one extra enrollment (winner enrolls, loser bails out
-        # cleanly; or both serialise correctly and one no-ops as idempotent).
+        # (b) Exactly one enrollment. Either branch of the contract converges
+        # on this: winner enrolls and loser bails cleanly (no row), OR both
+        # serialise and the second no-ops as idempotent (no extra row). Zero
+        # enrollments would mean both processes failed, which violates the
+        # at-least-one-must-succeed contract; > 1 means flock didn't hold.
         enrollments = _enrollments(home_dir)
-        assert len(enrollments) <= 1, (
-            f"concurrent lock produced phantom enrollments: {len(enrollments)}\noutputs:\n{outputs}"
+        assert len(enrollments) == 1, (
+            f"concurrent lock produced {len(enrollments)} enrollments (expected 1):\n{outputs}"
         )
 
         # (c) Loser exits with a real message, not a Python traceback.
