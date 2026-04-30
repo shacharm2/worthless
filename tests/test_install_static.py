@@ -30,13 +30,36 @@ def test_uv_version_pinned(install_text: str) -> None:
     )
 
 
-def test_worthless_version_pinned(install_text: str) -> None:
-    assert re.search(r'^\s*WORTHLESS_VERSION\s*=\s*"\d+\.\d+\.\d+"', install_text, re.MULTILINE), (
-        "install.sh must pin WORTHLESS_VERSION to a specific x.y.z release (no floating tag)"
+def test_worthless_version_resolution(install_text: str) -> None:
+    """Resolve-latest pattern (Ollama / Bun / Deno style):
+
+    install.sh does NOT hardcode a `WORTHLESS_VERSION="x.y.z"` literal —
+    uv resolves the latest from PyPI at install time. The user-pin escape
+    hatch is `WORTHLESS_VERSION=x.y.z curl … | sh`, validated against a
+    PEP-440-ish charset before reaching `uv tool install`. See README
+    "Versioning" section for the rationale.
+    """
+    # Negative: no hardcoded x.y.z constant.
+    assert not re.search(
+        r'^\s*WORTHLESS_VERSION\s*=\s*"\d+\.\d+\.\d+"', install_text, re.MULTILINE
+    ), (
+        "install.sh must NOT hardcode WORTHLESS_VERSION — version resolves "
+        "from PyPI at install time. Use `${WORTHLESS_VERSION:+==…}` instead."
     )
+    # Positive: env-var-pin escape hatch via POSIX `${VAR:+…}` expansion.
     assert re.search(
-        r"worthless==\$\{?WORTHLESS_VERSION\}?|worthless==\d+\.\d+\.\d+", install_text
-    ), "install.sh must install 'worthless==<version>' using the pinned variable"
+        r"worthless\$\{WORTHLESS_VERSION:\+==\$\{?WORTHLESS_VERSION\}?\}",
+        install_text,
+    ), (
+        "install.sh must use the env-var-pin escape hatch: "
+        "`worthless${WORTHLESS_VERSION:+==${WORTHLESS_VERSION}}`"
+    )
+    # Positive: input validator on user-supplied env var (defends against
+    # shell metachars and arg-confusion before `uv tool install` is invoked).
+    assert re.search(r"\[\!0-9A-Za-z\.\+\!-\]", install_text), (
+        "install.sh must validate WORTHLESS_VERSION against a PEP-440-ish "
+        "charset (POSIX case pattern with bracket negation)."
+    )
 
 
 def test_sha256_verification_referenced(install_text: str) -> None:

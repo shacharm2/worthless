@@ -196,6 +196,24 @@ uv run pytest
 - [Contributor security rules](CONTRIBUTING-security.md) -- invariants all contributions must preserve
 - [SKILL.md](SKILL.md) -- agent discovery file
 
+## Versioning
+
+Three identifiers, kept loosely aligned:
+
+- **PyPI version** (`pip install worthless==0.3.2`) — canonical Python
+  package. Source of truth: `pyproject.toml`.
+- **Git tag** (`v0.3.2`) — same value, signed by the maintainer, drives
+  both the PyPI publish and the worthless.sh Worker deploy. CI fails fast
+  if the tag and `pyproject.toml` disagree (see `.github/workflows/publish.yml`).
+- **`X-Worthless-Script-Tag` header** on `https://worthless.sh/` — labels
+  the *Worker deploy* (which install.sh bytes you fetched). Usually
+  matches the latest PyPI version; can drift when the Worker is
+  redeployed without a new package release. Not a promise of PyPI
+  alignment — for that, run `pip install` and check `worthless --version`.
+
+`install.sh` resolves the latest worthless from PyPI at install time;
+override with `WORTHLESS_VERSION=x.y.z curl … | sh` to pin.
+
 ## Contributing
 
 PRs welcome. Read [CONTRIBUTING-security.md](CONTRIBUTING-security.md) first.
