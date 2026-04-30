@@ -157,7 +157,7 @@ class TestOrphanState:
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
         self._orphan(env_file, home_dir)
-        result = _invoke(["scan", "--path", str(env_file.parent)], home_dir)
+        result = _invoke(["scan", str(env_file.parent)], home_dir)
 
         assert not _looks_like_traceback(result.output)
         assert _has_actionable_hint(
