@@ -43,7 +43,7 @@ Native-Windows support is tracked in [WOR-237](https://linear.app/plumbusai/issu
 
 ## Versioning
 
-PyPI version, signed git tag (`vX.Y.Z`), and the `X-Worthless-Script-Tag` header on `worthless.sh` are kept aligned — CI fails fast if `pyproject.toml` and the tag disagree. `install.sh` resolves the latest `worthless` from PyPI at install time; pin via `WORTHLESS_VERSION=x.y.z curl … | sh`.
+PyPI version, signed git tag (`vX.Y.Z`), and the `X-Worthless-Script-Tag` header on `worthless.sh` are kept aligned — CI fails fast if `pyproject.toml` and the tag disagree. `install.sh` resolves the latest `worthless` from PyPI at install time; pin via `WORTHLESS_VERSION=x.y.z curl -sSL https://worthless.sh | sh`.
 
 ## Documentation
 
