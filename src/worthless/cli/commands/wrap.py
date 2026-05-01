@@ -49,7 +49,12 @@ def _list_enrolled_aliases(home: WorthlessHome) -> list[tuple[str, str]]:
     async def _query():
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         await repo.initialize()
-        return await repo.list_aliases_with_provider()
+        # 8rqs Phase 4 rename: list_aliases_with_routing returns
+        # (alias, var_name, base_url, protocol). Phase 8 will rewire this
+        # caller to consume the full tuple; for now we slice to (alias, protocol)
+        # so existing _build_child_env logic still works.
+        rows = await repo.list_aliases_with_routing()
+        return [(alias, protocol) for alias, _var, _url, protocol in rows]
 
     try:
         return asyncio.run(_query())

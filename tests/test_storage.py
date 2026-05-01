@@ -394,42 +394,138 @@ async def test_store_without_prefix_charset_defaults_none(
 
 
 @pytest.mark.asyncio
-async def test_list_aliases_with_provider_empty(repo: ShardRepository) -> None:
-    """list_aliases_with_provider returns empty list when no shards exist."""
-    result = await repo.list_aliases_with_provider()
+async def test_list_aliases_with_routing_empty(repo: ShardRepository) -> None:
+    """list_aliases_with_routing returns empty list when no enrollments exist."""
+    result = await repo.list_aliases_with_routing()
     assert result == []
 
 
 @pytest.mark.asyncio
-async def test_list_aliases_with_provider_returns_pairs(
+async def test_list_aliases_with_routing_returns_four_tuples(
     repo: ShardRepository,
     sample_split_result,
 ) -> None:
-    """list_aliases_with_provider returns (alias, provider) tuples."""
+    """list_aliases_with_routing returns (alias, var_name, base_url, protocol)."""
     shard_a = stored_shard_from_split(sample_split_result, provider="openai")
     shard_b = stored_shard_from_split(sample_split_result, provider="anthropic")
-    await repo.store("key-oai", shard_a)
-    await repo.store("key-anth", shard_b)
+    await repo.store_enrolled(
+        "key-oai",
+        shard_a,
+        var_name="OPENAI_API_KEY",
+        env_path=None,
+        base_url="https://api.openai.com/v1",
+    )
+    await repo.store_enrolled(
+        "key-anth",
+        shard_b,
+        var_name="ANTHROPIC_API_KEY",
+        env_path=None,
+        base_url="https://api.anthropic.com/v1",
+    )
 
-    result = await repo.list_aliases_with_provider()
-    result_dict = dict(result)
-    assert result_dict["key-oai"] == "openai"
-    assert result_dict["key-anth"] == "anthropic"
+    result = await repo.list_aliases_with_routing()
+    by_alias = {row[0]: row for row in result}
+    assert by_alias["key-oai"] == (
+        "key-oai",
+        "OPENAI_API_KEY",
+        "https://api.openai.com/v1",
+        "openai",
+    )
+    assert by_alias["key-anth"] == (
+        "key-anth",
+        "ANTHROPIC_API_KEY",
+        "https://api.anthropic.com/v1",
+        "anthropic",
+    )
 
 
 @pytest.mark.asyncio
-async def test_list_aliases_with_provider_after_delete(
+async def test_list_aliases_with_routing_after_delete(
     repo: ShardRepository,
     sample_split_result,
 ) -> None:
-    """Deleted alias should not appear in list_aliases_with_provider."""
+    """Deleted alias should not appear in list_aliases_with_routing."""
     shard = stored_shard_from_split(sample_split_result, provider="openai")
-    await repo.store("delete-me", shard)
+    await repo.store_enrolled(
+        "delete-me",
+        shard,
+        var_name="OPENAI_API_KEY",
+        env_path=None,
+        base_url="https://api.openai.com/v1",
+    )
     await repo.delete("delete-me")
 
-    result = await repo.list_aliases_with_provider()
-    aliases = [a for a, _ in result]
+    result = await repo.list_aliases_with_routing()
+    aliases = [row[0] for row in result]
     assert "delete-me" not in aliases
+
+
+@pytest.mark.asyncio
+async def test_list_aliases_with_routing_legacy_row_has_null_base_url(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """A pre-8rqs row stored without base_url surfaces as ``None`` in routing —
+    the proxy (Phase 6) refuses to use it; the user must re-lock. This pins
+    that flow at the data-layer boundary."""
+    shard = stored_shard_from_split(sample_split_result, provider="openai")
+    await repo.store_enrolled(
+        "legacy",
+        shard,
+        var_name="OPENAI_API_KEY",
+        env_path=None,
+        # base_url omitted — simulates a row enrolled before this PR.
+    )
+
+    result = await repo.list_aliases_with_routing()
+    by_alias = {row[0]: row for row in result}
+    assert by_alias["legacy"][2] is None, (
+        f"legacy row should have NULL base_url, got {by_alias['legacy']!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# worthless-8rqs Phase 4: base_url roundtrip on store / fetch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_store_enrolled_with_base_url_roundtrips(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """store_enrolled(base_url=...) is read back by fetch_encrypted."""
+    shard = stored_shard_from_split(sample_split_result, provider="openai")
+    await repo.store_enrolled(
+        "or-alias",
+        shard,
+        var_name="OPENROUTER_API_KEY",
+        env_path=None,
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    enc = await repo.fetch_encrypted("or-alias")
+    assert enc is not None
+    assert enc.base_url == "https://openrouter.ai/api/v1"
+
+
+@pytest.mark.asyncio
+async def test_store_enrolled_without_base_url_returns_none(
+    repo: ShardRepository,
+    sample_split_result,
+) -> None:
+    """Omitting base_url leaves the column NULL → field reads as None."""
+    shard = stored_shard_from_split(sample_split_result, provider="openai")
+    await repo.store_enrolled(
+        "no-url",
+        shard,
+        var_name="OPENAI_API_KEY",
+        env_path=None,
+    )
+
+    enc = await repo.fetch_encrypted("no-url")
+    assert enc is not None
+    assert enc.base_url is None
 
 
 # ---------------------------------------------------------------------------
