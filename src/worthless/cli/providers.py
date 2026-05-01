@@ -115,3 +115,13 @@ def bundled_names() -> set[str]:
 def user_registry_path() -> Path:
     """Public accessor for ``~/.worthless/providers.toml``."""
     return _user_registry_path()
+
+
+def lookup_by_name(name: str) -> ProviderEntry | None:
+    """Return the entry for a given provider name, or ``None`` if unknown.
+    Used by ``worthless lock`` to fall back to the canonical URL when the
+    user's ``.env`` has an API key but no ``*_BASE_URL`` companion."""
+    for entry in load_registry().values():
+        if entry.name == name:
+            return entry
+    return None

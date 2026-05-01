@@ -17,6 +17,7 @@ from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.commands.up import _resolve_port
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.cli.console import get_console
+from worthless.cli.providers import lookup_by_name
 from worthless.cli.dotenv_rewriter import (
     build_enrolled_locations,
     rewrite_env_keys,
@@ -58,6 +59,35 @@ def _proxy_base_url(alias: str) -> str:
     return f"http://127.0.0.1:{_resolve_port(None)}/{alias}/v1"
 
 
+def _derive_base_url_var(var_name: str, provider: str) -> str:
+    """Derive the corresponding ``*_BASE_URL`` variable name for a key var.
+
+    Convention: ``OPENROUTER_API_KEY`` → ``OPENROUTER_BASE_URL``. Falls
+    back to the canonical ``_PROVIDER_ENV_MAP`` mapping when the key var
+    name doesn't end in ``_API_KEY``.
+    """
+    if var_name.endswith("_API_KEY"):
+        return var_name[: -len("_API_KEY")] + "_BASE_URL"
+    return _PROVIDER_ENV_MAP.get(provider, "OPENAI_BASE_URL")
+
+
+def _resolve_upstream_base_url(
+    base_url_var: str, env_values: dict[str, str | None], provider: str
+) -> str:
+    """Pick the upstream URL for the DB row.
+
+    Prefers the user's explicit ``*_BASE_URL`` value from ``.env`` when set;
+    otherwise falls back to the bundled registry default for the provider.
+    """
+    user_value = env_values.get(base_url_var)
+    if user_value:
+        return user_value
+    entry = lookup_by_name(provider)
+    if entry is None:  # pragma: no cover — provider is validated above
+        return "https://api.openai.com/v1"
+    return entry.url
+
+
 @dataclass(eq=False)
 class _PlannedUpdate:
     """One key's in-flight lock plan — built pass-1, consumed by hook + unwind."""
@@ -73,6 +103,11 @@ class _PlannedUpdate:
     prefix: str
     charset: str
     was_fresh_enroll: bool
+    # 8rqs Phase 7: per-enrollment base_url plumbing. ``base_url_var`` is the
+    # .env variable name to write the local proxy URL to (e.g.
+    # ``OPENROUTER_BASE_URL`` for ``OPENROUTER_API_KEY``); preserves the
+    # user's naming convention rather than forcing OPENAI_BASE_URL.
+    base_url_var: str = ""
 
     def zero(self) -> None:
         for buf in (self.shard_a, self.shard_b, self.commitment, self.nonce):
@@ -122,11 +157,16 @@ async def _pass1_db_writes(
     env_str: str,
     token_budget_daily: int | None,
     planned_out: list[_PlannedUpdate],
+    env_values: dict[str, str | None],
 ) -> None:
     """Do every DB write; append each ``_PlannedUpdate`` to *planned_out*.
 
     MUTATES *planned_out* so partial-failure paths still expose the
     bytearrays the caller's ``finally`` needs to zero.
+
+    *env_values* is the parsed ``.env`` (from ``dotenv_values``) so we can
+    read the user's existing ``*_BASE_URL`` value at lock time and store
+    that as the upstream URL in the DB.
     """
     for var_name, value, provider in candidates:
         if provider not in _SUPPORTED_PROVIDERS:
@@ -134,6 +174,9 @@ async def _pass1_db_writes(
                 f"Skipping {var_name}: provider {provider!r} not yet supported"
             )
             continue
+
+        base_url_var = _derive_base_url_var(var_name, provider)
+        upstream_base_url = _resolve_upstream_base_url(base_url_var, env_values, provider)
 
         alias = _make_alias(provider, value)
         db_shard = await repo.fetch_encrypted(alias)
@@ -181,6 +224,7 @@ async def _pass1_db_writes(
                         prefix=db_shard.prefix,
                         charset=db_shard.charset,
                         was_fresh_enroll=False,
+                        base_url_var=base_url_var,
                     )
                 )
             finally:
@@ -209,6 +253,7 @@ async def _pass1_db_writes(
                 token_budget_daily=token_budget_daily,
                 prefix=sr.prefix,
                 charset=sr.charset,
+                base_url=upstream_base_url,
             )
             planned_out.append(
                 _PlannedUpdate(
@@ -223,6 +268,7 @@ async def _pass1_db_writes(
                     prefix=sr.prefix,
                     charset=sr.charset,
                     was_fresh_enroll=True,
+                    base_url_var=base_url_var,
                 )
             )
         finally:
@@ -235,19 +281,27 @@ def _batch_rewrite(
     keys_only: bool,
     existing_env_keys: set[str],
 ) -> None:
-    """One ``safe_rewrite`` call for every planned update + BASE_URL additions."""
+    """One ``safe_rewrite`` call for every planned update + BASE_URL changes."""
     updates: dict[str, str] = {p.var_name: p.shard_a.decode("utf-8") for p in planned}
     additions: dict[str, str] = {}
     if not keys_only:
         for p in planned:
-            base_url_var = _PROVIDER_ENV_MAP.get(p.provider)
-            if (
-                base_url_var
-                and base_url_var not in updates
-                and base_url_var not in existing_env_keys
-                and base_url_var not in additions
+            local_proxy = _proxy_base_url(p.alias)
+            if p.base_url_var in existing_env_keys:
+                # User already has e.g. OPENROUTER_BASE_URL=<upstream>;
+                # rewrite the value to the local proxy URL (the upstream
+                # value was already captured into the DB at pass-1 time).
+                updates[p.base_url_var] = local_proxy
+            elif (
+                p.base_url_var and p.base_url_var not in updates and p.base_url_var not in additions
             ):
-                additions[base_url_var] = _proxy_base_url(p.alias)
+                # Fresh: lock auto-creates the BASE_URL var with a one-line
+                # stderr notice so the user knows something was added.
+                additions[p.base_url_var] = local_proxy
+                sys.stderr.write(
+                    f"worthless: added {p.base_url_var}={local_proxy} to {env_path} (was missing)\n"
+                )
+                sys.stderr.flush()
 
     rewrite_env_keys(
         env_path,
@@ -301,6 +355,8 @@ def _lock_keys(
         console.print_hint(f"Scanning {env_path} for API keys...")
 
     async def _lock_async() -> int:
+        from dotenv import dotenv_values  # noqa: PLC0415 — local import keeps test surface tight
+
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         await repo.initialize()
 
@@ -313,17 +369,23 @@ def _lock_keys(
             console.print_warning("No unprotected API keys found.")
             return 0
 
+        # 8rqs Phase 7: snapshot the full .env so _pass1 can read existing
+        # *_BASE_URL values and pull them into the DB row.
+        env_values = dict(dotenv_values(env_path))
+
         candidates = [
             (var_name, value, provider_override or detected_provider)
             for var_name, value, detected_provider in scanned
         ]
-        existing_env_keys = {var_name for var_name, _, _ in scanned}
+        existing_env_keys = set(env_values.keys())
 
         planned: list[_PlannedUpdate] = []
         try:
             if not quiet:
                 console.print_hint(f"  Protecting {len(candidates)} key(s)...")
-            await _pass1_db_writes(repo, candidates, env_str, token_budget_daily, planned)
+            await _pass1_db_writes(
+                repo, candidates, env_str, token_budget_daily, planned, env_values
+            )
             if not planned:
                 return 0
             _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
@@ -398,6 +460,10 @@ def _enroll_single(
             nonce=sr.nonce,
             provider=provider,
         )
+        # 8rqs: enroll falls back to the registry default URL — _enroll_single
+        # is the no-.env path so there's no user var to read.
+        registry_default = lookup_by_name(provider)
+        base_url = registry_default.url if registry_default else None
         await repo.store_enrolled(
             alias,
             stored,
@@ -405,6 +471,7 @@ def _enroll_single(
             env_path=None,
             prefix=sr.prefix,
             charset=sr.charset,
+            base_url=base_url,
         )
 
     try:

@@ -75,6 +75,54 @@ class TestLockFormatPreserving:
         else:
             pytest.fail("OPENAI_BASE_URL not found in .env")
 
+    def test_lock_reads_existing_base_url_from_env(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """If user's .env has OPENROUTER_API_KEY + OPENROUTER_BASE_URL pointing
+        at OpenRouter, lock stores that URL in DB and rewrites the var (NAME
+        unchanged) to the local proxy URL — not the canonical OPENAI_BASE_URL.
+
+        worthless-8rqs core flow: respect the user's variable names, route
+        per-enrollment to the right upstream.
+        """
+        from worthless.storage.repository import ShardRepository
+
+        env = tmp_path / ".env"
+        env.write_text(
+            f"OPENROUTER_API_KEY={fake_openai_key()}\n"
+            "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n"
+        )
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        # DB row stores the user's base_url (the upstream — OpenRouter).
+        async def _check():
+            repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+            await repo.initialize()
+            aliases = await repo.list_keys()
+            assert len(aliases) == 1
+            enc = await repo.fetch_encrypted(aliases[0])
+            return enc.base_url, aliases[0]
+
+        base_url_in_db, alias = asyncio.run(_check())
+        assert base_url_in_db == "https://openrouter.ai/api/v1"
+
+        # .env rewrite preserves the var NAME (OPENROUTER_BASE_URL, not OPENAI_BASE_URL).
+        from dotenv import dotenv_values
+
+        parsed = dotenv_values(env)
+        assert "OPENROUTER_BASE_URL" in parsed
+        assert "OPENAI_BASE_URL" not in parsed, (
+            "lock rewrote to canonical OPENAI_BASE_URL — should preserve OPENROUTER_BASE_URL"
+        )
+        assert parsed["OPENROUTER_BASE_URL"].startswith("http://127.0.0.1:")
+        assert alias in parsed["OPENROUTER_BASE_URL"]
+
     def test_lock_keys_only_skips_base_url(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """--keys-only flag should skip BASE_URL writing."""
         result = runner.invoke(
