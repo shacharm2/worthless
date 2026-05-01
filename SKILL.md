@@ -237,6 +237,19 @@ Thin wrapper around `safe_restore` for ops runbooks and recovery scripts that ne
 
 **Use case:** `cat backup.env | worthless restore ./.env`
 
+#### `worthless providers list|register [OPTIONS]`
+**Manage the LLM-provider registry (URL → wire-protocol mapping).**
+
+The registry maps known upstream URLs (e.g., `https://api.openai.com/v1`) to a wire protocol (`openai` / `anthropic`) so `worthless lock` can auto-detect protocol when scanning `.env` files.
+
+**Subcommands:**
+- `list` — Print the merged registry: bundled + optional `~/.worthless/providers.toml`. Use the global `--json` flag for machine-readable output.
+- `register --name NAME --url URL --protocol {openai,anthropic} [--force]` — Append a custom provider to `~/.worthless/providers.toml`. Refuses bundled-name conflicts; refuses bundled-URL conflicts unless `--force`.
+
+**Bundled providers:** openai, anthropic, openrouter, groq, together, ollama. Add more locally via `register` without modifying the package.
+
+**Use case:** Lock keys from any OpenAI-protocol-compatible provider (OpenRouter, Groq, Together, Ollama, internal LLM gateways). The proxy uses each enrollment's stored URL at request time, so multiple providers coexist in one `.env`.
+
 #### `worthless mcp [OPTIONS]`
 **Start the MCP server (stdio transport).**
 

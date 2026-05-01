@@ -376,12 +376,28 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             await rules_engine.release_spend_reservation(alias, _spend_reservation)
             return _uniform_401()
 
+        # 8rqs Phase 6: per-enrollment routing. Legacy rows enrolled before
+        # this column existed return base_url=None; refuse with a clear hint
+        # rather than fall back to a possibly-wrong default.
+        if encrypted.base_url is None:
+            await rules_engine.release_spend_reservation(alias, _spend_reservation)
+            return _make_gateway_response(
+                503,
+                f"alias {alias!r} predates upstream URL storage; "
+                "run 'worthless relock' to re-enroll with --base-url",
+            )
+
         # Build and send with stream=True for SSE support
         upstream_resp: httpx.Response | None = None
         try:
             with secure_key(key_buf) as k:
                 # Prepare upstream request
-                adapter_req = adapter.prepare_request(body=body, headers=req_headers, api_key=k)
+                adapter_req = adapter.prepare_request(
+                    body=body,
+                    headers=req_headers,
+                    api_key=k,
+                    base_url=encrypted.base_url,
+                )
 
                 # Build the httpx request object
                 upstream_req = httpx_client.build_request(

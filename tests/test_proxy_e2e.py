@@ -73,7 +73,9 @@ async def _enroll(repo: ShardRepository, alias: str, api_key: str, prefix: str, 
         nonce=bytearray(sr.nonce),
         provider=provider,
     )
-    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+    await repo.store(
+        alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
+    )
     shard_a_utf8 = sr.shard_a.decode("utf-8")
     return alias, shard_a_utf8, api_key
 

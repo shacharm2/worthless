@@ -69,7 +69,9 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings):
         nonce=bytearray(sr.nonce),
         provider="openai",
     )
-    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+    await repo.store(
+        alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
+    )
 
     shard_a_utf8 = sr.shard_a.decode("utf-8")
     return alias, shard_a_utf8, api_key.encode()

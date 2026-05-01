@@ -29,8 +29,6 @@ from worthless.proxy.config import ProxySettings
 from worthless.storage.repository import ShardRepository, StoredShard
 
 # Import mock app from harness (same mock upstream)
-import worthless.adapters.anthropic as _anth_mod
-import worthless.adapters.openai as _oai_mod
 
 # Inline the mock app to avoid importing scripts/ with sys.path hacks
 from starlette.applications import Starlette
@@ -110,6 +108,14 @@ def live_proxy():
     shard_a_tokens: dict[str, str] = {}
 
     prefixes = {"openai": "sk-proj-", "anthropic": "sk-ant-api03-"}
+    # 8rqs Phase 5+6: each enrollment carries its own base_url. Point both at
+    # the local mock upstream so the per-enrollment routing in proxy/app.py
+    # delivers the request there.
+    mock_upstream = f"http://127.0.0.1:{mock_port}"
+    enrollment_base_urls = {
+        "openai": f"{mock_upstream}/v1",
+        "anthropic": f"{mock_upstream}/v1",
+    }
 
     async def _enroll():
         repo = ShardRepository(db_path, fernet_key)
@@ -124,21 +130,20 @@ def live_proxy():
                 nonce=bytearray(sr.nonce),
                 provider=provider,
             )
-            await repo.store(f"{provider}-contract", shard, prefix=sr.prefix, charset=sr.charset)
+            await repo.store_enrolled(
+                f"{provider}-contract",
+                shard,
+                var_name=f"{provider.upper()}_API_KEY",
+                env_path=None,
+                prefix=sr.prefix,
+                charset=sr.charset,
+                base_url=enrollment_base_urls[provider],
+            )
             shard_a_tokens[provider] = sr.shard_a.decode("utf-8")
 
     asyncio.run(_enroll())
 
-    # Save originals before patching — restore in finally to prevent xdist pollution
-    _oai_original = _oai_mod.UPSTREAM_URL
-    _anth_original = _anth_mod.UPSTREAM_URL
-
     try:
-        # Patch upstream URLs to mock
-        mock_upstream = f"http://127.0.0.1:{mock_port}"
-        _oai_mod.UPSTREAM_URL = f"{mock_upstream}/v1/chat/completions"
-        _anth_mod.UPSTREAM_URL = f"{mock_upstream}/v1/messages"
-
         # Create proxy app
         settings = ProxySettings(
             db_path=db_path,
@@ -181,10 +186,6 @@ def live_proxy():
         mock_thread.join(timeout=3)
         proxy_thread.join(timeout=3)
     finally:
-        # Always restore upstream URLs — prevents cross-test pollution under xdist
-        _oai_mod.UPSTREAM_URL = _oai_original
-        _anth_mod.UPSTREAM_URL = _anth_original
-
         import shutil
 
         shutil.rmtree(tmpdir, ignore_errors=True)

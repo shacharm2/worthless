@@ -84,6 +84,7 @@ class ProviderAdapter(Protocol):
         body: bytes,
         headers: dict[str, str],
         api_key: bytearray,
+        base_url: str,
     ) -> AdapterRequest: ...
 
     async def relay_response(self, response: httpx.Response) -> AdapterResponse: ...

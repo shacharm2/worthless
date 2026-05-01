@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 
 import httpx
 
@@ -12,11 +11,6 @@ from worthless.adapters.types import (
     AdapterResponse,
     relay_response,
     strip_internal_headers,
-)
-
-UPSTREAM_URL = os.environ.get(
-    "WORTHLESS_UPSTREAM_OPENAI_URL",
-    "https://api.openai.com/v1/chat/completions",
 )
 
 
@@ -56,6 +50,7 @@ class OpenAIAdapter:
         body: bytes,
         headers: dict[str, str],
         api_key: bytearray,
+        base_url: str,
     ) -> AdapterRequest:
         out_headers = strip_internal_headers(headers)
         out_headers["authorization"] = f"Bearer {api_key.decode()}"
@@ -64,7 +59,8 @@ class OpenAIAdapter:
             # Body was modified: stale Content-Length must be removed so
             # httpx recalculates it from the actual byte count (WOR-240).
             out_headers.pop("content-length", None)
-        return AdapterRequest(url=UPSTREAM_URL, headers=out_headers, body=new_body)
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        return AdapterRequest(url=url, headers=out_headers, body=new_body)
 
     async def relay_response(self, response: httpx.Response) -> AdapterResponse:
         return await relay_response(response)

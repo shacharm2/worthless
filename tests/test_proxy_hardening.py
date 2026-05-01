@@ -60,7 +60,9 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings):
         nonce=bytearray(sr.nonce),
         provider="openai",
     )
-    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+    await repo.store(
+        alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
+    )
 
     shard_a_utf8 = sr.shard_a.decode("utf-8")
     return alias, shard_a_utf8, api_key.encode()
@@ -705,7 +707,13 @@ class TestUpstreamSanitizationAnthropic:
             nonce=bytearray(sr.nonce),
             provider="anthropic",
         )
-        await proxy_app.state.repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+        await proxy_app.state.repo.store(
+            alias,
+            shard,
+            prefix=sr.prefix,
+            charset=sr.charset,
+            base_url="https://api.anthropic.com/v1",
+        )
         shard_a_utf8 = sr.shard_a.decode("utf-8")
 
         respx.post("https://api.anthropic.com/v1/messages").mock(
@@ -1107,7 +1115,9 @@ async def attack_scenario(
         nonce=bytearray(sr.nonce),
         provider="openai",
     )
-    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+    await repo.store(
+        alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
+    )
 
     app = create_app(settings)
     db = await aiosqlite.connect(tmp_db_path)
@@ -1567,7 +1577,13 @@ class TestShardAExtractionAttacks:
             nonce=bytearray(sr_b.nonce),
             provider="openai",
         )
-        await repo.store(alias_b, shard_b, prefix=sr_b.prefix, charset=sr_b.charset)
+        await repo.store(
+            alias_b,
+            shard_b,
+            prefix=sr_b.prefix,
+            charset=sr_b.charset,
+            base_url="https://api.openai.com/v1",
+        )
 
         # Use shard-A from alias_a against alias_b
         transport = httpx.ASGITransport(app=proxy_app)
