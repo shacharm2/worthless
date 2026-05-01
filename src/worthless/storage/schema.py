@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import aiosqlite
 
 SCHEMA = """\
@@ -15,6 +17,7 @@ CREATE TABLE IF NOT EXISTS shards (
     provider    TEXT NOT NULL,
     prefix      TEXT,
     charset     TEXT,
+    base_url    TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -63,6 +66,46 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollments_null_path
 """
 
 
+async def _migrate_shard_format_columns(db: aiosqlite.Connection, shard_columns: set[str]) -> None:
+    """WOR-207: prefix/charset columns for format-preserving split."""
+    _SHARD_MIGRATIONS = {
+        "prefix": "ALTER TABLE shards ADD COLUMN prefix TEXT",
+        "charset": "ALTER TABLE shards ADD COLUMN charset TEXT",
+    }
+    for col_name, stmt in _SHARD_MIGRATIONS.items():
+        if col_name not in shard_columns:
+            try:
+                await db.execute(stmt)
+            except Exception as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+    await db.commit()
+
+
+async def _migrate_base_url_column(
+    db: aiosqlite.Connection, db_path: str, shard_columns: set[str]
+) -> None:
+    """worthless-8rqs: add ``shards.base_url`` (nullable, no backfill).
+
+    Backfilling NULL → per-provider default could silently mis-route legacy
+    OpenAI-protocol rows that pointed at OpenRouter via the old env-var
+    workaround. Phase-6 readers raise a "predates upstream URL storage"
+    error on NULL, forcing explicit re-lock for affected aliases.
+    """
+    if "base_url" in shard_columns:
+        return
+    # Defensive snapshot via SQLite's VACUUM INTO — clean copy that respects
+    # WAL state. Only runs the first time we add the column.
+    backup_path = f"{db_path}.bak.{int(time.time())}"
+    await db.execute(f"VACUUM INTO '{backup_path}'")  # noqa: S608 — internal path, not user input
+    try:
+        await db.execute("ALTER TABLE shards ADD COLUMN base_url TEXT")
+        await db.commit()
+    except Exception as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
+
+
 async def init_db(db_path: str) -> None:
     """Create tables and enable WAL journal mode."""
     async with aiosqlite.connect(db_path) as db:
@@ -72,47 +115,43 @@ async def init_db(db_path: str) -> None:
         await db.commit()
 
 
+async def _prune_old_spend_log(db: aiosqlite.Connection) -> None:
+    """WOR-182: prune spend_log entries older than 90 days."""
+    try:
+        await db.execute("DELETE FROM spend_log WHERE created_at < datetime('now', '-90 days')")
+        await db.commit()
+    except Exception:  # noqa: S110 — spend_log may not exist in pre-schema DBs  # nosec B110
+        pass
+
+
+async def _migrate_decoy_hash_column(db: aiosqlite.Connection) -> None:
+    """WOR-31: add decoy_hash column to enrollments."""
+    cursor = await db.execute("PRAGMA table_info(enrollments)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "decoy_hash" in columns:
+        return
+    try:
+        await db.execute("ALTER TABLE enrollments ADD COLUMN decoy_hash TEXT")
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_enrollments_decoy_hash "
+            "ON enrollments (decoy_hash) WHERE decoy_hash IS NOT NULL"
+        )
+        await db.commit()
+    except Exception as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
+
+
 async def migrate_db(db_path: str) -> None:
     """Apply forward-only migrations for existing databases."""
     async with aiosqlite.connect(db_path) as db:
-        # WOR-182: Prune spend_log entries older than 90 days
-        try:
-            await db.execute("DELETE FROM spend_log WHERE created_at < datetime('now', '-90 days')")
-            await db.commit()
-        except Exception:  # noqa: S110 — spend_log may not exist in pre-schema DBs  # nosec B110
-            pass
+        await _prune_old_spend_log(db)
+        await _migrate_decoy_hash_column(db)
 
-        # WOR-31: Add decoy_hash column to enrollments
-        cursor = await db.execute("PRAGMA table_info(enrollments)")
-        columns = {row[1] for row in await cursor.fetchall()}
-        if "decoy_hash" not in columns:
-            try:
-                await db.execute("ALTER TABLE enrollments ADD COLUMN decoy_hash TEXT")
-                await db.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_enrollments_decoy_hash "
-                    "ON enrollments (decoy_hash) WHERE decoy_hash IS NOT NULL"
-                )
-                await db.commit()
-            except Exception as exc:
-                if "duplicate column" not in str(exc).lower():
-                    raise
-
-        # WOR-207: Add prefix/charset columns to shards for format-preserving split
         cursor = await db.execute("PRAGMA table_info(shards)")
         shard_columns = {row[1] for row in await cursor.fetchall()}
-        # Hardcoded migration statements — not dynamic SQL
-        _SHARD_MIGRATIONS = {
-            "prefix": "ALTER TABLE shards ADD COLUMN prefix TEXT",
-            "charset": "ALTER TABLE shards ADD COLUMN charset TEXT",
-        }
-        for col_name, stmt in _SHARD_MIGRATIONS.items():
-            if col_name not in shard_columns:
-                try:
-                    await db.execute(stmt)
-                except Exception as exc:
-                    if "duplicate column" not in str(exc).lower():
-                        raise
-        await db.commit()
+        await _migrate_shard_format_columns(db, shard_columns)
+        await _migrate_base_url_column(db, db_path, shard_columns)
 
         # WOR-183: Add rules engine columns to enrollment_config
         # Guard: table may not exist in very old DBs

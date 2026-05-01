@@ -468,3 +468,134 @@ async def test_migrate_adds_decoy_hash_column(tmp_path) -> None:
         cursor = await db.execute("PRAGMA table_info(enrollments)")
         columns = {row[1] for row in await cursor.fetchall()}
         assert "decoy_hash" in columns
+
+
+# ------------------------------------------------------------------
+# worthless-8rqs Phase 3: per-enrollment base_url column
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fresh_db_has_base_url_column(tmp_path) -> None:
+    """A DB initialised from current SCHEMA includes ``base_url`` in shards."""
+    db_path = str(tmp_path / "fresh.db")
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.commit()
+
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute("PRAGMA table_info(shards)")
+        columns = {row[1] for row in await cursor.fetchall()}
+
+    assert "base_url" in columns, (
+        "fresh DB missing shards.base_url — required for per-enrollment routing (8rqs)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_migrate_adds_base_url_column(tmp_path) -> None:
+    """Migration adds ``base_url`` to a pre-8rqs DB without the column."""
+    db_path = str(tmp_path / "pre_8rqs.db")
+
+    # Create a DB with the schema as it existed BEFORE 8rqs (no base_url).
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute("PRAGMA foreign_keys = ON")
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS shards ("
+            "key_alias TEXT PRIMARY KEY, shard_b_enc BLOB NOT NULL, "
+            "commitment BLOB NOT NULL, nonce BLOB NOT NULL, "
+            "provider TEXT NOT NULL, prefix TEXT, charset TEXT, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS enrollments ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "key_alias TEXT NOT NULL REFERENCES shards(key_alias), "
+            "var_name TEXT NOT NULL, env_path TEXT, "
+            "decoy_hash TEXT, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        await db.commit()
+
+    await migrate_db(db_path)
+
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute("PRAGMA table_info(shards)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        assert "base_url" in columns
+
+
+@pytest.mark.asyncio
+async def test_migrate_base_url_idempotent(tmp_path) -> None:
+    """Running migrate twice must not raise (post-8rqs DBs already have the column)."""
+    db_path = str(tmp_path / "double_migrate.db")
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(SCHEMA)
+        await db.commit()
+
+    # First run: column already there, no-op.
+    await migrate_db(db_path)
+    # Second run: also no-op.
+    await migrate_db(db_path)
+
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute("PRAGMA table_info(shards)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        # Column appears exactly once (no duplicate-add).
+        assert columns.count("base_url") == 1
+
+
+@pytest.mark.asyncio
+async def test_migrate_creates_backup_before_altering(tmp_path) -> None:
+    """When migration ACTUALLY runs ALTER (column was missing), it must
+    leave a ``.bak.<timestamp>`` file alongside the DB so the user has a
+    rollback option if anything subsequent goes wrong.
+
+    Brutus's scoping decision: no backfill (would mis-route legacy rows),
+    but DO take the backup — ALTER itself is safe but the migration window
+    is the right time for a defensive snapshot.
+    """
+    db_path = tmp_path / "to_migrate.db"
+
+    # Create pre-8rqs DB.
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS shards ("
+            "key_alias TEXT PRIMARY KEY, shard_b_enc BLOB NOT NULL, "
+            "commitment BLOB NOT NULL, nonce BLOB NOT NULL, "
+            "provider TEXT NOT NULL, prefix TEXT, charset TEXT, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        await db.execute(
+            "CREATE TABLE IF NOT EXISTS enrollments ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "key_alias TEXT NOT NULL REFERENCES shards(key_alias), "
+            "var_name TEXT NOT NULL, env_path TEXT, decoy_hash TEXT, "
+            "created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+        )
+        await db.commit()
+
+    await migrate_db(str(db_path))
+
+    backups = list(tmp_path.glob("to_migrate.db.bak.*"))
+    assert len(backups) >= 1, (
+        f"no pre-migration backup created in {tmp_path}; existing files: {list(tmp_path.iterdir())}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_migrate_no_backup_when_already_migrated(tmp_path) -> None:
+    """If the DB already has base_url (post-8rqs), migrate must NOT spam
+    the directory with a fresh backup on every startup."""
+    db_path = tmp_path / "already.db"
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.executescript(SCHEMA)
+        await db.commit()
+
+    # Fresh DB has the column → migrate is a no-op for shards.base_url.
+    await migrate_db(str(db_path))
+
+    backups = list(tmp_path.glob("already.db.bak.*"))
+    assert len(backups) == 0, (
+        f"backup file created on no-op migration; got: {[p.name for p in backups]}"
+    )
