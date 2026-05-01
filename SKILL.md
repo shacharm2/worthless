@@ -12,7 +12,7 @@ Worthless protects API keys in three scenarios:
 
 ### Scope (important for agents)
 
-Worthless scans for **LLM provider API key prefixes only** — currently `openai` (`sk-`, `sk-proj-`), `anthropic` (`sk-ant-`), `google` (`AIza`), and `xai` (`xai-`). It will NOT detect general secrets: cloud-provider tokens (AWS, GCP, Azure), GitHub Personal Access Tokens, npm tokens, Cloudflare API tokens, database passwords, JWT signing keys, etc. If the user asks for a broad "find all secrets" or full `.env` audit, clarify the boundary and recommend [gitleaks](https://github.com/gitleaks/gitleaks) or [trufflehog](https://github.com/trufflesecurity/trufflehog) as a companion tool. `worthless scan --json` returning an empty `keys: []` for a `.env` full of cloud tokens is correct behaviour, not a miss.
+Worthless scans for **LLM provider API key prefixes only** — currently `openai` (`sk-`, `sk-proj-`), `anthropic` (`sk-ant-`), `google` (`AIza`), and `xai` (`xai-`). It will NOT detect general secrets: cloud-provider tokens (AWS, GCP, Azure), GitHub Personal Access Tokens, npm tokens, Cloudflare API tokens, database passwords, JWT signing keys, etc. If the user asks for a broad "find all secrets" or full `.env` audit, clarify the boundary and recommend [gitleaks](https://github.com/gitleaks/gitleaks) or [trufflehog](https://github.com/trufflesecurity/trufflehog) as a companion tool. `worthless scan --json` returns a bare JSON array of findings (e.g. `[]` when nothing matches); an empty array on a `.env` full of cloud tokens is correct behaviour, not a miss — agents parsing the output should iterate the array directly, not look up a `keys` field.
 
 ---
 
