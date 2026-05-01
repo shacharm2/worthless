@@ -63,10 +63,15 @@ class WorthlessHome:
         keychain prompts (bootstrap probe + ShardRepository init + proxy env
         injection). Cache is process-scoped — new CLI invocations still
         re-fetch once, which is acceptable per the bead spec.
+
+        Each access returns a *fresh bytearray copy* of the cached value so
+        callers can ``zero_buf()`` their own copy (SR-01) without poisoning
+        the cache. The cache itself stays intact for subsequent reads;
+        consumer mutation of one returned bytearray does not propagate.
         """
         if self._cached_fernet_key is None:
             self._cached_fernet_key = read_fernet_key(self.base_dir)
-        return self._cached_fernet_key
+        return bytearray(self._cached_fernet_key)
 
 
 def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
@@ -97,9 +102,16 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 "Create it or mount a volume at that path.",
             )
 
-        # Generate Fernet key if missing (keyring or file fallback)
+        # Generate Fernet key if missing (keyring or file fallback). Route
+        # the existence probe through ``home.fernet_key`` so the read also
+        # populates ``WorthlessHome``'s per-instance cache — collapses the
+        # bootstrap probe + first ``ShardRepository`` init into a single
+        # macOS Keychain ACL evaluation on the existing-key path. The
+        # missing-key branch generates and stores the key without populating
+        # the cache; the next ``home.fernet_key`` access reads the freshly
+        # stored key once.
         try:
-            read_fernet_key(home.base_dir)
+            _ = home.fernet_key
         except WorthlessError as exc:
             if exc.code != ErrorCode.KEY_NOT_FOUND:
                 raise

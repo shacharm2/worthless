@@ -215,27 +215,84 @@ class TestFernetKeyMemoization:
                 f"each WorthlessHome should trigger one read, got {mock_read.call_count}"
             )
 
-    def test_memoized_value_remains_bytearray_and_identity_stable(self, tmp_path: Path) -> None:
-        """SR-01: the cached value stays a mutable bytearray, identity stable.
+    def test_caller_mutation_does_not_poison_cache(self, tmp_path: Path) -> None:
+        """Consumer ``zero_buf`` on the returned bytearray must NOT poison the cache.
 
-        If memoization stored the result as immutable ``bytes``, secret zeroing
-        (``zero_buf``) could not wipe it in place. SR-01 pre-commit hooks would
-        catch the type regression at commit time, but this test pins the
-        runtime contract. ``is`` identity also confirms it is true memoization
-        (one cached object), not a fresh-copy-each-time look-alike.
+        Production callers (``unlock.py``, ``proxy/app.py``) zero their
+        bytearray after using the key, per SR-01. The OLD design (return the
+        cached object directly) would have meant their ``zero_buf`` zeroed
+        the cache itself, so the next reader on the same ``WorthlessHome``
+        would silently get all-zero bytes — decryption would corrupt without
+        raising. This test simulates that exact flow: read, zero the returned
+        copy, read again, assert clean key bytes are returned.
+
+        A future regression to "return self._cached_fernet_key" (no copy)
+        would fail this test loudly.
         """
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
-        fake_key = bytearray(b"sr01-check-padded-to-44-bytes-1234567890123")
-
+        clean_key = b"poison-test-padded-to-44-bytes-1234567890123"
+        # Mock returns a NEW bytearray each call so the cache stores its own
+        # bytearray (not a reference the test holds onto).
         with patch(
             "worthless.cli.bootstrap.read_fernet_key",
-            return_value=fake_key,
+            side_effect=lambda *_: bytearray(clean_key),
         ):
             first = home.fernet_key
+            # Caller zeros their copy — simulates SR-01 ``zero_buf()`` after use.
+            for i in range(len(first)):
+                first[i] = 0
+            assert all(b == 0 for b in first), "precondition: caller's copy is fully zeroed"
+
+            # Subsequent reader must get the original clean key bytes from cache,
+            # not whatever residue the caller left in their now-zeroed copy.
             second = home.fernet_key
+            assert bytes(second) == clean_key, (
+                f"cache was poisoned by caller mutation: returned "
+                f"{bytes(second)!r}, expected {clean_key!r}"
+            )
+            assert any(b != 0 for b in second), (
+                "second read returned all-zero bytes — cache was poisoned"
+            )
+
+    def test_property_returns_fresh_bytearray_copies_with_same_content(
+        self, tmp_path: Path
+    ) -> None:
+        """Each property access returns an INDEPENDENT bytearray copy.
+
+        After memoization, the cache is the canonical source but the property
+        returns a fresh copy on each access so callers can ``zero_buf()`` their
+        own copy (per SR-01) without poisoning the cache. This test pins:
+
+        * SR-01 type contract — cached and returned values are ``bytearray``,
+          not immutable ``bytes``.
+        * True memoization — proven by ``call_count == 1`` over two accesses.
+          The earlier version of this test asserted ``first is second``, which
+          would have passed even without a cache because ``mock.return_value``
+          is the same object on every call. Using ``side_effect=lambda *_:
+          bytearray(...)`` returns a NEW object on each underlying read, so
+          ``call_count`` is the only honest way to prove the cache is engaged.
+        * Fresh-copy contract — ``first is not second`` confirms callers each
+          get their own bytearray. A future regression to "return the cached
+          object directly" would re-introduce the consumer-zeroing-poisons-
+          cache bug; this assertion catches that.
+        """
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+        # Mock returns a NEW bytearray each underlying call so identity-only
+        # checks cannot false-pass.
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key",
+            side_effect=lambda *_: bytearray(b"sr01-check-padded-to-44-bytes-1234567890123"),
+        ) as mock_read:
+            first = home.fernet_key
+            second = home.fernet_key
+            assert mock_read.call_count == 1, (
+                f"fernet_key not memoized — read_fernet_key called "
+                f"{mock_read.call_count} times for 2 accesses on the same instance"
+            )
             assert isinstance(first, bytearray), "first read must be bytearray (SR-01)"
             assert isinstance(second, bytearray), "second read must be bytearray (SR-01)"
-            assert first is second, (
-                "memoized fernet_key must return the same bytearray object on repeat "
-                "access (true memoization, not a fresh copy)"
+            assert first == second, "both reads must derive from the same cached source"
+            assert first is not second, (
+                "property must return a FRESH bytearray copy on each access so "
+                "callers can zero_buf() their copy without poisoning the cache"
             )
