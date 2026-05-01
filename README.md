@@ -79,6 +79,18 @@ $ worthless
   Proxy ready on 127.0.0.1:8787
 ```
 
+## Scope
+
+Worthless scans for **LLM provider API key prefixes only** — currently
+`openai` (`sk-`, `sk-proj-`), `anthropic` (`sk-ant-`), `google`
+(`AIza`), and `xai` (`xai-`). For general secret detection (cloud
+tokens, GitHub PATs, AWS access keys, npm tokens, Cloudflare API
+tokens, etc.), use
+[gitleaks](https://github.com/gitleaks/gitleaks) or
+[trufflehog](https://github.com/trufflesecurity/trufflehog) as a
+companion tool — worthless will not flag those and is not trying to
+replace them.
+
 ## How it works
 
 1. `worthless lock` splits each API key into two shards using XOR

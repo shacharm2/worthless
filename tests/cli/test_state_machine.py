@@ -215,14 +215,13 @@ class TestShardWithoutDBRow:
     the user the shard is unrecognised.
     """
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="RED: HF4 (worthless-5u6y) — unlock must produce a recognisable hint "
-        "on shard-shaped values without DB rows. Remove this marker when HF4 lands.",
-    )
     def test_unlock_with_no_db_row_fails_gracefully(
         self, home_dir: WorthlessHome, tmp_path: Path
     ) -> None:
+        # GREEN: HF4 (worthless-5u6y) landed — `worthless unlock` now raises
+        # a WorthlessError with a "no enrollment" hint when the .env contains
+        # shard-A-shape values but no matching DB rows. Marker removed in the
+        # same PR that fixed the bug.
         env = tmp_path / ".env"
         # A shard-A-looking value: same prefix, same length, but never enrolled.
         fake_shard = "sk-proj-" + ("a" * (len(_TEST_KEY) - len("sk-proj-")))

@@ -10,6 +10,10 @@ Worthless protects API keys in three scenarios:
 2. **Daemon Mode**: `worthless up` starts a persistent local proxy on port 8787 (configurable) that stays running and protects all enrolled keys.
 3. **CI/CD & Sidecar**: The proxy is designed to run as a sidecar container or process, protecting keys across environments with per-key spending limits and time-window gates.
 
+### Scope (important for agents)
+
+Worthless scans for **LLM provider API key prefixes only** — currently `openai` (`sk-`, `sk-proj-`), `anthropic` (`sk-ant-`), `google` (`AIza`), and `xai` (`xai-`). It will NOT detect general secrets: cloud-provider tokens (AWS, GCP, Azure), GitHub Personal Access Tokens, npm tokens, Cloudflare API tokens, database passwords, JWT signing keys, etc. If the user asks for a broad "find all secrets" or full `.env` audit, clarify the boundary and recommend [gitleaks](https://github.com/gitleaks/gitleaks) or [trufflehog](https://github.com/trufflesecurity/trufflehog) as a companion tool. `worthless scan --json` returning an empty `keys: []` for a `.env` full of cloud tokens is correct behaviour, not a miss.
+
 ---
 
 ## Installation & Setup

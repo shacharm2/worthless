@@ -20,6 +20,7 @@ from worthless.cli.console import get_console
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.cli.dotenv_rewriter import rewrite_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
+from worthless.cli.key_patterns import detect_provider
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp
 from worthless.crypto.types import zero_buf
 from worthless.storage.repository import (
@@ -231,14 +232,20 @@ async def _unlock_batch(
     home: WorthlessHome,
     repo: ShardRepository,
     env_path: Path | None,
-) -> int:
-    """Transactional multi-alias unlock. Returns count restored."""
+) -> list[_PlannedRestore]:
+    """Transactional multi-alias unlock.
+
+    Returns the planned restores so the caller can emit per-key audit output
+    (HF4 / worthless-5u6y). The returned objects have ``key_buf`` already
+    zeroed by this function's ``finally`` block; only metadata (alias,
+    var_name, provider, env_path) is safe to read post-return.
+    """
     console = get_console()
     planned: list[_PlannedRestore] = []
     try:
         await _pass1_reconstruct(aliases, home, repo, env_path, planned)
         if not planned:
-            return 0
+            return planned
 
         env_writers = [p for p in planned if p.env_path is not None and p.var_name is not None]
         if env_writers:
@@ -257,7 +264,7 @@ async def _unlock_batch(
         _print_recovery_keys(planned, console)
 
         await _pass3_db_cleanup(repo, home, planned)
-        return len(planned)
+        return planned
     finally:
         for p in planned:
             p.zero()
@@ -286,13 +293,19 @@ def register_unlock_commands(app: typer.Typer) -> None:
         async def _unlock_async():
             await repo.initialize()
             if alias:
-                count = await _unlock_batch([alias], home, repo, env)
-                if count:
-                    console.print_success(f"Unlocked {alias}.")
+                planned = await _unlock_batch([alias], home, repo, env)
+                if planned:
+                    # HF4: per-key restore line, not just "Unlocked {alias}."
+                    p = planned[0]
+                    where = str(p.env_path) if p.env_path is not None else "<recovery>"
+                    console.print_success(
+                        f"Restored {p.var_name or p.alias} "
+                        f"({p.provider}, alias {p.alias}) → {where}"
+                    )
                 else:
-                    # Per CodeRabbit nitpick: don't exit silently on count==0.
-                    # If the user typo'd the alias, success-with-no-output is
-                    # the worst possible feedback.
+                    # Per CodeRabbit nitpick: don't exit silently when nothing
+                    # was found. If the user typo'd the alias, silent success
+                    # is the worst possible feedback.
                     console.print_warning(f"Alias not found or no keys restored: {alias}.")
                 return
 
@@ -300,14 +313,57 @@ def register_unlock_commands(app: typer.Typer) -> None:
             all_enrollments = await repo.list_enrollments()
             aliases = sorted({e.key_alias for e in all_enrollments if e.env_path == env_str})
             if not aliases:
+                # HF4 (worthless-5u6y): discriminate "legitimate empty state"
+                # from "shard-shape values copied from another machine, no DB
+                # row here." The previous behaviour silently warned + exit 0
+                # for both, which masked the second case — a user looking at
+                # a .env that LOOKS like locked keys could not tell unlock
+                # had silently done nothing. RED test: TestShardWithoutDBRow
+                # in tests/cli/test_state_machine.py.
+                #
+                # Discriminator: detect_provider() recognises the LLM-key
+                # prefixes worthless owns (sk-, sk-proj-, sk-ant-, AIza-,
+                # xai-). If any value in the .env starts with one of those
+                # but no enrollment matches, the user has unrecoverable
+                # shard-A values — error with a re-lock hint. Otherwise,
+                # the .env is empty / has only non-key env vars / does not
+                # exist → preserve the legacy "no enrolled keys" warning.
+                unrecognised: list[str] = []
+                if env.exists():
+                    parsed = dotenv_values(env)
+                    unrecognised = [
+                        var
+                        for var, val in parsed.items()
+                        if val and detect_provider(val) is not None
+                    ]
+                if unrecognised:
+                    raise WorthlessError(
+                        ErrorCode.KEY_NOT_FOUND,
+                        f"No enrollment found for shard-shape value(s) in "
+                        f"{env}: {', '.join(unrecognised)}. If this .env "
+                        f"was copied from another machine, those values "
+                        f"are unrecognised shards here — re-lock from the "
+                        f"original machine, or remove them manually if "
+                        f"they are junk.",
+                    )
                 console.print_warning("No enrolled keys found.")
                 return
-            count = await _unlock_batch(aliases, home, repo, env)
-            if count:
-                console.print_success(f"{count} key(s) restored.")
+            # Per-key restore lines drive HF4's "precise per-key, not silent
+            # count" contract: enumerate what was just restored so the user
+            # can audit the change (and so a typo in --env fails loudly).
+            planned = await _unlock_batch(aliases, home, repo, env)
+            for p in planned:
+                where = str(p.env_path) if p.env_path is not None else "<recovery>"
+                console.print_success(
+                    f"Restored {p.var_name or p.alias} ({p.provider}, alias {p.alias}) → {where}"
+                )
+            n = len(planned)
+            if n:
+                console.print_success(f"{n} key(s) restored.")
             else:
-                # Per CodeRabbit nitpick: explicit feedback when the env-wide
-                # branch finishes with zero restores.
+                # Pass-1 succeeded zero aliases — should not happen given the
+                # `if not aliases` guard above, but defensive against schema
+                # changes that desync list_enrollments / pass-1.
                 console.print_warning("No keys restored.")
 
         with acquire_lock(home):
