@@ -728,10 +728,18 @@ class TestEnvEdgeCases:
 
 def _worthless_cli_args() -> list[str]:
     """Resolve the worthless CLI as an executable invocation. Prefer the
-    project's `worthless` script; fall back to `python -m worthless.cli.app`
-    so the test never requires a globally-installed binary. There is no
+    project's ``worthless`` script *scoped to the current interpreter's bin
+    directory* so a globally-installed binary cannot shadow the venv under
+    test; fall back to ``python -m worthless.cli.app`` so the test never
+    requires a console-script entry point. There is no
     ``worthless/__main__.py`` so ``python -m worthless`` would fail."""
-    binary = shutil.which("worthless")
+    # NOTE: do NOT call .resolve() here — under a venv, sys.executable is a
+    # symlink whose target lives in the uv/pyenv/system Python install. The
+    # `worthless` console script sits next to the symlink itself (.venv/bin/),
+    # not next to the resolved interpreter, so resolving would point us at
+    # the wrong directory and miss the script every time.
+    interpreter_dir = Path(sys.executable).parent
+    binary = shutil.which("worthless", path=str(interpreter_dir))
     if binary:
         return [binary]
     return [sys.executable, "-m", "worthless.cli.app"]
@@ -769,12 +777,21 @@ class TestConcurrencyAndCorruption:
             )
             for _ in range(2)
         ]
-        outputs = []
-        codes = []
-        for p in procs:
-            out, _ = p.communicate(timeout=60)
-            outputs.append(out or "")
-            codes.append(p.returncode)
+        outputs: list[str] = []
+        codes: list[int] = []
+        try:
+            for p in procs:
+                out, _ = p.communicate(timeout=60)
+                outputs.append(out or "")
+                codes.append(p.returncode)
+        finally:
+            # Reap any procs that timed out or otherwise exited the loop
+            # mid-flight, so they cannot poison later tests in the xdist
+            # worker.
+            for p in procs:
+                if p.poll() is None:
+                    p.kill()
+                    p.wait(timeout=5)
 
         # (a) DB integrity intact.
         with sqlite3.connect(str(home_dir.db_path)) as con:
