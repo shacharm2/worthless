@@ -95,6 +95,9 @@ def _has_all_tokens(text: str, *required: str) -> bool:
 
 
 def _enrollments(home: WorthlessHome) -> list:
+    # repo.initialize() is idempotent: schema.py uses CREATE TABLE/INDEX IF NOT
+    # EXISTS, so re-init does NOT rebuild the schema or wipe rows. Two
+    # asyncio.run() calls are therefore safe — each spins up its own loop.
     repo = _repo(home)
     asyncio.run(repo.initialize())
     return asyncio.run(repo.list_enrollments())
@@ -137,6 +140,11 @@ class TestOrphanState:
         _lock(env_file, home)
         env_file.write_text("")  # user deleted the locked line
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="RED: HF7 (worthless-3907) — unlock must detect orphan rows. "
+        "Remove this marker when HF7 lands.",
+    )
     def test_unlock_on_orphan_does_not_silently_succeed(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -158,6 +166,11 @@ class TestOrphanState:
             result.output, "orphan", "no matching .env", "orphaned", "ORPHAN-IN-DB"
         ), f"no orphan-specific hint:\n{result.output}"
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="RED: HF5 (worthless-gmky) — status must flag orphan rows. "
+        "Remove this marker when HF5 lands.",
+    )
     def test_status_on_orphan_flags_inconsistency(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -171,6 +184,11 @@ class TestOrphanState:
             result.output, "orphan", "ORPHAN-IN-DB", "inconsistent state", "no .env row"
         ), f"status did not flag orphan DB row:\n{result.output}"
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="RED: HF5 (worthless-gmky) — scan must flag orphan rows. "
+        "Remove this marker when HF5 lands.",
+    )
     def test_scan_on_orphan_flags_inconsistency(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -197,6 +215,11 @@ class TestShardWithoutDBRow:
     the user the shard is unrecognised.
     """
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="RED: HF4 (worthless-5u6y) — unlock must produce a recognisable hint "
+        "on shard-shaped values without DB rows. Remove this marker when HF4 lands.",
+    )
     def test_unlock_with_no_db_row_fails_gracefully(
         self, home_dir: WorthlessHome, tmp_path: Path
     ) -> None:
@@ -247,8 +270,14 @@ class TestMultiProjectPollution:
         assert _dotenv_value(env_b, "OPENAI_API_KEY") == _TEST_KEY_2
 
         # The DB has exactly one enrollment, scoped to proj-a.
+        # EnrollmentRecord always carries env_path (storage/repository.py:48-53);
+        # assert that invariant explicitly so a schema regression that drops the
+        # field cannot silently fall through the hasattr filter below.
         enrollments = _enrollments(home_dir)
-        env_paths = {str(e.env_path) for e in enrollments if hasattr(e, "env_path")}
+        assert all(hasattr(e, "env_path") for e in enrollments), (
+            f"EnrollmentRecord schema regression: env_path missing on {enrollments}"
+        )
+        env_paths = {str(e.env_path) for e in enrollments}
         assert any(str(env_a) in p for p in env_paths) or any("proj-a" in p for p in env_paths), (
             f"proj-a's enrollment is missing from DB: {env_paths}"
         )
@@ -313,6 +342,11 @@ class TestManualRotationMismatch:
     garbage and writing it back as the "real" key.
     """
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="RED: commitment-verification gap — no specific HF assigned yet. "
+        "File a bead and remove this marker when the fix lands.",
+    )
     def test_unlock_detects_commitment_mismatch(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -359,7 +393,7 @@ class TestEnvFileDeleted:
         )
         # Require either an explicit ".env" mention or a filesystem-not-found
         # phrase — generic "missing" alone would match unrelated bugs.
-        assert _has_all_tokens(result.output, ".env") or _has_actionable_hint(
+        assert ".env" in result.output or _has_actionable_hint(
             result.output, "no such file", "file not found", "does not exist"
         ), f"no hint about missing .env:\n{result.output}"
 
@@ -497,6 +531,12 @@ class TestPurgeOrphans:
     can stay red and the doctor red below will turn green.
     """
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="RED: HF7 (worthless-3907) option A — `worthless purge --orphans`. "
+        "Remove this marker if HF7 lands as `purge`. If HF7 lands as `doctor` "
+        "instead, this marker stays and the doctor companion test xfail flips green.",
+    )
     def test_purge_orphans_removes_dangling_db_rows(
         self, home_dir: WorthlessHome, multi_env_file: Path
     ) -> None:
@@ -531,7 +571,7 @@ class TestPurgeOrphans:
         )
 
         # (c) Output names what was purged so the user can audit.
-        assert "OPENAI_API_KEY" in result.output or "openai" in result.output.lower(), (
+        assert "openai" in result.output.lower(), (
             f"purge output must name what it removed:\n{result.output}"
         )
 
@@ -549,6 +589,12 @@ class TestDoctorFixOrphans:
     RED today: neither command exists in the CLI registry.
     """
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="RED: HF7 (worthless-3907) option C — `worthless doctor --fix`. "
+        "Remove this marker if HF7 lands as `doctor`. If HF7 lands as `purge` "
+        "instead, this marker stays and the purge companion test xfail flips green.",
+    )
     def test_doctor_fix_detects_and_repairs_orphans(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -626,8 +672,8 @@ class TestEnvEdgeCases:
 
         if result.exit_code != 0:
             pytest.skip(
-                "discovery: unicode var names are not currently supported by "
-                f"`worthless lock`. Output:\n{result.output}"
+                "discovery (worthless-9ljt): unicode var names are not currently "
+                f"supported by `worthless lock`. Output:\n{result.output}"
             )
         enrollments = _enrollments(home_dir)
         assert len(enrollments) >= 1, (
@@ -667,11 +713,12 @@ class TestEnvEdgeCases:
 def _worthless_cli_args() -> list[str]:
     """Resolve the worthless CLI as an executable invocation. Prefer the
     project's `worthless` script; fall back to `python -m worthless.cli.app`
-    so the test never requires a globally-installed binary."""
+    so the test never requires a globally-installed binary. There is no
+    ``worthless/__main__.py`` so ``python -m worthless`` would fail."""
     binary = shutil.which("worthless")
     if binary:
         return [binary]
-    return [sys.executable, "-m", "worthless"]
+    return [sys.executable, "-m", "worthless.cli.app"]
 
 
 class TestConcurrencyAndCorruption:
