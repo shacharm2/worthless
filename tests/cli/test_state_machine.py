@@ -162,9 +162,21 @@ class TestOrphanState:
         assert "OPENAI_API_KEY" in result.output, (
             f"unlock error must name the affected var:\n{result.output}"
         )
+        # Drop bare "orphan" as a hint: pytest's tmp_path embeds the test
+        # function name (which contains "orphan"), so any error that echoes
+        # the temp env path back to the user satisfies a substring match by
+        # accident — that's exactly how this test was reporting xpassed
+        # before HF7 actually shipped. HF7's contract is a *phrase* the user
+        # can action on. Match phrase-level tokens that won't appear in any
+        # filesystem path.
         assert _has_actionable_hint(
-            result.output, "orphan", "no matching .env", "orphaned", "ORPHAN-IN-DB"
-        ), f"no orphan-specific hint:\n{result.output}"
+            result.output,
+            "orphan-in-db",
+            "no matching env line",
+            "no shard-A in .env",
+            "alias is orphaned",
+            "re-lock or `worthless purge`",
+        ), f"no orphan-specific hint (phrase match):\n{result.output}"
 
     @pytest.mark.xfail(
         strict=False,
