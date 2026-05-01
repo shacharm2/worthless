@@ -183,7 +183,12 @@ class TestUnlockUx:
     """User-facing messages from the unlock command."""
 
     def test_unlock_single_alias_message(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
-        """After unlocking a specific alias, user sees 'Unlocked {alias}.'"""
+        """After unlocking a specific alias, user sees a per-key 'Restored …' line.
+
+        HF4 (worthless-5u6y): replaces the old 'Unlocked {alias}.' message
+        with a precise per-key audit line that names the env var, provider,
+        alias, and target path. Auditable on a glance; loud on a typo'd --env.
+        """
         env = tmp_path / ".env"
         env.write_text(f"OPENAI_API_KEY={_OPENAI_KEY}\n")
         home_env = {"WORTHLESS_HOME": str(home_dir.base_dir)}
@@ -207,15 +212,22 @@ class TestUnlockUx:
         )
         assert result.exit_code == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
         combined = result.stdout + result.stderr
-        assert f"Unlocked {alias}" in combined
+        assert "Restored" in combined and alias in combined, (
+            f"expected per-key 'Restored ... alias {alias} ...' line, got:\n{combined}"
+        )
 
     def test_unlock_all_keys_message(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
-        """After unlocking all keys, user sees 'N key(s) restored.'"""
+        """After unlocking 2+ keys, user sees 'N key(s) restored.' summary
+        in addition to per-key Restored lines.
+
+        For N==1 the per-key line already names the var/provider/path; the
+        summary would be redundant and is intentionally skipped.
+        """
         env = tmp_path / ".env"
-        env.write_text(f"OPENAI_API_KEY={_OPENAI_KEY}\n")
+        env.write_text(f"OPENAI_API_KEY={_OPENAI_KEY}\nANTHROPIC_API_KEY={_ANTHROPIC_KEY}\n")
         home_env = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
-        # Lock first (creates format-preserving enrollment)
+        # Lock first (creates format-preserving enrollments for both keys)
         lock_result = runner.invoke(app, ["lock", "--env", str(env)], env=home_env)
         assert lock_result.exit_code == 0, (
             f"lock failed: {lock_result.stdout}\n{lock_result.stderr}"
@@ -228,7 +240,7 @@ class TestUnlockUx:
         )
         assert result.exit_code == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
         combined = result.stdout + result.stderr
-        assert "key(s) restored" in combined
+        assert "2 key(s) restored" in combined, combined
 
     def test_unlock_no_keys_message(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """When no keys enrolled, user sees 'No enrolled keys found.'"""

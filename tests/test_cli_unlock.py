@@ -367,14 +367,22 @@ class TestUnlockErrorBranches:
 class TestUnlockNoAliases:
     """unlock with no enrolled keys prints warning."""
 
-    def test_unlock_empty_home_warns(self, home_dir: WorthlessHome) -> None:
-        """unlock on empty home prints 'No enrolled keys found.'"""
+    def test_unlock_empty_home_warns(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """unlock on empty home prints 'No enrolled keys found.'
+
+        Pass an explicit `--env` to a nonexistent path so the test does not
+        accidentally read whatever `.env` happens to live in the test
+        runner's CWD. HF4's discriminator deliberately treats shard-shape
+        values without a DB row as a hard error; this test exercises the
+        legitimate "empty home, no enrollments" path.
+        """
+        nope = tmp_path / "nope.env"
         result = runner.invoke(
             app,
-            ["unlock"],
+            ["unlock", "--env", str(nope)],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "no enrolled" in result.output.lower()
 
 

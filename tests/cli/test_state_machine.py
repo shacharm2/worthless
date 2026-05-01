@@ -162,9 +162,21 @@ class TestOrphanState:
         assert "OPENAI_API_KEY" in result.output, (
             f"unlock error must name the affected var:\n{result.output}"
         )
+        # Drop bare "orphan" as a hint: pytest's tmp_path embeds the test
+        # function name (which contains "orphan"), so any error that echoes
+        # the temp env path back to the user satisfies a substring match by
+        # accident — that's exactly how this test was reporting xpassed
+        # before HF7 actually shipped. HF7's contract is a *phrase* the user
+        # can action on. Match phrase-level tokens that won't appear in any
+        # filesystem path.
         assert _has_actionable_hint(
-            result.output, "orphan", "no matching .env", "orphaned", "ORPHAN-IN-DB"
-        ), f"no orphan-specific hint:\n{result.output}"
+            result.output,
+            "orphan-in-db",
+            "no matching env line",
+            "no shard-A in .env",
+            "alias is orphaned",
+            "re-lock or `worthless purge`",
+        ), f"no orphan-specific hint (phrase match):\n{result.output}"
 
     @pytest.mark.xfail(
         strict=False,
@@ -215,17 +227,17 @@ class TestShardWithoutDBRow:
     the user the shard is unrecognised.
     """
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="RED: HF4 (worthless-5u6y) — unlock must produce a recognisable hint "
-        "on shard-shaped values without DB rows. Remove this marker when HF4 lands.",
-    )
     def test_unlock_with_no_db_row_fails_gracefully(
         self, home_dir: WorthlessHome, tmp_path: Path
     ) -> None:
+        # GREEN: HF4 (worthless-5u6y) landed — `worthless unlock` now raises
+        # a WorthlessError with a "no enrollment" hint when the .env contains
+        # shard-A-shape values but no matching DB rows. Marker removed in the
+        # same PR that fixed the bug.
         env = tmp_path / ".env"
-        # A shard-A-looking value: same prefix, same length, but never enrolled.
-        fake_shard = "sk-proj-" + ("a" * (len(_TEST_KEY) - len("sk-proj-")))
+        # A shard-A-looking value: real entropy (otherwise scan_env_keys
+        # filters it as a placeholder), correct prefix, never enrolled here.
+        fake_shard = fake_openai_key()
         env.write_text(f"OPENAI_API_KEY={fake_shard}\n")
 
         result = _invoke(["unlock", "--env", str(env)], home_dir)
