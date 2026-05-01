@@ -113,6 +113,31 @@ def migrate_file_to_keyring(home_dir: Path | None = None) -> bool:
         return False
 
 
+def read_fernet_key_from_file(home_dir: Path | None = None) -> bytearray:
+    """Read the Fernet key directly from the on-disk file fallback.
+
+    HF3 (worthless-cmpf): companion to ``read_fernet_key`` for callers
+    that know the file is the authoritative source and want to bypass
+    the keyring step in the cascade. ``read_fernet_key``'s order is
+    env → keyring → file, so calling it on a file-only system still
+    invokes the keyring backend (silent on macOS when no entry exists,
+    but still an API touch — and prompts on backends that authenticate
+    the lookup itself). Use this helper from bootstrap when
+    ``_fernet_key_present`` is True via file alone.
+
+    Returns ``bytearray`` per SR-01.
+
+    Raises ``WorthlessError(KEY_NOT_FOUND)`` if the file does not exist.
+    """
+    fernet_path = _fernet_file_path(home_dir)
+    if not fernet_path.exists():
+        raise WorthlessError(
+            ErrorCode.KEY_NOT_FOUND,
+            f"Fernet key file not found at {fernet_path}.",
+        )
+    return bytearray(fernet_path.read_bytes().strip())
+
+
 def _fernet_file_path(home_dir: Path | None) -> Path:
     """Resolve fernet key file path, respecting WORTHLESS_FERNET_KEY_PATH."""
     env_path = os.environ.get("WORTHLESS_FERNET_KEY_PATH")
