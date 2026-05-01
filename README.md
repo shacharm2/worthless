@@ -6,7 +6,7 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Tests](https://github.com/shacharm2/worthless/actions/workflows/tests.yml/badge.svg)](https://github.com/shacharm2/worthless/actions/workflows/tests.yml)
 
-Your API key is split in two. Neither half works alone. The proxy enforces a hard spend cap **before** the key reconstructs — blow the budget, the key never forms, the request never reaches the provider.
+When your `.env` leaks, the keys inside are placeholders. The real key never sits in your repo, your shell history, or your laptop's memory.
 
 ## Quickstart
 
