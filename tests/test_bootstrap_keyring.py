@@ -155,3 +155,87 @@ class TestFernetKeyPropertyUsesKeystore:
             with pytest.raises(WorthlessError) as exc_info:
                 _ = home.fernet_key
             assert exc_info.value.code == ErrorCode.KEY_NOT_FOUND
+
+
+class TestFernetKeyMemoization:
+    """HF2 / worthless-mnlp: ``WorthlessHome.fernet_key`` is memoized
+    per-instance to collapse 3+ keychain calls per ``worthless lock`` to 1.
+
+    THIS IS process-scoped caching at the dataclass instance level. THIS IS
+    NOT keychain permission permanence — macOS re-evaluates the
+    ``SecKeychainItemCopyContent`` ACL on every call, so 'Always Allow' on
+    the dialog only sticks to the exact call that triggered the dialog;
+    subsequent reads in the same process re-prompt unless served from an
+    in-memory cache. New CLI invocations still re-fetch (cache is per-process,
+    not per-session) — that is acceptable per the bead spec.
+    """
+
+    def test_property_memoizes_first_read(self, tmp_path: Path):
+        """Accessing ``.fernet_key`` 5x must call ``read_fernet_key`` exactly once.
+
+        Bug repro: today the property re-reads on every access, firing a fresh
+        keychain ACL probe each time. After memoization the first access
+        populates a private cache and subsequent accesses return the cached
+        bytearray.
+        """
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+        fake_key = bytearray(b"memoized-key-padded-to-44-bytes-12345678901")
+
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key",
+            return_value=fake_key,
+        ) as mock_read:
+            for _ in range(5):
+                _ = home.fernet_key
+            assert mock_read.call_count == 1, (
+                f"fernet_key not memoized — read_fernet_key called "
+                f"{mock_read.call_count} times for 5 accesses on the same instance"
+            )
+
+    def test_memoization_is_per_instance(self, tmp_path: Path):
+        """Two ``WorthlessHome`` instances must each trigger one read.
+
+        Memoization is per-dataclass-instance, not module-level. Multi-tenant
+        test fixtures (or pytest-xdist workers sharing a process) must NOT
+        share a fernet cache; each ``WorthlessHome`` object owns its own.
+        """
+        home_a = WorthlessHome(base_dir=tmp_path / "a" / ".worthless")
+        home_b = WorthlessHome(base_dir=tmp_path / "b" / ".worthless")
+        fake_key = bytearray(b"shared-fake-key-padded-to-44-bytes-1234567")
+
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key",
+            return_value=fake_key,
+        ) as mock_read:
+            _ = home_a.fernet_key
+            _ = home_a.fernet_key
+            _ = home_b.fernet_key
+            _ = home_b.fernet_key
+            assert mock_read.call_count == 2, (
+                f"each WorthlessHome should trigger one read, got {mock_read.call_count}"
+            )
+
+    def test_memoized_value_remains_bytearray_and_identity_stable(self, tmp_path: Path) -> None:
+        """SR-01: the cached value stays a mutable bytearray, identity stable.
+
+        If memoization stored the result as immutable ``bytes``, secret zeroing
+        (``zero_buf``) could not wipe it in place. SR-01 pre-commit hooks would
+        catch the type regression at commit time, but this test pins the
+        runtime contract. ``is`` identity also confirms it is true memoization
+        (one cached object), not a fresh-copy-each-time look-alike.
+        """
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+        fake_key = bytearray(b"sr01-check-padded-to-44-bytes-1234567890123")
+
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key",
+            return_value=fake_key,
+        ):
+            first = home.fernet_key
+            second = home.fernet_key
+            assert isinstance(first, bytearray), "first read must be bytearray (SR-01)"
+            assert isinstance(second, bytearray), "second read must be bytearray (SR-01)"
+            assert first is second, (
+                "memoized fernet_key must return the same bytearray object on repeat "
+                "access (true memoization, not a fresh copy)"
+            )

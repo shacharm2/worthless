@@ -12,6 +12,7 @@ All notable changes to Worthless are documented here. Format follows [Keep a Cha
 
 ### Fixed
 - **OpenRouter API keys classified as `openrouter`** (worthless-lj0z, advances WOR-381). `sk-or-v1-...` and `sk-or-...` keys were previously mislabeled `openai` because the generic `sk-` prefix won the longest-first match; the new `openrouter` prefixes now beat it. **Behaviour change:** SARIF/scan consumers filtering on `provider == "openai"` for OpenRouter keys will see relabels to `provider == "openrouter"` — update filter logic accordingly. Detection only; per-enrollment proxy routing for `provider == "openrouter"` is tracked separately under `worthless-8rqs` and remains future work.
+- **macOS Keychain prompts collapse to one per CLI invocation** (worthless-mnlp). `WorthlessHome.fernet_key` is now memoized per-instance via a private `_cached_fernet_key` field, so a single `worthless lock` triggers exactly one keychain ACL probe instead of 3+ (bootstrap probe + `ShardRepository` init + proxy env injection each previously hit `read_fernet_key` independently, and macOS re-evaluates `SecKeychainItemCopyContent` ACL on every call so 'Always Allow' didn't suppress later prompts). Cache is process-scoped — new CLI invocations still re-prompt once. SR-01 mutable-bytearray semantics preserved.
 
 ## [0.3.0] — 2026-04-18
 

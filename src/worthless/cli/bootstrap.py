@@ -25,6 +25,14 @@ class WorthlessHome:
     """Paths within the ``~/.worthless/`` directory tree."""
 
     base_dir: Path = field(default_factory=lambda: _DEFAULT_BASE)
+    # HF2 / worthless-mnlp: per-instance cache for the Fernet key so a single
+    # CLI invocation triggers exactly one keychain probe (one macOS Keychain
+    # prompt on first run). Excluded from init/repr/compare so it doesn't
+    # leak into reprs or break dataclass equality across cached/uncached
+    # instances.
+    _cached_fernet_key: bytearray | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     @property
     def db_path(self) -> Path:
@@ -47,8 +55,18 @@ class WorthlessHome:
 
     @property
     def fernet_key(self) -> bytearray:
-        """Read the Fernet key via keystore cascade (SR-01: mutable bytearray)."""
-        return read_fernet_key(self.base_dir)
+        """Read the Fernet key via keystore cascade (SR-01: mutable bytearray).
+
+        Memoized per-instance after the first read. macOS Keychain
+        re-evaluates the per-call ACL on every ``SecKeychainItemCopyContent``
+        call, so without this cache a single ``worthless lock`` triggers 3+
+        keychain prompts (bootstrap probe + ShardRepository init + proxy env
+        injection). Cache is process-scoped — new CLI invocations still
+        re-fetch once, which is acceptable per the bead spec.
+        """
+        if self._cached_fernet_key is None:
+            self._cached_fernet_key = read_fernet_key(self.base_dir)
+        return self._cached_fernet_key
 
 
 def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
