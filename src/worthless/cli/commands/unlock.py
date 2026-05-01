@@ -18,9 +18,8 @@ from dotenv import dotenv_values
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
-from worthless.cli.dotenv_rewriter import rewrite_env_keys
+from worthless.cli.dotenv_rewriter import rewrite_env_keys, scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
-from worthless.cli.key_patterns import detect_provider
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp
 from worthless.crypto.types import zero_buf
 from worthless.storage.repository import (
@@ -29,6 +28,27 @@ from worthless.storage.repository import (
     ShardRepository,
     StoredShard,
 )
+
+
+_RECOVERY_LABEL = "<recovery>"
+
+
+def _format_restored_line(p: _PlannedRestore) -> str:
+    """Per-key audit line emitted after a successful restore (HF4)."""
+    where = str(p.env_path) if p.env_path is not None else _RECOVERY_LABEL
+    return f"Restored {p.var_name or p.alias} ({p.provider}, alias {p.alias}) → {where}"
+
+
+def _unrecognised_shards(env: Path) -> list[str]:
+    """Var names in *env* that look like LLM provider keys but are not enrolled.
+
+    Used by both unlock branches to discriminate "legitimate empty state"
+    (warn + exit 0) from "shard-shape values copied from another machine
+    with no DB row here" (HF4 hard error). Reuses scan_env_keys so the
+    entropy + KEY_PATTERN guards apply — a low-entropy placeholder like
+    ``sk-aaaa…`` will not trigger a false-positive hard error.
+    """
+    return [var_name for var_name, _value, _provider in scan_env_keys(env)]
 
 
 async def _resolve_enrollment(
@@ -290,81 +310,53 @@ def register_unlock_commands(app: typer.Typer) -> None:
         home = get_home()
         repo = ShardRepository(str(home.db_path), home.fernet_key)
 
+        def _raise_unrecognised_shards() -> None:
+            # HF4 (worthless-5u6y): if the .env contains values that look
+            # like LLM provider keys but have no matching DB row here, the
+            # user has unrecoverable shard-A values — fail loudly. Otherwise
+            # the .env is genuinely empty and the caller's "no enrolled
+            # keys" warning is correct.
+            unrecognised = _unrecognised_shards(env)
+            if not unrecognised:
+                return
+            raise WorthlessError(
+                ErrorCode.KEY_NOT_FOUND,
+                f"No enrollment found for shard-shape value(s) in {env}: "
+                f"{', '.join(unrecognised)}. If this .env was copied from "
+                f"another machine, those values are unrecognised shards "
+                f"here — re-lock from the original machine, or remove "
+                f"them manually if they are junk.",
+            )
+
         async def _unlock_async():
             await repo.initialize()
             if alias:
                 planned = await _unlock_batch([alias], home, repo, env)
                 if planned:
-                    # HF4: per-key restore line, not just "Unlocked {alias}."
-                    p = planned[0]
-                    where = str(p.env_path) if p.env_path is not None else "<recovery>"
-                    console.print_success(
-                        f"Restored {p.var_name or p.alias} "
-                        f"({p.provider}, alias {p.alias}) → {where}"
-                    )
-                else:
-                    # Per CodeRabbit nitpick: don't exit silently when nothing
-                    # was found. If the user typo'd the alias, silent success
-                    # is the worst possible feedback.
-                    console.print_warning(f"Alias not found or no keys restored: {alias}.")
+                    console.print_success(_format_restored_line(planned[0]))
+                    return
+                # If a typo'd --alias points at a .env full of shard-shape
+                # values, silent success is the worst possible feedback.
+                _raise_unrecognised_shards()
+                console.print_warning(f"Alias not found or no keys restored: {alias}.")
                 return
 
             env_str = str(env.resolve())
             all_enrollments = await repo.list_enrollments()
             aliases = sorted({e.key_alias for e in all_enrollments if e.env_path == env_str})
             if not aliases:
-                # HF4 (worthless-5u6y): discriminate "legitimate empty state"
-                # from "shard-shape values copied from another machine, no DB
-                # row here." The previous behaviour silently warned + exit 0
-                # for both, which masked the second case — a user looking at
-                # a .env that LOOKS like locked keys could not tell unlock
-                # had silently done nothing. RED test: TestShardWithoutDBRow
-                # in tests/cli/test_state_machine.py.
-                #
-                # Discriminator: detect_provider() recognises the LLM-key
-                # prefixes worthless owns (sk-, sk-proj-, sk-ant-, AIza-,
-                # xai-). If any value in the .env starts with one of those
-                # but no enrollment matches, the user has unrecoverable
-                # shard-A values — error with a re-lock hint. Otherwise,
-                # the .env is empty / has only non-key env vars / does not
-                # exist → preserve the legacy "no enrolled keys" warning.
-                unrecognised: list[str] = []
-                if env.exists():
-                    parsed = dotenv_values(env)
-                    unrecognised = [
-                        var
-                        for var, val in parsed.items()
-                        if val and detect_provider(val) is not None
-                    ]
-                if unrecognised:
-                    raise WorthlessError(
-                        ErrorCode.KEY_NOT_FOUND,
-                        f"No enrollment found for shard-shape value(s) in "
-                        f"{env}: {', '.join(unrecognised)}. If this .env "
-                        f"was copied from another machine, those values "
-                        f"are unrecognised shards here — re-lock from the "
-                        f"original machine, or remove them manually if "
-                        f"they are junk.",
-                    )
+                _raise_unrecognised_shards()
                 console.print_warning("No enrolled keys found.")
                 return
-            # Per-key restore lines drive HF4's "precise per-key, not silent
-            # count" contract: enumerate what was just restored so the user
-            # can audit the change (and so a typo in --env fails loudly).
+
             planned = await _unlock_batch(aliases, home, repo, env)
             for p in planned:
-                where = str(p.env_path) if p.env_path is not None else "<recovery>"
-                console.print_success(
-                    f"Restored {p.var_name or p.alias} ({p.provider}, alias {p.alias}) → {where}"
-                )
+                console.print_success(_format_restored_line(p))
             n = len(planned)
-            if n:
+            if n > 1:
+                # Per-key lines already covered N=1; only emit the summary
+                # when there's something to count.
                 console.print_success(f"{n} key(s) restored.")
-            else:
-                # Pass-1 succeeded zero aliases — should not happen given the
-                # `if not aliases` guard above, but defensive against schema
-                # changes that desync list_enrollments / pass-1.
-                console.print_warning("No keys restored.")
 
         with acquire_lock(home):
             asyncio.run(_unlock_async())

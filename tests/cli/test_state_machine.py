@@ -235,8 +235,9 @@ class TestShardWithoutDBRow:
         # shard-A-shape values but no matching DB rows. Marker removed in the
         # same PR that fixed the bug.
         env = tmp_path / ".env"
-        # A shard-A-looking value: same prefix, same length, but never enrolled.
-        fake_shard = "sk-proj-" + ("a" * (len(_TEST_KEY) - len("sk-proj-")))
+        # A shard-A-looking value: real entropy (otherwise scan_env_keys
+        # filters it as a placeholder), correct prefix, never enrolled here.
+        fake_shard = fake_openai_key()
         env.write_text(f"OPENAI_API_KEY={fake_shard}\n")
 
         result = _invoke(["unlock", "--env", str(env)], home_dir)
