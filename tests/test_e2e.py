@@ -138,6 +138,19 @@ class TestLockStatusUnlockCycle:
 # will reject it. Any HTTP response proves full transit through the proxy.
 _CHILD_SCRIPT = textwrap.dedent("""\
     import os, sys, httpx
+    # 8rqs Phase 8: wrap no longer synthesises *_BASE_URL into child env —
+    # the var lives in the user's .env after lock rewrites it. Real apps
+    # use python-dotenv; we mimic that here by reading the .env path the
+    # test passed via WORTHLESS_E2E_ENV_PATH.
+    env_path = os.environ.get("WORTHLESS_E2E_ENV_PATH")
+    if env_path and os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
     base = os.environ.get("OPENAI_BASE_URL")
     if not base:
         print("OPENAI_BASE_URL not set", file=sys.stderr)
@@ -189,7 +202,13 @@ class TestWrapProxiesRequest:
                 "-c",
                 _CHILD_SCRIPT,
             ],
-            env={**os.environ, "WORTHLESS_HOME": str(worthless_home)},
+            env={
+                **os.environ,
+                "WORTHLESS_HOME": str(worthless_home),
+                # Pass .env path so the child can pick up the OPENAI_BASE_URL
+                # that lock wrote (post-8rqs wrap doesn't synthesise it).
+                "WORTHLESS_E2E_ENV_PATH": str(env_file),
+            },
             timeout=45,
             capture_output=True,
             text=True,

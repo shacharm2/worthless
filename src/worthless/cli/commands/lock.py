@@ -15,9 +15,7 @@ import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.commands.up import _resolve_port
-from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.cli.console import get_console
-from worthless.cli.providers import lookup_by_name
 from worthless.cli.dotenv_rewriter import (
     build_enrolled_locations,
     rewrite_env_keys,
@@ -32,6 +30,7 @@ from worthless.cli.errors import (
     sanitize_exception,
 )
 from worthless.cli.key_patterns import detect_prefix
+from worthless.cli.providers import lookup_by_name
 from worthless.crypto.splitter import (
     _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
     derive_shard_a_fp,
@@ -43,6 +42,15 @@ from worthless.exceptions import ShardTamperedError
 from worthless.storage.repository import ShardRepository, StoredShard
 
 logger = logging.getLogger(__name__)
+
+# Local map of supported wire protocols → canonical fallback env var name.
+# Used only when the user's API-key var doesn't follow the ``<NAME>_API_KEY``
+# convention. After 8rqs, ``wrap`` no longer owns this — lock has the only
+# remaining consumer (plus ``unlock`` which imports it), so the map lives here.
+_PROVIDER_ENV_MAP: dict[str, str] = {
+    "openai": "OPENAI_BASE_URL",
+    "anthropic": "ANTHROPIC_BASE_URL",
+}
 
 _SUPPORTED_PROVIDERS = frozenset(_PROVIDER_ENV_MAP.keys())
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")

@@ -17,7 +17,7 @@ from dotenv import dotenv_values
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
-from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
+from worthless.cli.commands.lock import _PROVIDER_ENV_MAP
 from worthless.cli.dotenv_rewriter import rewrite_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp
