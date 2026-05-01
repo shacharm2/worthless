@@ -672,6 +672,12 @@ class TestMultiProjectStatusOutput:
 class TestEnvEdgeCases:
     """Both expected to be GREEN today; if either fails it's a discovery."""
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason="DISCOVERY (worthless-9ljt): unicode var names not yet supported by "
+        "`worthless lock`. Strict so that when support lands, the unexpected pass "
+        "forces removal of this marker as part of that PR.",
+    )
     def test_lock_with_unicode_var_name(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         env = tmp_path / ".env"
         # Non-ASCII var name with an accented character. dotenv permits it;
@@ -680,11 +686,11 @@ class TestEnvEdgeCases:
 
         result = _invoke(["lock", "--env", str(env)], home_dir)
 
-        if result.exit_code != 0:
-            pytest.skip(
-                "discovery (worthless-9ljt): unicode var names are not currently "
-                f"supported by `worthless lock`. Output:\n{result.output}"
-            )
+        # Was: runtime `pytest.skip` on any non-zero exit. CodeRabbit (PR #120):
+        # that masks unrelated regressions (parse errors, import failures, DB bugs)
+        # by reporting them all as skip. Replaced with a top-of-test xfail so the
+        # whole test runs and any unexpected pass demands marker removal.
+        assert result.exit_code == 0, f"unicode var name lock failed:\n{result.output}"
         enrollments = _enrollments(home_dir)
         assert len(enrollments) >= 1, (
             f"unicode var name lock did not create a DB row:\n{result.output}"
@@ -783,6 +789,13 @@ class TestConcurrencyAndCorruption:
         # enrollments would mean both processes failed, which violates the
         # at-least-one-must-succeed contract; > 1 means flock didn't hold.
         enrollments = _enrollments(home_dir)
+        # CodeRabbit (PR #120): explicitly enforce that at least one process
+        # exited 0. Without this, the test would pass if one process wrote the
+        # enrollment but BOTH exited non-zero — silently violating the contract
+        # documented in the comment above.
+        assert any(code == 0 for code in codes), (
+            f"at least one concurrent lock invocation should report success:\n{outputs}"
+        )
         assert len(enrollments) == 1, (
             f"concurrent lock produced {len(enrollments)} enrollments (expected 1):\n{outputs}"
         )
@@ -803,6 +816,22 @@ class TestConcurrencyAndCorruption:
     ) -> None:
         _lock(env_file, home_dir)
         db_path = home_dir.db_path
+
+        # CodeRabbit (PR #120): src/worthless/storage/schema.py initialises SQLite
+        # with `PRAGMA journal_mode=WAL`. In WAL mode, truncating only db.sqlite
+        # does NOT reliably produce the broken state — the next connection can
+        # recover from the -wal/-shm sidecar files, making this test flaky across
+        # SQLite/platform combos. Force a checkpoint into main DB and remove
+        # sidecars so the truncation below is the SOLE remaining state.
+        with sqlite3.connect(str(db_path)) as con:
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        for sidecar in (
+            db_path.with_name(db_path.name + "-wal"),
+            db_path.with_name(db_path.name + "-shm"),
+        ):
+            if sidecar.exists():
+                sidecar.unlink()
+
         size = db_path.stat().st_size
         assert size > 0, "precondition: DB file is empty"
 
