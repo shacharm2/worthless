@@ -6,6 +6,8 @@ retrieval to the keystore module instead of doing direct file I/O.
 
 from __future__ import annotations
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -179,11 +181,14 @@ class TestFernetKeyMemoization:
         bytearray.
         """
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
-        fake_key = bytearray(b"memoized-key-padded-to-44-bytes-12345678901")
 
+        # ``side_effect=lambda *_: bytearray(...)`` returns a NEW bytearray on
+        # every underlying call so the cache cannot inadvertently alias a
+        # test-owned reference; ``call_count`` becomes the only honest proof
+        # of memoization (CodeRabbit nit #2 on PR #125).
         with patch(
             "worthless.cli.bootstrap.read_fernet_key",
-            return_value=fake_key,
+            side_effect=lambda *_: bytearray(b"memoized-key-padded-to-44-bytes-12345678901"),
         ) as mock_read:
             for _ in range(5):
                 _ = home.fernet_key
@@ -201,11 +206,12 @@ class TestFernetKeyMemoization:
         """
         home_a = WorthlessHome(base_dir=tmp_path / "a" / ".worthless")
         home_b = WorthlessHome(base_dir=tmp_path / "b" / ".worthless")
-        fake_key = bytearray(b"shared-fake-key-padded-to-44-bytes-1234567")
 
+        # Fresh bytearray per underlying call, same rationale as
+        # test_property_memoizes_first_read — see CodeRabbit nit #2 on PR #125.
         with patch(
             "worthless.cli.bootstrap.read_fernet_key",
-            return_value=fake_key,
+            side_effect=lambda *_: bytearray(b"shared-fake-key-padded-to-44-bytes-1234567"),
         ) as mock_read:
             _ = home_a.fernet_key
             _ = home_a.fernet_key
@@ -296,3 +302,56 @@ class TestFernetKeyMemoization:
                 "property must return a FRESH bytearray copy on each access so "
                 "callers can zero_buf() their copy without poisoning the cache"
             )
+
+    def test_concurrent_first_read_triggers_one_keychain_call(self, tmp_path: Path) -> None:
+        """Concurrent first-readers on one ``WorthlessHome`` must collapse to
+        exactly one ``read_fernet_key`` call (one Keychain prompt).
+
+        Without a lock, the lazy-init check-then-set is two operations: two
+        threads can both observe ``_cached_fernet_key is None`` and both
+        call ``read_fernet_key``, firing duplicate macOS Keychain prompts
+        and discarding one bytearray without ``zero_buf``. Real call site:
+        ``src/worthless/mcp/server.py`` runs FastMCP's asyncio loop on the
+        main thread but dispatches blocking work (``_do_lock``) via
+        ``loop.run_in_executor`` to the default thread pool — main +
+        executor can both touch ``home.fernet_key``.
+
+        This test widens the race window with a ``time.sleep`` inside the
+        mock so the bug is deterministically catchable when the lock is
+        absent. With the per-instance ``threading.Lock`` and double-checked
+        init, ``call_count == 1`` regardless of the number of concurrent
+        readers.
+        """
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+
+        def slow_read(*_: object) -> bytearray:
+            # Sleep widens the race: any two threads that both reach the
+            # outer ``is None`` check before either acquires the lock will
+            # both observe ``None``. The lock + inner check must serialize
+            # them so only one calls ``read_fernet_key``.
+            time.sleep(0.05)
+            return bytearray(b"thread-safe-padded-to-44-bytes-12345678901a")
+
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key",
+            side_effect=slow_read,
+        ) as mock_read:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                results = list(ex.map(lambda _: home.fernet_key, range(4)))
+
+            assert mock_read.call_count == 1, (
+                f"thread-safe lock failed: read_fernet_key called "
+                f"{mock_read.call_count} times across 4 concurrent first-readers"
+            )
+            # All readers should derive from the single cached source.
+            first_content = bytes(results[0])
+            assert all(bytes(r) == first_content for r in results), (
+                "concurrent reads returned divergent content — cache populate raced"
+            )
+            # And each result is its own bytearray copy (fresh-copy contract).
+            for i, r in enumerate(results):
+                for j in range(i + 1, len(results)):
+                    assert r is not results[j], (
+                        f"results[{i}] and results[{j}] are the SAME object — "
+                        "fresh-copy contract violated"
+                    )

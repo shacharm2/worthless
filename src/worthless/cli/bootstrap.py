@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -32,6 +33,18 @@ class WorthlessHome:
     # instances.
     _cached_fernet_key: bytearray | None = field(
         default=None, init=False, repr=False, compare=False
+    )
+    # Per-instance lock guarding the lazy-populate path. The check-then-set
+    # in ``fernet_key`` is two operations; without this lock, two threads
+    # accessing the property concurrently on the same instance can both
+    # observe ``None`` and both call ``read_fernet_key`` — firing duplicate
+    # macOS Keychain prompts and discarding one bytearray without
+    # ``zero_buf``. Real call site: ``src/worthless/mcp/server.py`` runs
+    # FastMCP's asyncio loop on the main thread but dispatches blocking
+    # work (``_do_lock``) via ``loop.run_in_executor`` to the default
+    # thread pool — main + executor can both touch ``home.fernet_key``.
+    _cache_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
     )
 
     @property
@@ -68,9 +81,18 @@ class WorthlessHome:
         callers can ``zero_buf()`` their own copy (SR-01) without poisoning
         the cache. The cache itself stays intact for subsequent reads;
         consumer mutation of one returned bytearray does not propagate.
+
+        The lazy populate uses double-checked locking: the outer ``is None``
+        check is a fast path for the warm-cache case (no lock cost on the
+        ~99.9% of accesses where the cache is already populated); the inner
+        check inside ``self._cache_lock`` serialises concurrent first-readers
+        so only one thread calls ``read_fernet_key`` and only one Keychain
+        prompt fires.
         """
         if self._cached_fernet_key is None:
-            self._cached_fernet_key = read_fernet_key(self.base_dir)
+            with self._cache_lock:
+                if self._cached_fernet_key is None:
+                    self._cached_fernet_key = read_fernet_key(self.base_dir)
         return bytearray(self._cached_fernet_key)
 
 
