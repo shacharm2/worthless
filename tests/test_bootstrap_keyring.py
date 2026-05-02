@@ -6,7 +6,7 @@ retrieval to the keystore module instead of doing direct file I/O.
 
 from __future__ import annotations
 
-import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
@@ -53,13 +53,20 @@ class TestEnsureHomeUsesKeystore:
                 assert call_args[1].get("home_dir") == base
 
     def test_does_not_call_store_when_key_exists(self, tmp_path: Path):
-        """When fernet key already exists, store_fernet_key is NOT called."""
+        """When fernet key already exists, store_fernet_key is NOT called.
+
+        ``migrate_file_to_keyring`` is patched out: it can call
+        ``store_fernet_key`` when promoting a file-backed key. That's a
+        separate path. Patching keeps the assertion strict and
+        backend-independent.
+        """
         base = tmp_path / ".worthless"
         with patch("worthless.cli.keystore.keyring_available", return_value=False):
             ensure_home(base_dir=base)
 
         with (
             patch("worthless.cli.bootstrap.store_fernet_key") as mock_store,
+            patch("worthless.cli.bootstrap.migrate_file_to_keyring"),
             patch(
                 "worthless.cli.bootstrap.read_fernet_key",
                 return_value=bytearray(b"x" * 44),
@@ -323,21 +330,25 @@ class TestFernetKeyMemoization:
         readers.
         """
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
+        # Barrier serialises the 4 worker threads: they all block at
+        # ``barrier.wait()`` until the last one arrives, then all release
+        # simultaneously. This deterministically maximises the race window —
+        # without the lock, all 4 would reach the outer ``is None`` check
+        # together and all call ``read_fernet_key``. With the lock, exactly
+        # one enters the populate branch. No timing dependence (replaces an
+        # earlier ``time.sleep`` per CodeRabbit's nit on PR #125).
+        barrier = threading.Barrier(4)
 
-        def slow_read(*_: object) -> bytearray:
-            # Sleep widens the race: any two threads that both reach the
-            # outer ``is None`` check before either acquires the lock will
-            # both observe ``None``. The lock + inner check must serialize
-            # them so only one calls ``read_fernet_key``.
-            time.sleep(0.05)
-            return bytearray(b"thread-safe-padded-to-44-bytes-12345678901a")
+        def access_fernet_key(_: object) -> bytearray:
+            barrier.wait()
+            return home.fernet_key
 
         with patch(
             "worthless.cli.bootstrap.read_fernet_key",
-            side_effect=slow_read,
+            side_effect=lambda *_: bytearray(b"thread-safe-padded-to-44-bytes-12345678901a"),
         ) as mock_read:
             with ThreadPoolExecutor(max_workers=4) as ex:
-                results = list(ex.map(lambda _: home.fernet_key, range(4)))
+                results = list(ex.map(access_fernet_key, range(4)))
 
             assert mock_read.call_count == 1, (
                 f"thread-safe lock failed: read_fernet_key called "
