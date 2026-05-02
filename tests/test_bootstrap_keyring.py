@@ -6,6 +6,8 @@ retrieval to the keystore module instead of doing direct file I/O.
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -51,13 +53,20 @@ class TestEnsureHomeUsesKeystore:
                 assert call_args[1].get("home_dir") == base
 
     def test_does_not_call_store_when_key_exists(self, tmp_path: Path):
-        """When fernet key already exists, store_fernet_key is NOT called."""
+        """When fernet key already exists, store_fernet_key is NOT called.
+
+        ``migrate_file_to_keyring`` is patched out: it can call
+        ``store_fernet_key`` when promoting a file-backed key. That's a
+        separate path. Patching keeps the assertion strict and
+        backend-independent.
+        """
         base = tmp_path / ".worthless"
         with patch("worthless.cli.keystore.keyring_available", return_value=False):
             ensure_home(base_dir=base)
 
         with (
             patch("worthless.cli.bootstrap.store_fernet_key") as mock_store,
+            patch("worthless.cli.bootstrap.migrate_file_to_keyring"),
             patch(
                 "worthless.cli.bootstrap.read_fernet_key",
                 return_value=bytearray(b"x" * 44),
@@ -155,3 +164,205 @@ class TestFernetKeyPropertyUsesKeystore:
             with pytest.raises(WorthlessError) as exc_info:
                 _ = home.fernet_key
             assert exc_info.value.code == ErrorCode.KEY_NOT_FOUND
+
+
+class TestFernetKeyMemoization:
+    """HF2 / worthless-mnlp: ``WorthlessHome.fernet_key`` is memoized
+    per-instance to collapse 3+ keychain calls per ``worthless lock`` to 1.
+
+    THIS IS process-scoped caching at the dataclass instance level. THIS IS
+    NOT keychain permission permanence — macOS re-evaluates the
+    ``SecKeychainItemCopyContent`` ACL on every call, so 'Always Allow' on
+    the dialog only sticks to the exact call that triggered the dialog;
+    subsequent reads in the same process re-prompt unless served from an
+    in-memory cache. New CLI invocations still re-fetch (cache is per-process,
+    not per-session) — that is acceptable per the bead spec.
+    """
+
+    def test_property_memoizes_first_read(self, tmp_path: Path):
+        """Accessing ``.fernet_key`` 5x must call ``read_fernet_key`` exactly once.
+
+        Bug repro: today the property re-reads on every access, firing a fresh
+        keychain ACL probe each time. After memoization the first access
+        populates a private cache and subsequent accesses return the cached
+        bytearray.
+        """
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+
+        # ``side_effect=lambda *_: bytearray(...)`` returns a NEW bytearray on
+        # every underlying call so the cache cannot inadvertently alias a
+        # test-owned reference; ``call_count`` becomes the only honest proof
+        # of memoization (CodeRabbit nit #2 on PR #125).
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key",
+            side_effect=lambda *_: bytearray(b"memoized-key-padded-to-44-bytes-12345678901"),
+        ) as mock_read:
+            for _ in range(5):
+                _ = home.fernet_key
+            assert mock_read.call_count == 1, (
+                f"fernet_key not memoized — read_fernet_key called "
+                f"{mock_read.call_count} times for 5 accesses on the same instance"
+            )
+
+    def test_memoization_is_per_instance(self, tmp_path: Path):
+        """Two ``WorthlessHome`` instances must each trigger one read.
+
+        Memoization is per-dataclass-instance, not module-level. Multi-tenant
+        test fixtures (or pytest-xdist workers sharing a process) must NOT
+        share a fernet cache; each ``WorthlessHome`` object owns its own.
+        """
+        home_a = WorthlessHome(base_dir=tmp_path / "a" / ".worthless")
+        home_b = WorthlessHome(base_dir=tmp_path / "b" / ".worthless")
+
+        # Fresh bytearray per underlying call, same rationale as
+        # test_property_memoizes_first_read — see CodeRabbit nit #2 on PR #125.
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key",
+            side_effect=lambda *_: bytearray(b"shared-fake-key-padded-to-44-bytes-1234567"),
+        ) as mock_read:
+            _ = home_a.fernet_key
+            _ = home_a.fernet_key
+            _ = home_b.fernet_key
+            _ = home_b.fernet_key
+            assert mock_read.call_count == 2, (
+                f"each WorthlessHome should trigger one read, got {mock_read.call_count}"
+            )
+
+    def test_caller_mutation_does_not_poison_cache(self, tmp_path: Path) -> None:
+        """Consumer ``zero_buf`` on the returned bytearray must NOT poison the cache.
+
+        Production callers (``unlock.py``, ``proxy/app.py``) zero their
+        bytearray after using the key, per SR-01. The OLD design (return the
+        cached object directly) would have meant their ``zero_buf`` zeroed
+        the cache itself, so the next reader on the same ``WorthlessHome``
+        would silently get all-zero bytes — decryption would corrupt without
+        raising. This test simulates that exact flow: read, zero the returned
+        copy, read again, assert clean key bytes are returned.
+
+        A future regression to "return self._cached_fernet_key" (no copy)
+        would fail this test loudly.
+        """
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+        clean_key = b"poison-test-padded-to-44-bytes-1234567890123"
+        # Mock returns a NEW bytearray each call so the cache stores its own
+        # bytearray (not a reference the test holds onto).
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key",
+            side_effect=lambda *_: bytearray(clean_key),
+        ):
+            first = home.fernet_key
+            # Caller zeros their copy — simulates SR-01 ``zero_buf()`` after use.
+            for i in range(len(first)):
+                first[i] = 0
+            assert all(b == 0 for b in first), "precondition: caller's copy is fully zeroed"
+
+            # Subsequent reader must get the original clean key bytes from cache,
+            # not whatever residue the caller left in their now-zeroed copy.
+            second = home.fernet_key
+            assert bytes(second) == clean_key, (
+                f"cache was poisoned by caller mutation: returned "
+                f"{bytes(second)!r}, expected {clean_key!r}"
+            )
+            assert any(b != 0 for b in second), (
+                "second read returned all-zero bytes — cache was poisoned"
+            )
+
+    def test_property_returns_fresh_bytearray_copies_with_same_content(
+        self, tmp_path: Path
+    ) -> None:
+        """Each property access returns an INDEPENDENT bytearray copy.
+
+        After memoization, the cache is the canonical source but the property
+        returns a fresh copy on each access so callers can ``zero_buf()`` their
+        own copy (per SR-01) without poisoning the cache. This test pins:
+
+        * SR-01 type contract — cached and returned values are ``bytearray``,
+          not immutable ``bytes``.
+        * True memoization — proven by ``call_count == 1`` over two accesses.
+          The earlier version of this test asserted ``first is second``, which
+          would have passed even without a cache because ``mock.return_value``
+          is the same object on every call. Using ``side_effect=lambda *_:
+          bytearray(...)`` returns a NEW object on each underlying read, so
+          ``call_count`` is the only honest way to prove the cache is engaged.
+        * Fresh-copy contract — ``first is not second`` confirms callers each
+          get their own bytearray. A future regression to "return the cached
+          object directly" would re-introduce the consumer-zeroing-poisons-
+          cache bug; this assertion catches that.
+        """
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+        # Mock returns a NEW bytearray each underlying call so identity-only
+        # checks cannot false-pass.
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key",
+            side_effect=lambda *_: bytearray(b"sr01-check-padded-to-44-bytes-1234567890123"),
+        ) as mock_read:
+            first = home.fernet_key
+            second = home.fernet_key
+            assert mock_read.call_count == 1, (
+                f"fernet_key not memoized — read_fernet_key called "
+                f"{mock_read.call_count} times for 2 accesses on the same instance"
+            )
+            assert isinstance(first, bytearray), "first read must be bytearray (SR-01)"
+            assert isinstance(second, bytearray), "second read must be bytearray (SR-01)"
+            assert first == second, "both reads must derive from the same cached source"
+            assert first is not second, (
+                "property must return a FRESH bytearray copy on each access so "
+                "callers can zero_buf() their copy without poisoning the cache"
+            )
+
+    def test_concurrent_first_read_triggers_one_keychain_call(self, tmp_path: Path) -> None:
+        """Concurrent first-readers on one ``WorthlessHome`` must collapse to
+        exactly one ``read_fernet_key`` call (one Keychain prompt).
+
+        Without a lock, the lazy-init check-then-set is two operations: two
+        threads can both observe ``_cached_fernet_key is None`` and both
+        call ``read_fernet_key``, firing duplicate macOS Keychain prompts
+        and discarding one bytearray without ``zero_buf``. Real call site:
+        ``src/worthless/mcp/server.py`` runs FastMCP's asyncio loop on the
+        main thread but dispatches blocking work (``_do_lock``) via
+        ``loop.run_in_executor`` to the default thread pool — main +
+        executor can both touch ``home.fernet_key``.
+
+        This test widens the race window with a ``time.sleep`` inside the
+        mock so the bug is deterministically catchable when the lock is
+        absent. With the per-instance ``threading.Lock`` and double-checked
+        init, ``call_count == 1`` regardless of the number of concurrent
+        readers.
+        """
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+        # Barrier serialises the 4 worker threads: they all block at
+        # ``barrier.wait()`` until the last one arrives, then all release
+        # simultaneously. This deterministically maximises the race window —
+        # without the lock, all 4 would reach the outer ``is None`` check
+        # together and all call ``read_fernet_key``. With the lock, exactly
+        # one enters the populate branch. No timing dependence (replaces an
+        # earlier ``time.sleep`` per CodeRabbit's nit on PR #125).
+        barrier = threading.Barrier(4)
+
+        def access_fernet_key(_: object) -> bytearray:
+            barrier.wait()
+            return home.fernet_key
+
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key",
+            side_effect=lambda *_: bytearray(b"thread-safe-padded-to-44-bytes-12345678901a"),
+        ) as mock_read:
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                results = list(ex.map(access_fernet_key, range(4)))
+
+            assert mock_read.call_count == 1, (
+                f"thread-safe lock failed: read_fernet_key called "
+                f"{mock_read.call_count} times across 4 concurrent first-readers"
+            )
+            # All readers should derive from the single cached source.
+            first_content = bytes(results[0])
+            assert all(bytes(r) == first_content for r in results), (
+                "concurrent reads returned divergent content — cache populate raced"
+            )
+            # And each result is its own bytearray copy (fresh-copy contract).
+            for i, r in enumerate(results):
+                for j in range(i + 1, len(results)):
+                    assert r is not results[j], (
+                        f"results[{i}] and results[{j}] are the SAME object — "
+                        "fresh-copy contract violated"
+                    )

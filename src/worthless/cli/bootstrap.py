@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -25,6 +26,26 @@ class WorthlessHome:
     """Paths within the ``~/.worthless/`` directory tree."""
 
     base_dir: Path = field(default_factory=lambda: _DEFAULT_BASE)
+    # HF2 / worthless-mnlp: per-instance cache for the Fernet key so a single
+    # CLI invocation triggers exactly one keychain probe (one macOS Keychain
+    # prompt on first run). Excluded from init/repr/compare so it doesn't
+    # leak into reprs or break dataclass equality across cached/uncached
+    # instances.
+    _cached_fernet_key: bytearray | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    # Per-instance lock guarding the lazy-populate path. The check-then-set
+    # in ``fernet_key`` is two operations; without this lock, two threads
+    # accessing the property concurrently on the same instance can both
+    # observe ``None`` and both call ``read_fernet_key`` — firing duplicate
+    # macOS Keychain prompts and discarding one bytearray without
+    # ``zero_buf``. Real call site: ``src/worthless/mcp/server.py`` runs
+    # FastMCP's asyncio loop on the main thread but dispatches blocking
+    # work (``_do_lock``) via ``loop.run_in_executor`` to the default
+    # thread pool — main + executor can both touch ``home.fernet_key``.
+    _cache_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
 
     @property
     def db_path(self) -> Path:
@@ -47,8 +68,32 @@ class WorthlessHome:
 
     @property
     def fernet_key(self) -> bytearray:
-        """Read the Fernet key via keystore cascade (SR-01: mutable bytearray)."""
-        return read_fernet_key(self.base_dir)
+        """Read the Fernet key via keystore cascade (SR-01: mutable bytearray).
+
+        Memoized per-instance after the first read. macOS Keychain
+        re-evaluates the per-call ACL on every ``SecKeychainItemCopyContent``
+        call, so without this cache a single ``worthless lock`` triggers 3+
+        keychain prompts (bootstrap probe + ShardRepository init + proxy env
+        injection). Cache is process-scoped — new CLI invocations still
+        re-fetch once, which is acceptable per the bead spec.
+
+        Each access returns a *fresh bytearray copy* of the cached value so
+        callers can ``zero_buf()`` their own copy (SR-01) without poisoning
+        the cache. The cache itself stays intact for subsequent reads;
+        consumer mutation of one returned bytearray does not propagate.
+
+        The lazy populate uses double-checked locking: the outer ``is None``
+        check is a fast path for the warm-cache case (no lock cost on the
+        ~99.9% of accesses where the cache is already populated); the inner
+        check inside ``self._cache_lock`` serialises concurrent first-readers
+        so only one thread calls ``read_fernet_key`` and only one Keychain
+        prompt fires.
+        """
+        if self._cached_fernet_key is None:
+            with self._cache_lock:
+                if self._cached_fernet_key is None:
+                    self._cached_fernet_key = read_fernet_key(self.base_dir)
+        return bytearray(self._cached_fernet_key)
 
 
 def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
@@ -79,9 +124,16 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 "Create it or mount a volume at that path.",
             )
 
-        # Generate Fernet key if missing (keyring or file fallback)
+        # Generate Fernet key if missing (keyring or file fallback). Route
+        # the existence probe through ``home.fernet_key`` so the read also
+        # populates ``WorthlessHome``'s per-instance cache — collapses the
+        # bootstrap probe + first ``ShardRepository`` init into a single
+        # macOS Keychain ACL evaluation on the existing-key path. The
+        # missing-key branch generates and stores the key without populating
+        # the cache; the next ``home.fernet_key`` access reads the freshly
+        # stored key once.
         try:
-            read_fernet_key(home.base_dir)
+            _ = home.fernet_key
         except WorthlessError as exc:
             if exc.code != ErrorCode.KEY_NOT_FOUND:
                 raise
