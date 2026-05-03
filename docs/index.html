@@ -875,17 +875,41 @@
       <h1>Make your API Keys Worthless.</h1>
 
       <p class="hero-sub">
-        ...while keeping your LLMs working.
+        ...while keeping everything working.
       </p>
 
-      <!-- Waitlist + Install -->
-      <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
-        <button class="install-cmd"
-          onclick="navigator.clipboard.writeText('pip install worthless').then(()=>{this.classList.add('copied');setTimeout(()=>this.classList.remove('copied'),1800)})">
-          <span>pip install worthless</span>
-          <span class="copy-icon">📋</span>
-          <span class="copy-done">✓</span>
-        </button>
+      <!-- Key enrollment demo -->
+      <div class="enroll-demo">
+        <div class="enroll-label">What do you want to protect?</div>
+        <div class="key-chips" id="key-chips">
+          <button class="key-chip active" data-key="openai">OpenAI</button>
+          <button class="key-chip active" data-key="anthropic">Anthropic</button>
+          <button class="key-chip" data-key="stripe">Stripe</button>
+          <button class="key-chip" data-key="github">GitHub</button>
+          <button class="key-chip" data-key="slack">Slack</button>
+          <button class="key-chip" data-key="aws">AWS</button>
+          <span class="key-chip-add">
+            <input id="custom-key-input" class="custom-key-input" placeholder="+ add your own" maxlength="32" autocomplete="off" spellcheck="false">
+          </span>
+        </div>
+        <div class="code-preview">
+          <div class="code-preview-bar">
+            <span class="code-lang">python</span>
+            <button class="code-copy-btn" id="code-copy-btn" onclick="copyCode()" title="Copy code">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              <span id="code-copy-label">copy</span>
+            </button>
+          </div>
+          <pre id="code-output" class="code-block"></pre>
+        </div>
+        <div style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap; margin-top:0.6rem;">
+          <button class="install-cmd" id="enroll-cmd-btn"
+            onclick="navigator.clipboard.writeText(document.getElementById('enroll-cmd-text').textContent).then(()=>{this.classList.add('copied');setTimeout(()=>this.classList.remove('copied'),1800)})">
+            <span id="enroll-cmd-text">worthless enroll openai anthropic</span>
+            <span class="copy-icon">📋</span>
+            <span class="copy-done">✓</span>
+          </button>
+        </div>
       </div>
 
       <!-- Audit with AI -->
@@ -915,6 +939,119 @@
           border-color: rgba(0, 0, 0, 0.25);
           box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
         }
+        /* ── Enroll demo ── */
+        .enroll-demo {
+          margin-bottom: 2rem;
+        }
+        .enroll-label {
+          font-size: 0.78rem;
+          color: var(--text2);
+          opacity: 0.8;
+          margin-bottom: 0.55rem;
+          letter-spacing: 0.02em;
+        }
+        .key-chips {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.4rem;
+          margin-bottom: 0.75rem;
+          align-items: center;
+        }
+        .key-chip {
+          font-size: 0.78rem;
+          font-family: var(--mono);
+          padding: 0.25rem 0.65rem;
+          border-radius: 99px;
+          border: 1px solid rgba(10, 147, 150, 0.35);
+          background: transparent;
+          color: var(--text2);
+          cursor: pointer;
+          transition: background 0.12s, color 0.12s, border-color 0.12s;
+          user-select: none;
+        }
+        .key-chip.active {
+          background: rgba(10, 147, 150, 0.12);
+          border-color: var(--accent);
+          color: var(--accent);
+          font-weight: 600;
+        }
+        .key-chip:hover:not(.active) {
+          background: rgba(10, 147, 150, 0.06);
+          border-color: rgba(10, 147, 150, 0.6);
+        }
+        .key-chip-add {
+          display: inline-flex;
+          align-items: center;
+        }
+        .custom-key-input {
+          font-size: 0.78rem;
+          font-family: var(--mono);
+          padding: 0.25rem 0.65rem;
+          border-radius: 99px;
+          border: 1px dashed rgba(10, 147, 150, 0.4);
+          background: transparent;
+          color: var(--text2);
+          outline: none;
+          width: 140px;
+          transition: border-color 0.12s, width 0.2s;
+        }
+        .custom-key-input:focus {
+          border-color: var(--accent);
+          color: var(--fg);
+        }
+        .custom-key-input::placeholder {
+          color: var(--text2);
+          opacity: 0.6;
+        }
+        .code-preview {
+          background: #0f1117;
+          border-radius: var(--radius);
+          border: 1px solid rgba(255,255,255,0.06);
+          overflow: hidden;
+          margin-bottom: 0.5rem;
+        }
+        .code-preview-bar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0.35rem 0.75rem;
+          background: rgba(255,255,255,0.04);
+          border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .code-lang {
+          font-size: 0.7rem;
+          font-family: var(--mono);
+          color: rgba(255,255,255,0.3);
+          letter-spacing: 0.05em;
+        }
+        .code-copy-btn {
+          display: flex;
+          align-items: center;
+          gap: 0.3rem;
+          font-size: 0.7rem;
+          font-family: var(--mono);
+          color: rgba(255,255,255,0.35);
+          background: none;
+          border: none;
+          cursor: pointer;
+          padding: 0.1rem 0.3rem;
+          border-radius: 4px;
+          transition: color 0.15s, background 0.15s;
+        }
+        .code-copy-btn:hover {
+          color: rgba(255,255,255,0.7);
+          background: rgba(255,255,255,0.08);
+        }
+        .code-block {
+          margin: 0;
+          padding: 0.9rem 1rem;
+          font-family: var(--mono);
+          font-size: 0.82rem;
+          line-height: 1.65;
+          color: #e2e8f0;
+          white-space: pre;
+          overflow-x: auto;
+        }
       </style>
       <script>
         (function () {
@@ -943,6 +1080,81 @@
           document.querySelectorAll(".audit-btn").forEach(function (a) {
             a.href = urls[a.getAttribute("data-audit")];
           });
+        })();
+      </script>
+      <script>
+        (function () {
+          var active = ['openai', 'anthropic'];
+          var labels = {
+            openai: 'openai', anthropic: 'anthropic',
+            stripe: 'stripe', github: 'github',
+            slack: 'slack', aws: 'aws'
+          };
+
+          function varName(k) {
+            return k.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '_key';
+          }
+
+          function update() {
+            var lines = ['from worthless import get_apikey', ''];
+            active.forEach(function (k) {
+              lines.push(varName(k) + ' = get_apikey(name="' + k + '")');
+            });
+            document.getElementById('code-output').textContent = lines.join('\n');
+            document.getElementById('enroll-cmd-text').textContent =
+              'worthless enroll ' + active.join(' ');
+          }
+
+          document.querySelectorAll('.key-chip[data-key]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var key = this.getAttribute('data-key');
+              var idx = active.indexOf(key);
+              if (idx === -1) {
+                active.push(key);
+                this.classList.add('active');
+              } else if (active.length > 1) {
+                active.splice(idx, 1);
+                this.classList.remove('active');
+              }
+              update();
+            });
+          });
+
+          var customInput = document.getElementById('custom-key-input');
+          customInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === ',') {
+              e.preventDefault();
+              var val = this.value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+              if (!val || active.indexOf(val) !== -1) { this.value = ''; return; }
+              var chip = document.createElement('button');
+              chip.className = 'key-chip active';
+              chip.setAttribute('data-key', val);
+              chip.textContent = val;
+              chip.addEventListener('click', function () {
+                var idx = active.indexOf(val);
+                if (idx !== -1 && active.length > 1) {
+                  active.splice(idx, 1);
+                  this.classList.remove('active');
+                  update();
+                }
+              });
+              customInput.parentElement.before(chip);
+              active.push(val);
+              this.value = '';
+              update();
+            }
+          });
+
+          window.copyCode = function () {
+            var code = document.getElementById('code-output').textContent;
+            navigator.clipboard.writeText(code).then(function () {
+              var lbl = document.getElementById('code-copy-label');
+              lbl.textContent = 'copied!';
+              setTimeout(function () { lbl.textContent = 'copy'; }, 1600);
+            });
+          };
+
+          update();
         })();
       </script>
     </div>
