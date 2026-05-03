@@ -78,6 +78,12 @@ class TestScanBuildsEnrollmentCheckerWithoutKeystore:
         # through must not call ``home.fernet_key``.
         home_base = tmp_path / ".worthless"
         _set_file_fernet_key(home_base)
+        # Mark bootstrapped so ``ensure_home`` takes the post-bootstrap
+        # file-only path (no keyring touch). Without this the fixture
+        # setup itself would trigger the bootstrap probe — on macOS
+        # that's exactly the keychain access this test is supposed to
+        # pin AGAINST. Per CodeRabbit FINDING on PR #126.
+        _mark_bootstrapped(home_base)
 
         # Build a real home and assert ``home.fernet_key`` is never read.
         home = ensure_home(base_dir=home_base)
@@ -340,6 +346,38 @@ class TestEnsureHomeProbeGate:
             assert home._cached_fernet_key is not None, (
                 "file-only branch must populate the cache from disk"
             )
+
+    def test_file_disappears_between_check_and_read_does_not_crash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """File-only signal is advisory, not fatal. If the fernet.key
+        file vanishes between ``_fernet_key_present`` and
+        ``read_fernet_key_from_file`` (TOCTOU race, e.g. user deletes
+        it concurrently with a CLI invocation), ``ensure_home`` MUST
+        defer to the lazy keyring fetch instead of crashing the
+        whole CLI invocation on what may be a read-only command.
+
+        Per CodeRabbit FINDING on PR #126: turning a TOCTOU race into
+        a hard ensure_home failure was the wrong tradeoff.
+        """
+        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
+        home_base = tmp_path / ".worthless"
+        _set_file_fernet_key(home_base)
+        _mark_bootstrapped(home_base)
+
+        from worthless.cli.errors import ErrorCode, WorthlessError
+
+        # Simulate the file disappearing between check and read.
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key_from_file",
+            side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "vanished"),
+        ):
+            # Must NOT raise — degrades gracefully to the lazy path.
+            home = ensure_home(base_dir=home_base)
+            # Cache should remain unpopulated; next ``home.fernet_key``
+            # access will go through the full cascade and succeed via
+            # keyring (or fail loudly there with a clear KEY_NOT_FOUND).
+            assert home._cached_fernet_key is None
 
     def test_probe_skipped_for_keyring_only_subsequent_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

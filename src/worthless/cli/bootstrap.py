@@ -210,9 +210,24 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
             else:
                 # File-only. Read OUTSIDE the lock so concurrent
                 # ``home.fernet_key`` readers aren't blocked on disk I/O;
-                # acquire only for the assignment.
-                key = read_fernet_key_from_file(home.base_dir)
-                home._seed_cached_fernet_key(key)
+                # acquire only for the assignment. The file signal is
+                # advisory, not fatal: if the file disappears between
+                # ``_fernet_key_present`` and the read (TOCTOU), defer
+                # to the lazy keyring fetch on next ``home.fernet_key``
+                # access rather than crashing ensure_home on a read-only
+                # invocation. Per CodeRabbit findings on PR #126.
+                try:
+                    key = read_fernet_key_from_file(home.base_dir)
+                except WorthlessError as exc:
+                    if exc.code != ErrorCode.KEY_NOT_FOUND:
+                        raise
+                    logger.debug(
+                        "ensure_home: fernet key file disappeared between "
+                        "_fernet_key_present and read; deferring to lazy "
+                        "keyring fetch"
+                    )
+                else:
+                    home._seed_cached_fernet_key(key)
         # else: keyring-only post-bootstrap → skip; lazy fetch later.
     except WorthlessError:
         raise
