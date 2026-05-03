@@ -875,46 +875,22 @@
       <h1>Make your API Keys Worthless.</h1>
 
       <p class="hero-sub">
-        ...while keeping everything working.
+        ...while keeping your LLMs working.
       </p>
 
-      <!-- Key enrollment demo -->
-      <div class="enroll-demo">
-        <div class="enroll-label">What do you want to protect?</div>
-        <div class="key-chips" id="key-chips">
-          <button class="key-chip active" data-key="openai">OpenAI</button>
-          <button class="key-chip active" data-key="anthropic">Anthropic</button>
-          <button class="key-chip" data-key="stripe">Stripe</button>
-          <button class="key-chip" data-key="github">GitHub</button>
-          <button class="key-chip" data-key="slack">Slack</button>
-          <button class="key-chip" data-key="aws">AWS</button>
-          <span class="key-chip-add">
-            <input id="custom-key-input" class="custom-key-input" placeholder="+ add your own" maxlength="32" autocomplete="off" spellcheck="false">
-          </span>
-        </div>
-        <div class="code-preview">
-          <div class="code-preview-bar">
-            <span class="code-lang">python</span>
-            <button class="code-copy-btn" id="code-copy-btn" onclick="copyCode()" title="Copy code">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              <span id="code-copy-label">copy</span>
-            </button>
-          </div>
-          <pre id="code-output" class="code-block"></pre>
-        </div>
-        <div style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap; margin-top:0.6rem;">
-          <button class="install-cmd" id="enroll-cmd-btn"
-            onclick="navigator.clipboard.writeText(document.getElementById('enroll-cmd-text').textContent).then(()=>{this.classList.add('copied');setTimeout(()=>this.classList.remove('copied'),1800)})">
-            <span id="enroll-cmd-text">worthless enroll openai anthropic</span>
-            <span class="copy-icon">📋</span>
-            <span class="copy-done">✓</span>
-          </button>
-        </div>
+      <!-- Install -->
+      <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
+        <button class="install-cmd"
+          onclick="navigator.clipboard.writeText('pip install worthless').then(()=>{this.classList.add('copied');setTimeout(()=>this.classList.remove('copied'),1800)})">
+          <span>pip install worthless</span>
+          <span class="copy-icon">📋</span>
+          <span class="copy-done">✓</span>
+        </button>
       </div>
 
       <!-- Audit with AI -->
       <div class="audit-ai" style="margin-bottom: 5rem;">
-        <div style="margin-bottom: 0.6rem; font-size: 0.8rem; color: var(--text2); opacity: 0.75;">Don't trust us - Audit us:</div>
+        <div style="margin-bottom: 0.6rem; font-size: 0.8rem; color: var(--text2); opacity: 0.75;">Do not trust us. Audit:</div>
         <div style="display: flex; gap: 0.5rem; align-items: center;">
           <a href="#" data-audit="chatgpt" class="audit-btn" title="Audit with ChatGPT" aria-label="Audit with ChatGPT" rel="noopener" target="_blank"><svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="#412991" width="20" height="20"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg></a>
           <a href="#" data-audit="claude" class="audit-btn" title="Audit with Claude" aria-label="Audit with Claude" rel="noopener" target="_blank"><svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="#191919" width="20" height="20"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg></a>
@@ -1080,81 +1056,6 @@
           document.querySelectorAll(".audit-btn").forEach(function (a) {
             a.href = urls[a.getAttribute("data-audit")];
           });
-        })();
-      </script>
-      <script>
-        (function () {
-          var active = ['openai', 'anthropic'];
-          var labels = {
-            openai: 'openai', anthropic: 'anthropic',
-            stripe: 'stripe', github: 'github',
-            slack: 'slack', aws: 'aws'
-          };
-
-          function varName(k) {
-            return k.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '_key';
-          }
-
-          function update() {
-            var lines = ['from worthless import get_key', ''];
-            active.forEach(function (k) {
-              lines.push(varName(k) + ' = get_key(name="' + k + '")');
-            });
-            document.getElementById('code-output').textContent = lines.join('\n');
-            document.getElementById('enroll-cmd-text').textContent =
-              'worthless enroll ' + active.join(' ');
-          }
-
-          document.querySelectorAll('.key-chip[data-key]').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-              var key = this.getAttribute('data-key');
-              var idx = active.indexOf(key);
-              if (idx === -1) {
-                active.push(key);
-                this.classList.add('active');
-              } else if (active.length > 1) {
-                active.splice(idx, 1);
-                this.classList.remove('active');
-              }
-              update();
-            });
-          });
-
-          var customInput = document.getElementById('custom-key-input');
-          customInput.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter' || e.key === ',') {
-              e.preventDefault();
-              var val = this.value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-              if (!val || active.indexOf(val) !== -1) { this.value = ''; return; }
-              var chip = document.createElement('button');
-              chip.className = 'key-chip active';
-              chip.setAttribute('data-key', val);
-              chip.textContent = val;
-              chip.addEventListener('click', function () {
-                var idx = active.indexOf(val);
-                if (idx !== -1 && active.length > 1) {
-                  active.splice(idx, 1);
-                  this.classList.remove('active');
-                  update();
-                }
-              });
-              customInput.parentElement.before(chip);
-              active.push(val);
-              this.value = '';
-              update();
-            }
-          });
-
-          window.copyCode = function () {
-            var code = document.getElementById('code-output').textContent;
-            navigator.clipboard.writeText(code).then(function () {
-              var lbl = document.getElementById('code-copy-label');
-              lbl.textContent = 'copied!';
-              setTimeout(function () { lbl.textContent = 'copy'; }, 1600);
-            });
-          };
-
-          update();
         })();
       </script>
     </div>
@@ -1349,6 +1250,220 @@
         </div>
       </div>
     </div>
+  </section>
+
+  <!-- What's next: get_key for any secret -->
+  <section class="on-bg" id="get-key" style="padding: 6rem 0; border-top: 1px solid var(--border);">
+    <div class="container">
+      <div class="getkey-wrap">
+
+        <div class="getkey-copy">
+          <div class="section-eyebrow">Coming next</div>
+          <h2 class="getkey-h2">Any key. Any secret.<br>One interface.</h2>
+          <p class="getkey-sub">Not just LLMs. Stripe, GitHub, database passwords — every secret your code touches becomes worthless to steal. Same split-key protection, same <code>get_key()</code> call.</p>
+          <form class="getkey-form" id="getkey-form" onsubmit="submitGetKeyWaitlist(event)">
+            <input type="email" class="getkey-email" id="getkey-email" placeholder="your@email.com" required autocomplete="email">
+            <button type="submit" class="getkey-submit" id="getkey-submit">Notify me</button>
+          </form>
+          <div class="getkey-success" id="getkey-success" style="display:none;">
+            You're on the list. We'll reach out when <code>get_key()</code> ships.
+          </div>
+        </div>
+
+        <div class="getkey-demo">
+          <div class="enroll-label" style="margin-bottom:0.6rem;">What do you want to protect?</div>
+          <div class="key-chips" id="key-chips">
+            <button class="key-chip active" data-key="openai">OpenAI</button>
+            <button class="key-chip active" data-key="anthropic">Anthropic</button>
+            <button class="key-chip" data-key="stripe">Stripe</button>
+            <button class="key-chip" data-key="github">GitHub</button>
+            <button class="key-chip" data-key="slack">Slack</button>
+            <button class="key-chip" data-key="aws">AWS</button>
+            <span class="key-chip-add">
+              <input id="custom-key-input" class="custom-key-input" placeholder="+ add your own" maxlength="32" autocomplete="off" spellcheck="false">
+            </span>
+          </div>
+          <div class="code-preview">
+            <div class="code-preview-bar">
+              <span class="code-lang">python</span>
+              <button class="code-copy-btn" onclick="copyGetKeyCode()" title="Copy code">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                <span id="gk-copy-label">copy</span>
+              </button>
+            </div>
+            <pre id="gk-code-output" class="code-block"></pre>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <style>
+      .getkey-wrap {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4rem;
+        align-items: start;
+      }
+      .getkey-h2 {
+        font-size: clamp(1.6rem, 3vw, 2.4rem);
+        font-weight: 700;
+        line-height: 1.2;
+        margin: 0.5rem 0 1rem;
+        color: var(--fg);
+      }
+      .getkey-sub {
+        font-size: 1rem;
+        color: var(--text2);
+        line-height: 1.7;
+        margin-bottom: 1.75rem;
+      }
+      .getkey-sub code {
+        font-family: var(--mono);
+        font-size: 0.9em;
+        background: rgba(10,147,150,0.1);
+        color: var(--accent);
+        padding: 0.1em 0.35em;
+        border-radius: 4px;
+      }
+      .getkey-form {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .getkey-email {
+        flex: 1;
+        min-width: 200px;
+        padding: 0.6rem 0.9rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        font-size: 0.9rem;
+        font-family: var(--sans);
+        background: var(--surface);
+        color: var(--fg);
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      .getkey-email:focus {
+        border-color: var(--accent);
+      }
+      .getkey-submit {
+        padding: 0.6rem 1.25rem;
+        background: var(--accent);
+        color: #fff;
+        border: none;
+        border-radius: var(--radius);
+        font-size: 0.9rem;
+        font-family: var(--sans);
+        font-weight: 600;
+        cursor: pointer;
+        transition: opacity 0.15s;
+      }
+      .getkey-submit:hover { opacity: 0.88; }
+      .getkey-success {
+        font-size: 0.88rem;
+        color: var(--accent);
+        margin-top: 0.75rem;
+      }
+      .getkey-success code {
+        font-family: var(--mono);
+        font-size: 0.9em;
+      }
+      .getkey-demo {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: calc(var(--radius) * 2);
+        padding: 1.5rem;
+      }
+      @media (max-width: 768px) {
+        .getkey-wrap { grid-template-columns: 1fr; gap: 2rem; }
+      }
+    </style>
+
+    <script>
+      (function () {
+        var active = ['openai', 'anthropic'];
+
+        function varName(k) {
+          return k.replace(/[^a-z0-9]/gi, '_').toLowerCase() + '_key';
+        }
+
+        function update() {
+          var lines = ['from worthless import get_key', ''];
+          active.forEach(function (k) {
+            lines.push(varName(k) + ' = get_key(name="' + k + '")');
+          });
+          document.getElementById('gk-code-output').textContent = lines.join('\n');
+        }
+
+        document.querySelectorAll('#key-chips .key-chip[data-key]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var key = this.getAttribute('data-key');
+            var idx = active.indexOf(key);
+            if (idx === -1) {
+              active.push(key);
+              this.classList.add('active');
+            } else if (active.length > 1) {
+              active.splice(idx, 1);
+              this.classList.remove('active');
+            }
+            update();
+          });
+        });
+
+        var customInput = document.getElementById('custom-key-input');
+        customInput.addEventListener('keydown', function (e) {
+          if (e.key !== 'Enter' && e.key !== ',') return;
+          e.preventDefault();
+          var val = this.value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+          if (!val || active.indexOf(val) !== -1) { this.value = ''; return; }
+          var chip = document.createElement('button');
+          chip.className = 'key-chip active';
+          chip.setAttribute('data-key', val);
+          chip.textContent = val;
+          chip.addEventListener('click', function () {
+            var idx = active.indexOf(val);
+            if (idx !== -1 && active.length > 1) {
+              active.splice(idx, 1);
+              this.classList.remove('active');
+              update();
+            }
+          });
+          customInput.parentElement.before(chip);
+          active.push(val);
+          this.value = '';
+          update();
+        });
+
+        window.copyGetKeyCode = function () {
+          var code = document.getElementById('gk-code-output').textContent;
+          navigator.clipboard.writeText(code).then(function () {
+            var lbl = document.getElementById('gk-copy-label');
+            lbl.textContent = 'copied!';
+            setTimeout(function () { lbl.textContent = 'copy'; }, 1600);
+          });
+        };
+
+        window.submitGetKeyWaitlist = function (e) {
+          e.preventDefault();
+          var email = document.getElementById('getkey-email').value.trim();
+          if (!email) return;
+          // Store locally; swap for real API endpoint when backend exists
+          var btn = document.getElementById('getkey-submit');
+          btn.disabled = true;
+          btn.textContent = '...';
+          var stored = JSON.parse(localStorage.getItem('gk_waitlist') || '[]');
+          if (stored.indexOf(email) === -1) stored.push(email);
+          localStorage.setItem('gk_waitlist', JSON.stringify(stored));
+          setTimeout(function () {
+            document.getElementById('getkey-form').style.display = 'none';
+            document.getElementById('getkey-success').style.display = 'block';
+          }, 400);
+        };
+
+        update();
+      })();
+    </script>
   </section>
 
   <!-- CTA -->
