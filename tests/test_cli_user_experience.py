@@ -138,8 +138,16 @@ class TestHelpText:
 class TestLockUx:
     """User-facing messages from the lock command."""
 
-    def test_lock_success_message(self, home_dir: WorthlessHome, env_with_openai: Path) -> None:
-        """After locking, user sees 'N key(s) protected.'"""
+    def test_lock_success_message_tells_the_story(
+        self, home_dir: WorthlessHome, env_with_openai: Path
+    ) -> None:
+        """Success message names the .env file + says what changed (UX P1#3).
+
+        Prior wording was "{N} key(s) protected." — opaque about what just
+        happened. New wording: "Done. {N} key(s) split between this machine
+        and your system keystore — {env_filename} no longer contains a
+        usable secret." Tells the user a story, names the file.
+        """
         result = runner.invoke(
             app,
             ["lock", "--env", str(env_with_openai)],
@@ -147,7 +155,89 @@ class TestLockUx:
         )
         assert result.exit_code == 0
         combined = result.stdout + result.stderr
-        assert "1 key(s) protected" in combined
+        # Must say what changed (split between machine + keystore).
+        assert "split between" in combined, (
+            f"success message missing storytelling shape:\n{combined}"
+        )
+        # Must name the actual .env file so user knows which file is now safe.
+        assert env_with_openai.name in combined, (
+            f"success message did not reference {env_with_openai.name}:\n{combined}"
+        )
+        # Count is still surfaced.
+        assert "1 key(s)" in combined, f"count missing from success:\n{combined}"
+
+    def test_lock_protect_message_names_each_key(
+        self, home_dir: WorthlessHome, env_with_openai: Path
+    ) -> None:
+        """During lock, the 'Protecting ...' line names the env vars (UX P0#2).
+
+        Prior "  Protecting {N} key(s)..." was opaque. Users couldn't tell
+        which secrets were being touched. New wording lists var names:
+        "  Protecting OPENAI_API_KEY...".
+        """
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_with_openai)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+        combined = result.stdout + result.stderr
+        assert "OPENAI_API_KEY" in combined, (
+            f"protect message did not name the var being touched:\n{combined}"
+        )
+
+    def test_lock_macos_pre_announces_keychain_dialog(
+        self,
+        home_dir: WorthlessHome,
+        env_with_openai: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """On macOS, lock pre-announces the Keychain dialog (UX P0#1).
+
+        First-time users on macOS see a system dialog labelled 'python3.10'
+        mid-`lock`, panic, and click Deny. The pre-announce sets expectation
+        and tells them to click 'Always Allow'. Mock sys.platform so this
+        test runs on every CI platform.
+        """
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_with_openai)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+        combined = result.stdout + result.stderr
+        # The hint must mention Keychain AND Always Allow so the user knows
+        # exactly what the dialog will look like and what to click.
+        assert "Keychain" in combined, f"macOS pre-announce missing 'Keychain':\n{combined}"
+        assert "Always Allow" in combined, f"macOS pre-announce missing 'Always Allow':\n{combined}"
+
+    def test_lock_non_macos_does_not_pre_announce_keychain(
+        self,
+        home_dir: WorthlessHome,
+        env_with_openai: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """On non-macOS platforms, no Keychain pre-announce — wrong UX cue.
+
+        Linux Secret Service / Windows DPAPI prompt differently (or not at
+        all). Saying 'click Always Allow' on those platforms confuses users.
+        """
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_with_openai)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+        combined = result.stdout + result.stderr
+        assert "Always Allow" not in combined, (
+            f"non-macOS run leaked the macOS-only Keychain hint:\n{combined}"
+        )
 
     def test_lock_no_keys_message(self, home_dir: WorthlessHome, env_clean: Path) -> None:
         """When .env has no API keys, user sees 'No unprotected API keys found.'"""

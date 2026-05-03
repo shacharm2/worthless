@@ -322,7 +322,11 @@ def _lock_keys(
         planned: list[_PlannedUpdate] = []
         try:
             if not quiet:
-                console.print_hint(f"  Protecting {len(candidates)} key(s)...")
+                # Name the keys so the user knows exactly which env vars are being
+                # touched — prior "Protecting N key(s)..." was opaque about which
+                # secrets just changed (UX P0).
+                key_names = ", ".join(var_name for var_name, _, _ in candidates)
+                console.print_hint(f"  Protecting {key_names}...")
             await _pass1_db_writes(repo, candidates, env_str, token_budget_daily, planned)
             if not planned:
                 return 0
@@ -350,7 +354,14 @@ def _lock_keys(
 
     if not quiet:
         if count:
-            console.print_success(f"{count} key(s) protected.")
+            # Tell the story: keys are now split between this machine and the
+            # OS keystore, so the .env file no longer holds usable secrets.
+            # Prior "{count} key(s) protected." read like a unit test (UX P1).
+            console.print_success(
+                f"Done. {count} key(s) split between this machine and your "
+                f"system keystore — {env_path.name} no longer contains a "
+                f"usable secret."
+            )
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
             )
@@ -441,6 +452,17 @@ def register_lock_commands(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Protect API keys in a .env file."""
+        # Pre-announce the macOS Keychain dialog so users aren't surprised by a
+        # system prompt mid-command. The dialog labels itself "python3.10" not
+        # "worthless"; without this hint, first-time users panic and click Deny.
+        # Per HF2 (worthless-mnlp) the prompt fires at most once per invocation
+        # (cache + lock + probe-via-property collapse 3+ → 1).
+        if sys.platform == "darwin":
+            console = get_console()
+            console.print_hint(
+                "macOS may ask once to access your Keychain — click 'Always Allow' "
+                "so we don't ask again."
+            )
         home = get_home()
         with acquire_lock(home):
             _lock_keys(
