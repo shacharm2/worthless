@@ -88,14 +88,22 @@ def migrate_file_to_keyring(home_dir: Path | None = None) -> bool:
     """
     try:
         if not keyring_available():
+            logger.debug("migrate_file_to_keyring: keyring unavailable, skip")
             return False
-        # Already in keyring? Nothing to do.
-        username = _keyring_username(home_dir)
-        if keyring.get_password(_SERVICE, username) is not None:
-            return False
-        # File exists?
+        # File-existence check FIRST so we don't fire keyring.get_password on
+        # every CLI invocation just to confirm "no migration needed". When
+        # there is no fernet.key file (the common case post-migration), we
+        # return immediately without touching the keyring — preserves the
+        # HF2 1-keyring-read-per-CLI promise on the existing-key path.
         fernet_path = _fernet_file_path(home_dir)
         if not fernet_path.exists():
+            logger.debug("migrate_file_to_keyring: no file at %s, skip", fernet_path)
+            return False
+        # File exists. Now check keyring — worth a get_password only when a
+        # file is present and migration is actually possible.
+        username = _keyring_username(home_dir)
+        if keyring.get_password(_SERVICE, username) is not None:
+            logger.debug("migrate_file_to_keyring: keyring already has key, skip")
             return False
         # Read from file and store to keyring (which also cleans up the file).
         # store_fernet_key deletes the file on keyring success and re-creates
