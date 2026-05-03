@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
@@ -16,6 +17,8 @@ from cryptography.fernet import Fernet
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.cli.keystore import migrate_file_to_keyring, read_fernet_key, store_fernet_key
 from worthless.cli.platform import IS_WINDOWS
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE = Path.home() / ".worthless"
 _STALE_LOCK_SECONDS = 300  # 5 minutes
@@ -92,7 +95,15 @@ class WorthlessHome:
         if self._cached_fernet_key is None:
             with self._cache_lock:
                 if self._cached_fernet_key is None:
+                    logger.debug("WorthlessHome.fernet_key cache MISS — reading from keystore")
                     self._cached_fernet_key = read_fernet_key(self.base_dir)
+                else:
+                    logger.debug(
+                        "WorthlessHome.fernet_key cache HIT (won the lock race; another "
+                        "thread populated)"
+                    )
+        else:
+            logger.debug("WorthlessHome.fernet_key cache HIT (warm path)")
         return bytearray(self._cached_fernet_key)
 
 
@@ -128,18 +139,25 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
         # the existence probe through ``home.fernet_key`` so the read also
         # populates ``WorthlessHome``'s per-instance cache — collapses the
         # bootstrap probe + first ``ShardRepository`` init into a single
-        # macOS Keychain ACL evaluation on the existing-key path. The
-        # missing-key branch generates and stores the key without populating
-        # the cache; the next ``home.fernet_key`` access reads the freshly
-        # stored key once.
+        # ``keyring.get_password`` on the existing-key path. The missing-key
+        # branch generates + stores the key, then populates the cache from
+        # the freshly generated key so the next consumer also skips the
+        # re-read — both paths converge on 1 keyring read per CLI invocation.
         try:
             _ = home.fernet_key
         except WorthlessError as exc:
             if exc.code != ErrorCode.KEY_NOT_FOUND:
                 raise
+            logger.info("ensure_home: no Fernet key found, generating new one")
             key = Fernet.generate_key()
             store_fernet_key(key, home_dir=home.base_dir)
+            # Seed the cache directly from the generated key so the next
+            # ``home.fernet_key`` consumer doesn't trigger a re-read.
+            # SR-01: bytearray is mutable so callers can zero_buf().
+            home._cached_fernet_key = bytearray(key)
+            logger.debug("ensure_home: cache seeded from generated key")
         else:
+            logger.debug("ensure_home: existing Fernet key found, cache populated by probe")
             migrate_file_to_keyring(home.base_dir)
     except WorthlessError:
         raise

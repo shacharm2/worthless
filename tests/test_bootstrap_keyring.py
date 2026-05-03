@@ -366,3 +366,85 @@ class TestFernetKeyMemoization:
                         f"results[{i}] and results[{j}] are the SAME object — "
                         "fresh-copy contract violated"
                     )
+
+
+class TestKeyringCallCountInvariants:
+    """One ``keyring.get_password`` per CLI invocation — both paths.
+
+    Background: HF2 PR #125 review surfaced via real-keyring spy that the
+    existing-key path was hitting the keyring TWICE per CLI invocation,
+    not once as the bead claimed. Root cause: ``migrate_file_to_keyring``
+    (called by ``ensure_home`` after a successful probe) was calling
+    ``keyring.get_password`` directly to ask "is the key already in
+    keyring?", bypassing the property cache. First-ever-boot path also
+    counted 2 because the probe raised KEY_NOT_FOUND before assigning the
+    cache, so the first consumer re-read.
+
+    These tests pin both paths at 1 keyring read.
+    """
+
+    def test_migrate_skips_keyring_when_no_fernet_file_exists(self, tmp_path: Path):
+        """``migrate_file_to_keyring`` MUST check file existence first.
+
+        If no ``fernet.key`` file is on disk (the common case post-migration),
+        no migration is possible — the function must return immediately
+        without calling ``keyring.get_password``. Anything else inflates the
+        keyring read count on every CLI invocation.
+        """
+        from worthless.cli import keystore
+
+        with (
+            patch.object(keystore, "keyring_available", return_value=True),
+            patch.object(keystore.keyring, "get_password") as mock_get,
+        ):
+            result = keystore.migrate_file_to_keyring(home_dir=tmp_path / ".worthless")
+
+        assert result is False, "no file → migration cannot succeed"
+        (
+            mock_get.assert_not_called(),
+            (
+                "migrate_file_to_keyring called keyring.get_password despite no fernet.key "
+                "file present — this is the HF2 bypass that re-read the keyring on every "
+                "existing-key CLI invocation"
+            ),
+        )
+
+    def test_ensure_home_seeds_cache_after_generating_key_on_missing_key_path(
+        self, tmp_path: Path
+    ) -> None:
+        """First-ever-boot path: cache MUST be populated after key generation.
+
+        When ``read_fernet_key`` raises ``KEY_NOT_FOUND`` during the bootstrap
+        probe, the property body re-raises before assigning ``_cached_fernet_key``.
+        ``ensure_home``'s ``except`` branch generates and stores a fresh key —
+        but unless it ALSO seeds the cache directly from that key, the next
+        ``home.fernet_key`` consumer (e.g., ``ShardRepository`` init) would
+        re-read the freshly stored key from keyring. This test pins the
+        cache-seeding contract.
+        """
+        from cryptography.fernet import Fernet
+
+        generated = Fernet.generate_key()
+        with (
+            patch(
+                "worthless.cli.bootstrap.read_fernet_key",
+                side_effect=WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key"),
+            ),
+            patch("worthless.cli.bootstrap.store_fernet_key"),
+            patch(
+                "worthless.cli.bootstrap.Fernet.generate_key",
+                return_value=generated,
+            ),
+        ):
+            home = ensure_home(base_dir=tmp_path / ".worthless")
+
+        assert home._cached_fernet_key is not None, (
+            "cache was not seeded after generate_key — first-ever-boot path "
+            "still costs an extra keyring.get_password on the next consumer"
+        )
+        assert isinstance(home._cached_fernet_key, bytearray), (
+            f"cache must be bytearray (SR-01); got {type(home._cached_fernet_key).__name__}"
+        )
+        assert bytes(home._cached_fernet_key) == generated, (
+            "cache value does not match the freshly generated key"
+        )

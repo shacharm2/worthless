@@ -129,7 +129,7 @@ where = ["src"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 timeout = 30
-addopts = "--strict-config --strict-markers -n auto --dist loadscope --reruns 1 -m 'not live and not docker'"
+addopts = "--strict-config --strict-markers -n auto --dist loadscope --reruns 1 -m 'not live and not docker and not user_flow'"
 markers = [
     "benchmark: performance and latency regression checks",
     "contract: schema-driven API and protocol checks",
@@ -142,6 +142,7 @@ markers = [
     "docker: Docker container end-to-end tests (requires running Docker daemon)",
     "e2e: end-to-end smoke tests — full lifecycle (lock, proxy, healthz)",
     "openclaw: OpenClaw integration tests (requires Docker + network pull)",
+    "user_flow: end-to-end user-flow tests — real keyring, real CLI, real fs. Run with `pytest -m user_flow`. See worthless-bwu6 for the full suite scope.",
 ]
 
 [tool.coverage.run]
