@@ -33,6 +33,7 @@ from worthless.cli.providers import (
     bundled_names,
     load_bundled,
     load_user,
+    user_names,
     user_registry_path,
 )
 
@@ -63,6 +64,19 @@ def _validate_url(url: str) -> str:
     if not parsed.netloc:
         raise WorthlessError(ErrorCode.INVALID_INPUT, "URL has empty host (netloc)")
     return url
+
+
+def _refuse_name_collision(name: str, taken: set[str], suffix_hint: str) -> None:
+    """Raise INVALID_INPUT if ``name`` is in ``taken``. Used by ``register``
+    to refuse both bundled-name conflicts and user-name re-registrations
+    with the same error shape and the same call shape — keeps the error
+    format from drifting between the two checks (and makes ``--json``
+    error rendering consistent across the two paths)."""
+    if name in taken:
+        raise WorthlessError(
+            ErrorCode.INVALID_INPUT,
+            f"name {name!r} {suffix_hint}",
+        )
 
 
 def _validate_protocol(protocol: str) -> str:
@@ -157,12 +171,25 @@ def register_providers_commands(app: typer.Typer) -> None:
         _validate_protocol(protocol)
 
         bundled = load_bundled()
-        if name in bundled_names():
-            raise WorthlessError(
-                ErrorCode.INVALID_INPUT,
-                f"name {name!r} conflicts with a bundled provider; "
-                "pick a different name (e.g., {name}-staging)",
-            )
+        # Two name-collision sources, same shape: refuse and suggest a
+        # qualified alternative. Bundled names (``openai``, ``anthropic``,
+        # …) are reserved. User names are refused too — otherwise this
+        # command silently appends a duplicate ``[provider.<name>]`` table
+        # to the user TOML, which TOML forbids; the next ``load_user()``
+        # would raise and break every providers/lock flow until the user
+        # hand-edits ``~/.worthless/providers.toml``.
+        _refuse_name_collision(
+            name,
+            bundled_names(),
+            f"conflicts with a bundled provider; pick a different name (e.g., {name}-staging)",
+        )
+        _refuse_name_collision(
+            name,
+            user_names(),
+            f"is already registered in {user_registry_path()}; "
+            f"remove it from that file first, or pick a different name "
+            f"(e.g., {name}-v2)",
+        )
         if url in bundled and not force:
             raise WorthlessError(
                 ErrorCode.INVALID_INPUT,

@@ -10,6 +10,7 @@ Tests for Phase 3.1:
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -537,18 +538,35 @@ class TestGateBeforeDecrypt:
         assert data["choices"][0]["message"]["content"] == "OK"
 
     @respx.mock
-    async def test_null_base_url_refused_before_reconstruction(self, proxy_app, enrolled_alias):
-        """SR-03: a row with NULL base_url (legacy / pre-8rqs enrollment) must
-        be refused BEFORE any key reconstruction or rules-engine evaluation.
+    async def test_null_base_url_refused_before_reconstruction(
+        self, proxy_app, enrolled_alias, caplog
+    ):
+        """SR-03 + anti-enumeration: a row with NULL base_url (legacy /
+        pre-8rqs enrollment) must be refused BEFORE any key reconstruction
+        AND BEFORE rules-engine evaluation, AND with the same uniform 401
+        an unknown alias would get — no content-shape oracle.
 
-        Failure mode if violated: the user has a legacy row missing base_url;
-        a request triggers full reconstruction (key materialises in memory)
-        before we refuse with 503. SR-03 (gate before reconstruct) requires
-        no reconstruction on the denial path.
+        Three contracts pinned here:
 
-        Regression target: the original 8rqs Phase 6 placed the NULL check
-        AFTER reconstruction (proxy/app.py line 382, below reconstruction at
-        363/372). M1 hoists it above. This test pins the new ordering.
+        1. SR-03 (gate before reconstruct). Reconstruction must not fire.
+           Original 8rqs Phase 6 placed the NULL check AFTER reconstruction;
+           M1 hoists it above. Rules engine must not fire either —
+           ``rules_engine.evaluate`` runs BETWEEN the row fetch and the
+           reconstruction, so any leak there would also count as
+           pre-reconstruction key-material exposure once worthless-rzi1
+           lands per-request DB re-validation inside the rules path.
+
+        2. Anti-enumeration. The original M1 fix returned a distinctive
+           503 with a relock hint. That let an attacker probe the DB by
+           content-shape (random alias → 401, real legacy alias → 503).
+           Same oracle class as worthless-bi7h's timing oracle. M5 changes
+           the response to ``_uniform_401()`` — byte-identical to the
+           unknown-alias path.
+
+        3. Operator signal preserved. The relock hint moved from the wire
+           to the server log. Without a server-side log line, the
+           legacy-row condition would be silent to operators. caplog
+           assertion below pins that.
         """
         alias, shard_a_utf8, _ = enrolled_alias
 
@@ -562,10 +580,17 @@ class TestGateBeforeDecrypt:
 
         proxy_app.state.repo.fetch_encrypted = fetch_with_null_base_url
 
-        # Track reconstruct_key + reconstruct_key_fp calls.
+        # Track every gate that must NOT fire on the NULL base_url denial
+        # path: reconstruction (SR-03 strict) + rules-engine evaluate.
         with (
             patch("worthless.proxy.app.reconstruct_key") as mock_reconstruct,
             patch("worthless.proxy.app.reconstruct_key_fp") as mock_reconstruct_fp,
+            patch.object(
+                proxy_app.state.rules_engine,
+                "evaluate",
+                wraps=proxy_app.state.rules_engine.evaluate,
+            ) as mock_evaluate,
+            caplog.at_level(logging.WARNING, logger="worthless.proxy.app"),
         ):
             transport = httpx.ASGITransport(app=proxy_app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -578,8 +603,21 @@ class TestGateBeforeDecrypt:
                     content=b'{"model": "gpt-4", "messages": []}',
                 )
 
-        # Refusal — legacy row with NULL base_url cannot be served.
-        assert resp.status_code == 503, f"expected 503, got {resp.status_code}: {resp.text}"
+                # Anti-enumeration: capture an unknown-alias response from the
+                # SAME proxy and assert byte-equality. If they differ, the
+                # legacy-row path is leaking existence.
+                unknown_resp = await client.post(
+                    "/this-alias-never-existed/v1/chat/completions",
+                    headers={
+                        "authorization": f"Bearer {shard_a_utf8}",
+                        "content-type": "application/json",
+                    },
+                    content=b'{"model": "gpt-4", "messages": []}',
+                )
+
+        # Assertion order: gate-bypass call_counts FIRST so a regression in
+        # any one gate surfaces at the precise contract it broke, instead
+        # of being masked by a later status-code mismatch.
 
         # SR-03 contract: NEITHER reconstruction function called.
         assert mock_reconstruct.call_count == 0, (
@@ -589,6 +627,42 @@ class TestGateBeforeDecrypt:
         assert mock_reconstruct_fp.call_count == 0, (
             f"reconstruct_key_fp called {mock_reconstruct_fp.call_count} times — "
             "SR-03 violated: NULL base_url should refuse BEFORE reconstruction"
+        )
+
+        # Rules-engine must also be skipped on this denial path.
+        assert mock_evaluate.call_count == 0, (
+            f"rules_engine.evaluate called {mock_evaluate.call_count} times — "
+            "the SR-03 docstring promises gating BEFORE rules evaluation, "
+            "but rules ran anyway"
+        )
+
+        # Anti-enumeration: legacy-row response is byte-identical to the
+        # unknown-alias response. No content-shape oracle.
+        assert resp.status_code == 401, (
+            f"expected uniform 401 (anti-enumeration), got {resp.status_code}: {resp.text}"
+        )
+        assert resp.status_code == unknown_resp.status_code, (
+            f"legacy-row response status {resp.status_code} != unknown-alias "
+            f"status {unknown_resp.status_code} — content-shape oracle leaks "
+            "DB membership"
+        )
+        assert resp.content == unknown_resp.content, (
+            "legacy-row response body differs from unknown-alias body — "
+            "content-shape oracle leaks DB membership"
+        )
+
+        # Operator signal preserved. The relock hint moved from the wire to
+        # the server log. Without a logged warning, operators have no way
+        # to know a legacy row was hit.
+        legacy_warnings = [
+            r
+            for r in caplog.records
+            if "NULL base_url" in r.getMessage() and alias in r.getMessage()
+        ]
+        assert legacy_warnings, (
+            "no operator warning logged for NULL-base_url path — "
+            f"legacy-row condition is silent. caplog records: "
+            f"{[r.getMessage() for r in caplog.records]}"
         )
 
 

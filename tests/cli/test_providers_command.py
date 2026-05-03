@@ -277,3 +277,71 @@ class TestProvidersRegister:
 
         content = (tmp_path / ".worthless" / "providers.toml").read_text()
         assert "first" in content and "second" in content
+
+    def test_register_refuses_existing_user_name(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Re-registering an already-user-registered name must fail before
+        writing. Otherwise the second call appends a duplicate
+        ``[provider.<name>]`` table to ``providers.toml``; the next
+        ``load_user()`` raises ``TOMLDecodeError`` (TOML forbids
+        duplicate tables) — breaking every other ``providers``/``lock``
+        flow until the user hand-edits the file.
+        """
+        monkeypatch.setenv("HOME", str(tmp_path))
+        common_args = [
+            "providers",
+            "register",
+            "--name",
+            "duplicate-me",
+            "--url",
+            "https://first.example/v1",
+            "--protocol",
+            "openai",
+        ]
+        first = runner.invoke(app, common_args)
+        assert first.exit_code == 0, first.output
+
+        # Second call with the same name must refuse.
+        second_args = list(common_args)
+        second_args[5] = "https://second.example/v1"  # different URL, same name
+        second = runner.invoke(app, second_args)
+        assert second.exit_code != 0, (
+            f"second register with same name should fail; output={second.output[:300]}"
+        )
+        assert "duplicate-me" in second.output, (
+            f"error should name the colliding provider; got: {second.output[:300]}"
+        )
+
+        # File must still be parseable (no duplicate table written).
+        from worthless.cli.providers import load_user
+
+        loaded = load_user()
+        assert any(e.name == "duplicate-me" for e in loaded.values()), (
+            "first registration should still be present"
+        )
+        assert all(e.url != "https://second.example/v1" for e in loaded.values()), (
+            "second registration must not have been written"
+        )
+
+    def test_lookup_normalizes_trailing_slash(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Registry lookup must treat trailing slash as equivalent.
+        ``https://api.openai.com/v1`` (bundled) and
+        ``https://api.openai.com/v1/`` (user with extra slash in .env)
+        must resolve to the same entry — otherwise lock-time URL
+        validation refuses a perfectly valid OpenAI URL just because the
+        user added a slash.
+        """
+        from worthless.cli.providers import lookup_by_url
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        without = lookup_by_url("https://api.openai.com/v1")
+        with_slash = lookup_by_url("https://api.openai.com/v1/")
+        assert without is not None, "bundled URL without trailing slash must resolve"
+        assert with_slash is not None, (
+            "bundled URL WITH trailing slash must resolve to the same entry "
+            "(otherwise lock refuses users whose .env has the extra slash)"
+        )
+        assert without.name == with_slash.name == "openai"

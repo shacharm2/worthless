@@ -50,6 +50,24 @@ def _user_registry_path() -> Path:
     return Path.home() / ".worthless" / "providers.toml"
 
 
+def _strip_trailing_slash(url: str) -> str:
+    """Drop a single trailing slash so ``…/v1`` and ``…/v1/`` are the same key.
+
+    Registry lookups are exact-string keyed. Without this, a user whose
+    ``.env`` has ``OPENAI_BASE_URL=https://api.openai.com/v1/`` (extra
+    slash) would fail M3's lock-time registry membership check even
+    though the URL is the bundled OpenAI endpoint.
+
+    Scope: trailing slash only. Scheme/host case folding and explicit
+    default-port stripping (``:443`` on https) are NOT handled here —
+    file as a follow-up if real users hit those forms. Keeping the name
+    honest about what this function does.
+    """
+    if url.endswith("/") and not url.endswith("://"):
+        return url[:-1]
+    return url
+
+
 def _parse_toml_to_entries(raw: dict) -> dict[str, ProviderEntry]:
     """Convert a parsed-TOML dict into a URL-keyed entry map.
 
@@ -68,7 +86,8 @@ def _parse_toml_to_entries(raw: dict) -> dict[str, ProviderEntry]:
         if not isinstance(url, str) or not isinstance(protocol, str):
             logger.warning("provider %r has missing url or protocol; skipping", name)
             continue
-        out[url] = ProviderEntry(name=name, url=url, protocol=protocol)
+        normalized = _strip_trailing_slash(url)
+        out[normalized] = ProviderEntry(name=name, url=normalized, protocol=protocol)
     return out
 
 
@@ -102,14 +121,26 @@ def load_registry() -> dict[str, ProviderEntry]:
 
 
 def lookup_by_url(url: str) -> ProviderEntry | None:
-    """Return the entry for a given URL, or ``None`` if unknown."""
-    return load_registry().get(url)
+    """Return the entry for a given URL, or ``None`` if unknown.
+
+    Strips a trailing slash on the input the same way registry entries
+    have it stripped at load time, so callers passing ``https://x.com/v1/``
+    match an entry stored as ``https://x.com/v1``.
+    """
+    return load_registry().get(_strip_trailing_slash(url))
 
 
 def bundled_names() -> set[str]:
     """Return the set of names registered in the bundled file (used to refuse
     name collisions when registering a user provider)."""
     return {e.name for e in load_bundled().values()}
+
+
+def user_names() -> set[str]:
+    """Return the set of names already registered in the user file (used to
+    refuse re-registering an existing user provider — see CodeRabbit #7
+    on PR #127). Symmetric with ``bundled_names``."""
+    return {e.name for e in load_user().values()}
 
 
 def user_registry_path() -> Path:

@@ -315,13 +315,21 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         # extraction, BEFORE reconstruction. The denial path must not
         # trigger key materialisation. (worthless-2pdi will promote this
         # into a structural validate_encrypted_row helper covering all
-        # row-shape denials; the inline guard is the M1 minimum.)
+        # row-shape denials; the inline guard is the minimum.)
+        #
+        # Anti-enumeration: return the same _uniform_401() that unknown
+        # aliases get. A distinctive response (e.g. 503 with a relock
+        # hint) would let an attacker probe the DB by content-shape,
+        # breaking the anti-enumeration contract worthless-bi7h tracks
+        # for the timing-oracle variant. The relock hint surfaces in
+        # operator logs and via authenticated paths only.
         if encrypted.base_url is None:
-            return _make_gateway_response(
-                503,
-                f"alias {alias!r} predates upstream URL storage; "
-                "run 'worthless relock' to re-enroll with --base-url",
+            logger.warning(
+                "alias %r has NULL base_url (legacy pre-8rqs row); "
+                "operator should run `worthless relock`",
+                alias,
             )
+            return _uniform_401()
 
         # SR-09: shard-A from request header only (no disk, no files)
         # OpenAI: Authorization: Bearer <shard-A>

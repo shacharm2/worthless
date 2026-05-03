@@ -150,7 +150,12 @@ _CHILD_SCRIPT = textwrap.dedent("""\
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, _, v = line.partition("=")
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+                # Assignment, not setdefault: the .env file MUST win over
+                # any ambient OPENAI_BASE_URL in the parent env. Otherwise
+                # a developer running pytest with their own real BASE_URL
+                # set would silently bypass the locked proxy and the e2e
+                # would pass for the wrong reason.
+                os.environ[k.strip()] = v.strip().strip('"').strip("'")
     base = os.environ.get("OPENAI_BASE_URL")
     if not base:
         print("OPENAI_BASE_URL not set", file=sys.stderr)
