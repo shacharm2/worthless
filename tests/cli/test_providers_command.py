@@ -324,6 +324,49 @@ class TestProvidersRegister:
             "second registration must not have been written"
         )
 
+    def test_load_user_decodes_non_ascii_as_utf8(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """User TOML must decode as UTF-8 regardless of platform locale.
+
+        Without ``encoding="utf-8"`` on ``read_text()`` the call falls
+        back to ``locale.getencoding()`` — cp1252 on a fresh Windows
+        install — which corrupts any non-ASCII byte. Bundled
+        ``providers.toml`` is pure ASCII today so the bug is latent on
+        Linux/macOS CI; this test pins the contract so a future drift
+        back to the platform default would fail loudly.
+
+        Setup writes a TOML containing a Cyrillic provider name and an
+        em-dash in a comment — both invalid in cp1252.
+        """
+        from worthless.cli.providers import load_user
+
+        user_dir = tmp_path / ".worthless"
+        user_dir.mkdir()
+        # TOML bare keys are ASCII; non-ASCII goes in a quoted key OR in
+        # values. Cover both: an em-dash in a comment + a Cyrillic name
+        # via quoted-key syntax + a non-ASCII URL fragment.
+        (user_dir / "providers.toml").write_bytes(
+            (
+                "# i18n provider — registered locally\n"
+                '[provider."staging-провайдер"]\n'
+                'url = "https://staging.example/v1?région=eu"\n'
+                'protocol = "openai"\n'
+            ).encode()
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        loaded = load_user()
+        names = [e.name for e in loaded.values()]
+        urls = [e.url for e in loaded.values()]
+        assert any("провайдер" in n for n in names), (
+            f"Cyrillic provider name not parsed correctly — likely a "
+            f"non-UTF-8 decode happened. Got names: {names}"
+        )
+        assert any("région" in u for u in urls), (
+            f"Non-ASCII URL fragment lost — likely a non-UTF-8 decode happened. Got URLs: {urls}"
+        )
+
     def test_lookup_normalizes_trailing_slash(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

@@ -92,8 +92,16 @@ def _parse_toml_to_entries(raw: dict) -> dict[str, ProviderEntry]:
 
 
 def load_bundled() -> dict[str, ProviderEntry]:
-    """Load ``src/worthless/providers.toml`` shipped with the package."""
-    bundle_text = resources.files("worthless").joinpath("providers.toml").read_text()
+    """Load ``src/worthless/providers.toml`` shipped with the package.
+
+    UTF-8 is explicit (TOML spec mandates it). Without ``encoding=``,
+    ``read_text()`` falls back to the platform locale — cp1252 on a
+    fresh Windows install — which would fail on any non-ASCII character
+    in the bundled file. Same reasoning applies to ``load_user()``.
+    """
+    bundle_text = (
+        resources.files("worthless").joinpath("providers.toml").read_text(encoding="utf-8")
+    )
     parsed = tomllib.loads(bundle_text)
     return _parse_toml_to_entries(parsed)
 
@@ -104,7 +112,7 @@ def load_user() -> dict[str, ProviderEntry]:
     if not path.is_file():
         return {}
     try:
-        parsed = tomllib.loads(path.read_text())
+        parsed = tomllib.loads(path.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError) as exc:
         logger.warning(
             "could not parse user providers.toml at %s — falling back to bundled registry only: %s",
