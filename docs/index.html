@@ -886,18 +886,16 @@
           <span class="copy-icon">📋</span>
           <span class="copy-done">✓</span>
         </button>
-        <a href="https://github.com/shacharm2/worthless" target="_blank" rel="noopener" class="btn-waitlist" style="margin-bottom: 0;">GitHub →</a>
       </div>
 
-      <!-- Audit with AI: don't trust us, ask your LLM to read install.sh -->
-      <div class="audit-ai" style="margin-bottom: 5rem; font-size: 0.85rem; color: var(--slate, #005f73);">
-        <div style="margin-bottom: 0.5rem; opacity: 0.8;">
-          Don't trust us — have your AI audit the install script:
-        </div>
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-          <a href="#" data-audit="claude" class="audit-btn" rel="noopener" target="_blank">🤖 Audit with Claude</a>
-          <a href="#" data-audit="chatgpt" class="audit-btn" rel="noopener" target="_blank">🤖 Audit with ChatGPT</a>
-          <a href="#" data-audit="gemini" class="audit-btn" rel="noopener" target="_blank">🤖 Audit with Gemini</a>
+      <!-- Audit with AI -->
+      <div class="audit-ai" style="margin-bottom: 5rem;">
+        <div style="margin-bottom: 0.6rem; font-size: 0.8rem; color: var(--text2); opacity: 0.75;">Don't trust us - Audit us:</div>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <a href="#" data-audit="chatgpt" class="audit-btn" title="Audit with ChatGPT" rel="noopener" target="_blank"><img src="https://cdn.simpleicons.org/openai/005f73" class="audit-logo" alt="ChatGPT"></a>
+          <a href="#" data-audit="claude" class="audit-btn" title="Audit with Claude" rel="noopener" target="_blank"><img src="https://cdn.simpleicons.org/anthropic/005f73" class="audit-logo" alt="Claude"></a>
+          <a href="#" data-audit="gemini" class="audit-btn" title="Audit with Gemini" rel="noopener" target="_blank"><img src="https://cdn.simpleicons.org/googlegemini/005f73" class="audit-logo" alt="Gemini"></a>
+          <a href="#" data-audit="grok" class="audit-btn" title="Audit with Grok" rel="noopener" target="_blank"><img src="https://cdn.simpleicons.org/xai/005f73" class="audit-logo" alt="Grok"></a>
         </div>
       </div>
       <style>
@@ -915,6 +913,13 @@
         }
         .audit-btn:hover {
           background: rgba(10, 147, 150, 0.15);
+        }
+        .audit-logo {
+          width: 16px;
+          height: 16px;
+          border-radius: 3px;
+          vertical-align: middle;
+          margin-right: 4px;
         }
       </style>
       <script>
@@ -938,7 +943,8 @@
           var urls = {
             claude: "https://claude.ai/new?q=" + q,
             chatgpt: "https://chatgpt.com/?q=" + q,
-            gemini: "https://gemini.google.com/app?q=" + q
+            gemini: "https://gemini.google.com/app?q=" + q,
+            grok: "https://x.com/i/grok?text=" + q
           };
           document.querySelectorAll(".audit-btn").forEach(function (a) {
             a.href = urls[a.getAttribute("data-audit")];
