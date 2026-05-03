@@ -6,6 +6,37 @@ import time
 
 import aiosqlite
 
+# Characters that would break out of a single-quoted SQL literal or are
+# otherwise illegal in a SQLite path argument. ``VACUUM INTO`` does not
+# accept parameterised paths (``VACUUM INTO ?`` is a syntax error in
+# SQLite), so the backup path MUST be inlined into the SQL string. This
+# guard makes the inlining safe by refusing any path that could escape
+# the surrounding ``'…'`` quotes or terminate the statement early.
+#
+# Threat model: ``db_path`` is operator-controlled (``WORTHLESS_DB_PATH``
+# env var or composed from ``WORTHLESS_HOME``); not network-reachable.
+# This is operator-self-pwn / config-error hardening, not an
+# anti-injection defense against an external attacker.
+_UNSAFE_DB_PATH_CHARS = frozenset("'\x00\r\n\t")
+
+
+def _assert_safe_db_path(db_path: str) -> None:
+    """Refuse db paths that would corrupt the migration ``VACUUM INTO`` SQL.
+
+    See ``_UNSAFE_DB_PATH_CHARS`` for the rationale and threat-model
+    framing. Any control char or single quote in the path raises
+    ``ValueError`` before the f-string interpolation happens, making
+    the subsequent inlined SQL provably safe.
+    """
+    bad = _UNSAFE_DB_PATH_CHARS.intersection(db_path)
+    if bad:
+        raise ValueError(
+            f"db_path {db_path!r} contains unsafe character(s) {sorted(bad)!r}; "
+            "set WORTHLESS_HOME / WORTHLESS_DB_PATH to a path without quotes "
+            "or control characters"
+        )
+
+
 SCHEMA = """\
 PRAGMA foreign_keys = ON;
 
@@ -95,9 +126,18 @@ async def _migrate_base_url_column(
     if "base_url" in shard_columns:
         return
     # Defensive snapshot via SQLite's VACUUM INTO — clean copy that respects
-    # WAL state. Only runs the first time we add the column.
+    # WAL state. Only runs the first time we add the column. ``VACUUM INTO``
+    # cannot use a parameterised path (SQLite syntax limitation), so the
+    # path is inlined; ``_assert_safe_db_path`` proves the inlining is safe
+    # by refusing any path with quotes or control chars.
+    _assert_safe_db_path(db_path)
     backup_path = f"{db_path}.bak.{int(time.time())}"
-    await db.execute(f"VACUUM INTO '{backup_path}'")  # noqa: S608 — internal path, not user input
+    # SQLite VACUUM INTO has no parameter form; path is inlined. Validator
+    # above proves the inlining is safe (rejects ', NUL, CR, LF, TAB).
+    # nosemgrep: formatted-sql-query
+    # nosemgrep: sqlalchemy-execute-raw-query
+    vacuum_sql = f"VACUUM INTO '{backup_path}'"  # noqa: S608
+    await db.execute(vacuum_sql)
     try:
         await db.execute("ALTER TABLE shards ADD COLUMN base_url TEXT")
         await db.commit()

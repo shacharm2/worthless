@@ -220,6 +220,72 @@ async def test_spend_log_index_exists(tmp_db_path: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_assert_safe_db_path_rejects_quotes_and_control_chars() -> None:
+    """``_migrate_base_url_column`` inlines ``db_path`` into the SQL of
+    ``VACUUM INTO '<path>'`` because SQLite's VACUUM INTO does not accept
+    parameterised paths. The ``_assert_safe_db_path`` validator makes
+    that inlining provably safe by refusing any path that could escape
+    the surrounding ``'…'`` quotes or terminate the statement early.
+
+    Threat model: ``db_path`` is operator-controlled (``WORTHLESS_HOME``
+    env var). This is operator-self-pwn / config-error hardening, not
+    anti-injection from an external attacker. But it's still a real
+    footgun — a user with a quote in their HOME path would have crashed
+    migration mid-transaction without this guard.
+
+    Pinning the validator behaviour also closes Semgrep findings
+    ``sqlalchemy-execute-raw-query`` and ``formatted-sql-query`` on
+    ``schema.py:100`` against drift back to a bare interpolation.
+    """
+    from worthless.storage.schema import _assert_safe_db_path
+
+    # Safe paths pass through silently. Path strings are not real fs paths
+    # — the validator is pure string analysis, doesn't touch the filesystem.
+    safe_paths = [
+        "/var/lib/worthless/shards.db",  # noqa: S108
+        "/Users/alice/.worthless/shards.db",
+        # Windows path with backslashes — backslash is intentionally
+        # allowed (legal in SQLite literals; not in _UNSAFE_DB_PATH_CHARS).
+        # Don't "fix" this entry to forward slashes.
+        "C:\\Users\\Bob\\worthless\\shards.db",
+        "/path/with-dashes_and.dots/shards.db",
+    ]
+    for path in safe_paths:
+        _assert_safe_db_path(path)  # must not raise
+
+    # Unsafe characters all raise.
+    bad_paths = [
+        "/var/has'quote/shards.db",  # noqa: S108 — single quote escapes the SQL literal
+        "/var/has\x00null/shards.db",  # noqa: S108 — NUL truncates the path
+        "/var/has\nnewline/shards.db",  # noqa: S108 — newline corrupts SQL multi-statement
+        "/var/has\rreturn/shards.db",  # noqa: S108
+        "/var/has\ttab/shards.db",  # noqa: S108
+    ]
+    for path in bad_paths:
+        with pytest.raises(ValueError, match="unsafe character"):
+            _assert_safe_db_path(path)
+
+
+@pytest.mark.asyncio
+async def test_migrate_base_url_column_refuses_unsafe_db_path() -> None:
+    """End-to-end: the migration that uses VACUUM INTO refuses a quote-
+    bearing db_path before any SQL fires. Without this guard the f-string
+    SQL would syntax-error mid-transaction.
+
+    Uses an in-memory SQLite — no SCHEMA setup needed, the validator runs
+    BEFORE any DB read on the migration path. A bare connection is enough
+    to reach the validator, and dropping the schema setup keeps test
+    intent narrow ("validator rejects bad path", not "migration e2e").
+    """
+    # Pass an unsafe path. Validator must reject before any SQL fires.
+    unsafe_db = "/var/has'quote/shards.db"  # noqa: S108 — string analysis only
+    from worthless.storage.schema import _migrate_base_url_column
+
+    async with aiosqlite.connect(":memory:") as db:
+        with pytest.raises(ValueError, match="unsafe character"):
+            await _migrate_base_url_column(db, unsafe_db, shard_columns=set())
+
+
 @pytest.mark.asyncio
 async def test_migrate_adds_rules_columns(tmp_path) -> None:
     """Migration adds token_budget_*, time_window to enrollment_config."""

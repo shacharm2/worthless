@@ -23,6 +23,11 @@ from __future__ import annotations
 
 import logging
 import sys
+
+# Project requires Python >=3.10 (pyproject.toml). The resources.files()
+# API we use was added in 3.9. Semgrep's python37 compatibility rule
+# fires on importlib.resources regardless — suppress the false positive.
+# nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
 from importlib import resources
 from pathlib import Path
 from typing import NamedTuple
