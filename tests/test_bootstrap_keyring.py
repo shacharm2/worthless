@@ -401,13 +401,13 @@ class TestKeyringCallCountInvariants:
             result = keystore.migrate_file_to_keyring(home_dir=tmp_path / ".worthless")
 
         assert result is False, "no file → migration cannot succeed"
-        (
-            mock_get.assert_not_called(),
-            (
-                "migrate_file_to_keyring called keyring.get_password despite no fernet.key "
-                "file present — this is the HF2 bypass that re-read the keyring on every "
-                "existing-key CLI invocation"
-            ),
+        # Real assertion (NOT a tuple) — assert_not_called raises directly if
+        # the mock was called. Prior code wrapped this in a tuple expression
+        # that silently discarded the failure message.
+        assert mock_get.call_count == 0, (
+            "migrate_file_to_keyring called keyring.get_password despite no "
+            "fernet.key file present — this is the HF2 bypass that re-read the "
+            f"keyring on every existing-key CLI invocation. Calls: {mock_get.call_count}"
         )
 
     def test_ensure_home_seeds_cache_after_generating_key_on_missing_key_path(
@@ -478,12 +478,12 @@ class TestObservabilityAndCascadePaths:
             _ = home.fernet_key  # cache HIT (warm path)
 
         miss_logs = [r for r in caplog.records if "cache MISS" in r.message]
-        hit_logs = [r for r in caplog.records if "cache HIT (warm path)" in r.message]
+        hit_logs = [r for r in caplog.records if "cache HIT" in r.message]
         assert len(miss_logs) == 1, (
             f"expected one 'cache MISS' log on first access, got {len(miss_logs)}"
         )
         assert len(hit_logs) == 1, (
-            f"expected one 'cache HIT (warm path)' log on second access, got {len(hit_logs)}"
+            f"expected one 'cache HIT' log on second access, got {len(hit_logs)}"
         )
 
     def test_env_var_path_populates_cache_without_keyring_call(

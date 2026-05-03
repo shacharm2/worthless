@@ -73,37 +73,20 @@ class WorthlessHome:
     def fernet_key(self) -> bytearray:
         """Read the Fernet key via keystore cascade (SR-01: mutable bytearray).
 
-        Memoized per-instance after the first read. macOS Keychain
-        re-evaluates the per-call ACL on every ``SecKeychainItemCopyContent``
-        call, so without this cache a single ``worthless lock`` triggers 3+
-        keychain prompts (bootstrap probe + ShardRepository init + proxy env
-        injection). Cache is process-scoped — new CLI invocations still
-        re-fetch once, which is acceptable per the bead spec.
+        Memoized per-instance with double-checked locking. macOS Keychain
+        re-evaluates the per-call ACL, so without this cache one
+        ``worthless lock`` triggers 3+ Keychain prompts.
 
-        Each access returns a *fresh bytearray copy* of the cached value so
-        callers can ``zero_buf()`` their own copy (SR-01) without poisoning
-        the cache. The cache itself stays intact for subsequent reads;
-        consumer mutation of one returned bytearray does not propagate.
-
-        The lazy populate uses double-checked locking: the outer ``is None``
-        check is a fast path for the warm-cache case (no lock cost on the
-        ~99.9% of accesses where the cache is already populated); the inner
-        check inside ``self._cache_lock`` serialises concurrent first-readers
-        so only one thread calls ``read_fernet_key`` and only one Keychain
-        prompt fires.
+        Returns a fresh bytearray copy on each access so callers can
+        ``zero_buf()`` per SR-01 without poisoning the cache.
         """
         if self._cached_fernet_key is None:
             with self._cache_lock:
                 if self._cached_fernet_key is None:
                     logger.debug("WorthlessHome.fernet_key cache MISS — reading from keystore")
                     self._cached_fernet_key = read_fernet_key(self.base_dir)
-                else:
-                    logger.debug(
-                        "WorthlessHome.fernet_key cache HIT (won the lock race; another "
-                        "thread populated)"
-                    )
         else:
-            logger.debug("WorthlessHome.fernet_key cache HIT (warm path)")
+            logger.debug("WorthlessHome.fernet_key cache HIT")
         return bytearray(self._cached_fernet_key)
 
 
@@ -135,14 +118,7 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 "Create it or mount a volume at that path.",
             )
 
-        # Generate Fernet key if missing (keyring or file fallback). Route
-        # the existence probe through ``home.fernet_key`` so the read also
-        # populates ``WorthlessHome``'s per-instance cache — collapses the
-        # bootstrap probe + first ``ShardRepository`` init into a single
-        # ``keyring.get_password`` on the existing-key path. The missing-key
-        # branch generates + stores the key, then populates the cache from
-        # the freshly generated key so the next consumer also skips the
-        # re-read — both paths converge on 1 keyring read per CLI invocation.
+        # Probe via ``home.fernet_key`` so the read also populates the cache.
         try:
             _ = home.fernet_key
         except WorthlessError as exc:
@@ -151,13 +127,9 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
             logger.info("ensure_home: no Fernet key found, generating new one")
             key = Fernet.generate_key()
             store_fernet_key(key, home_dir=home.base_dir)
-            # Seed the cache directly from the generated key so the next
-            # ``home.fernet_key`` consumer doesn't trigger a re-read.
-            # SR-01: bytearray is mutable so callers can zero_buf().
+            # Seed cache from generated key so the next consumer skips the re-read.
             home._cached_fernet_key = bytearray(key)
-            logger.debug("ensure_home: cache seeded from generated key")
         else:
-            logger.debug("ensure_home: existing Fernet key found, cache populated by probe")
             migrate_file_to_keyring(home.base_dir)
     except WorthlessError:
         raise
