@@ -108,6 +108,18 @@ class WorthlessHome:
             logger.debug("WorthlessHome.fernet_key cache HIT")
         return bytearray(self._cached_fernet_key)
 
+    def _seed_cached_fernet_key(self, key: bytes | bytearray) -> None:
+        """Install *key* into the cache under ``_cache_lock``.
+
+        HF3 (worthless-cmpf): single entry point for any code that
+        wants to populate the cache from a known source (env var,
+        on-disk file, freshly generated key). Mirrors the locking
+        discipline of the property's read path so a concurrent
+        ``home.fernet_key`` call cannot race the assignment.
+        """
+        with self._cache_lock:
+            self._cached_fernet_key = bytearray(key)
+
 
 def _fernet_key_present(home: WorthlessHome) -> bool:
     """True if a Fernet key is provisioned WITHOUT touching the keyring.
@@ -163,24 +175,19 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 "Create it or mount a volume at that path.",
             )
 
-        # HF3 (worthless-cmpf): keystore-touching logic gated on a
-        # marker file written at the END of a successful ensure_home.
-        # Marker absent → first-run OR previous crashed bootstrap; run
-        # the full probe-and-generate flow. Marker present → bootstrap
-        # completed once; do only the work the env explicitly signals:
-        #
-        #   • env var set → call ``home.fernet_key`` so HF2's cache
-        #     populates from the env value (cascade short-circuits at
-        #     step 1, no keyring touch).
-        #   • file fallback only → read directly via
-        #     ``read_fernet_key_from_file`` and pre-populate the cache,
-        #     bypassing the keyring step. Migration intentionally NOT
-        #     run here — would re-introduce a keyring touch on every
-        #     CLI invocation. Existing file installs migrate via a
-        #     future ``worthless doctor --migrate``.
-        #   • neither (keyring-only) → skip; key-using commands fetch
-        #     lazily via ``home.fernet_key`` (HF2 amortizes within a
-        #     CLI invocation); read-only commands never touch keyring.
+        # HF3 (worthless-cmpf): the keystore-touching logic is gated
+        # on ``bootstrapped_marker`` — a marker file written at the
+        # END of a successful first-run, NOT just ``base_dir.exists()``
+        # (which a Docker volume mount or a failed prior run can pre-
+        # create). Marker absent ⇒ probe-and-generate. Marker present
+        # AND env-or-file present ⇒ pre-populate the cache without
+        # touching the keyring. Marker present AND keyring-only ⇒
+        # skip; key-using commands fetch lazily via ``home.fernet_key``.
+        # Migration is NOT run on the post-bootstrap file path — that
+        # would re-introduce a keyring touch on every CLI invocation,
+        # defeating the read-only-no-keychain contract. Filed as
+        # ``worthless-d8it`` (doctor --migrate) for legacy file
+        # installs.
         if not home.bootstrapped_marker.exists():
             try:
                 _ = home.fernet_key
@@ -190,31 +197,23 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 logger.info("ensure_home: no Fernet key found, generating new one")
                 key = Fernet.generate_key()
                 store_fernet_key(key, home_dir=home.base_dir)
-                # Seed cache so the next consumer skips the re-read.
-                # HF3 (worthless-cmpf): under ``_cache_lock`` so this
-                # assignment is consistent with the file-only branch
-                # below — every write to ``_cached_fernet_key`` goes
-                # through the same lock the property body uses on read.
-                with home._cache_lock:
-                    home._cached_fernet_key = bytearray(key)
+                home._seed_cached_fernet_key(key)
             else:
                 migrate_file_to_keyring(home.base_dir)
-        elif os.environ.get("WORTHLESS_FERNET_KEY"):
-            _ = home.fernet_key
-        elif home.fernet_key_path.exists():
-            # HF3: lock the cache write so a concurrent ``home.fernet_key``
-            # read on another thread can't race the assignment. Same
-            # discipline as the generate path above.
-            with home._cache_lock:
-                home._cached_fernet_key = read_fernet_key_from_file(home.base_dir)
+            # Marker is written ONLY on the first-run path. Subsequent
+            # invocations short-circuit above without touching mtime.
+            home.bootstrapped_marker.touch(mode=0o600, exist_ok=True)
+        elif _fernet_key_present(home):
+            if os.environ.get("WORTHLESS_FERNET_KEY"):
+                # Cascade short-circuits at the env step, no keyring touch.
+                _ = home.fernet_key
+            else:
+                # File-only. Read OUTSIDE the lock so concurrent
+                # ``home.fernet_key`` readers aren't blocked on disk I/O;
+                # acquire only for the assignment.
+                key = read_fernet_key_from_file(home.base_dir)
+                home._seed_cached_fernet_key(key)
         # else: keyring-only post-bootstrap → skip; lazy fetch later.
-
-        # Mark bootstrap complete at the END so crashed runs leave it
-        # absent → next invocation re-runs probe-and-generate (FINDING
-        # 1: stronger than ``base_dir.exists()`` because mkdir success
-        # doesn't imply key was provisioned). 0o600 matches the home
-        # tree.
-        home.bootstrapped_marker.touch(mode=0o600, exist_ok=True)
     except WorthlessError:
         raise
     except OSError as exc:

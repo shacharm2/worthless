@@ -16,15 +16,9 @@ from worthless.cli.bootstrap import get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.key_patterns import KEY_PATTERN
+from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
 from worthless.storage.repository import ShardRepository
-
-# HF3 (worthless-cmpf): valid-shape Fernet key (urlsafe_b64 of 32 zero
-# bytes) used by ``_build_enrollment_checker_async``. The scan path
-# only calls ``list_enrollments()``, which reads non-encrypted columns
-# — Fernet is never invoked. Contract pinned in
-# tests/test_scan_no_keystore.py.
-_PLACEHOLDER_FERNET_KEY: bytes = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 
 def _find_git_dir() -> Path | None:
@@ -206,7 +200,7 @@ async def _build_enrollment_checker_async():
         # never invoked by list_enrollments(). Contract pinned in
         # tests/test_scan_no_keystore.py so a future schema change
         # that encrypts metadata fails loudly, not silently.
-        placeholder_fernet = bytearray(_PLACEHOLDER_FERNET_KEY)
+        placeholder_fernet = bytearray(PLACEHOLDER_FERNET_KEY)
         repo = ShardRepository(str(home.db_path), placeholder_fernet)
         await repo.initialize()
         enrollments = await repo.list_enrollments()

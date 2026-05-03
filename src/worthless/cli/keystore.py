@@ -121,6 +121,15 @@ def migrate_file_to_keyring(home_dir: Path | None = None) -> bool:
         return False
 
 
+# HF3 (worthless-cmpf): valid-shape Fernet key for code paths that need
+# to instantiate Fernet/ShardRepository but never actually call decrypt
+# (e.g. ``commands/scan.py:_build_enrollment_checker_async`` reads only
+# plaintext metadata via ``list_enrollments``). Co-located here next to
+# ``read_fernet_key`` so any future "decrypt-free" path finds it without
+# importing from a CLI command module.
+PLACEHOLDER_FERNET_KEY: bytes = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+
 def read_fernet_key_from_file(home_dir: Path | None = None) -> bytearray:
     """Read the Fernet key directly from the on-disk file fallback.
 
@@ -138,12 +147,16 @@ def read_fernet_key_from_file(home_dir: Path | None = None) -> bytearray:
     Raises ``WorthlessError(KEY_NOT_FOUND)`` if the file does not exist.
     """
     fernet_path = _fernet_file_path(home_dir)
-    if not fernet_path.exists():
+    try:
+        return bytearray(fernet_path.read_bytes().strip())
+    except FileNotFoundError as exc:
+        # Skip the upfront ``exists()`` stat: ``read_bytes`` already
+        # raises on a missing file, and the TOCTOU race is harmless
+        # (we'd just fail with the same error a microsecond later).
         raise WorthlessError(
             ErrorCode.KEY_NOT_FOUND,
             f"Fernet key file not found at {fernet_path}.",
-        )
-    return bytearray(fernet_path.read_bytes().strip())
+        ) from exc
 
 
 def _fernet_file_path(home_dir: Path | None) -> Path:
