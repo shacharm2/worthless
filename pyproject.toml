@@ -221,3 +221,8 @@ exclude = ["**/__pycache__"]
 typeCheckingMode = "basic"
 # Strict mode on the crypto module — typed boundaries are a security guarantee
 strict = ["src/worthless/crypto"]
+
+[tool.uv]
+override-dependencies = [
+    "lxml>=6.1.0",  # cyclonedx-python-lib 9.x pins <6 but lxml 6 is API-compatible
+]
