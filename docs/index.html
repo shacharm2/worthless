@@ -794,6 +794,9 @@
         gap: 1.5rem;
         text-align: center;
       }
+      nav { padding: 0 1rem; }
+      .nav-links { display: none; }
+      .nav-kofi { display: none; }
     }
 
     /* Incidents feed */
@@ -809,6 +812,19 @@
     .feed-row-src { font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; color: var(--slate); min-width: 2rem; flex-shrink: 0; }
     .feed-row-desc { color: var(--text); flex: 1; }
     .feed-row-date { font-size: 0.7rem; color: var(--text2); white-space: nowrap; flex-shrink: 0; }
+
+    /* Intro splash */
+    #intro { position: fixed; inset: 0; z-index: 1000; background: #eef6ff; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 0.7s ease, transform 0.7s ease; }
+    #intro.slide-up { opacity: 0; transform: translateY(-16px); pointer-events: none; }
+    .intro-mark { font-size: 2.5rem; font-weight: 800; color: #0a9396; opacity: 0; animation: fadeUp 0.5s ease forwards 0.1s; }
+    .intro-title { font-size: 1.75rem; font-weight: 700; color: var(--text); margin-top: 0.4rem; opacity: 0; animation: fadeUp 0.5s ease forwards 0.25s; }
+    .intro-sub { font-size: 0.95rem; color: var(--text2); margin-top: 0.35rem; opacity: 0; animation: fadeUp 0.5s ease forwards 0.4s; }
+
+    /* Copy button feedback */
+    .install-cmd .copy-icon { display: inline; }
+    .install-cmd .copy-done { display: none; }
+    .install-cmd.copied .copy-icon { display: none; }
+    .install-cmd.copied .copy-done { display: inline; color: #0a9396; }
   </style>
 </head>
 
@@ -845,7 +861,6 @@
         <span class="star-badge"><span class="star-icon">★</span><span id="gh-stars">…</span></span>
       </a>
       <a href="https://ko-fi.com/shacharme" class="nav-kofi" target="_blank" rel="noopener">☕ Ko-fi</a>
-      <a href="https://discord.gg/worthless" class="nav-discord" target="_blank" rel="noopener">Discord</a>
     </div>
   </nav>
 
@@ -952,7 +967,7 @@
               <div class="to">1 key protected</div>
             </div>
             <div class="term-pane">
-              <div><span class="tp">$ </span><span class="tk">git</span> add . && commit -m "feat"</div>
+              <div><span class="tp">$ </span><span class="tk">git</span> add . && git commit -m "feat"</div>
               <div class="to">[main c7d8e9f] feat</div>
               <br />
               <div><span class="tp">$ </span><span class="tk">git</span> push origin main</div>
@@ -1033,8 +1048,6 @@
         <div class="stat-lbl">keys you can protect</div>
       </div>
     </div>
-
-    </div>
   </section>
 
   <!-- In the wild -->
@@ -1074,7 +1087,7 @@
             <a href="https://dev.to/dhayabaran/googles-documentation-says-api-keys-are-secrets-and-also-not-secrets-2863-verified-keys-are-219k" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">dev</span><span class="feed-row-desc">2,863 live Google keys exposed in Common Crawl</span><span class="feed-row-date">Feb 2026</span></a>
             <a href="https://dev.to/rainkode/google-api-keys-werent-secrets-until-gemini-broke-everything-ohm" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">dev</span><span class="feed-row-desc">Google API keys weren't secrets - until Gemini broke everything</span><span class="feed-row-date">Feb 2026</span></a>
             <a href="https://dev.to/linou518/is-your-api-key-still-running-naked-the-complete-2026-secrets-management-guide-4m7n" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">dev</span><span class="feed-row-desc">Is your API key still running naked?</span><span class="feed-row-date">Feb 2026</span></a>
-            <a href="https://dev.to/uzyntra/top-api-security-vulnerabilities-in-2026-real-world-breaking-e9g" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">dev</span><span class="feed-row-desc">Top API security vulns 2026 - billing bypass tactics</span><span class="feed-row-date"></span></a>
+            <a href="https://dev.to/uzyntra/top-api-security-vulnerabilities-in-2026-real-world-breakdown-e9g" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">dev</span><span class="feed-row-desc">Top API security vulns 2026 - billing bypass tactics</span><span class="feed-row-date"></span></a>
           </div>
         </div>
       </div>

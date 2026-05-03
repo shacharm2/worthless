@@ -301,7 +301,7 @@
       "name": "Where are the key shares stored?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Share A stays on your machine in .env. Share B is encrypted on the Worthless server. The full key never exists at rest."
+        "text": "Share A stays on your machine in .env. Share B is held by the local Worthless proxy, also on your machine. The full key never exists at rest."
       }
     },
     {
@@ -309,7 +309,7 @@
       "name": "Does Worthless see my full API key?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "Only for a split second during a request, inside server memory. The key is destroyed immediately after the API call completes."
+        "text": "Only for a split second during a request, inside the local proxy's memory on your machine. The key is destroyed immediately after the API call completes."
       }
     },
     {
