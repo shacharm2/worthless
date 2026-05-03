@@ -449,3 +449,81 @@ class TestKeyringCallCountInvariants:
         assert bytes(home._cached_fernet_key) == generated, (
             "cache value does not match the freshly generated key"
         )
+
+
+class TestObservabilityAndCascadePaths:
+    """Coverage for the small gaps surfaced in the HF2 final pass:
+    logger statements + WORTHLESS_FERNET_KEY env-var cascade path.
+    """
+
+    def test_logger_fires_on_cache_miss_then_hit(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Cache-miss + cache-hit log lines fire from the property body.
+
+        Future debugging via ``WORTHLESS_LOG_LEVEL=DEBUG`` (or pytest
+        ``--log-cli-level=DEBUG``) needs these two messages to surface the
+        exact path each access took. If someone removes them, no functional
+        test catches it; this one does.
+        """
+        import logging
+
+        caplog.set_level(logging.DEBUG, logger="worthless.cli.bootstrap")
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key",
+            side_effect=lambda *_: bytearray(b"log-test-padded-to-44-bytes-1234567890123"),
+        ):
+            _ = home.fernet_key  # cache MISS
+            _ = home.fernet_key  # cache HIT (warm path)
+
+        miss_logs = [r for r in caplog.records if "cache MISS" in r.message]
+        hit_logs = [r for r in caplog.records if "cache HIT (warm path)" in r.message]
+        assert len(miss_logs) == 1, (
+            f"expected one 'cache MISS' log on first access, got {len(miss_logs)}"
+        )
+        assert len(hit_logs) == 1, (
+            f"expected one 'cache HIT (warm path)' log on second access, got {len(hit_logs)}"
+        )
+
+    def test_env_var_path_populates_cache_without_keyring_call(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``WORTHLESS_FERNET_KEY`` env var beats keyring in ``read_fernet_key``
+        and the value still flows through the HF2 cache.
+
+        Three invariants:
+        1. The cached value matches the env var (proves the cascade is intact).
+        2. ``keyring.get_password`` is NOT called (env path short-circuits).
+        3. Repeated property access stays at zero ``keyring.get_password`` calls
+           (cache works the same regardless of which read_fernet_key branch
+           returned the bytes).
+        """
+        import keyring
+
+        env_key = "env-var-fernet-padded-to-44-bytes-12345678901"
+        monkeypatch.setenv("WORTHLESS_FERNET_KEY", env_key)
+        home = WorthlessHome(base_dir=tmp_path / ".worthless")
+
+        original_get_password = keyring.get_password
+        keyring_calls = [0]
+
+        def _spy(*args: object, **kwargs: object) -> object:
+            keyring_calls[0] += 1
+            return original_get_password(*args, **kwargs)
+
+        monkeypatch.setattr(keyring, "get_password", _spy)
+
+        first = home.fernet_key
+        for _ in range(4):
+            _ = home.fernet_key
+
+        assert bytes(first) == env_key.encode(), (
+            f"env var value did not flow through cache: got {bytes(first)!r}"
+        )
+        assert keyring_calls[0] == 0, (
+            f"env var path leaked into keyring: keyring.get_password called "
+            f"{keyring_calls[0]} times despite WORTHLESS_FERNET_KEY being set"
+        )
+        assert home._cached_fernet_key is not None
+        assert bytes(home._cached_fernet_key) == env_key.encode()

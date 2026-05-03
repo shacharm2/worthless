@@ -102,3 +102,61 @@ def test_lock_calls_keyring_get_password_once_on_existing_key_path(tmp_path: Pat
             delete_fernet_key(home_dir=home)
         except Exception:  # noqa: BLE001 — cleanup best-effort
             pass
+
+
+@pytest.mark.user_flow
+def test_unlock_calls_keyring_get_password_once_on_existing_key_path(tmp_path: Path) -> None:
+    """One ``keyring.get_password`` per ``worthless unlock`` on the existing-key
+    path — extends the lock contract to the unlock flow.
+
+    Pattern (mirrors the lock test):
+      1. First ``lock`` provisions the keyring entry (we don't measure this).
+      2. Second ``unlock`` runs against the existing keyring entry. THIS is
+         the path we spy on.
+      3. Assert ``keyring.get_password`` was called exactly once during unlock.
+
+    Without HF2's cache, unlock would fire 3+ keyring reads
+    (bootstrap probe + ShardRepository init + per-alias decryption setup).
+    With HF2, the cache collapses them to 1 per CLI invocation.
+    """
+    if not keyring_available():
+        pytest.skip("no keyring backend (CI without secret-service, fresh dev machine)")
+
+    home = tmp_path / ".worthless"
+    env_file = tmp_path / ".env"
+    cli_env = {"WORTHLESS_HOME": str(home)}
+    runner = CliRunner()
+
+    # Provision: first lock creates the keyring entry + .env shard-A.
+    env_file.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
+    first = runner.invoke(app, ["lock", "--env", str(env_file)], env=cli_env)
+    assert first.exit_code == 0, first.output
+
+    # Now spy on the unlock CLI invocation.
+    try:
+        original_get_password = keyring.get_password
+        recorded_calls: list[tuple] = []
+
+        def _spy(*args: object, **kwargs: object) -> object:
+            recorded_calls.append(args)
+            return original_get_password(*args, **kwargs)
+
+        keyring.get_password = _spy
+        try:
+            unlock = runner.invoke(app, ["unlock", "--env", str(env_file)], env=cli_env)
+            assert unlock.exit_code == 0, unlock.output
+        finally:
+            keyring.get_password = original_get_password
+
+        assert len(recorded_calls) == 1, (
+            f"existing-key unlock: expected 1 keyring.get_password call, "
+            f"got {len(recorded_calls)}.\n"
+            f"calls: {recorded_calls}\n"
+            f"A result > 1 means a code path bypasses the cache for unlock — "
+            f"the same bug class HF2 fixed in the lock path."
+        )
+    finally:
+        try:
+            delete_fernet_key(home_dir=home)
+        except Exception:  # noqa: BLE001 — cleanup best-effort
+            pass
