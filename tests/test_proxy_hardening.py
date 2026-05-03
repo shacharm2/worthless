@@ -452,6 +452,91 @@ class TestGateBeforeDecrypt:
         assert not decrypt_called
 
     @respx.mock
+    async def test_proxy_response_pipe_is_consistent_with_gzip_upstream(
+        self, proxy_app, enrolled_alias
+    ):
+        """M2 (Blocker #3 / true-pipe minimum): when upstream returns a gzipped
+        body with Content-Encoding: gzip, the proxy's forwarded response must be
+        internally consistent — either the body is decompressed AND
+        Content-Encoding is removed, OR the body stays gzipped AND
+        Content-Encoding is preserved.
+
+        Failure mode pre-fix: proxy auto-decompresses upstream gzip via httpx's
+        aread()/aiter_bytes(), but forwards the original Content-Encoding: gzip
+        header back to the SDK. SDK tries to gunzip plain JSON → DecodingError.
+        Live smoke during PR #127 review required Accept-Encoding: identity to
+        bypass — which means default SDK calls (which advertise gzip) don't work.
+
+        worthless-yo9o (P2 follow-up) will deepen this to a true byte-transparent
+        pipe with aiter_raw — no decompression at all. M2 is the minimum to
+        unblock real SDKs today: header gets stripped after decompression.
+        """
+        import gzip
+        import json as _json
+
+        alias, shard_a_utf8, _ = enrolled_alias
+        expected_payload = {
+            "id": "chatcmpl-test",
+            "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        }
+        body_bytes = _json.dumps(expected_payload).encode()
+        gzipped_body = gzip.compress(body_bytes)
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                content=gzipped_body,
+                headers={
+                    "content-encoding": "gzip",
+                    "content-type": "application/json",
+                    "content-length": str(len(gzipped_body)),
+                },
+            )
+        )
+
+        transport = httpx.ASGITransport(app=proxy_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/{alias}/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {shard_a_utf8}",
+                    "content-type": "application/json",
+                },
+                content=(
+                    b'{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}'
+                ),
+            )
+
+        # Status forwards through.
+        assert resp.status_code == 200, f"got {resp.status_code}: {resp.text[:200]!r}"
+
+        # Critical: the proxy's response must be consistent.
+        # Either Content-Encoding is gone (because we already decompressed)
+        # OR the body is still gzipped (true raw pipe).
+        ce = resp.headers.get("content-encoding", "").lower()
+        body_raw = resp.content  # this is what's on the wire to the SDK
+
+        if ce == "gzip":
+            # Raw pipe: body must still be gzipped — gunzip should yield JSON.
+            try:
+                ungz = gzip.decompress(body_raw)
+            except OSError as exc:
+                pytest.fail(
+                    f"proxy returned Content-Encoding: gzip but body is NOT gzipped — "
+                    f"SDK clients will error decompressing. {exc}. "
+                    f"First 32 bytes: {body_raw[:32]!r}"
+                )
+            data = _json.loads(ungz)
+        else:
+            # Header stripped: body must be decompressed JSON directly.
+            data = resp.json()
+
+        # In both consistent states, the JSON payload must round-trip.
+        assert data["usage"]["total_tokens"] == 4
+        assert data["choices"][0]["message"]["content"] == "OK"
+
+    @respx.mock
     async def test_null_base_url_refused_before_reconstruction(self, proxy_app, enrolled_alias):
         """SR-03: a row with NULL base_url (legacy / pre-8rqs enrollment) must
         be refused BEFORE any key reconstruction or rules-engine evaluation.
