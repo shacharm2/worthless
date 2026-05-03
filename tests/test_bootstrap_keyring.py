@@ -323,11 +323,12 @@ class TestFernetKeyMemoization:
         ``loop.run_in_executor`` to the default thread pool — main +
         executor can both touch ``home.fernet_key``.
 
-        This test widens the race window with a ``time.sleep`` inside the
-        mock so the bug is deterministically catchable when the lock is
-        absent. With the per-instance ``threading.Lock`` and double-checked
-        init, ``call_count == 1`` regardless of the number of concurrent
-        readers.
+        A ``threading.Barrier(4)`` synchronises all 4 worker threads so they
+        reach the outer ``_cached_fernet_key is None`` check simultaneously,
+        deterministically maximising the race window without any timing
+        dependence. With the per-instance ``threading.Lock`` and
+        double-checked init, ``call_count == 1`` regardless of the number
+        of concurrent first-readers.
         """
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
         # Barrier serialises the 4 worker threads: they all block at
