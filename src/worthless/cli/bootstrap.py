@@ -191,13 +191,22 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 key = Fernet.generate_key()
                 store_fernet_key(key, home_dir=home.base_dir)
                 # Seed cache so the next consumer skips the re-read.
-                home._cached_fernet_key = bytearray(key)
+                # HF3 (worthless-cmpf): under ``_cache_lock`` so this
+                # assignment is consistent with the file-only branch
+                # below — every write to ``_cached_fernet_key`` goes
+                # through the same lock the property body uses on read.
+                with home._cache_lock:
+                    home._cached_fernet_key = bytearray(key)
             else:
                 migrate_file_to_keyring(home.base_dir)
         elif os.environ.get("WORTHLESS_FERNET_KEY"):
             _ = home.fernet_key
         elif home.fernet_key_path.exists():
-            home._cached_fernet_key = read_fernet_key_from_file(home.base_dir)
+            # HF3: lock the cache write so a concurrent ``home.fernet_key``
+            # read on another thread can't race the assignment. Same
+            # discipline as the generate path above.
+            with home._cache_lock:
+                home._cached_fernet_key = read_fernet_key_from_file(home.base_dir)
         # else: keyring-only post-bootstrap → skip; lazy fetch later.
 
         # Mark bootstrap complete at the END so crashed runs leave it

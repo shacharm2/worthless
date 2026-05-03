@@ -22,6 +22,7 @@ Two paths previously triggered the prompt:
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -356,3 +357,156 @@ class TestEnsureHomeProbeGate:
             ),
         ):
             ensure_home(base_dir=home_base)
+
+
+class TestEnsureHomeCacheLockDiscipline:
+    """Every write to ``_cached_fernet_key`` from ``ensure_home`` must go
+    through ``WorthlessHome._cache_lock`` — same discipline as the
+    property body's read path uses (HF2's double-checked locking).
+
+    HF3 (worthless-cmpf) extends this to BOTH the generate path (HF2's
+    territory) and the new file-only branch (HF3's). These tests pin
+    the contract so a future refactor that re-introduces an unlocked
+    assignment fails loudly.
+
+    Approach: patch ``threading.Lock.__enter__/__exit__`` to track when
+    the lock is held, then patch ``WorthlessHome.__setattr__`` to
+    record whether each ``_cached_fernet_key`` write happens while the
+    lock is held.
+    """
+
+    # Capture the real ``threading.Lock`` factory once at class-load
+    # time; if a test patches ``threading.Lock`` to point at our proxy,
+    # the proxy's __init__ must NOT recurse into the patched name —
+    # use this saved reference instead.
+    _REAL_LOCK_FACTORY = staticmethod(threading.Lock)
+
+    class _TrackingLock:
+        """Python-level Lock proxy so tests can observe whether the lock
+        is held during ``_cached_fernet_key`` writes.
+
+        ``threading.Lock()`` returns a C-level ``_thread.lock`` whose
+        ``__enter__/__exit__`` are immutable. We substitute this proxy
+        in via ``patch('worthless.cli.bootstrap.threading.Lock', ...)``
+        — the dataclass's ``default_factory`` calls it at instance
+        creation. We forward the full Lock protocol (acquire/release/
+        locked) so ``threading.Event`` and other internals that may
+        also see this patched factory keep working.
+        """
+
+        def __init__(self) -> None:
+            # Use the captured real factory to avoid recursion when
+            # ``threading.Lock`` is itself patched.
+            self._real = TestEnsureHomeCacheLockDiscipline._REAL_LOCK_FACTORY()
+            self.held = False
+
+        def __enter__(self):
+            self.held = True
+            return self._real.__enter__()
+
+        def __exit__(self, *exc):
+            try:
+                return self._real.__exit__(*exc)
+            finally:
+                self.held = False
+
+        def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+            ok = self._real.acquire(blocking, timeout)
+            if ok:
+                self.held = True
+            return ok
+
+        def release(self) -> None:
+            self._real.release()
+            self.held = False
+
+        def locked(self) -> bool:
+            return self._real.locked()
+
+    @staticmethod
+    def _make_setattr_spy(observed: list[bool]):
+        """Patch ``WorthlessHome.__setattr__`` to record whether the
+        instance's ``_cache_lock.held`` is True for each non-None
+        ``_cached_fernet_key`` write.
+
+        Skips ``value is None`` writes — the dataclass ``__init__``
+        sets ``_cached_fernet_key = None`` BEFORE ``_cache_lock`` is
+        constructed (declaration order on the class), so observing
+        that init write would always report held=False and fail the
+        test for the wrong reason. We only care about writes that
+        actually seed real key bytes.
+        """
+
+        def spy(self, name, value):
+            if name == "_cached_fernet_key" and value is not None:
+                lock = getattr(self, "_cache_lock", None)
+                observed.append(bool(getattr(lock, "held", False)))
+            object.__setattr__(self, name, value)
+
+        return spy
+
+    @classmethod
+    def _wrapped_init(cls):
+        """Wrap ``WorthlessHome.__init__`` to swap ``_cache_lock`` for
+        a ``_TrackingLock`` after the dataclass init finishes.
+
+        Why not patch ``threading.Lock``: the dataclass decorator
+        captures the factory at class-decoration time, so a later
+        ``patch('worthless.cli.bootstrap.threading.Lock', ...)`` is
+        ignored. Patching ``__init__`` runs at instance creation
+        (which is the point we care about) and is scoped strictly to
+        ``WorthlessHome``.
+        """
+        original_init = WorthlessHome.__init__
+
+        def wrapped(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            self._cache_lock = cls._TrackingLock()
+
+        return wrapped
+
+    def test_generate_branch_assignment_holds_lock(self, tmp_path: Path) -> None:
+        """First-run generate path acquires ``_cache_lock`` before
+        seeding ``_cached_fernet_key`` from the freshly generated key."""
+        home_base = tmp_path / ".worthless"
+        from worthless.cli.errors import ErrorCode, WorthlessError
+
+        observed: list[bool] = []
+
+        def _probe(*_a, **_kw):
+            raise WorthlessError(ErrorCode.KEY_NOT_FOUND, "no key")
+
+        with (
+            patch.object(WorthlessHome, "__init__", self._wrapped_init()),
+            patch.object(WorthlessHome, "__setattr__", self._make_setattr_spy(observed)),
+            patch("worthless.cli.bootstrap.read_fernet_key", side_effect=_probe),
+            patch("worthless.cli.bootstrap.store_fernet_key"),
+        ):
+            ensure_home(base_dir=home_base)
+
+        assert observed, "expected at least one _cached_fernet_key write"
+        assert all(observed), (
+            "generate-path wrote _cached_fernet_key without holding _cache_lock; "
+            f"observed locked-state per write: {observed}"
+        )
+
+    def test_file_only_branch_assignment_holds_lock(self, tmp_path: Path) -> None:
+        """File-only subsequent-run path acquires ``_cache_lock`` before
+        seeding ``_cached_fernet_key`` from the on-disk file."""
+        home_base = tmp_path / ".worthless"
+        _set_file_fernet_key(home_base)
+        _mark_bootstrapped(home_base)
+
+        observed: list[bool] = []
+
+        with (
+            patch.object(WorthlessHome, "__init__", self._wrapped_init()),
+            patch.object(WorthlessHome, "__setattr__", self._make_setattr_spy(observed)),
+        ):
+            ensure_home(base_dir=home_base)
+
+        assert observed, "expected at least one _cached_fernet_key write"
+        assert all(observed), (
+            "file-only branch wrote _cached_fernet_key without holding _cache_lock; "
+            f"observed locked-state per write: {observed}"
+        )
