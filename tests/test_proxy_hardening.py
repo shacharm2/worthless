@@ -451,6 +451,61 @@ class TestGateBeforeDecrypt:
         assert resp.status_code == 402
         assert not decrypt_called
 
+    @respx.mock
+    async def test_null_base_url_refused_before_reconstruction(self, proxy_app, enrolled_alias):
+        """SR-03: a row with NULL base_url (legacy / pre-8rqs enrollment) must
+        be refused BEFORE any key reconstruction or rules-engine evaluation.
+
+        Failure mode if violated: the user has a legacy row missing base_url;
+        a request triggers full reconstruction (key materialises in memory)
+        before we refuse with 503. SR-03 (gate before reconstruct) requires
+        no reconstruction on the denial path.
+
+        Regression target: the original 8rqs Phase 6 placed the NULL check
+        AFTER reconstruction (proxy/app.py line 382, below reconstruction at
+        363/372). M1 hoists it above. This test pins the new ordering.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+
+        # Inject a row that fetch_encrypted returns with base_url=None.
+        # EncryptedShard is a NamedTuple — use _replace to clone with NULL base_url.
+        orig_fetch = proxy_app.state.repo.fetch_encrypted
+
+        async def fetch_with_null_base_url(a):
+            row = await orig_fetch(a)
+            return row._replace(base_url=None) if row is not None else None
+
+        proxy_app.state.repo.fetch_encrypted = fetch_with_null_base_url
+
+        # Track reconstruct_key + reconstruct_key_fp calls.
+        with (
+            patch("worthless.proxy.app.reconstruct_key") as mock_reconstruct,
+            patch("worthless.proxy.app.reconstruct_key_fp") as mock_reconstruct_fp,
+        ):
+            transport = httpx.ASGITransport(app=proxy_app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    f"/{alias}/v1/chat/completions",
+                    headers={
+                        "authorization": f"Bearer {shard_a_utf8}",
+                        "content-type": "application/json",
+                    },
+                    content=b'{"model": "gpt-4", "messages": []}',
+                )
+
+        # Refusal — legacy row with NULL base_url cannot be served.
+        assert resp.status_code == 503, f"expected 503, got {resp.status_code}: {resp.text}"
+
+        # SR-03 contract: NEITHER reconstruction function called.
+        assert mock_reconstruct.call_count == 0, (
+            f"reconstruct_key called {mock_reconstruct.call_count} times — "
+            "SR-03 violated: NULL base_url should refuse BEFORE reconstruction"
+        )
+        assert mock_reconstruct_fp.call_count == 0, (
+            f"reconstruct_key_fp called {mock_reconstruct_fp.call_count} times — "
+            "SR-03 violated: NULL base_url should refuse BEFORE reconstruction"
+        )
+
 
 # ------------------------------------------------------------------
 # B-3: Bytearray zeroing

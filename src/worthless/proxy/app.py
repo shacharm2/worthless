@@ -310,6 +310,19 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         if encrypted is None:
             return _uniform_401()
 
+        # SR-03: gate before reconstruct. Refuse legacy rows missing
+        # base_url BEFORE any rules-engine evaluation, BEFORE shard_a
+        # extraction, BEFORE reconstruction. The denial path must not
+        # trigger key materialisation. (worthless-2pdi will promote this
+        # into a structural validate_encrypted_row helper covering all
+        # row-shape denials; the inline guard is the M1 minimum.)
+        if encrypted.base_url is None:
+            return _make_gateway_response(
+                503,
+                f"alias {alias!r} predates upstream URL storage; "
+                "run 'worthless relock' to re-enroll with --base-url",
+            )
+
         # SR-09: shard-A from request header only (no disk, no files)
         # OpenAI: Authorization: Bearer <shard-A>
         # Anthropic: x-api-key: <shard-A>
@@ -375,17 +388,6 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             stored.zero()
             await rules_engine.release_spend_reservation(alias, _spend_reservation)
             return _uniform_401()
-
-        # 8rqs Phase 6: per-enrollment routing. Legacy rows enrolled before
-        # this column existed return base_url=None; refuse with a clear hint
-        # rather than fall back to a possibly-wrong default.
-        if encrypted.base_url is None:
-            await rules_engine.release_spend_reservation(alias, _spend_reservation)
-            return _make_gateway_response(
-                503,
-                f"alias {alias!r} predates upstream URL storage; "
-                "run 'worthless relock' to re-enroll with --base-url",
-            )
 
         # Build and send with stream=True for SSE support
         upstream_resp: httpx.Response | None = None
