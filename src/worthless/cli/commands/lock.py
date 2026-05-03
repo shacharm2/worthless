@@ -30,7 +30,7 @@ from worthless.cli.errors import (
     sanitize_exception,
 )
 from worthless.cli.key_patterns import detect_prefix
-from worthless.cli.providers import lookup_by_name
+from worthless.cli.providers import lookup_by_name, lookup_by_url
 from worthless.crypto.splitter import (
     _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
     derive_shard_a_fp,
@@ -84,11 +84,25 @@ def _resolve_upstream_base_url(
 ) -> str:
     """Pick the upstream URL for the DB row.
 
-    Prefers the user's explicit ``*_BASE_URL`` value from ``.env`` when set;
-    otherwise falls back to the bundled registry default for the provider.
+    Prefers the user's explicit ``*_BASE_URL`` value from ``.env`` when set
+    AND when that URL is in the provider registry. Otherwise falls back to
+    the bundled registry default for the provider.
+
+    Refuses unregistered user URLs (M3 / Blocker #1): an attacker who can
+    write to .env should not be able to redirect the proxy at an arbitrary
+    upstream. worthless-rzi1 (P1 follow-up) adds per-request re-validation
+    to close the post-lock-tamper variant; worthless-8fbg adds RFC1918 /
+    loopback hardening. See seam 2 in worthless-8rqs design notes.
     """
     user_value = env_values.get(base_url_var)
     if user_value:
+        if lookup_by_url(user_value) is None:
+            raise WorthlessError(
+                ErrorCode.INVALID_INPUT,
+                f"unknown upstream URL {user_value!r} from {base_url_var}. "
+                "Register it first: 'worthless providers register --name <n> "
+                "--url <url> --protocol openai|anthropic'.",
+            )
         return user_value
     entry = lookup_by_name(provider)
     if entry is None:  # pragma: no cover — provider is validated above

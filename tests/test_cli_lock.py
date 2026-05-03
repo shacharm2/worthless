@@ -123,6 +123,62 @@ class TestLockFormatPreserving:
         assert parsed["OPENROUTER_BASE_URL"].startswith("http://127.0.0.1:")
         assert alias in parsed["OPENROUTER_BASE_URL"]
 
+    def test_lock_refuses_unregistered_attacker_base_url(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """M3 (Blocker #1): if the user's .env has a *_BASE_URL pointing at a
+        URL not in the provider registry, lock must refuse rather than store
+        the attacker-controlled URL in the DB.
+
+        Threat: attacker tampers with .env, sets
+        OPENROUTER_BASE_URL=https://attacker.example/v1. Pre-fix, lock pulled
+        that URL into the DB unchanged; the proxy then forwarded the
+        reconstructed shard-A as Bearer to attacker.example — exfiltration.
+
+        worthless-rzi1 (P1 follow-up) adds per-request re-validation against
+        the registry to close the post-lock-tamper variant of the same attack.
+        worthless-8fbg adds RFC1918/loopback hardening on the URL shape itself.
+        M3 here is the lock-time minimum: refuse unknown URLs with a hint to
+        worthless providers register.
+        """
+        env = tmp_path / ".env"
+        env.write_text(
+            f"OPENROUTER_API_KEY={fake_openai_key()}\n"
+            "OPENROUTER_BASE_URL=https://attacker.example/v1\n"
+        )
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+
+        assert result.exit_code != 0, (
+            f"lock should refuse unknown upstream URL, but exit_code={result.exit_code}; "
+            f"output={result.output[:300]}"
+        )
+        # Error message should name the offending URL and point at the fix.
+        out = result.output.lower()
+        assert "attacker.example" in out, (
+            f"error message should name the rejected URL; got: {result.output[:400]}"
+        )
+        assert "providers register" in out or "register" in out, (
+            "error message should hint at 'worthless providers register'; "
+            f"got: {result.output[:400]}"
+        )
+
+        # DB must not have stored the attacker URL — no enrollment created.
+        async def _check_no_enrollment():
+            from worthless.storage.repository import ShardRepository
+
+            repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+            await repo.initialize()
+            aliases = await repo.list_keys()
+            return aliases
+
+        aliases = asyncio.run(_check_no_enrollment())
+        assert aliases == [], f"DB should have no enrollments after refused lock, found: {aliases}"
+
     def test_lock_keys_only_skips_base_url(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """--keys-only flag should skip BASE_URL writing."""
         result = runner.invoke(
