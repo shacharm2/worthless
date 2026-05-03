@@ -29,7 +29,7 @@ from worthless.cli.errors import (
     error_boundary,
     sanitize_exception,
 )
-from worthless.cli.key_patterns import detect_prefix
+from worthless.cli.key_patterns import CANONICAL_KEY_VAR_RE, detect_prefix
 from worthless.cli.providers import lookup_by_name, lookup_by_url
 from worthless.crypto.splitter import (
     _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
@@ -198,6 +198,23 @@ async def _pass1_db_writes(
             continue
 
         base_url_var = _derive_base_url_var(var_name, provider)
+
+        # M4 (Blocker #2): warn on non-canonical var names. Apps that read
+        # MY_OPENAI_KEY directly (instead of OPENAI_API_KEY) and construct
+        # the SDK client without base_url= will fall through to the real
+        # provider — bypassing the proxy and leaking shard-A on the wire.
+        # Soft warning per product-manager review; worthless-v5sy adds
+        # --strict for CI/team policy. See seam 5 in worthless-8rqs notes.
+        if not CANONICAL_KEY_VAR_RE.match(var_name):
+            get_console().print_warning(
+                f"env var {var_name!r} doesn't match the canonical "
+                f"'<PROVIDER>_API_KEY' pattern. lock will set "
+                f"{base_url_var}, but if your app reads {var_name} "
+                f"without auto-detecting {base_url_var}, requests will "
+                f"bypass the proxy and send shard-A upstream. Rename to "
+                f"follow <PROVIDER>_API_KEY to silence this warning."
+            )
+
         upstream_base_url = _resolve_upstream_base_url(base_url_var, env_values, provider)
 
         alias = _make_alias(provider, value)

@@ -46,6 +46,17 @@ ENTROPY_THRESHOLD: float = 3.9
 # no-op merge for this line.
 
 
+# Canonical API-key env var convention: ``<PROVIDER>_API_KEY`` (with the
+# underscores between PROVIDER, API, and KEY individually optional). Used
+# by ``lock`` to warn users whose ``.env`` uses non-canonical names like
+# ``MY_OPENAI_KEY`` — apps that read such vars directly (without passing
+# ``base_url=`` to the SDK client) bypass the proxy and send shard-A
+# upstream. The end anchor ``$`` is critical: it prevents accidental
+# matches like ``OPENAI_API_KEY_OLD``. ``worthless-v5sy`` (P3 follow-up)
+# upgrades the warning to a refusal under ``worthless lock --strict``.
+CANONICAL_KEY_VAR_RE: re.Pattern[str] = re.compile(r"^[A-Z][A-Z0-9]*_?API_?KEY$")
+
+
 def detect_prefix(api_key: str, provider: str) -> str:
     """Return the matching prefix string for *api_key* given *provider*."""
     prefixes = PROVIDER_PREFIXES.get(provider, [])

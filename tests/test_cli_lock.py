@@ -179,6 +179,64 @@ class TestLockFormatPreserving:
         aliases = asyncio.run(_check_no_enrollment())
         assert aliases == [], f"DB should have no enrollments after refused lock, found: {aliases}"
 
+    def test_lock_warns_on_non_canonical_var_name(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """M4 (Blocker #2): if the user's API-key var doesn't match the
+        canonical ``<PROVIDER>_API_KEY`` convention, lock emits a soft
+        warning naming proxy bypass / shard-A leakage as the consequence.
+
+        Threat: app reads the non-canonical var (e.g. ``MY_OPENAI_KEY``)
+        directly and constructs an OpenAI client without ``base_url=``.
+        SDKs only auto-detect ``OPENAI_BASE_URL`` when no explicit base
+        URL is set; with the var read explicitly the SDK falls through
+        to ``api.openai.com`` — bypassing the proxy and sending shard-A
+        on the wire.
+
+        Per product-manager review the right behavior is a SOFT warning
+        (lock proceeds) so users learn about the gotcha without being
+        blocked. ``worthless-v5sy`` (P3 follow-up) adds
+        ``worthless lock --strict`` for CI/team policy that upgrades the
+        warning to a refusal.
+        """
+        env = tmp_path / ".env"
+        env.write_text(f"MY_OPENAI_KEY={fake_openai_key()}\n")
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+
+        # Soft warning: lock proceeds.
+        assert result.exit_code == 0, (
+            f"warning is soft, not a refusal; got exit_code={result.exit_code}; "
+            f"output={result.output[:400]}"
+        )
+        out = result.output
+        # Warning must name the offending var so the user can find it in .env.
+        assert "MY_OPENAI_KEY" in out, (
+            f"warning should name the non-canonical var; got: {out[:400]}"
+        )
+        # Warning must explain the consequence so users know why they care.
+        out_l = out.lower()
+        assert "shard-a" in out_l or "bypass" in out_l, (
+            f"warning should explain shard-A leakage / proxy bypass; got: {out[:400]}"
+        )
+
+        # Lock still proceeded — DB has the enrollment.
+        async def _check_enrollment():
+            from worthless.storage.repository import ShardRepository
+
+            repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+            await repo.initialize()
+            return await repo.list_keys()
+
+        aliases = asyncio.run(_check_enrollment())
+        assert len(aliases) == 1, (
+            f"lock should still create the enrollment despite the warning; got: {aliases}"
+        )
+
     def test_lock_keys_only_skips_base_url(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """--keys-only flag should skip BASE_URL writing."""
         result = runner.invoke(
