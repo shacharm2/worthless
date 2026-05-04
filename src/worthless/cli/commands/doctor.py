@@ -11,9 +11,15 @@ state from 2026-04-30:
 ``worthless doctor --fix`` purges them (destructive). Prompts unless
 ``--yes``. ``--dry-run`` shows the planned action without writing.
 
-Future extension (worthless-57ad, post-v0.4): a small BYO-key LLM agent
-diagnoses UNKNOWN stuck states using a user-locked enrollment. Out of
-scope here.
+Design seams (foreseen extensions, NOT in this PR):
+
+* ``worthless-7db2`` (P3): a SECOND repair shape — partial-state recovery
+  when the home dir is intact but the fernet key is missing from every
+  source (manual keyring deletion). ``ensure_home`` will surface that
+  state and point users here; doctor will need a key-regeneration flow
+  guarded against silently destroying access to existing locked secrets.
+* ``worthless-57ad`` (P3, post-v0.4): a BYO-key LLM agent diagnoses
+  UNKNOWN stuck states using a user-locked enrollment.
 """
 
 from __future__ import annotations
