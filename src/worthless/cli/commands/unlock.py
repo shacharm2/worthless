@@ -20,6 +20,7 @@ from worthless.cli.console import get_console
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.cli.dotenv_rewriter import rewrite_env_keys, scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
+from worthless.cli.orphans import format_orphan_error
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp
 from worthless.crypto.types import zero_buf
 from worthless.storage.repository import (
@@ -89,9 +90,13 @@ def _load_shard_a(
         parsed = dotenv_values(env_path)
         shard_a_value = parsed.get(var_name)
         if shard_a_value is None:
+            # Canonical orphan wording lives in ``cli.orphans`` so the same
+            # string surfaces in doctor + unlock + future HF5 status/scan.
             raise WorthlessError(
                 ErrorCode.KEY_NOT_FOUND,
-                f"Variable {var_name!r} not found in {env_path}",
+                format_orphan_error(
+                    EnrollmentRecord(key_alias=alias, var_name=var_name, env_path=str(env_path))
+                ),
             )
         return bytearray(shard_a_value.encode("utf-8"))
 

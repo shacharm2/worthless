@@ -241,6 +241,26 @@ Thin wrapper around `safe_restore` for ops runbooks and recovery scripts that ne
 
 **Use case:** `cat backup.env | worthless restore ./.env`
 
+#### `worthless doctor [OPTIONS]`
+**Diagnose and repair stuck DB/.env states.**
+
+Currently handles ONE shape: DB enrollment rows whose `.env` line was deleted by the user. Surfaces and (with `--fix`) purges them. Closes the dogfood-discovered stuck state where `worthless unlock` says "no enrolled keys" but `worthless status` lists them as PROTECTED.
+
+**Options:**
+- `--fix`: Repair (destructive). Prompts unless `--yes`.
+- `--yes, -y`: Skip the confirmation prompt for `--fix`.
+- `--dry-run`: Show planned actions without writing.
+
+**Behavior:**
+- No flags: read-only diagnose mode, lists broken rows, exit 0.
+- `--fix`: prompts; on Y, deletes broken DB rows + their shard files atomically (same path as `revoke`).
+- `--fix --dry-run`: prints planned deletions, leaves DB intact.
+- `--fix --yes`: skip prompt, perform purge.
+
+**User-facing wording:** `"can't restore <alias>: .env line deleted"` — plain English, no engineer jargon. The fix command name is part of the canonical message so the user always sees the recovery path.
+
+**Use case:** user manually deleted a key line from `.env`; system is stuck. Run `worthless doctor --fix --dry-run` to preview, then `worthless doctor --fix` to clean up.
+
 #### `worthless mcp [OPTIONS]`
 **Start the MCP server (stdio transport).**
 
