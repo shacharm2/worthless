@@ -245,6 +245,27 @@
       margin-top: -1px;
     }
 
+    .nav-early-access {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--slate);
+      text-decoration: none;
+      padding: 0.38rem 0.85rem;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: transparent;
+      transition: background 0.2s, color 0.2s;
+      white-space: nowrap;
+    }
+    .nav-early-access:hover { background: var(--bg2); color: var(--text); }
+
+.features-api-link {
+      color: var(--slate);
+      font-weight: 500;
+      text-decoration: none;
+    }
+    .features-api-link:hover { text-decoration: underline; }
+
     .nav-kofi {
       display: inline-flex;
       align-items: center;
@@ -466,6 +487,105 @@
       cursor: pointer;
       position: relative;
     }
+
+    /* Two-track install cards (Carbon/Cloudscape pattern) */
+    .install-cards {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.75rem;
+      width: 100%;
+      max-width: 680px;
+    }
+    .install-card {
+      flex: 1;
+      min-width: 280px;
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg, 12px);
+      padding: 1.25rem 1.25rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      box-shadow: 0 1px 6px rgba(74,111,165,0.06);
+      transition: box-shadow 0.2s, border-color 0.2s;
+    }
+    .install-card:hover { border-color: var(--slate); box-shadow: 0 2px 16px rgba(74,111,165,0.1); }
+    .install-card-header { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+    .install-card-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--slate); }
+    .install-card-badge { font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #0a9396; background: rgba(10,147,150,0.08); padding: 0.15rem 0.5rem; border-radius: 4px; }
+    /* Dark inset code block — terminal aesthetic where it matters */
+    .install-code-block {
+      background: #0d1117;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      position: relative;
+    }
+    .install-code-block.multi { align-items: flex-start; }
+    .install-code-prompt { font-family: var(--mono); font-size: 0.8rem; color: #6b7280; flex-shrink: 0; user-select: none; }
+    .install-code-cmd { font-family: var(--mono); font-size: 0.8rem; color: #e6edf3; flex: 1; }
+    .install-code-block pre { font-family: var(--mono); font-size: 0.75rem; color: #e6edf3; line-height: 1.6; flex: 1; margin: 0; white-space: pre; }
+    .install-code-block .code-comment { color: #6b7280; }
+    /* Copy button — Carbon/Cloudscape pattern */
+    .install-copy-btn {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.5rem;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 5px;
+      color: #8b949e;
+      font-size: 0.72rem;
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s, background 0.15s, color 0.15s;
+    }
+    .install-code-block:hover .install-copy-btn { opacity: 1; }
+    .install-copy-btn:hover { background: rgba(255,255,255,0.12); color: #e6edf3; }
+    .install-copy-btn.copied { color: #3fb950; background: rgba(63,185,80,0.1); border-color: rgba(63,185,80,0.2); opacity: 1; }
+    /* Persona chips — below install command */
+    .persona-chip {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      font-size: 0.72rem; font-weight: 500; font-family: inherit;
+      color: var(--text2); text-decoration: none;
+      border: 1px solid var(--border); border-radius: 99px;
+      padding: 0.18rem 0.6rem;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+      background: rgba(255,255,255,0.6);
+    }
+    .persona-chip:hover { color: var(--slate); border-color: var(--slate); background: rgba(74,111,165,0.06); }
+    .persona-chip-tool { gap: 0.3rem; }
+    /* Card CTA buttons */
+    .install-card-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 0.6rem 1rem;
+      border-radius: var(--radius);
+      text-decoration: none;
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+      margin-top: auto;
+      font-family: inherit;
+      cursor: pointer;
+      border: none;
+    }
+    .install-card-btn.primary { background: var(--slate); color: white; }
+    .install-card-btn.primary:hover { background: #3a5a8a; }
+    .install-card-btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--slate); }
+    .install-card-btn.ghost:hover { border-color: var(--slate); background: rgba(74,111,165,0.05); }
+    .install-card-note { font-size: 0.75rem; color: var(--text2); margin: 0; }
+    @media (max-width: 600px) { .install-cards { flex-direction: column; } .install-card { min-width: unset; } }
 
     /* Terminal centralized block */
     .hero-media {
@@ -804,7 +924,7 @@
     .feed-card-label { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text2); padding: 0.9rem 1.25rem 0.6rem; border-bottom: 1px solid var(--border); }
     .feed-scroll { overflow: hidden; height: 14rem; -webkit-mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent); mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent); }
     .feed-scroll:hover .feed-rows { animation-play-state: paused; }
-    .feed-rows { animation: feed-tick 40s linear infinite; }
+    .feed-rows { animation: feed-tick 66s linear infinite; }
     @keyframes feed-tick { from { transform: translateY(0); } to { transform: translateY(-50%); } }
     .feed-row { display: flex; align-items: baseline; gap: 0.6rem; padding: 0.55rem 1.25rem; font-size: 0.825rem; line-height: 1.5; text-decoration: none; color: var(--text); border-bottom: 1px solid var(--border); }
     .feed-row:last-child { border-bottom: none; }
@@ -812,6 +932,13 @@
     .feed-row-src { font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; color: var(--slate); min-width: 2rem; flex-shrink: 0; }
     .feed-row-desc { color: var(--text); flex: 1; }
     .feed-row-date { font-size: 0.7rem; color: var(--text2); white-space: nowrap; flex-shrink: 0; }
+
+    /* Damage counter above the ticker */
+    .wild-stats { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; font-size: 0.8rem; color: var(--text2); max-width: 560px; margin-left: auto; margin-right: auto; }
+    .wild-stat { color: var(--text); font-weight: 600; }
+    .wild-sep { color: var(--border); }
+    .wild-link { margin-left: auto; font-size: 0.78rem; font-weight: 700; color: #b83030; text-decoration: none; letter-spacing: 0.02em; }
+    .wild-link:hover { text-decoration: underline; }
 
     /* Intro splash */
     #intro { position: fixed; inset: 0; z-index: 1000; background: #eef6ff; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 0.7s ease, transform 0.7s ease; }
@@ -860,6 +987,7 @@
         GitHub
         <span class="star-badge"><span class="star-icon">★</span><span id="gh-stars">…</span></span>
       </a>
+      <a href="#get-key" class="nav-early-access" onclick="event.preventDefault();document.getElementById('get-key').scrollIntoView({behavior:'smooth'})">early access →</a>
       <a href="https://ko-fi.com/shacharme" class="nav-kofi" target="_blank" rel="noopener">☕ Ko-fi</a>
     </div>
   </nav>
@@ -875,17 +1003,35 @@
       <h1>Make your API Keys Worthless.</h1>
 
       <p class="hero-sub">
-        ...while keeping your LLMs working.
+        ...while keeping your LLMs working.<br>
+        <span style="font-size:0.85em; opacity:0.75;">For solo devs and Claude Code / OpenClaw.</span>
       </p>
 
-      <!-- Install -->
-      <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
-        <button class="install-cmd"
-          onclick="navigator.clipboard.writeText('pip install worthless').then(()=>{this.classList.add('copied');setTimeout(()=>this.classList.remove('copied'),1800)})">
-          <span>pip install worthless</span>
-          <span class="copy-icon">📋</span>
-          <span class="copy-done">✓</span>
-        </button>
+      <!-- Install — single command + persona chips -->
+      <div class="hero-install" style="margin-bottom: 1.75rem;">
+        <div class="install-code-block" id="solo-install-block" style="max-width: 420px;">
+          <span class="install-code-prompt">$</span>
+          <span class="install-code-cmd" id="solo-install-cmd">curl -fsSL worthless.sh | sh</span>
+          <button class="install-copy-btn" id="solo-copy-btn"
+            onclick="copyInstallCmd('solo-install-cmd','solo-copy-btn')"
+            aria-label="Copy to clipboard">⎘</button>
+        </div>
+        <!-- Persona chips — warm, human, no OS icons (same command everywhere) -->
+        <div style="display:flex; gap:0.4rem; margin-top:0.75rem; flex-wrap:wrap; align-items:center;">
+          <span style="font-size:0.75rem; color:var(--text2);">I'm a</span>
+          <a href="install.html?p=solo" class="persona-chip">solo dev</a>
+          <a href="install.html?p=claude" class="persona-chip persona-chip-tool">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" style="opacity:0.7;flex-shrink:0;"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>
+            Claude Code user
+          </a>
+          <a href="install.html?p=openclaw" class="persona-chip persona-chip-tool">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" style="opacity:0.7;flex-shrink:0;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+            OpenClaw user
+          </a>
+        </div>
+        <p style="font-size:0.72rem; color:var(--text2); opacity:0.75; margin-top:0.5rem; margin-bottom:0;">
+          <a href="install.html?p=windows" style="color:var(--text2); text-decoration:none; border-bottom:1px solid var(--border);">What about Windows / WSL 2? →</a>
+        </p>
       </div>
 
       <!-- Audit with AI -->
@@ -1166,6 +1312,14 @@
   <!-- In the wild -->
   <section class="on-bg" style="padding: 6rem 0;">
     <div class="container">
+      <div class="wild-stats">
+        <span class="wild-stat">$350M+ in documented fines</span>
+        <span class="wild-sep">·</span>
+        <span class="wild-stat">23,000+ orgs silently exfiltrated</span>
+        <span class="wild-sep">·</span>
+        <span class="wild-stat">~1M engineers force-rotated secrets</span>
+        <a href="red/index.html" class="wild-link">full breakdown →</a>
+      </div>
       <div class="feed-card">
         <div class="feed-card-label">In the wild</div>
         <div class="feed-scroll">
@@ -1185,6 +1339,16 @@
             <a href="https://dev.to/rainkode/google-api-keys-werent-secrets-until-gemini-broke-everything-ohm" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">dev</span><span class="feed-row-desc">Google API keys weren't secrets - until Gemini broke everything</span><span class="feed-row-date">Feb 2026</span></a>
             <a href="https://dev.to/linou518/is-your-api-key-still-running-naked-the-complete-2026-secrets-management-guide-4m7n" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">dev</span><span class="feed-row-desc">Is your API key still running naked?</span><span class="feed-row-date">Feb 2026</span></a>
             <a href="https://dev.to/uzyntra/top-api-security-vulnerabilities-in-2026-real-world-breakdown-e9g" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">dev</span><span class="feed-row-desc">Top API security vulns 2026 - billing bypass tactics</span><span class="feed-row-date"></span></a>
+            <a href="https://www.bleepingcomputer.com/news/security/codecov-bash-uploader-devs-targeted-by-supply-chain-attack/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">BCP</span><span class="feed-row-desc">Codecov supply chain: 23,000+ orgs silently exfiltrated for 60 days</span><span class="feed-row-date">Apr 2021</span></a>
+            <a href="https://www.ftc.gov/news-events/news/press-releases/2020/08/ftc-issues-opinion-order-against-capital-one" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">FTC</span><span class="feed-row-desc">Capital One: AWS SSRF → stolen creds → 106M records, $270M+ in fines</span><span class="feed-row-date">Jul 2019</span></a>
+            <a href="https://circleci.com/blog/jan-4-2023-incident-report/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">CCI</span><span class="feed-row-desc">CircleCI breach: ~1M engineers told to rotate every secret immediately</span><span class="feed-row-date">Jan 2023</span></a>
+            <a href="https://www.bleepingcomputer.com/news/security/toyota-accidentally-exposed-a-secret-key-publicly-on-github-for-5-years/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">BCP</span><span class="feed-row-desc">Toyota: GitHub token public for 5 years, 260K customers' data accessible</span><span class="feed-row-date">Oct 2022</span></a>
+            <a href="https://github.blog/2022-04-15-security-alert-stolen-oauth-user-tokens/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">GH</span><span class="feed-row-desc">Heroku/Travis CI: stolen OAuth tokens → npm private packages exfiltrated</span><span class="feed-row-date">Apr 2022</span></a>
+            <a href="https://www.bleepingcomputer.com/news/security/pytorch-discloses-malicious-dependency-chain-compromise-impacts-torchtriton/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">BCP</span><span class="feed-row-desc">PyTorch torchtriton: malicious package stole SSH keys + env vars from 2,717 devs</span><span class="feed-row-date">Jan 2023</span></a>
+            <a href="https://blog.lastpass.com/posts/notice-of-recent-security-incident" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">LP</span><span class="feed-row-desc">LastPass: dev vault compromised → encrypted backups → $35M+ in crypto losses</span><span class="feed-row-date">Dec 2022</span></a>
+            <a href="https://www.bleepingcomputer.com/news/security/okta-says-its-support-system-was-breached-using-stolen-credentials/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">BCP</span><span class="feed-row-desc">Okta 2023: stolen support creds → 134 customer tenants → $60M class-action filed</span><span class="feed-row-date">Oct 2023</span></a>
+            <a href="https://www.bleepingcomputer.com/news/security/samsung-source-code-leaked-by-lapsus-ransomware-group/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">BCP</span><span class="feed-row-desc">Samsung: hardcoded creds → 190GB source code + 6,600+ embedded secrets exposed</span><span class="feed-row-date">Mar 2022</span></a>
+            <a href="https://www.uber.com/newsroom/security-update/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">UBR</span><span class="feed-row-desc">Uber 2022: contractor creds + MFA fatigue → full infrastructure compromised</span><span class="feed-row-date">Sep 2022</span></a>
             <!-- duplicate for seamless loop -->
             <a href="https://news.ycombinator.com/item?id=47791871" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">HN</span><span class="feed-row-desc">€54K charged in 13 hours</span><span class="feed-row-date">Apr 2026</span></a>
             <a href="https://news.ycombinator.com/item?id=47231469" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">HN</span><span class="feed-row-desc">$82K Gemini bill in 48 hours</span><span class="feed-row-date">Mar 2026</span></a>
@@ -1201,6 +1365,16 @@
             <a href="https://dev.to/rainkode/google-api-keys-werent-secrets-until-gemini-broke-everything-ohm" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">dev</span><span class="feed-row-desc">Google API keys weren't secrets - until Gemini broke everything</span><span class="feed-row-date">Feb 2026</span></a>
             <a href="https://dev.to/linou518/is-your-api-key-still-running-naked-the-complete-2026-secrets-management-guide-4m7n" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">dev</span><span class="feed-row-desc">Is your API key still running naked?</span><span class="feed-row-date">Feb 2026</span></a>
             <a href="https://dev.to/uzyntra/top-api-security-vulnerabilities-in-2026-real-world-breakdown-e9g" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">dev</span><span class="feed-row-desc">Top API security vulns 2026 - billing bypass tactics</span><span class="feed-row-date"></span></a>
+            <a href="https://www.bleepingcomputer.com/news/security/codecov-bash-uploader-devs-targeted-by-supply-chain-attack/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">BCP</span><span class="feed-row-desc">Codecov supply chain: 23,000+ orgs silently exfiltrated for 60 days</span><span class="feed-row-date">Apr 2021</span></a>
+            <a href="https://www.ftc.gov/news-events/news/press-releases/2020/08/ftc-issues-opinion-order-against-capital-one" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">FTC</span><span class="feed-row-desc">Capital One: AWS SSRF → stolen creds → 106M records, $270M+ in fines</span><span class="feed-row-date">Jul 2019</span></a>
+            <a href="https://circleci.com/blog/jan-4-2023-incident-report/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">CCI</span><span class="feed-row-desc">CircleCI breach: ~1M engineers told to rotate every secret immediately</span><span class="feed-row-date">Jan 2023</span></a>
+            <a href="https://www.bleepingcomputer.com/news/security/toyota-accidentally-exposed-a-secret-key-publicly-on-github-for-5-years/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">BCP</span><span class="feed-row-desc">Toyota: GitHub token public for 5 years, 260K customers' data accessible</span><span class="feed-row-date">Oct 2022</span></a>
+            <a href="https://github.blog/2022-04-15-security-alert-stolen-oauth-user-tokens/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">GH</span><span class="feed-row-desc">Heroku/Travis CI: stolen OAuth tokens → npm private packages exfiltrated</span><span class="feed-row-date">Apr 2022</span></a>
+            <a href="https://www.bleepingcomputer.com/news/security/pytorch-discloses-malicious-dependency-chain-compromise-impacts-torchtriton/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">BCP</span><span class="feed-row-desc">PyTorch torchtriton: malicious package stole SSH keys + env vars from 2,717 devs</span><span class="feed-row-date">Jan 2023</span></a>
+            <a href="https://blog.lastpass.com/posts/notice-of-recent-security-incident" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">LP</span><span class="feed-row-desc">LastPass: dev vault compromised → encrypted backups → $35M+ in crypto losses</span><span class="feed-row-date">Dec 2022</span></a>
+            <a href="https://www.bleepingcomputer.com/news/security/okta-says-its-support-system-was-breached-using-stolen-credentials/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">BCP</span><span class="feed-row-desc">Okta 2023: stolen support creds → 134 customer tenants → $60M class-action filed</span><span class="feed-row-date">Oct 2023</span></a>
+            <a href="https://www.bleepingcomputer.com/news/security/samsung-source-code-leaked-by-lapsus-ransomware-group/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">BCP</span><span class="feed-row-desc">Samsung: hardcoded creds → 190GB source code + 6,600+ embedded secrets exposed</span><span class="feed-row-date">Mar 2022</span></a>
+            <a href="https://www.uber.com/newsroom/security-update/" target="_blank" rel="noopener" class="feed-row"><span class="feed-row-src">UBR</span><span class="feed-row-desc">Uber 2022: contractor creds + MFA fatigue → full infrastructure compromised</span><span class="feed-row-date">Sep 2022</span></a>
           </div>
         </div>
       </div>
@@ -1223,6 +1397,7 @@
       <h2 style="color: #005f73; font-size: clamp(2.5rem, 4vw, 3.5rem); margin-bottom: 1.5rem;">Everything you need.</h2>
       <p class="section-lead" style="color: #0a9396; margin-bottom: 2.5rem;">...No cloud. No account. No vendor.</p>
       <a href="features.html" class="btn-calm-ghost on-light">Full feature breakdown →</a>
+      <p style="margin-top: 1.5rem; font-size: 0.85rem; color: var(--text2);">Need it for Stripe, GitHub, or database passwords too? <a href="#get-key" class="features-api-link" onclick="event.preventDefault();document.getElementById('get-key').scrollIntoView({behavior:'smooth'})">See what's coming →</a></p>
     </div>
   </section>
 
@@ -1502,6 +1677,32 @@
     window.addEventListener('scroll', () => {
       document.querySelector('nav').classList.toggle('scrolled', window.scrollY > 50);
     }, { passive: true });
+
+    function copyInstallCmd(cmdId, btnId) {
+      const text = document.getElementById(cmdId)?.textContent || '';
+      const btn = document.getElementById(btnId);
+      navigator.clipboard.writeText(text).then(() => _flashCopyBtn(btn));
+    }
+
+    function copyInstallPre(preId, btnId) {
+      // Copy raw text, stripping the comment line
+      const pre = document.getElementById(preId);
+      const btn = document.getElementById(btnId);
+      const lines = (pre?.textContent || '').split('\n').filter(l => !l.trim().startsWith('//'));
+      navigator.clipboard.writeText(lines.join('\n').trim()).then(() => _flashCopyBtn(btn));
+    }
+
+    function _flashCopyBtn(btn) {
+      if (!btn) return;
+      btn.textContent = '✓';
+      btn.classList.add('copied');
+      btn.setAttribute('aria-label', 'Copied');
+      setTimeout(() => {
+        btn.textContent = '⎘';
+        btn.classList.remove('copied');
+        btn.setAttribute('aria-label', 'Copy to clipboard');
+      }, 1500);
+    }
 
     // GH Stars
     fetch('https://api.github.com/repos/shacharm2/worthless')
