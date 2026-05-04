@@ -150,8 +150,12 @@ def _fernet_key_present(home: WorthlessHome) -> bool:
 def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
     """Create ``~/.worthless/`` structure on first run (idempotent).
 
-    Creates directories with 0700 permissions, generates a Fernet key if
-    missing, and initialises the SQLite database.
+    Creates directories with 0700 permissions, generates a Fernet key
+    if missing, initialises the SQLite database, and writes a
+    ``.bootstrapped`` marker on completion. The marker gates future
+    keystore probes so post-bootstrap CLI invocations skip the
+    keyring entirely when scan/status/other read-only paths run
+    (HF3 — worthless-cmpf).
     """
     home = WorthlessHome(base_dir=base_dir or _DEFAULT_BASE)
 
@@ -204,18 +208,31 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
             # invocations short-circuit above without touching mtime.
             home.bootstrapped_marker.touch(mode=0o600, exist_ok=True)
         elif _fernet_key_present(home):
+            # Both post-bootstrap branches treat the env/file signal as
+            # advisory: if the source disappears or is malformed between
+            # ``_fernet_key_present`` and the actual read, defer to the
+            # lazy keyring fetch on next ``home.fernet_key`` access
+            # rather than crashing ensure_home on a read-only invocation.
+            # ``logger.debug`` (not info) on the defer paths because
+            # this is best-effort recovery from a TOCTOU race — no
+            # operator action is required and it's not a state
+            # transition worth surfacing in normal logs.
             if os.environ.get("WORTHLESS_FERNET_KEY"):
                 # Cascade short-circuits at the env step, no keyring touch.
-                _ = home.fernet_key
+                try:
+                    _ = home.fernet_key
+                except WorthlessError as exc:
+                    if exc.code != ErrorCode.KEY_NOT_FOUND:
+                        raise
+                    logger.debug(
+                        "ensure_home: WORTHLESS_FERNET_KEY env var unset or "
+                        "malformed between _fernet_key_present and read; "
+                        "deferring to lazy keyring fetch"
+                    )
             else:
                 # File-only. Read OUTSIDE the lock so concurrent
                 # ``home.fernet_key`` readers aren't blocked on disk I/O;
-                # acquire only for the assignment. The file signal is
-                # advisory, not fatal: if the file disappears between
-                # ``_fernet_key_present`` and the read (TOCTOU), defer
-                # to the lazy keyring fetch on next ``home.fernet_key``
-                # access rather than crashing ensure_home on a read-only
-                # invocation. Per CodeRabbit findings on PR #126.
+                # acquire only for the assignment.
                 try:
                     key = read_fernet_key_from_file(home.base_dir)
                 except WorthlessError as exc:

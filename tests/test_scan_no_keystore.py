@@ -29,6 +29,9 @@ from unittest.mock import patch
 import pytest
 
 from worthless.cli.bootstrap import WorthlessHome, _fernet_key_present, ensure_home
+from worthless.cli.commands import scan as scan_module
+from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY
 from worthless.storage.repository import ShardRepository
 
 
@@ -38,12 +41,17 @@ from worthless.storage.repository import ShardRepository
 
 
 def _set_file_fernet_key(home_dir: Path) -> Path:
-    """Drop a valid-shape Fernet key file so ``_fernet_key_present`` returns
-    True without us having to touch the keyring at all."""
+    """Drop a valid Fernet placeholder key on disk.
+
+    Uses ``PLACEHOLDER_FERNET_KEY`` (urlsafe-b64 of 32 zero bytes) so
+    these fixtures stay correct even if a future hardening teaches
+    ``read_fernet_key_from_file`` / ``home.fernet_key`` to validate
+    Fernet shape. Per CodeRabbit FINDING on PR #126: a non-shape-valid
+    sentinel would fail those tests for the wrong reason.
+    """
     home_dir.mkdir(parents=True, exist_ok=True)
     key_path = home_dir / "fernet.key"
-    # Real-shape (44 base64 chars) — content doesn't matter for these tests.
-    key_path.write_bytes(b"a" * 44)
+    key_path.write_bytes(PLACEHOLDER_FERNET_KEY)
     key_path.chmod(0o600)
     return key_path
 
@@ -71,8 +79,6 @@ class TestScanBuildsEnrollmentCheckerWithoutKeystore:
         instantiating it just to satisfy ShardRepository's constructor
         triggers a keychain prompt for nothing.
         """
-        from worthless.cli.commands import scan
-
         # Set up a usable home with a DB but no enrollments — scan should
         # short-circuit at the empty-enrollments check, but on the way
         # through must not call ``home.fernet_key``.
@@ -99,7 +105,7 @@ class TestScanBuildsEnrollmentCheckerWithoutKeystore:
             # Patch get_home so scan's helper sees our prepared home.
             with patch("worthless.cli.commands.scan.get_home", return_value=home):
                 # Run the async helper directly so we don't pull in CliRunner.
-                result = asyncio.run(scan._build_enrollment_checker_async())
+                result = asyncio.run(scan_module._build_enrollment_checker_async())
 
         assert not accessed["value"], "home.fernet_key must not be touched on scan path"
         # No enrollments — checker is None (graceful degrade).
@@ -109,26 +115,76 @@ class TestScanBuildsEnrollmentCheckerWithoutKeystore:
         """Pin the contract that ShardRepository.list_enrollments() does NOT
         decrypt anything — it reads plaintext columns only.
 
-        This is what makes scan's placeholder-Fernet-key trick safe: if
-        a future refactor encrypts var_name or env_path, this test fails
-        loudly so we don't silently break HF3.
-        """
-        db_path = tmp_path / "test.db"
-        # Valid-shape placeholder (urlsafe_b64 of 32 zero bytes). Fernet's
-        # constructor validates shape, so we can't pass arbitrary bytes —
-        # but we still pass a constant key (not the user's real one). If
-        # list_enrollments tries to decrypt anything, the test still
-        # catches it because decrypt of an unrelated ciphertext with this
-        # zero-key would raise InvalidToken.
-        from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY
+        Two layers of pin:
+        1. Row layer: seed a real enrollment (encrypted with a real key),
+           then list with a *different* repository whose Fernet key would
+           NOT decrypt that row. ``list_enrollments`` must succeed —
+           proving it never reaches the encrypted columns. Per CodeRabbit
+           FINDING on PR #126: empty-table fast path alone is insufficient.
+        2. Spy layer: also mock the ``Fernet.decrypt`` call on the listing
+           repository so ANY decrypt attempt fails loudly. Belt-and-braces.
 
-        placeholder = bytearray(PLACEHOLDER_FERNET_KEY)
-        repo = ShardRepository(str(db_path), placeholder)
-        asyncio.run(repo.initialize())
-        # Empty DB, but the call path matters — initialize + list must
-        # not invoke any decrypt() on the placeholder key.
-        enrollments = asyncio.run(repo.list_enrollments())
-        assert enrollments == []
+        If a future refactor encrypts ``var_name`` or ``env_path`` (or
+        starts decrypting metadata while iterating real rows), this test
+        fails loudly so HF3's placeholder-Fernet-key trick stays safe.
+        """
+        from cryptography.fernet import Fernet
+
+        from worthless.crypto.splitter import split_key
+        from worthless.storage.repository import StoredShard
+
+        db_path = tmp_path / "test.db"
+
+        # Step 1 — seed an enrollment row using a REAL Fernet key.
+        real_key = Fernet.generate_key()
+        seed_repo = ShardRepository(str(db_path), bytearray(real_key))
+        asyncio.run(seed_repo.initialize())
+
+        # Generate a real shard from a fake API key so store_enrolled has
+        # something to encrypt. The actual key bytes don't matter — only
+        # that ``list_enrollments`` later doesn't try to decrypt them.
+        sr = split_key(b"sk-proj-" + b"x" * 40)
+        try:
+            stored = StoredShard(
+                shard_b=bytearray(sr.shard_b),
+                commitment=bytearray(sr.commitment),
+                nonce=bytearray(sr.nonce),
+                provider="openai",
+            )
+            asyncio.run(
+                seed_repo.store_enrolled(
+                    "openai-row-test",
+                    stored,
+                    var_name="OPENAI_API_KEY",
+                    env_path=str(tmp_path / ".env"),
+                )
+            )
+        finally:
+            sr.zero()
+
+        # Step 2 — open the SAME db with a DIFFERENT Fernet key.
+        # Any decrypt attempt would fail with InvalidToken because the
+        # placeholder key cannot decrypt rows encrypted with real_key.
+        list_repo = ShardRepository(str(db_path), bytearray(PLACEHOLDER_FERNET_KEY))
+        asyncio.run(list_repo.initialize())
+
+        # Belt: also fail-loud on any decrypt attempt against this repo.
+        original_decrypt = list_repo._fernet.decrypt  # type: ignore[union-attr]
+
+        def _fail_decrypt(*_a, **_kw):
+            raise AssertionError("list_enrollments tried to decrypt; HF3 contract broken")
+
+        list_repo._fernet.decrypt = _fail_decrypt  # type: ignore[union-attr]
+        try:
+            enrollments = asyncio.run(list_repo.list_enrollments())
+        finally:
+            list_repo._fernet.decrypt = original_decrypt  # type: ignore[union-attr]
+
+        # Row IS visible — proves the SELECT touched plaintext columns
+        # (key_alias, var_name, env_path) and never the ciphertext.
+        assert len(enrollments) == 1, f"expected 1 row, got {enrollments}"
+        assert enrollments[0].key_alias == "openai-row-test"
+        assert enrollments[0].var_name == "OPENAI_API_KEY"
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +198,9 @@ class TestFernetKeyPresent:
     def test_returns_true_when_env_var_set(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("WORTHLESS_FERNET_KEY", "anything")
+        # Use a Fernet-valid placeholder so a future shape-validation
+        # hardening doesn't fail this test for the wrong reason.
+        monkeypatch.setenv("WORTHLESS_FERNET_KEY", PLACEHOLDER_FERNET_KEY.decode())
         home = WorthlessHome(base_dir=tmp_path / ".worthless")
         assert _fernet_key_present(home) is True
 
@@ -198,8 +256,6 @@ class TestEnsureHomeProbeGate:
         """No marker → probe runs and key is generated. This is the magic-
         moment first-run-on-clean-macOS path."""
         home_base = tmp_path / ".worthless"
-        from worthless.cli.errors import ErrorCode, WorthlessError
-
         probe_called = {"value": False}
 
         def _probe(*args, **kwargs):
@@ -247,8 +303,6 @@ class TestEnsureHomeProbeGate:
         # that idempotently.)
         home_base.mkdir(parents=True, exist_ok=True)
 
-        from worthless.cli.errors import ErrorCode, WorthlessError
-
         probe_called = {"value": False}
 
         def _probe(*args, **kwargs):
@@ -282,8 +336,6 @@ class TestEnsureHomeProbeGate:
         # crashed prior bootstrap that did mkdir but never reached
         # store_fernet_key.
         home_base.mkdir(parents=True, exist_ok=True)
-        from worthless.cli.errors import ErrorCode, WorthlessError
-
         probe_called = {"value": False}
 
         def _probe(*args, **kwargs):
@@ -305,7 +357,7 @@ class TestEnsureHomeProbeGate:
     ) -> None:
         """Marker present + env var → cascade returns at env step, no
         keyring API touch."""
-        monkeypatch.setenv("WORTHLESS_FERNET_KEY", "ignored-by-bootstrap")
+        monkeypatch.setenv("WORTHLESS_FERNET_KEY", PLACEHOLDER_FERNET_KEY.decode())
         home_base = tmp_path / ".worthless"
         _mark_bootstrapped(home_base)
 
@@ -365,8 +417,6 @@ class TestEnsureHomeProbeGate:
         _set_file_fernet_key(home_base)
         _mark_bootstrapped(home_base)
 
-        from worthless.cli.errors import ErrorCode, WorthlessError
-
         # Simulate the file disappearing between check and read.
         with patch(
             "worthless.cli.bootstrap.read_fernet_key_from_file",
@@ -378,6 +428,35 @@ class TestEnsureHomeProbeGate:
             # access will go through the full cascade and succeed via
             # keyring (or fail loudly there with a clear KEY_NOT_FOUND).
             assert home._cached_fernet_key is None
+
+    def test_non_key_not_found_errors_propagate_from_file_branch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The TOCTOU defer in the file-only branch ONLY suppresses
+        ``KEY_NOT_FOUND``. Any other ``WorthlessError`` (e.g.
+        ``BOOTSTRAP_FAILED`` from a permission error, or a future
+        ``CORRUPTED_KEY``) must propagate so the operator sees the
+        real failure instead of silently falling through to keyring.
+
+        This pins the ``if exc.code != ErrorCode.KEY_NOT_FOUND: raise``
+        guard against accidental loosening.
+        """
+        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
+        home_base = tmp_path / ".worthless"
+        _set_file_fernet_key(home_base)
+        _mark_bootstrapped(home_base)
+
+        sentinel = WorthlessError(ErrorCode.BOOTSTRAP_FAILED, "disk on fire — not a TOCTOU")
+        with patch(
+            "worthless.cli.bootstrap.read_fernet_key_from_file",
+            side_effect=sentinel,
+        ):
+            with pytest.raises(WorthlessError) as exc_info:
+                ensure_home(base_dir=home_base)
+            assert exc_info.value.code == ErrorCode.BOOTSTRAP_FAILED, (
+                "non-KEY_NOT_FOUND errors from read_fernet_key_from_file "
+                "must propagate to the operator, not be silently swallowed"
+            )
 
     def test_probe_skipped_for_keyring_only_subsequent_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
