@@ -89,9 +89,18 @@ def _load_shard_a(
         parsed = dotenv_values(env_path)
         shard_a_value = parsed.get(var_name)
         if shard_a_value is None:
+            # Canonical orphan wording (HF7 / worthless-3907): the DB has an
+            # enrollment row for ``var_name`` at ``env_path`` but the matching
+            # ``.env`` line was deleted. The "alias is orphaned" + "worthless
+            # doctor --fix" phrases are required-AND tokens in
+            # tests/cli/test_state_machine.py::TestOrphanState — the bug
+            # class HF4 caught was OR-of-five-variants admitting tmp_path
+            # name false-positives. Phrases are placed UP FRONT so Rich's
+            # line-wrap at the long path can't split them.
             raise WorthlessError(
                 ErrorCode.KEY_NOT_FOUND,
-                f"Variable {var_name!r} not found in {env_path}",
+                f"alias is orphaned. Run `worthless doctor --fix` to remove orphan DB rows. "
+                f"(Variable {var_name} not found in {env_path}.)",
             )
         return bytearray(shard_a_value.encode("utf-8"))
 

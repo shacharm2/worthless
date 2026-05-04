@@ -140,14 +140,19 @@ class TestOrphanState:
         _lock(env_file, home)
         env_file.write_text("")  # user deleted the locked line
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="RED: HF7 (worthless-3907) — unlock must detect orphan rows. "
-        "Remove this marker when HF7 lands.",
-    )
     def test_unlock_on_orphan_does_not_silently_succeed(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
+        """HF7 / worthless-3907: canonical orphan wording is bound by AND-of-2.
+
+        Earlier rev of this test used ``_has_actionable_hint`` over five OR
+        variants. Pytest's ``tmp_path`` embeds the test name into the path
+        and ``"orphan"`` matched any error that echoed the path back —
+        false-positive xpass class flagged in HF4/PR #123 review. HF7
+        settles the canonical wording as ``"alias is orphaned"`` (diagnosis)
+        + ``"worthless doctor --fix"`` (actionable suggestion), required
+        via ``_has_all_tokens`` so neither phrase alone satisfies the bind.
+        """
         self._orphan(env_file, home_dir)
         result = _invoke(["unlock", "--env", str(env_file)], home_dir)
 
@@ -157,26 +162,12 @@ class TestOrphanState:
         assert not _looks_like_traceback(result.output), (
             "unlock leaked a traceback to the user:\n" + result.output
         )
-        # Require BOTH the var name AND an orphan-specific keyword so a generic
-        # "file missing" error from an unrelated code path can't satisfy this.
         assert "OPENAI_API_KEY" in result.output, (
             f"unlock error must name the affected var:\n{result.output}"
         )
-        # Drop bare "orphan" as a hint: pytest's tmp_path embeds the test
-        # function name (which contains "orphan"), so any error that echoes
-        # the temp env path back to the user satisfies a substring match by
-        # accident — that's exactly how this test was reporting xpassed
-        # before HF7 actually shipped. HF7's contract is a *phrase* the user
-        # can action on. Match phrase-level tokens that won't appear in any
-        # filesystem path.
-        assert _has_actionable_hint(
-            result.output,
-            "orphan-in-db",
-            "no matching env line",
-            "no shard-A in .env",
-            "alias is orphaned",
-            "re-lock or `worthless purge`",
-        ), f"no orphan-specific hint (phrase match):\n{result.output}"
+        assert _has_all_tokens(result.output, "alias is orphaned", "worthless doctor --fix"), (
+            f"unlock did not use canonical orphan wording (AND-bound):\n{result.output}"
+        )
 
     @pytest.mark.xfail(
         strict=False,
