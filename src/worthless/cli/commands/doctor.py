@@ -51,11 +51,39 @@ async def _purge_all(
     repo: ShardRepository,
     shard_a_dir: Path,
 ) -> int:
-    """Delete each orphan's DB row + shard_a file. Returns count purged."""
+    """Delete each orphan's enrollment row surgically. If an alias has no
+    enrollments left after the delete, also tear down its shard + spend_log
+    + config + shard_a file (the full ``_revoke_async`` path).
+
+    CodeRabbit MAJOR (PR #128 review): the previous version called
+    ``_revoke_async`` per orphan, which wipes EVERY enrollment for that
+    alias — including healthy rows in other ``.env`` files. That's a
+    multi-project data-loss bug. Surgical delete by ``(key_alias, env_path)``
+    fixes it; per-alias teardown only fires when the alias has nothing left.
+
+    Re-validates the orphan set against the live DB after acquiring the
+    lock so stale entries (state shifted between diagnose + confirm) don't
+    delete healthy rows.
+    """
+    current = await repo.list_enrollments()
+    still_orphan_keys = {(e.key_alias, e.env_path) for e in find_orphans(current)}
+
     purged = 0
-    for e in orphans:
-        if await _revoke_async(e.key_alias, repo, shard_a_dir):
+    aliases_touched: set[str] = set()
+    for orphan in orphans:
+        if (orphan.key_alias, orphan.env_path) not in still_orphan_keys:
+            continue  # state drifted — skip
+        if await repo.delete_enrollment(orphan.key_alias, orphan.env_path):
             purged += 1
+            aliases_touched.add(orphan.key_alias)
+
+    # For each touched alias: if zero enrollments remain, tear down the
+    # alias-level state (shard_b row + spend_log + config + shard_a file).
+    after = await repo.list_enrollments()
+    aliases_with_remaining = {e.key_alias for e in after}
+    for alias in aliases_touched - aliases_with_remaining:
+        await _revoke_async(alias, repo, shard_a_dir)
+
     return purged
 
 

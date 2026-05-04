@@ -18,6 +18,7 @@ from pathlib import Path
 from worthless.cli.bootstrap import WorthlessHome
 
 from tests.cli.conftest import (
+    TEST_OPENAI_KEY,
     cli_invoke,
     has_all_tokens,
     list_enrollments,
@@ -105,14 +106,20 @@ class TestDoctorOrphanPurge:
     ) -> None:
         """`doctor --fix --dry-run`: shows planned action, leaves DB intact."""
         self._orphan(env_file, home_dir)
+        before = list_enrollments(home_dir)
+        assert len(before) == 1, "precondition: orphan row exists"
+        orphan_alias = before[0].key_alias
 
         result = cli_invoke(["doctor", "--fix", "--dry-run"], home_dir)
 
         assert result.exit_code == 0, f"dry-run exited non-zero:\n{result.output}"
         assert not looks_like_traceback(result.output)
-        # Output names the deletion as planned, not done.
-        assert has_all_tokens(result.output, "dry-run"), (
-            f"dry-run output must mark itself as a preview:\n{result.output}"
+        # Bind the dry-run preview to an actual orphan, not just the banner —
+        # CodeRabbit PR #128: a banner-only check passes even if the preview
+        # silently lost the row it was supposed to enumerate.
+        assert has_all_tokens(result.output, "dry-run", orphan_alias), (
+            f"dry-run output must mark itself as a preview AND name the orphan "
+            f"({orphan_alias}):\n{result.output}"
         )
         # DB unchanged.
         after = list_enrollments(home_dir)
@@ -134,6 +141,57 @@ class TestDoctorOrphanPurge:
             f"declining the prompt should be exit 0, not an error:\n{result.output}"
         )
         assert not looks_like_traceback(result.output)
+        # CodeRabbit PR #128: assert the prompt was actually exercised, not
+        # just the postcondition — otherwise a silent abort path that never
+        # reached the prompt would also pass.
+        assert has_all_tokens(result.output, "delete", "?"), (
+            f"the confirmation prompt must appear in user output "
+            f"(text containing 'delete' + '?'):\n{result.output}"
+        )
+        assert has_all_tokens(result.output, "cancelled"), (
+            f"declining must produce a 'cancelled' acknowledgement:\n{result.output}"
+        )
         # DB still has the orphan — abort means nothing got deleted.
         after = list_enrollments(home_dir)
         assert len(after) == 1, f"declining the prompt must NOT delete anything. Remaining: {after}"
+
+    # ---- 6. Regression: multi-enrollment alias — surgical purge --------------
+
+    def test_doctor_fix_yes_keeps_other_envs_intact_for_same_alias(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """CodeRabbit PR #128 MAJOR: an alias may have enrollments in multiple
+        ``.env`` files. If only one is orphaned, doctor must purge ONLY that
+        row — not wipe the alias from the other ``.env`` too.
+        """
+        env_a = tmp_path / "project_a" / ".env"
+        env_b = tmp_path / "project_b" / ".env"
+        env_a.parent.mkdir()
+        env_b.parent.mkdir()
+        env_a.write_text(f"OPENAI_API_KEY={TEST_OPENAI_KEY}\n")
+        env_b.write_text(f"OPENAI_API_KEY={TEST_OPENAI_KEY}\n")
+        lock_env(env_a, home_dir)
+        lock_env(env_b, home_dir)
+        before = list_enrollments(home_dir)
+        assert len(before) == 2, f"precondition: 2 enrollments for the shared alias\n{before}"
+
+        # Delete env_a's line — env_a is now orphan, env_b is intact.
+        env_a.write_text("")
+
+        result = cli_invoke(["doctor", "--fix", "--yes"], home_dir)
+        assert result.exit_code == 0, f"doctor --fix --yes failed:\n{result.output}"
+
+        # The orphan row (env_a) should be gone; env_b's enrollment must survive.
+        after = list_enrollments(home_dir)
+        env_a_str = str(env_a.resolve())
+        env_b_str = str(env_b.resolve())
+        remaining_paths = sorted(e.env_path for e in after)
+        assert env_a_str not in remaining_paths, (
+            f"orphan row for {env_a_str} was not purged:\n{remaining_paths}"
+        )
+        assert env_b_str in remaining_paths, (
+            f"healthy row for {env_b_str} was deleted (alias-wide bug):\n{remaining_paths}"
+        )
+        assert len(after) == 1, (
+            f"expected exactly 1 row remaining (env_b's), got {len(after)}:\n{after}"
+        )
