@@ -299,7 +299,12 @@ def register_unlock_commands(app: typer.Typer) -> None:
         alias: str | None = typer.Option(
             None, "--alias", "-a", help="Specific alias to unlock (default: all)"
         ),
-        env: Path = typer.Option(Path(".env"), "--env", "-e", help="Path to .env file"),
+        env: Path | None = typer.Option(
+            None,
+            "--env",
+            "-e",
+            help="Path to .env file (default: ./.env if present)",
+        ),
     ) -> None:
         """Restore original API keys from shards.
 
@@ -310,12 +315,28 @@ def register_unlock_commands(app: typer.Typer) -> None:
         home = get_home()
         repo = ShardRepository(str(home.db_path), home.fernet_key)
 
+        # Detect whether the user passed --env explicitly. The HF4
+        # discriminator (raise on shard-shape values without DB rows)
+        # only fires when the user named a path — running ``unlock``
+        # from a directory with someone else's .env should not surprise-
+        # error the user with HF4's hard hint. Per worthless-pnn2.
+        explicit_env = env is not None
+        if env is None:
+            env = Path(".env")
+
         def _raise_unrecognised_shards() -> None:
             # HF4 (worthless-5u6y): if the .env contains values that look
             # like LLM provider keys but have no matching DB row here, the
             # user has unrecoverable shard-A values — fail loudly. Otherwise
             # the .env is genuinely empty and the caller's "no enrolled
             # keys" warning is correct.
+            #
+            # Pnn2: only run this discriminator when the user explicitly
+            # named --env. With the default (CWD ./.env), we cannot tell
+            # whether shard-shape values belong to a different project the
+            # user is just visiting; warning + exit 0 is the safer default.
+            if not explicit_env:
+                return
             unrecognised = _unrecognised_shards(env)
             if not unrecognised:
                 return
