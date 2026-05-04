@@ -85,9 +85,15 @@ def test_full_dogfood_lock_break_doctor_recover(tmp_path: Path) -> None:
     )
 
     # Step 5 — status STILL lists the key (the surprising part — DB row
-    # exists, .env line is gone, status reads from DB).
+    # exists, .env line is gone, status reads from DB). Asserting it
+    # explicitly: if a regression silently cleared the enrollment during
+    # unlock, exit_code alone wouldn't catch that. CodeRabbit PR #128.
     status2 = runner.invoke(app, ["status"], env=cli_env)
     assert status2.exit_code == 0, f"status after break failed:\n{status2.output}"
+    assert "OPENAI_API_KEY" in status2.output or "openai-" in status2.output, (
+        f"status must STILL list the key after the .env line is deleted "
+        f"(this is the user-confusing dual answer the bug created):\n{status2.output}"
+    )
 
     # Step 6 — doctor: diagnose-only, lists the row, exit 0, DB unchanged
     doctor_diag = runner.invoke(app, ["doctor"], env=cli_env)
@@ -107,9 +113,17 @@ def test_full_dogfood_lock_break_doctor_recover(tmp_path: Path) -> None:
         f"doctor --fix --yes must announce successful cleanup:\n{doctor_fix.output}"
     )
 
-    # Step 8 — status: now consistent. The broken row is gone.
+    # Step 8 — status: now consistent. The broken row is gone — and the
+    # symmetric assertion to step 5: the key must NOT be listed any more.
     status3 = runner.invoke(app, ["status"], env=cli_env)
     assert status3.exit_code == 0, f"status after fix failed:\n{status3.output}"
+    assert "OPENAI_API_KEY" not in status3.output and "openai-" not in status3.output, (
+        f"status must NOT list the key after doctor --fix --yes — system is "
+        f"now consistent:\n{status3.output}"
+    )
+    assert "no keys" in status3.output.lower(), (
+        f"status must announce the empty state in plain English:\n{status3.output}"
+    )
     # The previously-orphaned alias is gone — a second `doctor` call has
     # nothing to report. This double-checks step 7 closed the loop.
     doctor_done = runner.invoke(app, ["doctor"], env=cli_env)
