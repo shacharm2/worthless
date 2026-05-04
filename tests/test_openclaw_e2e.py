@@ -169,7 +169,11 @@ def openclaw_stack():
         env_content = (
             f"OPENAI_API_KEY={fake_key}\nOPENAI_BASE_URL=http://mock-upstream:9999/openai/v1\n"
         )
-        _write_env_to_container(proxy_container, env_content)
+        # Check the .env write explicitly — otherwise a write failure would
+        # shadow as "lock failed" downstream (CR catch on M10). The
+        # anthropic_alias fixture already does this; matching the pattern.
+        write = _write_env_to_container(proxy_container, env_content)
+        assert write.returncode == 0, f"failed to write .env: {write.stderr}"
         lock = docker_exec(proxy_container, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"Lock failed: {lock.stderr}"
 
