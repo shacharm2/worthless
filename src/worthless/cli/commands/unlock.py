@@ -20,6 +20,7 @@ from worthless.cli.console import get_console
 from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
 from worthless.cli.dotenv_rewriter import rewrite_env_keys, scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
+from worthless.cli.orphans import format_orphan_error
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp
 from worthless.crypto.types import zero_buf
 from worthless.storage.repository import (
@@ -89,18 +90,13 @@ def _load_shard_a(
         parsed = dotenv_values(env_path)
         shard_a_value = parsed.get(var_name)
         if shard_a_value is None:
-            # Canonical orphan wording (HF7 / worthless-3907): the DB has an
-            # enrollment row for ``var_name`` at ``env_path`` but the matching
-            # ``.env`` line was deleted. The "alias is orphaned" + "worthless
-            # doctor --fix" phrases are required-AND tokens in
-            # tests/cli/test_state_machine.py::TestOrphanState — the bug
-            # class HF4 caught was OR-of-five-variants admitting tmp_path
-            # name false-positives. Phrases are placed UP FRONT so Rich's
-            # line-wrap at the long path can't split them.
+            # Canonical orphan wording lives in ``cli.orphans`` so the same
+            # string surfaces in doctor + unlock + future HF5 status/scan.
             raise WorthlessError(
                 ErrorCode.KEY_NOT_FOUND,
-                f"alias is orphaned. Run `worthless doctor --fix` to remove orphan DB rows. "
-                f"(Variable {var_name} not found in {env_path}.)",
+                format_orphan_error(
+                    EnrollmentRecord(key_alias=alias, var_name=var_name, env_path=str(env_path))
+                ),
             )
         return bytearray(shard_a_value.encode("utf-8"))
 
