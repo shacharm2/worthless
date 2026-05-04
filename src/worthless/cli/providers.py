@@ -80,9 +80,22 @@ def _parse_toml_to_entries(raw: dict) -> dict[str, ProviderEntry]:
         [provider.<name>]
         url = "..."
         protocol = "..."
+
+    Defensive against malformed input: if ``provider`` is something
+    other than a table (e.g. a stray ``provider = "string"`` line at
+    file root), return ``{}`` and log a warning. ``load_user``'s
+    docstring promises ``{}`` on any failure mode — this guard makes
+    that promise true for the "section is wrong shape" case too.
     """
     out: dict[str, ProviderEntry] = {}
     providers = raw.get("provider", {})
+    if not isinstance(providers, dict):
+        logger.warning(
+            "provider section has invalid shape (%s); falling back to "
+            "empty registry. Expected [provider.<name>] tables.",
+            type(providers).__name__,
+        )
+        return out
     for name, body in providers.items():
         if not isinstance(body, dict):
             continue
@@ -118,7 +131,7 @@ def load_user() -> dict[str, ProviderEntry]:
         return {}
     try:
         parsed = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, OSError) as exc:
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError, OSError) as exc:
         logger.warning(
             "could not parse user providers.toml at %s — falling back to bundled registry only: %s",
             path,

@@ -324,6 +324,54 @@ class TestProvidersRegister:
             "second registration must not have been written"
         )
 
+    def test_load_user_returns_empty_on_non_utf8_bytes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``load_user()`` docstring promises ``{}`` on any failure mode.
+        ``UnicodeDecodeError`` was missing from the except tuple in M6 —
+        a file with non-UTF-8 bytes (Latin-1 user, copy-pasted bytes
+        from a Windows tool, corrupted file) would crash the CLI on
+        any ``providers``/``lock``/``unlock`` invocation.
+
+        Test writes a TOML containing a Latin-1-only byte (0xc3 alone is
+        invalid UTF-8 — it's the lead byte of a 2-byte sequence with no
+        continuation), monkey-patches HOME, asserts ``load_user`` returns
+        ``{}`` instead of raising.
+        """
+        from worthless.cli.providers import load_user
+
+        user_dir = tmp_path / ".worthless"
+        user_dir.mkdir()
+        # Non-UTF-8 byte sequence (lone 0xc3 + ASCII).
+        (user_dir / "providers.toml").write_bytes(
+            b'[provider.test]\nurl = "https://x.com/v1"\nname = "\xc3\x28"\nprotocol = "openai"\n'
+        )
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        # Must not raise. Falls back to empty.
+        loaded = load_user()
+        assert loaded == {}, f"expected {{}} on non-UTF-8 input, got: {loaded}"
+
+    def test_load_user_returns_empty_on_provider_not_a_table(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """If a user types ``provider = "openrouter"`` at file root instead
+        of ``[provider.openrouter]`` (common config-file confusion), the
+        ``raw.get("provider", {}).items()`` call used to raise
+        ``AttributeError`` (strings don't have ``.items()``). The fix
+        guards with ``isinstance(providers, dict)`` and falls back to
+        empty.
+        """
+        from worthless.cli.providers import load_user
+
+        user_dir = tmp_path / ".worthless"
+        user_dir.mkdir()
+        (user_dir / "providers.toml").write_text('provider = "openrouter"\n')
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        loaded = load_user()
+        assert loaded == {}, f"expected {{}} when provider is a string not a table, got: {loaded}"
+
     def test_load_user_decodes_non_ascii_as_utf8(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
