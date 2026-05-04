@@ -8,6 +8,25 @@ Severity legend: **H** = blocks ship / demands mitigation before launch. **M** =
 
 ---
 
+## Scope of the worthless tool itself (assumed by this model)
+
+This threat model covers the **delivery channel** for worthless. The
+tool itself has a deliberately narrow detection scope: it scans for
+**LLM provider API key prefixes only** — currently `openai` (`sk-`,
+`sk-proj-`), `anthropic` (`sk-ant-`), `google` (`AIza`), and `xai`
+(`xai-`). It is **not** a general-purpose secret scanner: cloud
+provider tokens (AWS, GCP, Azure), GitHub PATs, npm tokens, Cloudflare
+API tokens, database passwords, and JWT signing keys are out of scope
+and will not be flagged. Users are expected to pair worthless with
+[gitleaks](https://github.com/gitleaks/gitleaks) or
+[trufflehog](https://github.com/trufflesecurity/trufflehog) for
+broader coverage. Threats premised on worthless catching non-LLM
+secrets (e.g. "user assumed worthless would block AWS-key leaks") are
+therefore documentation/UX risks (covered under the README + SKILL.md
+scope statement), not detection-scope bugs.
+
+---
+
 ## TOP FINDINGS THAT SHOULD BLOCK SHIP
 
 1. **F-12 — GitHub Actions OIDC / `wrangler deploy` token is the single highest-value secret.** Whoever pops that key ships arbitrary script to every `curl | sh` on the planet for the cache TTL. No out-of-band review. **Must** require a second human approval (environments + required reviewers) on the deploy job, and rotate the Cloudflare API token to a short-lived scoped token (not an account-wide key).

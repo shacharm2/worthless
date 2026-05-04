@@ -43,16 +43,24 @@ from worthless.storage.repository import ShardRepository, StoredShard
 
 logger = logging.getLogger(__name__)
 
-# Local map of supported wire protocols → canonical fallback env var name.
+# Map of supported wire protocols → canonical fallback env var name.
 # Used only when the user's API-key var doesn't follow the ``<NAME>_API_KEY``
 # convention. After 8rqs, ``wrap`` no longer owns this — lock has the only
 # remaining consumer (plus ``unlock`` which imports it), so the map lives here.
+#
+# Keys here are WIRE PROTOCOLS (``openai``, ``anthropic``), NOT registry
+# provider names. Post-HF1, ``detect_provider`` can return registry names
+# like ``openrouter`` / ``groq`` / ``together`` that all speak the
+# ``openai`` wire protocol. ``_pass1_db_writes`` translates the detected
+# registry name to its protocol via ``lookup_by_name`` before checking
+# this map. ``worthless-9t74`` will promote that translation into a
+# structural ``provider name`` vs ``protocol`` separation post-merge.
 _PROVIDER_ENV_MAP: dict[str, str] = {
     "openai": "OPENAI_BASE_URL",
     "anthropic": "ANTHROPIC_BASE_URL",
 }
 
-_SUPPORTED_PROVIDERS = frozenset(_PROVIDER_ENV_MAP.keys())
+_SUPPORTED_PROTOCOLS = frozenset(_PROVIDER_ENV_MAP.keys())
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
@@ -190,12 +198,34 @@ async def _pass1_db_writes(
     read the user's existing ``*_BASE_URL`` value at lock time and store
     that as the upstream URL in the DB.
     """
-    for var_name, value, provider in candidates:
-        if provider not in _SUPPORTED_PROVIDERS:
+    for var_name, value, detected_provider in candidates:
+        # Translate registry-name → wire-protocol. Post-HF1,
+        # ``detect_provider`` returns registry names like ``openrouter``
+        # for OpenAI-protocol-compatible services. Lock's downstream uses
+        # (alias building, _PROVIDER_ENV_MAP fallback, _SUPPORTED_PROTOCOLS
+        # gate, DB ``provider`` column for proxy adapter dispatch) all
+        # need the WIRE PROTOCOL, not the registry name.
+        #
+        # Pre-HF1, detect_provider only returned ``openai``/``anthropic``,
+        # so name == protocol and this translation was a no-op. Post-HF1
+        # we MUST resolve via the registry or OpenRouter keys would be
+        # silently skipped, leaving the plaintext key in .env (the exact
+        # leak 8rqs is meant to close). worthless-9t74 will promote this
+        # into a structural separation of name/protocol post-merge.
+        registry_entry = lookup_by_name(detected_provider)
+        protocol = registry_entry.protocol if registry_entry else detected_provider
+
+        if protocol not in _SUPPORTED_PROTOCOLS:
             get_console().print_warning(
-                f"Skipping {var_name}: provider {provider!r} not yet supported"
+                f"Skipping {var_name}: wire protocol {protocol!r} not yet "
+                f"supported (detected provider: {detected_provider!r})"
             )
             continue
+
+        # Use the wire protocol for everything downstream so adapter
+        # dispatch in the proxy picks the right format, and so the alias
+        # namespace stays stable across pre- and post-HF1 enrollments.
+        provider = protocol
 
         base_url_var = _derive_base_url_var(var_name, provider)
 
@@ -421,7 +451,13 @@ def _lock_keys(
         planned: list[_PlannedUpdate] = []
         try:
             if not quiet:
-                console.print_hint(f"  Protecting {len(candidates)} key(s)...")
+                # HF2 UX: name the keys so the user knows exactly which env
+                # vars are being touched — prior "Protecting N key(s)..."
+                # was opaque about which secrets just changed.
+                key_names = ", ".join(var_name for var_name, _, _ in candidates)
+                console.print_hint(f"  Protecting {key_names}...")
+            # 8rqs Phase 7: env_values flows through so _pass1_db_writes can
+            # read each key's matching *_BASE_URL from .env at lock time.
             await _pass1_db_writes(
                 repo, candidates, env_str, token_budget_daily, planned, env_values
             )
@@ -451,7 +487,14 @@ def _lock_keys(
 
     if not quiet:
         if count:
-            console.print_success(f"{count} key(s) protected.")
+            # Tell the story: keys are now split between this machine and the
+            # OS keystore, so the .env file no longer holds usable secrets.
+            # Prior "{count} key(s) protected." read like a unit test (UX P1).
+            console.print_success(
+                f"Done. {count} key(s) split between this machine and your "
+                f"system keystore — {env_path.name} no longer contains a "
+                f"usable secret."
+            )
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
             )
@@ -547,6 +590,17 @@ def register_lock_commands(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Protect API keys in a .env file."""
+        # Pre-announce the macOS Keychain dialog so users aren't surprised by a
+        # system prompt mid-command. The dialog labels itself "python3.10" not
+        # "worthless"; without this hint, first-time users panic and click Deny.
+        # Per HF2 (worthless-mnlp) the prompt fires at most once per invocation
+        # (cache + lock + probe-via-property collapse 3+ → 1).
+        if sys.platform == "darwin":
+            console = get_console()
+            console.print_hint(
+                "macOS may ask once to access your Keychain — click 'Always Allow' "
+                "so we don't ask again."
+            )
         home = get_home()
         with acquire_lock(home):
             _lock_keys(

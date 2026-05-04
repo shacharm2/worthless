@@ -7,6 +7,7 @@ import re
 # Ordered longest-first per provider for greedy matching.
 PROVIDER_PREFIXES: dict[str, list[str]] = {
     "openai": ["sk-proj-", "sk-"],
+    "openrouter": ["sk-or-v1-", "sk-or-"],
     "anthropic": ["sk-ant-api03-", "sk-ant-", "anthropic-"],
     "google": ["AIza"],
     "xai": ["xai-"],

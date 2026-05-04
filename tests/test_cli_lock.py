@@ -179,6 +179,85 @@ class TestLockFormatPreserving:
         aliases = asyncio.run(_check_no_enrollment())
         assert aliases == [], f"DB should have no enrollments after refused lock, found: {aliases}"
 
+    def test_lock_enrolls_openrouter_key_post_hf1(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Regression: post-HF1 (`detect_provider("sk-or-v1-...") == "openrouter"`),
+        an `OPENROUTER_API_KEY` in `.env` must enroll successfully via the
+        OpenAI wire protocol — NOT be silently skipped with "provider not
+        yet supported."
+
+        Pre-HF1, the OpenRouter `sk-or-v1-` prefix wasn't in
+        ``PROVIDER_PREFIXES``, so ``detect_provider`` fell through to
+        ``"openai"`` and the lock flow worked. HF1 (commit fcf75f6) added
+        the prefix and made detection return ``"openrouter"``. The
+        existing ``_SUPPORTED_PROVIDERS = {"openai", "anthropic"}`` gate
+        then SKIPPED any OpenRouter key with a warning, leaving the
+        plaintext key in ``.env`` — the exact "shard-A on the wire" leak
+        8rqs is meant to close.
+
+        Fix (this commit, M8 merge resolution): translate the registry
+        name to its wire protocol via ``lookup_by_name`` before the
+        supported gate. ``lookup_by_name("openrouter")`` returns the
+        bundled registry entry with ``protocol="openai"``, so the gate
+        passes, the alias is built with ``protocol`` as the prefix
+        (matches pre-HF1 behaviour, namespace stable across re-locks),
+        and the proxy dispatches the OpenAI adapter to the OpenRouter
+        upstream URL — same flow that the M3 live-smoke validated.
+        """
+        from tests.helpers import fake_key
+
+        # OpenRouter-shaped key (the "sk-" + "or-v1-" form HF1 added).
+        or_key = fake_key("sk-" + "or-v1-")
+
+        env = tmp_path / ".env"
+        env.write_text(
+            f"OPENROUTER_API_KEY={or_key}\nOPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n"
+        )
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+
+        assert result.exit_code == 0, (
+            f"OpenRouter lock failed: exit={result.exit_code}; output={result.output[:400]}"
+        )
+
+        # Lock must NOT have emitted "provider 'openrouter' not yet supported".
+        out_l = result.output.lower()
+        assert "not yet supported" not in out_l, (
+            f"OpenRouter key was silently skipped — the M8 fix didn't take. "
+            f"output: {result.output[:400]}"
+        )
+
+        # DB row exists and stores wire protocol (openai), not registry name.
+        async def _check():
+            from worthless.storage.repository import ShardRepository
+
+            repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+            await repo.initialize()
+            aliases = await repo.list_keys()
+            return aliases
+
+        aliases = asyncio.run(_check())
+        assert len(aliases) == 1, f"expected 1 enrollment, got: {aliases}"
+        # Alias namespace stable: openai-XXXX prefix, not openrouter-XXXX.
+        # Pre-merge enrollments used "openai-" prefix because pre-HF1
+        # detect_provider returned "openai" for sk-or-v1-* keys.
+        # Post-merge with the M8 translation, alias prefix stays "openai-"
+        # so existing DB rows still resolve.
+        assert aliases[0].startswith("openai-"), (
+            f"expected alias to start with 'openai-' (wire protocol), got: {aliases[0]!r}"
+        )
+
+        # The .env was rewritten — OpenROUTER_BASE_URL points at local proxy.
+        rewritten = env.read_text()
+        assert "OPENROUTER_BASE_URL=http://127.0.0.1" in rewritten, (
+            f"OPENROUTER_BASE_URL should point at local proxy after lock; got .env: {rewritten!r}"
+        )
+
     def test_lock_warns_on_non_canonical_var_name(
         self, home_dir: WorthlessHome, tmp_path: Path
     ) -> None:

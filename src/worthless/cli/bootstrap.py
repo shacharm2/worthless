@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -16,6 +18,8 @@ from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.cli.keystore import migrate_file_to_keyring, read_fernet_key, store_fernet_key
 from worthless.cli.platform import IS_WINDOWS
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_BASE = Path.home() / ".worthless"
 _STALE_LOCK_SECONDS = 300  # 5 minutes
 
@@ -25,6 +29,26 @@ class WorthlessHome:
     """Paths within the ``~/.worthless/`` directory tree."""
 
     base_dir: Path = field(default_factory=lambda: _DEFAULT_BASE)
+    # HF2 / worthless-mnlp: per-instance cache for the Fernet key so a single
+    # CLI invocation triggers exactly one keychain probe (one macOS Keychain
+    # prompt on first run). Excluded from init/repr/compare so it doesn't
+    # leak into reprs or break dataclass equality across cached/uncached
+    # instances.
+    _cached_fernet_key: bytearray | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    # Per-instance lock guarding the lazy-populate path. The check-then-set
+    # in ``fernet_key`` is two operations; without this lock, two threads
+    # accessing the property concurrently on the same instance can both
+    # observe ``None`` and both call ``read_fernet_key`` — firing duplicate
+    # macOS Keychain prompts and discarding one bytearray without
+    # ``zero_buf``. Real call site: ``src/worthless/mcp/server.py`` runs
+    # FastMCP's asyncio loop on the main thread but dispatches blocking
+    # work (``_do_lock``) via ``loop.run_in_executor`` to the default
+    # thread pool — main + executor can both touch ``home.fernet_key``.
+    _cache_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
 
     @property
     def db_path(self) -> Path:
@@ -47,8 +71,23 @@ class WorthlessHome:
 
     @property
     def fernet_key(self) -> bytearray:
-        """Read the Fernet key via keystore cascade (SR-01: mutable bytearray)."""
-        return read_fernet_key(self.base_dir)
+        """Read the Fernet key via keystore cascade (SR-01: mutable bytearray).
+
+        Memoized per-instance with double-checked locking. macOS Keychain
+        re-evaluates the per-call ACL, so without this cache one
+        ``worthless lock`` triggers 3+ Keychain prompts.
+
+        Returns a fresh bytearray copy on each access so callers can
+        ``zero_buf()`` per SR-01 without poisoning the cache.
+        """
+        if self._cached_fernet_key is None:
+            with self._cache_lock:
+                if self._cached_fernet_key is None:
+                    logger.debug("WorthlessHome.fernet_key cache MISS — reading from keystore")
+                    self._cached_fernet_key = read_fernet_key(self.base_dir)
+        else:
+            logger.debug("WorthlessHome.fernet_key cache HIT")
+        return bytearray(self._cached_fernet_key)
 
 
 def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
@@ -79,14 +118,17 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 "Create it or mount a volume at that path.",
             )
 
-        # Generate Fernet key if missing (keyring or file fallback)
+        # Probe via ``home.fernet_key`` so the read also populates the cache.
         try:
-            read_fernet_key(home.base_dir)
+            _ = home.fernet_key
         except WorthlessError as exc:
             if exc.code != ErrorCode.KEY_NOT_FOUND:
                 raise
+            logger.info("ensure_home: no Fernet key found, generating new one")
             key = Fernet.generate_key()
             store_fernet_key(key, home_dir=home.base_dir)
+            # Seed cache from generated key so the next consumer skips the re-read.
+            home._cached_fernet_key = bytearray(key)
         else:
             migrate_file_to_keyring(home.base_dir)
     except WorthlessError:

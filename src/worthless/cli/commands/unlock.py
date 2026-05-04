@@ -17,8 +17,16 @@ from dotenv import dotenv_values
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
+
+# 8rqs Phase 8 moved _PROVIDER_ENV_MAP from wrap.py into lock.py
+# (wrap is now a passthrough; lock owns BASE_URL ownership). HF4 on main
+# pre-dated that move and still imported from wrap.py — that import would
+# fail at module-load post-merge. Importing from the new home, lock.py.
 from worthless.cli.commands.lock import _PROVIDER_ENV_MAP
-from worthless.cli.dotenv_rewriter import rewrite_env_keys
+
+# scan_env_keys is used by HF4's per-key messaging logic (the
+# "no DB row here" hard-error path further down in this module).
+from worthless.cli.dotenv_rewriter import rewrite_env_keys, scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp
 from worthless.crypto.types import zero_buf
@@ -28,6 +36,27 @@ from worthless.storage.repository import (
     ShardRepository,
     StoredShard,
 )
+
+
+_RECOVERY_LABEL = "<recovery>"
+
+
+def _format_restored_line(p: _PlannedRestore) -> str:
+    """Per-key audit line emitted after a successful restore (HF4)."""
+    where = str(p.env_path) if p.env_path is not None else _RECOVERY_LABEL
+    return f"Restored {p.var_name or p.alias} ({p.provider}, alias {p.alias}) → {where}"
+
+
+def _unrecognised_shards(env: Path) -> list[str]:
+    """Var names in *env* that look like LLM provider keys but are not enrolled.
+
+    Used by both unlock branches to discriminate "legitimate empty state"
+    (warn + exit 0) from "shard-shape values copied from another machine
+    with no DB row here" (HF4 hard error). Reuses scan_env_keys so the
+    entropy + KEY_PATTERN guards apply — a low-entropy placeholder like
+    ``sk-aaaa…`` will not trigger a false-positive hard error.
+    """
+    return [var_name for var_name, _value, _provider in scan_env_keys(env)]
 
 
 async def _resolve_enrollment(
@@ -231,14 +260,20 @@ async def _unlock_batch(
     home: WorthlessHome,
     repo: ShardRepository,
     env_path: Path | None,
-) -> int:
-    """Transactional multi-alias unlock. Returns count restored."""
+) -> list[_PlannedRestore]:
+    """Transactional multi-alias unlock.
+
+    Returns the planned restores so the caller can emit per-key audit output
+    (HF4 / worthless-5u6y). The returned objects have ``key_buf`` already
+    zeroed by this function's ``finally`` block; only metadata (alias,
+    var_name, provider, env_path) is safe to read post-return.
+    """
     console = get_console()
     planned: list[_PlannedRestore] = []
     try:
         await _pass1_reconstruct(aliases, home, repo, env_path, planned)
         if not planned:
-            return 0
+            return planned
 
         env_writers = [p for p in planned if p.env_path is not None and p.var_name is not None]
         if env_writers:
@@ -257,7 +292,7 @@ async def _unlock_batch(
         _print_recovery_keys(planned, console)
 
         await _pass3_db_cleanup(repo, home, planned)
-        return len(planned)
+        return planned
     finally:
         for p in planned:
             p.zero()
@@ -283,32 +318,53 @@ def register_unlock_commands(app: typer.Typer) -> None:
         home = get_home()
         repo = ShardRepository(str(home.db_path), home.fernet_key)
 
+        def _raise_unrecognised_shards() -> None:
+            # HF4 (worthless-5u6y): if the .env contains values that look
+            # like LLM provider keys but have no matching DB row here, the
+            # user has unrecoverable shard-A values — fail loudly. Otherwise
+            # the .env is genuinely empty and the caller's "no enrolled
+            # keys" warning is correct.
+            unrecognised = _unrecognised_shards(env)
+            if not unrecognised:
+                return
+            raise WorthlessError(
+                ErrorCode.KEY_NOT_FOUND,
+                f"No enrollment found for shard-shape value(s) in {env}: "
+                f"{', '.join(unrecognised)}. If this .env was copied from "
+                f"another machine, those values are unrecognised shards "
+                f"here — re-lock from the original machine, or remove "
+                f"them manually if they are junk.",
+            )
+
         async def _unlock_async():
             await repo.initialize()
             if alias:
-                count = await _unlock_batch([alias], home, repo, env)
-                if count:
-                    console.print_success(f"Unlocked {alias}.")
-                else:
-                    # Per CodeRabbit nitpick: don't exit silently on count==0.
-                    # If the user typo'd the alias, success-with-no-output is
-                    # the worst possible feedback.
-                    console.print_warning(f"Alias not found or no keys restored: {alias}.")
+                planned = await _unlock_batch([alias], home, repo, env)
+                if planned:
+                    console.print_success(_format_restored_line(planned[0]))
+                    return
+                # If a typo'd --alias points at a .env full of shard-shape
+                # values, silent success is the worst possible feedback.
+                _raise_unrecognised_shards()
+                console.print_warning(f"Alias not found or no keys restored: {alias}.")
                 return
 
             env_str = str(env.resolve())
             all_enrollments = await repo.list_enrollments()
             aliases = sorted({e.key_alias for e in all_enrollments if e.env_path == env_str})
             if not aliases:
+                _raise_unrecognised_shards()
                 console.print_warning("No enrolled keys found.")
                 return
-            count = await _unlock_batch(aliases, home, repo, env)
-            if count:
-                console.print_success(f"{count} key(s) restored.")
-            else:
-                # Per CodeRabbit nitpick: explicit feedback when the env-wide
-                # branch finishes with zero restores.
-                console.print_warning("No keys restored.")
+
+            planned = await _unlock_batch(aliases, home, repo, env)
+            for p in planned:
+                console.print_success(_format_restored_line(p))
+            n = len(planned)
+            if n > 1:
+                # Per-key lines already covered N=1; only emit the summary
+                # when there's something to count.
+                console.print_success(f"{n} key(s) restored.")
 
         with acquire_lock(home):
             asyncio.run(_unlock_async())
