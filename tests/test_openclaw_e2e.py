@@ -140,8 +140,35 @@ def openclaw_stack():
         mock_container = f"{project}-mock-upstream-1"
         mock_port = _get_host_port(mock_container, 9999)
 
-        # 4. Lock the key — writes shard-A to .env, shard-B to DB
-        env_content = f"OPENAI_API_KEY={fake_key}"
+        # 4. Register the mock-upstream URL in the proxy's provider registry.
+        #    Post-8rqs (Phase 5+6) the proxy resolves upstream from the per-
+        #    enrollment ``base_url`` stored at lock time, and lock-time
+        #    URL validation (M3) requires the URL to be in the merged
+        #    registry. The mock serves an /openai/v1/* alias path so the
+        #    registry can distinguish it from the bundled api.openai.com
+        #    entry, AND from the parallel anthropic-mock URL.
+        register = docker_exec(
+            proxy_container,
+            [
+                "worthless",
+                "providers",
+                "register",
+                "--name",
+                "openai-mock",
+                "--url",
+                "http://mock-upstream:9999/openai/v1",
+                "--protocol",
+                "openai",
+            ],
+        )
+        assert register.returncode == 0, f"register failed: {register.stderr}"
+
+        # 5. Lock the key — writes shard-A to .env, shard-B to DB.
+        #    OPENAI_BASE_URL pre-populated to the mock so lock stores that
+        #    URL in the per-enrollment row instead of the bundled default.
+        env_content = (
+            f"OPENAI_API_KEY={fake_key}\nOPENAI_BASE_URL=http://mock-upstream:9999/openai/v1\n"
+        )
         _write_env_to_container(proxy_container, env_content)
         lock = docker_exec(proxy_container, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"Lock failed: {lock.stderr}"
@@ -190,8 +217,33 @@ def openclaw_anthropic_alias(openclaw_stack):
     fake_key = fake_anthropic_key()
     alias = _make_alias("anthropic", fake_key)
 
+    # Register the anthropic-mock URL. Same mock host:port as the
+    # openai-mock entry but a different path prefix (mock serves an
+    # /anthropic/v1/messages alias), so registry keys are distinct
+    # — registry can't have two entries on the same URL with different
+    # protocols. See openclaw_stack for the openai-mock counterpart.
+    register = docker_exec(
+        proxy_container,
+        [
+            "worthless",
+            "providers",
+            "register",
+            "--name",
+            "anthropic-mock",
+            "--url",
+            "http://mock-upstream:9999/anthropic/v1",
+            "--protocol",
+            "anthropic",
+        ],
+    )
+    if register.returncode != 0:
+        pytest.skip(f"anthropic register failed: {register.stderr}")
+
     env_path = "/tmp/.anthropic.env"
-    write = _write_env_to_container(proxy_container, f"ANTHROPIC_API_KEY={fake_key}", dest=env_path)
+    env_content = (
+        f"ANTHROPIC_API_KEY={fake_key}\nANTHROPIC_BASE_URL=http://mock-upstream:9999/anthropic/v1\n"
+    )
+    write = _write_env_to_container(proxy_container, env_content, dest=env_path)
     if write.returncode != 0:
         pytest.skip(f"failed to write anthropic .env: {write.stderr}")
 
