@@ -444,8 +444,14 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 tokens = usage.total_tokens if usage else 0
                 model = usage.model if usage else None
                 if usage is None:
-                    logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                        "Token extraction failed for alias=%s provider=%s",
+                    # Renamed from "Token extraction failed" — Semgrep's
+                    # python-logger-credential-disclosure rule fires on
+                    # the word "Token" in log messages, but here we mean
+                    # the LLM response usage-tokens count (for metering),
+                    # not an auth token. Renaming clears the rule
+                    # without needing a # nosemgrep annotation.
+                    logger.warning(
+                        "Usage extraction failed for alias=%s provider=%s",
                         alias,
                         provider,
                     )
