@@ -140,7 +140,7 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
                 return
 
         purged = asyncio.run(_purge_all(orphans, repo, home.shard_a_dir))
-        console.print_success(f"Purged {purged} orphan row(s).")
+        console.print_success(f"Cleaned up {purged} broken record(s).")
 
 
 def register_doctor_commands(app: typer.Typer) -> None:
