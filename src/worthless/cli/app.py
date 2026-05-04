@@ -111,3 +111,7 @@ register_revoke_commands(app)
 from worthless.cli.commands.restore import register_restore_commands  # noqa: E402
 
 register_restore_commands(app)
+
+from worthless.cli.commands.doctor import register_doctor_commands  # noqa: E402
+
+register_doctor_commands(app)

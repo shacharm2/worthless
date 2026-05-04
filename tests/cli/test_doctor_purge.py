@@ -117,11 +117,6 @@ class TestDoctorOrphanPurge:
 
     # ---- 1. Empty / no-orphans path -----------------------------------------
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RED: HF7 (worthless-3907) — `worthless doctor` not yet implemented. "
-        "Remove this marker when doctor.py + app.py registration land.",
-    )
     def test_doctor_no_orphans_exits_clean(self, home_dir: WorthlessHome) -> None:
         """Fresh home, no enrollments — doctor reports nothing-to-fix and exits 0."""
         result = _invoke(["doctor"], home_dir)
@@ -136,10 +131,6 @@ class TestDoctorOrphanPurge:
 
     # ---- 2. Diagnose mode (no --fix) is read-only ---------------------------
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RED: HF7 (worthless-3907) — `worthless doctor` not yet implemented.",
-    )
     def test_doctor_detects_orphan_in_diagnose_mode(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -164,10 +155,6 @@ class TestDoctorOrphanPurge:
 
     # ---- 3. --fix --yes actually purges the orphan --------------------------
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RED: HF7 (worthless-3907) — `worthless doctor --fix` not yet implemented.",
-    )
     def test_doctor_fix_yes_purges_orphan(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """`doctor --fix --yes`: skip prompt, purge orphan, DB empty after."""
         self._orphan(env_file, home_dir)
@@ -183,10 +170,6 @@ class TestDoctorOrphanPurge:
 
     # ---- 4. --fix --dry-run lists planned deletions, writes nothing ---------
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RED: HF7 (worthless-3907) — `--dry-run` flag not yet implemented.",
-    )
     def test_doctor_fix_dry_run_does_not_write(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -207,10 +190,6 @@ class TestDoctorOrphanPurge:
 
     # ---- 5. --fix without --yes prompts; declining aborts -------------------
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RED: HF7 (worthless-3907) — interactive prompt not yet implemented.",
-    )
     def test_doctor_fix_without_yes_prompts_then_aborts(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
