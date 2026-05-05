@@ -145,8 +145,8 @@
       </div>
     </div>
 
-    <!-- Step 1: same for everyone -->
-    <div class="step1">
+    <!-- Step 1: same for everyone except OpenClaw (agent handles it) -->
+    <div class="step1" id="step1-block">
       <p class="step-label">Step 1 — install</p>
       <div class="code-block">
         <span class="prompt">$</span>
@@ -234,21 +234,18 @@
         <div class="panel-inner">
           <p class="panel-headline">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 C9 7 8 11 10 15"/><path d="M12 3 C15 7 16 11 14 15"/><path d="M10 15 C8 18 9 21 12 22 C15 21 16 18 14 15"/></svg>
-            Start the proxy — OpenClaw points at it via baseUrl
+            Tell OpenClaw to install it
           </p>
-          <div class="code-block">
-            <span class="prompt">$</span>
-            <span class="cmd" id="cmd-oc">cd your-project &amp;&amp; worthless</span>
-            <button class="copy-btn" onclick="copy('cmd-oc',this)">⎘</button>
-          </div>
           <p class="note" style="margin-bottom:0.75rem;">
-            OpenClaw reads standard env vars. <code>worthless lock</code> will rewrite <code>openclaw.json</code> automatically once WOR-321 ships. Until then, set the baseUrl manually in your OpenClaw config:
+            You don't run commands — OpenClaw does. Paste this into OpenClaw:
           </p>
-          <div class="code-block" style="margin-bottom:0.5rem;">
-            <span class="cmd" id="cmd-oc-url" style="color:#93c5fd;">"baseUrl": "http://localhost:8787/v1"</span>
-            <button class="copy-btn" onclick="copy('cmd-oc-url',this)">⎘</button>
+          <div class="code-block" style="margin-bottom:0.75rem;">
+            <span class="cmd" id="cmd-oc-prompt" style="color:#e6edf3; white-space:normal; line-height:1.5;">Install worthless in this project, lock my API keys, and configure yourself to route through the proxy.</span>
+            <button class="copy-btn" onclick="copy('cmd-oc-prompt',this)">⎘</button>
           </div>
-          <p class="note">OpenClaw routes through the proxy. Your key looks real but is a dead shard. <a href="how-it-works.html">How the split-key proxy works →</a></p>
+          <p class="note">
+            OpenClaw reads <a href="https://github.com/shacharm2/worthless/blob/main/SKILL.md" target="_blank" rel="noopener">SKILL.md</a> to understand worthless, runs the install, locks your keys, and updates its own config. Your key stays in <code>.env</code> — the value looks identical but is now a dead shard.
+          </p>
         </div>
       </div>
 
@@ -344,6 +341,17 @@
       panels.forEach(p => p.classList.toggle('active', p.dataset.panel === persona));
     }
     tabs.forEach(t => t.addEventListener('click', () => switchPersona(t.dataset.persona)));
+
+    // Hide Step 1 for OpenClaw — the agent handles installation
+    const step1 = document.getElementById('step1-block');
+    const step2label = document.querySelector('.step2-label');
+    function updateStep1Visibility(persona) {
+      const isAgent = persona === 'openclaw';
+      step1.style.display = isAgent ? 'none' : '';
+      step2label.style.display = isAgent ? 'none' : '';
+    }
+    const origSwitch = switchPersona;
+    switchPersona = function(persona) { origSwitch(persona); updateStep1Visibility(persona); };
 
     // Auto-select persona from URL hash or ?p= param
     (function autoSelect() {
