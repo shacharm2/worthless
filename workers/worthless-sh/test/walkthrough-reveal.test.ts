@@ -1,6 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import { WALKTHROUGH_B64 } from "../src/embedded";
+import { b64ToBytes } from "./_helpers";
 
 // WOR-323 — walkthrough REVEAL block contract.
 //
@@ -38,13 +39,10 @@ async function sha256Hex(input: string): Promise<string> {
     .join("");
 }
 
-// `atob` returns a binary string (each char = one byte 0..255), not a UTF-8
-// decoded string. Walkthrough/install bytes contain em-dashes and other
-// multi-byte UTF-8 — round-tripping via TextDecoder restores them.
+// Walkthrough/install bytes contain em-dashes and other multi-byte UTF-8 —
+// decode the raw bytes via TextDecoder to restore them as a JS string.
 function b64ToUtf8(b64: string): string {
-  const bin = atob(b64);
-  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-  return new TextDecoder("utf-8").decode(bytes);
+  return new TextDecoder("utf-8").decode(b64ToBytes(b64));
 }
 
 describe("walkthrough REVEAL block (WOR-323)", () => {

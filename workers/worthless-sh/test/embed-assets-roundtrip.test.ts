@@ -6,6 +6,7 @@ import { INSTALL_SH_B64, WALKTHROUGH_B64 } from "../src/embedded";
 // Workers pool — no `node:fs` at runtime.
 import installShSource from "../../../install.sh?raw";
 import walkthroughSource from "../src/walkthrough.txt?raw";
+import { b64ToBytes } from "./_helpers";
 
 // WOR-404 — embed:assets round-trip pin.
 //
@@ -26,29 +27,16 @@ import walkthroughSource from "../src/walkthrough.txt?raw";
 // Guardrail against accidental future drift; not a defense against
 // active tampering.
 
-function b64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
-}
-
-function strToBytes(s: string): Uint8Array {
-  return new TextEncoder().encode(s);
-}
-
 describe("embed:assets round-trip (WOR-404)", () => {
   it("decoded INSTALL_SH_B64 byte-equals on-disk install.sh", () => {
     const decoded = b64ToBytes(INSTALL_SH_B64);
-    const source = strToBytes(installShSource);
-    // Length first — gives a cleaner failure message than a deep array diff
-    // when the cause is a whole-file transform (BOM prepend, EOL rewrite).
-    expect(decoded.length).toBe(source.length);
-    expect(Array.from(decoded)).toEqual(Array.from(source));
+    const source = new TextEncoder().encode(installShSource);
+    expect(decoded).toEqual(source);
   });
 
   it("decoded WALKTHROUGH_B64 byte-equals on-disk walkthrough.txt", () => {
     const decoded = b64ToBytes(WALKTHROUGH_B64);
-    const source = strToBytes(walkthroughSource);
-    expect(decoded.length).toBe(source.length);
-    expect(Array.from(decoded)).toEqual(Array.from(source));
+    const source = new TextEncoder().encode(walkthroughSource);
+    expect(decoded).toEqual(source);
   });
 });
