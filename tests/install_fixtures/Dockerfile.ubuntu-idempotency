@@ -27,9 +27,13 @@ RUN ! command -v python3 \
     && ! command -v uv
 
 # Pin the worthless version so PyPI drift between the two install.sh runs
-# cannot make the snapshots disagree. Update this line in lockstep with
-# pyproject.toml `version`.
-ENV WORTHLESS_VERSION=0.3.3
+# cannot make the snapshots disagree. The fixture tests idempotency
+# (run install.sh twice → identical state) — both runs MUST install the
+# same version. The pinned version must EXIST on PyPI; the fixture
+# therefore lags pyproject.toml by one release across the tag-publish
+# boundary. Bump procedure: pyproject → tag/publish v{N} → CI passes
+# (this fixture still on v{N-1}) → follow-up PR bumps this line to v{N}.
+ENV WORTHLESS_VERSION=0.3.2
 
 WORKDIR /work
 COPY install.sh /work/install.sh
