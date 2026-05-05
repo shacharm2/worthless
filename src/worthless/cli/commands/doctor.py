@@ -87,10 +87,15 @@ async def _purge_all(
     return purged
 
 
-def _print_orphan_lines(orphans: list[EnrollmentRecord], *, dry_run: bool) -> None:
+def _print_orphan_lines(
+    orphans: list[EnrollmentRecord], *, dry_run: bool, show_fix_hint: bool = True
+) -> None:
     """One line per orphan, plain English. Phrase tokens come from
     ``worthless.cli.orphans``. ``typer.echo`` because ``WorthlessConsole``
     only exposes semantic methods (success/error/hint/warning).
+
+    ``show_fix_hint`` is False when we're already running ``--fix`` — no
+    point telling the user to run the command they just ran.
     """
     suffix = " (dry-run: no changes)" if dry_run else ""
     for e in orphans:
@@ -98,7 +103,8 @@ def _print_orphan_lines(orphans: list[EnrollmentRecord], *, dry_run: bool) -> No
             f"  • {PROBLEM_PHRASE} {e.key_alias}: .env line deleted "
             f"({e.var_name} -> {e.env_path}){suffix}"
         )
-    typer.echo(f"    fix: run `{FIX_PHRASE}`")
+    if show_fix_hint:
+        typer.echo(f"    fix: run `{FIX_PHRASE}`")
 
 
 def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
@@ -116,10 +122,17 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
             console.print_success("Nothing to fix. All locked keys have a matching .env line.")
             return
 
+        plural = "s" if len(orphans) != 1 else ""
         console.print_warning(
-            f"{len(orphans)} key(s) {PROBLEM_PHRASE} — their .env line was deleted:"
+            f"{len(orphans)} broken record{plural} — their .env line was deleted:"
         )
-        _print_orphan_lines(orphans, dry_run=fix and dry_run)
+        _print_orphan_lines(
+            orphans,
+            dry_run=fix and dry_run,
+            # Suppress "fix: run worthless doctor --fix" when we're ALREADY
+            # running --fix. Diagnose-only (no --fix) keeps the hint.
+            show_fix_hint=not fix,
+        )
 
         if not fix:
             return  # diagnose-only mode
