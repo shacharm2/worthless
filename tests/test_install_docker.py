@@ -61,9 +61,12 @@ pytestmark = [
 
 
 # Test timeout must exceed the sum of subprocess budgets below
-# (build=240 + run=180 + rmi=30) so pytest-timeout doesn't preempt
+# (build=480 + run=180 + rmi=30) so pytest-timeout doesn't preempt
 # a legitimately slow build before it gets a chance to report.
-@pytest.mark.timeout(480)
+# Bumped 480→720 to stay >sum-of-subprocess-budgets after main bumped
+# build to 480s (PR #127 8rqs) and WOR-319 pinned digests added cold-
+# cache layer-pull pressure on top.
+@pytest.mark.timeout(720)
 @pytest.mark.parametrize("fixture", INSTALL_MATRIX)
 def test_install_succeeds_on_distro(fixture: str) -> None:
     """Build image, run install.sh + verify_install.sh, assert both succeed."""
@@ -96,9 +99,10 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
             # GitHub Actions runners can be slow; the build does
             # `apt-get update && install ca-certs curl tar` + `install.sh`
             # which downloads uv + worthless from PyPI (network-bound).
-            # 240s was tight for the original baseline, started timing
-            # out routinely on PR #127 (8rqs). Bumped to 480s; the outer
-            # job timeout is 25min so there's still 5x headroom.
+            # 240s was tight for the original baseline, started timing out
+            # routinely on PR #127 (8rqs). Bumped to 480s. WOR-319 pinned
+            # digests force layer re-pulls (~50MB each, no shared cache
+            # across digests) so cold runners need this margin too.
             timeout=480,
             check=False,
             env={**os.environ, "DOCKER_BUILDKIT": "1"},
