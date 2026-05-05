@@ -5,8 +5,8 @@ description: "Native install on Ubuntu / Debian / Alpine, ~60 seconds."
 
 # Install on Linux
 
-Zero to working proxy in ~60 seconds. Tested on Ubuntu 22.04 / 24.04,
-Debian 12, and Alpine 3.20. Other glibc-based distros likely work but
+Zero to working proxy in ~1-2 minutes on a fast network. Tested on
+Ubuntu 22.04 / 24.04, Debian 12, and Alpine 3.20. Other glibc-based distros likely work but
 aren't part of the install matrix.
 
 ## 0. Prerequisites
@@ -103,7 +103,7 @@ What happens:
 ```diff
 - OPENAI_API_KEY=<your-real-openai-key-here>
 + OPENAI_API_KEY=<decoy-prefix>...
-+ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-<alias>/v1
++ OPENAI_BASE_URL=http://127.0.0.1:8787/<alias>/v1
 ```
 
 ## 4. Point your app at the proxy
@@ -121,12 +121,24 @@ EnvironmentFile=/path/to/your/project/.env
 
 ## 5. Verify
 
-```bash
-curl -s "http://127.0.0.1:8787/openai-<alias>/v1/models" \
-  -H "Authorization: Bearer $(grep OPENAI_API_KEY .env | cut -d= -f2)"
+Use your app's normal SDK path — the OpenAI SDK picks up
+`OPENAI_BASE_URL` from `.env` automatically:
+
+```python
+# verify.py
+from openai import OpenAI
+client = OpenAI()
+print(client.models.list().data[0].id)
 ```
 
-Expected: JSON list of models.
+```bash
+python verify.py
+# → prints e.g. "gpt-4o-mini"
+```
+
+**Never put your real API key on a shell command line** — that's the
+exact exfiltration worthless protects against. The SDK pattern reads
+from `.env` at the right boundary.
 
 ## 6. Daily use
 
@@ -137,16 +149,38 @@ Expected: JSON list of models.
 | Reboot machine | **Proxy is gone** | `worthless up` |
 | Logout / login | Depends on your session manager — usually proxy dies | `worthless up` |
 
-**Reboot gap is real.** WOR-175 (Linux systemd user service) ships in
-v1.1 — installs a `~/.config/systemd/user/worthless-proxy.service`
-unit with `Restart=on-failure`. Until then:
+**Reboot gap is real.** WOR-175 (Linux systemd user service) ships
+the install/uninstall commands in v1.1. Until then, write your own
+systemd user unit. Copy-paste this into
+`~/.config/systemd/user/worthless-proxy.service` (replace
+`/home/youruser` with your actual `$HOME`):
 
-```bash
-# Workaround: shell-rc hook
-echo 'pgrep -f "worthless up" >/dev/null || worthless up &> /dev/null &' >> ~/.bashrc
+```ini
+[Unit]
+Description=Worthless local proxy
+After=network.target
+
+[Service]
+ExecStart=/home/youruser/.local/bin/worthless up
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
 ```
 
-Or write your own systemd user unit (template in WOR-175 once it ships).
+Then enable it:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now worthless-proxy.service
+loginctl enable-linger "$USER"   # so the unit survives logout
+```
+
+If you don't want a service file (e.g. ephemeral dev machine), the
+fallback is the same shell-rc opt-in pattern — but be aware silently
+auto-spawning daemons from your `.bashrc` is a tradeoff worth knowing
+about, not the recommended path.
 
 ## 7. Uninstall (manual, until WOR-435 ships)
 
@@ -179,5 +213,5 @@ rm -rf ~/.worthless
   query the proxy.
 - Containerized apps without proper networking — see
   [docker.md](./docker.md).
-- Multi-user systems. `~/.worthless/` is mode 0700 but other root
-  users can still read it. worthless is a per-user tool.
+- Multi-user systems. `~/.worthless/` is mode 0700 but other admins
+  on the box can still read it. worthless is a per-user tool.

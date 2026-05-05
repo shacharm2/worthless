@@ -5,8 +5,9 @@ description: "Native install on Apple Silicon or Intel Mac, ~90 seconds zero to 
 
 # Install on macOS
 
-Zero to working proxy in ~90 seconds. Apple Silicon (M1/M2/M3/M4) and
-Intel Macs both supported. macOS 11 (Big Sur) or newer.
+Zero to working proxy in ~2 minutes on a fast network. Apple Silicon
+(M1/M2/M3/M4) and Intel Macs both supported. macOS 11 (Big Sur) or
+newer.
 
 ## 0. Prerequisites
 
@@ -67,8 +68,8 @@ worthless
 What happens:
 1. worthless detects the API key in `.env`
 2. Prompts: `Lock these keys? [y/N]:` — type `y`
-3. **macOS Keychain popup appears once** — it asks worthless can access
-   "fernet-key" — click **"Always Allow"**
+3. **macOS Keychain popup appears once** — it asks whether worthless
+   can access "fernet-key" — click **"Always Allow"**
 4. Key is split: shard A stays in `.env` (decoy), shard B encrypted in
    `~/.worthless/`
 5. Proxy spawns on `127.0.0.1:8787`
@@ -78,7 +79,7 @@ What happens:
 ```diff
 - OPENAI_API_KEY=<your-real-openai-key-here>
 + OPENAI_API_KEY=<decoy-prefix>...                    # decoy, useless alone
-+ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-<alias>/v1
++ OPENAI_BASE_URL=http://127.0.0.1:8787/<alias>/v1
 ```
 
 **Subsequent runs of `worthless` produce zero popups.** The "Always
@@ -100,16 +101,28 @@ client = OpenAI()  # reads OPENAI_API_KEY + OPENAI_BASE_URL from .env
 
 ## 5. Verify it actually works
 
-Make a real call:
+Make a real call from your app's normal codepath — the OpenAI SDK
+picks up `OPENAI_BASE_URL` from `.env` automatically:
 
-```bash
-curl -s "http://127.0.0.1:8787/openai-<alias>/v1/models" \
-  -H "Authorization: Bearer $(grep OPENAI_API_KEY .env | cut -d= -f2)"
+```python
+# verify.py
+from openai import OpenAI
+client = OpenAI()                  # reads .env (decoy + proxy URL)
+print(client.models.list().data[0].id)
 ```
 
-Expected: a JSON list of OpenAI models. If you get this, the proxy
-reconstructed your key, hit OpenAI, and returned the response — all
-without your real key ever leaving the proxy process.
+```bash
+python verify.py
+# → prints e.g. "gpt-4o-mini"
+```
+
+Expected: a model id. If you get this, the proxy reconstructed your
+key, hit OpenAI, and returned the response — all without your real
+key ever leaving the proxy process.
+
+**Never put your real API key on a shell command line.** That's the
+exact exfiltration worthless protects against. Use the SDK pattern
+above; it reads from `.env` at the right boundary.
 
 ## 6. Daily use
 
@@ -123,7 +136,17 @@ without your real key ever leaving the proxy process.
 
 **The reboot gap is real.** Until WOR-174 ships a launchd LaunchAgent
 in v1.1, you manually `worthless up` after every reboot.
-Workaround: add `worthless up &> /dev/null &` to your `~/.zshrc`.
+
+If you want a less-manual workaround in the meantime — knowing that
+silently auto-spawning a daemon on shell open is a tradeoff — you can
+opt in via your shell rc:
+
+```bash
+# OPT-IN, NOT recommended unless you understand the tradeoff:
+# echo 'worthless up &> /dev/null &' >> ~/.zshrc
+```
+
+The proper fix lands when WOR-174 installs a managed LaunchAgent.
 
 ## 7. Uninstall (manual, until WOR-435 ships)
 
@@ -159,6 +182,10 @@ After WOR-435 ships, this becomes one command: `worthless uninstall`.
   Mac, they can read shard A from `.env` AND extract the keychain
   entry AND query the proxy directly. worthless raises the bar against
   *exfiltrated `.env` files*, not local-attacker scenarios.
+- "Always Allow" widens the trust zone. Once you grant it, **any
+  process running as your user can read the keychain entry without
+  prompting** — including a malicious dev tool you `npm install`.
+  worthless is not a sandbox; it's a leak-mitigation layer.
 - Non-LLM secrets. `worthless scan` only flags OpenAI / Anthropic /
   Google / xAI / OpenRouter key prefixes. Use `gitleaks` or
   `trufflehog` for general secret scanning.

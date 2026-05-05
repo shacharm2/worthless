@@ -97,7 +97,7 @@ the **file-backed keystore** at `~/.worthless/.fernet-key` (mode 0600).
 ```diff
 - OPENAI_API_KEY=<your-real-openai-key-here>
 + OPENAI_API_KEY=<decoy-prefix>...
-+ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-<alias>/v1
++ OPENAI_BASE_URL=http://127.0.0.1:8787/<alias>/v1
 ```
 
 ## 4. Point your app at the proxy
@@ -122,12 +122,22 @@ Use that IP from Windows-side tools.
 
 ## 5. Verify
 
-```bash
-curl -s "http://127.0.0.1:8787/openai-<alias>/v1/models" \
-  -H "Authorization: Bearer $(grep OPENAI_API_KEY .env | cut -d= -f2)"
+Use your app's normal SDK path:
+
+```python
+# verify.py
+from openai import OpenAI
+client = OpenAI()                  # picks up OPENAI_BASE_URL from .env
+print(client.models.list().data[0].id)
 ```
 
-Expected: JSON list of models.
+```bash
+python verify.py
+# → prints e.g. "gpt-4o-mini"
+```
+
+**Never put your real API key on a shell command line** — that's the
+exact exfiltration worthless protects against.
 
 ## 6. Daily use
 
@@ -136,7 +146,7 @@ Expected: JSON list of models.
 | Close WSL terminal | Proxy keeps running (WSL2 keeps the distro alive) | Nothing |
 | `wsl --shutdown` from Windows | **Proxy is gone** + WSL state cleared | `worthless up` next time you start WSL |
 | Reboot Windows | Proxy is gone | `worthless up` |
-| Sleep / wake Windows | WSL usually survives — check `worthless status` | Maybe `worthless up` |
+| Sleep / wake Windows | WSL usually survives — check `worthless status` | `worthless status`; if proxy is gone, `worthless up` |
 
 **WSL2 idles aggressively.** If you don't use WSL for a few minutes
 and Windows decides to suspend it, the proxy's process state is

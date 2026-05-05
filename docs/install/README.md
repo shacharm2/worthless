@@ -12,10 +12,14 @@ line that changes.
 
 | Platform | Guide | Time to working proxy |
 |---|---|---|
-| **macOS** (Apple Silicon or Intel) | [mac.md](./mac.md) | ~90 seconds |
-| **Linux** (Ubuntu / Debian / Alpine) | [linux.md](./linux.md) | ~60 seconds |
-| **Windows + WSL2** | [wsl.md](./wsl.md) | ~90 seconds |
-| **Docker** (your app runs in a container) | [docker.md](./docker.md) | ~5 minutes (one-time per project) |
+| **macOS** (Apple Silicon or Intel) | [mac.md](./mac.md) | ~2 min on a fast network |
+| **Linux** (Ubuntu / Debian / Alpine) | [linux.md](./linux.md) | ~1-2 min on a fast network |
+| **Windows + WSL2** | [wsl.md](./wsl.md) | ~2-3 min on a fast network |
+| **Docker** (your app runs in a container) | [docker.md](./docker.md) | ~5 min (one-time per project) |
+
+Behind a corporate proxy or with cold uv caches, add 1-2 min for the
+PyPI fetch. The dominant cost is `uv tool install worthless` resolving
++ downloading wheels.
 
 Worthless is **always installed natively on your host**, even if your
 app runs in Docker. The Docker image is for self-hosting a worthless
@@ -29,7 +33,11 @@ What worthless does to your project after `worthless lock`:
 | Before | After |
 |---|---|
 | `OPENAI_API_KEY=<your-real-key-here>` | `OPENAI_API_KEY=<decoy-prefix>...` (useless on its own) |
-| (no `OPENAI_BASE_URL`) | `OPENAI_BASE_URL=http://127.0.0.1:8787/openai-<alias>/v1` |
+| (no `OPENAI_BASE_URL`) | `OPENAI_BASE_URL=http://127.0.0.1:8787/<alias>/v1` |
+
+`<alias>` is a per-key identifier worthless prints during `lock` (e.g.
+`openai-bab71e6a`). The proxy infers the upstream provider from the alias
+itself, so the URL is provider-neutral.
 
 Your app code stays the same. The OpenAI/Anthropic SDK reads
 `OPENAI_BASE_URL` and routes through the proxy automatically.

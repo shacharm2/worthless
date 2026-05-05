@@ -5,10 +5,10 @@ description: "When your app runs in a container — how the host CLI, Docker ima
 
 # Install with Docker
 
-Docker is **not a way to run the worthless CLI**. It's a way to run a
-worthless **server** for self-hosting (team mode). The CLI is always
-installed natively on your host. This is the most-misunderstood part
-of worthless and the source of every "Docker integration" question.
+The Docker image is a worthless **server** — not the CLI. The CLI is
+always installed natively on your host. The scenarios below spell out
+which one you need so the most-common confusion ("can I just `docker
+run worthless`?") doesn't happen.
 
 ## TL;DR — pick your scenario
 
@@ -56,7 +56,7 @@ This rewrites your `.env`:
 ```diff
 - OPENAI_API_KEY=<your-real-openai-key-here>
 + OPENAI_API_KEY=<decoy-prefix>...
-+ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-<alias>/v1
++ OPENAI_BASE_URL=http://127.0.0.1:8787/<alias>/v1
 ```
 
 ### A.3 Fix the URL for the container
@@ -77,7 +77,7 @@ After edit:
 ```bash
 # .env
 OPENAI_API_KEY=<decoy-prefix>...
-OPENAI_BASE_URL=http://host.docker.internal:8787/openai-<alias>/v1
+OPENAI_BASE_URL=http://host.docker.internal:8787/<alias>/v1
 ```
 
 ### A.4 Mount the .env into the container
@@ -97,19 +97,27 @@ services:
 
 ### A.5 Verify
 
-From inside the container:
+From inside the container, use your app's normal SDK path. The OpenAI
+SDK picks up `OPENAI_BASE_URL` from the `env_file`-mounted `.env`:
 
-```bash
-docker compose exec app curl -s \
-  "http://host.docker.internal:8787/openai-<alias>/v1/models" \
-  -H "Authorization: Bearer <decoy-prefix>..."
+```python
+# verify.py inside the container's image
+from openai import OpenAI
+client = OpenAI()
+print(client.models.list().data[0].id)
 ```
 
-Expected: JSON list of models.
+```bash
+docker compose exec app python /app/verify.py
+# → prints e.g. "gpt-4o-mini"
+```
 
-> Today's pain: `worthless lock` writes `127.0.0.1` blindly. You edit
-> the `.env` after locking. A future version will detect Docker
-> context or accept a `--docker-host` flag — tracked in v1.2.
+**Never put your real API key on a shell command line** — that's the
+exact exfiltration worthless protects against.
+
+(Auto-detection of Docker context — so the `.env` URL gets written as
+`host.docker.internal` directly without a manual edit — is on the v1.2
+roadmap.)
 
 ## Scenario B — both worthless and app in the same Compose stack
 
@@ -143,33 +151,34 @@ volumes:
 
 ### B.1 Lock from host (CLI on host targets the compose-side proxy)
 
+The compose port mapping `8787:8787` means the worthless service is
+reachable at `127.0.0.1:8787` from your host shell. The host CLI locks
+against it:
+
 ```bash
-# Tell the host CLI where the proxy lives
-export WORTHLESS_PROXY_URL=http://127.0.0.1:8787   # since compose mapped it
 worthless
 ```
 
-This locks against the worthless container. `.env` gets rewritten with
-the URL the **container** will use:
+`.env` gets rewritten with the host-side URL:
 
 ```diff
 - OPENAI_API_KEY=<your-real-openai-key-here>
 + OPENAI_API_KEY=<decoy-prefix>...
-+ OPENAI_BASE_URL=http://worthless:8787/openai-<alias>/v1
++ OPENAI_BASE_URL=http://127.0.0.1:8787/<alias>/v1
 ```
 
-(Compose service name `worthless` resolves inside the network. The
-host CLI lock writes the *container-resolvable* URL.)
+> The container side of your stack will reach the proxy at
+> `http://worthless:8787/<alias>/v1` (compose service name) — not
+> `127.0.0.1`. After locking, edit `.env` to swap `127.0.0.1` for
+> `worthless` so the `app` service can reach the proxy. Auto-detection
+> of compose context is tracked for v1.2.
 
-> Note: today's CLI doesn't auto-detect compose context. You may need
-> to `sed -i 's/127.0.0.1/worthless/' .env` after locking. Tracked in
-> the same v1.2 bead as Scenario A.
+## Scenario C — single-tenant team server
 
-## Scenario C — team server, multiple devs
-
-Run a single shared worthless instance, multiple devs point their CLI
-at it. Each dev's `worthless lock` enrolls keys against the team
-server.
+Run a shared worthless instance behind a TLS-terminating reverse proxy.
+Today this works as **single-tenant** (one shared enrollment table for
+the team) — multi-dev key isolation with per-user auth between CLI and
+remote proxy is not in v0.3.3.
 
 ```yaml
 # docker-compose.yml on the team server box
@@ -177,25 +186,22 @@ services:
   worthless:
     image: ghcr.io/shacharm2/worthless-proxy:0.3.3
     ports:
-      - "443:8787"
+      - "8787:8787"
     environment:
-      WORTHLESS_DEPLOY_MODE: public           # exposes to internet
-      WORTHLESS_TRUSTED_PROXIES: "10.0.0.0/8" # your VPC CIDR
+      WORTHLESS_DEPLOY_MODE: public
+      # REPLACE with your reverse proxy's actual subnet — e.g.
+      # 10.0.1.0/24 for the subnet your Caddy/nginx sits in.
+      WORTHLESS_TRUSTED_PROXIES: "<your-private-CIDR>"
     volumes:
       - worthless-data:/data
     # plus TLS termination — Caddy/nginx reverse proxy in front
 ```
 
-Each dev:
-
-```bash
-export WORTHLESS_PROXY_URL=https://worthless.your-team.example.com
-worthless
-# .env gets URL = https://worthless.your-team.example.com/openai-<alias>/v1
-```
-
-Team mode is **not v1 scope** for self-hosting docs — wait for v1.1
-launch (per WOR-300/388) for the full team-server runbook.
+> Multi-tenant team mode (per-dev enrollments, mTLS between CLI and
+> remote proxy, dashboard) is on the v1.1 launch roadmap — see
+> WOR-300 / WOR-388. The single-tenant flow above works today but
+> assumes your team trusts each other with the shared enrollment
+> table.
 
 ## Common failures
 
@@ -218,12 +224,20 @@ launch (per WOR-300/388) for the full team-server runbook.
   decoy — but if your container is compromised, attacker has shard A
   and the proxy URL. They still can't reconstruct without server-side
   shard B + cap gate, but the audit log shows the request flow.
-- Image supply chain. Use the cosign-signed image:
+- Image supply chain. Use the cosign-signed image (regex must match
+  the publish workflow's Fulcio SAN exactly — workflow path is the
+  `LOAD-BEARING` filename `publish-docker.yml`):
   ```
   cosign verify ghcr.io/shacharm2/worthless-proxy:0.3.3 \
-    --certificate-identity-regexp "^https://github.com/shacharm2/worthless/.github/workflows/publish-docker.yml@refs/tags/v" \
+    --certificate-identity-regexp 'https://github.com/shacharm2/worthless/\.github/workflows/publish-docker\.yml@refs/tags/v.*' \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
   ```
+- `env_file: .env` puts the decoy + proxy URL into the container's
+  process env, visible to anyone in the host's `docker` group via
+  `docker inspect <container>`. The decoy is harmless; the URL leak is
+  fine for `127.0.0.1` and minor for `host.docker.internal`. For
+  Scenario C team-server URLs, this matters — restrict `docker` group
+  access on shared hosts.
 
 ## Why this is more complicated than mac/linux/wsl
 
