@@ -41,7 +41,7 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
         "https://astral.sh/uv/${UV_VERSION}/install.sh" \
         -o /tmp/uv-installer.sh \
     && echo "${ASTRAL_INSTALLER_SHA256}  /tmp/uv-installer.sh" | sha256sum -c - \
-    && sh /tmp/uv-installer.sh \
+    && UV_INSTALL_VERSION="$UV_VERSION" sh /tmp/uv-installer.sh \
     && rm /tmp/uv-installer.sh \
     && test -x "$HOME/.local/bin/uv"
 
