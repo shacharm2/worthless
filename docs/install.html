@@ -234,7 +234,7 @@
         <div class="panel-inner">
           <p class="panel-headline">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 C9 7 8 11 10 15"/><path d="M12 3 C15 7 16 11 14 15"/><path d="M10 15 C8 18 9 21 12 22 C15 21 16 18 14 15"/></svg>
-            Start the proxy, then launch the MCP server
+            Start the proxy — OpenClaw points at it via baseUrl
           </p>
           <div class="code-block">
             <span class="prompt">$</span>
@@ -242,14 +242,13 @@
             <button class="copy-btn" onclick="copy('cmd-oc',this)">⎘</button>
           </div>
           <p class="note" style="margin-bottom:0.75rem;">
-            Worthless exposes an MCP server over stdio. Start it with:
+            OpenClaw reads standard env vars. <code>worthless lock</code> will rewrite <code>openclaw.json</code> automatically once WOR-321 ships. Until then, set the baseUrl manually in your OpenClaw config:
           </p>
-          <div class="code-block" style="margin-bottom:0.75rem;">
-            <span class="prompt">$</span>
-            <span class="cmd" id="cmd-oc-mcp">worthless mcp</span>
-            <button class="copy-btn" onclick="copy('cmd-oc-mcp',this)">⎘</button>
+          <div class="code-block" style="margin-bottom:0.5rem;">
+            <span class="cmd" id="cmd-oc-url" style="color:#93c5fd;">"baseUrl": "http://localhost:8787/v1"</span>
+            <button class="copy-btn" onclick="copy('cmd-oc-url',this)">⎘</button>
           </div>
-          <p class="note">OpenClaw picks it up as a standard MCP server. Same config shape as Claude Code — add <code>"worthless": {"command":"worthless","args":["mcp"]}</code> to your agent's MCP server list. <a href="how-it-works.html">How the split-key proxy works →</a></p>
+          <p class="note">OpenClaw routes through the proxy. Your key looks real but is a dead shard. <a href="how-it-works.html">How the split-key proxy works →</a></p>
         </div>
       </div>
 
