@@ -29,15 +29,9 @@ worthless's installer (`uv tool install`) bootstraps everything inside
 curl -sSL https://worthless.sh | sh
 ```
 
-What happens:
-1. Downloads `install.sh` from the Cloudflare Worker at worthless.sh
-2. Verifies the Astral `uv` installer's SHA256 (pinned in install.sh)
-3. Installs `uv` to `~/.local/bin/uv`
-4. Runs `uv tool install worthless` → `~/.local/bin/worthless`
-5. Prints activation hints if `~/.local/bin` isn't on your PATH
-
-**No keychain popups** during install. The keychain is only touched
-when you first lock a key (step 3).
+The installer drops `uv` and `worthless` into `~/.local/bin/`. **No
+keychain popups during install** — the keychain is only touched when
+you first lock a key (step 3).
 
 ## 2. Verify install
 
@@ -72,15 +66,7 @@ What happens:
    can access "fernet-key" — click **"Always Allow"**
 4. Key is split: shard A stays in `.env` (decoy), shard B encrypted in
    `~/.worthless/`
-5. Proxy spawns on `127.0.0.1:8787`
-
-`.env` is rewritten:
-
-```diff
-- OPENAI_API_KEY=<your-real-openai-key-here>
-+ OPENAI_API_KEY=<decoy-prefix>...                    # decoy, useless alone
-+ OPENAI_BASE_URL=http://127.0.0.1:8787/<alias>/v1
-```
+5. `.env` is rewritten (see [README — what `worthless lock` does](./README.md#what-worthless-lock-does-to-your-env)) and the proxy spawns on `127.0.0.1:8787`
 
 **Subsequent runs of `worthless` produce zero popups.** The "Always
 Allow" you clicked grants the binary permanent ACL trust.
@@ -101,28 +87,8 @@ client = OpenAI()  # reads OPENAI_API_KEY + OPENAI_BASE_URL from .env
 
 ## 5. Verify it actually works
 
-Make a real call from your app's normal codepath — the OpenAI SDK
-picks up `OPENAI_BASE_URL` from `.env` automatically:
-
-```python
-# verify.py
-from openai import OpenAI
-client = OpenAI()                  # reads .env (decoy + proxy URL)
-print(client.models.list().data[0].id)
-```
-
-```bash
-python verify.py
-# → prints e.g. "gpt-4o-mini"
-```
-
-Expected: a model id. If you get this, the proxy reconstructed your
-key, hit OpenAI, and returned the response — all without your real
-key ever leaving the proxy process.
-
-**Never put your real API key on a shell command line.** That's the
-exact exfiltration worthless protects against. Use the SDK pattern
-above; it reads from `.env` at the right boundary.
+See [README — Verify it works](./README.md#verify-it-works) for the
+SDK snippet. Same on every platform.
 
 ## 6. Daily use
 
@@ -134,7 +100,9 @@ above; it reads from `.env` at the right boundary.
 | Wake from sleep | Proxy keeps running | Nothing |
 | Switch projects (`cd`) | Each project's `.env` has its own proxy URL | Nothing — same daemon serves all |
 
-**The reboot gap is real.** Until WOR-174 ships a launchd LaunchAgent
+### Why no auto-start? (the reboot gap)
+
+The reboot gap is real. Until WOR-174 ships a launchd LaunchAgent
 in v1.1, you manually `worthless up` after every reboot.
 
 If you want a less-manual workaround in the meantime — knowing that

@@ -5,9 +5,7 @@ description: "Native install inside WSL2 Linux subsystem on Windows 10/11."
 
 # Install on WSL2 (Windows + Linux subsystem)
 
-WSL2 is the **documented happy path for Windows developers**. worthless
-works inside WSL2 like a native Linux install, with one important
-caveat about where you run it.
+WSL2 is the **documented happy path for Windows developers**.
 
 ## TL;DR
 
@@ -41,12 +39,8 @@ cd ~                                    # always start from your WSL home
 curl -sSL https://worthless.sh | sh
 ```
 
-What happens:
-1. Same as Linux install — `uv` + `worthless` to `~/.local/bin`
-2. install.sh detects WSL via `/proc/version` containing "microsoft"
-3. If it detects you're in `/mnt/*`, it warns you (but doesn't abort)
-
-**The /mnt/c warning matters.** Read the next section.
+install.sh detects WSL via `/proc/version` and warns (without aborting)
+if your `pwd` is under `/mnt/*`. See §1a for why that matters.
 
 ## 1a. Why /mnt/c matters
 
@@ -92,13 +86,7 @@ WSL2 typically does NOT have a session bus by default → worthless uses
 the **file-backed keystore** at `~/.worthless/.fernet-key` (mode 0600).
 **No popups.** No Windows Credential Manager involvement.
 
-`.env` after lock:
-
-```diff
-- OPENAI_API_KEY=<your-real-openai-key-here>
-+ OPENAI_API_KEY=<decoy-prefix>...
-+ OPENAI_BASE_URL=http://127.0.0.1:8787/<alias>/v1
-```
+`.env` is rewritten (see [README — what `worthless lock` does](./README.md#what-worthless-lock-does-to-your-env)).
 
 ## 4. Point your app at the proxy
 
@@ -122,22 +110,8 @@ Use that IP from Windows-side tools.
 
 ## 5. Verify
 
-Use your app's normal SDK path:
-
-```python
-# verify.py
-from openai import OpenAI
-client = OpenAI()                  # picks up OPENAI_BASE_URL from .env
-print(client.models.list().data[0].id)
-```
-
-```bash
-python verify.py
-# → prints e.g. "gpt-4o-mini"
-```
-
-**Never put your real API key on a shell command line** — that's the
-exact exfiltration worthless protects against.
+See [README — Verify it works](./README.md#verify-it-works) for the
+SDK snippet. Same on every platform.
 
 ## 6. Daily use
 

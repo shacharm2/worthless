@@ -12,26 +12,12 @@ run worthless`?") doesn't happen.
 
 ## TL;DR — pick your scenario
 
-| Your setup | What to do |
-|---|---|
-| **Solo dev. App runs natively. No Docker.** | Use [mac.md](./mac.md) / [linux.md](./linux.md) / [wsl.md](./wsl.md) — Docker irrelevant |
-| **Solo dev. App runs in a Docker container. worthless on host.** | This guide, §"Scenario A" |
-| **Solo dev. Want both worthless + app inside the same Docker Compose stack.** | This guide, §"Scenario B" |
-| **Team. Want a shared worthless server everyone points at.** | This guide, §"Scenario C" |
-
-## What the Docker image actually is
-
-`ghcr.io/shacharm2/worthless-proxy:0.3.3` packages worthless as a
-**server** (proxy + control plane in one container). You run it like
-any other service:
-
-```bash
-docker run -d -p 8787:8787 ghcr.io/shacharm2/worthless-proxy:0.3.3
-```
-
-That gives you a worthless **server** on port 8787. It does NOT give
-you a `worthless` command on your terminal. To lock keys you still
-need the CLI on your host.
+| Your setup | What to do | Container URL |
+|---|---|---|
+| **Solo dev. App runs natively. No Docker.** | Use [mac.md](./mac.md) / [linux.md](./linux.md) / [wsl.md](./wsl.md) | n/a (`127.0.0.1:8787`) |
+| **Solo dev. App in container. worthless on host.** | [Scenario A](#scenario-a--your-app-in-docker-worthless-on-host) | `host.docker.internal:8787` |
+| **Solo dev. worthless + app in same Compose stack.** | [Scenario B](#scenario-b--both-worthless-and-app-in-the-same-compose-stack) | service-name `worthless:8787` |
+| **Team. Shared worthless server (single-tenant).** | [Scenario C](#scenario-c--single-tenant-team-server) | your TLS endpoint |
 
 ## Scenario A — your app in Docker, worthless on host
 
@@ -59,7 +45,7 @@ This rewrites your `.env`:
 + OPENAI_BASE_URL=http://127.0.0.1:8787/<alias>/v1
 ```
 
-### A.3 Fix the URL for the container
+### A.3 Use `host.docker.internal:8787` (not `127.0.0.1`)
 
 **This is the gotcha.** From inside a container, `127.0.0.1` means
 "the container itself" — not "the host." Your container can't reach
@@ -97,23 +83,8 @@ services:
 
 ### A.5 Verify
 
-From inside the container, use your app's normal SDK path. The OpenAI
-SDK picks up `OPENAI_BASE_URL` from the `env_file`-mounted `.env`:
-
-```python
-# verify.py inside the container's image
-from openai import OpenAI
-client = OpenAI()
-print(client.models.list().data[0].id)
-```
-
-```bash
-docker compose exec app python /app/verify.py
-# → prints e.g. "gpt-4o-mini"
-```
-
-**Never put your real API key on a shell command line** — that's the
-exact exfiltration worthless protects against.
+From inside the container, use the SDK pattern from
+[README — Verify it works](./README.md#verify-it-works) (`docker compose exec app python /app/verify.py` etc.).
 
 (Auto-detection of Docker context — so the `.env` URL gets written as
 `host.docker.internal` directly without a manual edit — is on the v1.2

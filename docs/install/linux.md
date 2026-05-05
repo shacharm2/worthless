@@ -38,15 +38,9 @@ sudo apk add --no-cache bash ca-certificates curl tar zstd
 curl -sSL https://worthless.sh | sh
 ```
 
-What happens:
-1. Downloads `install.sh` (Cloudflare Worker)
-2. Verifies Astral `uv` installer SHA256
-3. `uv` lands in `~/.local/bin/uv`
-4. `uv tool install worthless` → `~/.local/bin/worthless`
-5. Prints `~/.local/bin` PATH activation hint for your shell
-
-**No password prompts.** install.sh runs entirely in `$HOME`. It does
-NOT need sudo and won't ask for it.
+The installer drops `uv` and `worthless` into `~/.local/bin/`. **No
+password prompts.** install.sh runs entirely in `$HOME` — it does not
+need sudo and won't ask for it.
 
 If you see `your shell may need ~/.local/bin on PATH`, add the
 suggested line to your shell rc:
@@ -90,21 +84,12 @@ cat .env
 worthless
 ```
 
-What happens:
 - On a desktop with GNOME / KDE: a credential prompt may appear once
-  (varies by desktop env), grant access permanently.
-- On a server with no DBus session: NO prompt — worthless uses the
+  (varies by desktop env). Grant access permanently.
+- On a server with no DBus session: **no prompt** — worthless uses the
   file-backed fallback at `~/.worthless/.fernet-key` (mode 0600).
-- Key is split, `.env` is rewritten with `OPENAI_BASE_URL=...`, proxy
-  spawns on `127.0.0.1:8787`.
 
-`.env` after lock:
-
-```diff
-- OPENAI_API_KEY=<your-real-openai-key-here>
-+ OPENAI_API_KEY=<decoy-prefix>...
-+ OPENAI_BASE_URL=http://127.0.0.1:8787/<alias>/v1
-```
+`.env` is rewritten (see [README — what `worthless lock` does](./README.md#what-worthless-lock-does-to-your-env)) and the proxy spawns on `127.0.0.1:8787`.
 
 ## 4. Point your app at the proxy
 
@@ -121,24 +106,8 @@ EnvironmentFile=/path/to/your/project/.env
 
 ## 5. Verify
 
-Use your app's normal SDK path — the OpenAI SDK picks up
-`OPENAI_BASE_URL` from `.env` automatically:
-
-```python
-# verify.py
-from openai import OpenAI
-client = OpenAI()
-print(client.models.list().data[0].id)
-```
-
-```bash
-python verify.py
-# → prints e.g. "gpt-4o-mini"
-```
-
-**Never put your real API key on a shell command line** — that's the
-exact exfiltration worthless protects against. The SDK pattern reads
-from `.env` at the right boundary.
+See [README — Verify it works](./README.md#verify-it-works) for the
+SDK snippet. Same on every platform.
 
 ## 6. Daily use
 
@@ -149,7 +118,9 @@ from `.env` at the right boundary.
 | Reboot machine | **Proxy is gone** | `worthless up` |
 | Logout / login | Depends on your session manager — usually proxy dies | `worthless up` |
 
-**Reboot gap is real.** WOR-175 (Linux systemd user service) ships
+### Why no auto-start? (the reboot gap)
+
+WOR-175 (Linux systemd user service) ships
 the install/uninstall commands in v1.1. Until then, write your own
 systemd user unit. Copy-paste this into
 `~/.config/systemd/user/worthless-proxy.service` (replace
