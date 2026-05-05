@@ -13,8 +13,13 @@ FROM python:3.13-slim-bookworm@sha256:f13a6b7565175da40695e8109f64cbc4d2e65f4c9e
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tini \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r worthless && useradd -r -g worthless -m worthless \
-    && mkdir -p /data /secrets && chown worthless:worthless /data /secrets
+    && groupadd -r -g 10001 worthless \
+    && useradd -r -u 10001 -g worthless -d /data -s /sbin/nologin worthless-proxy \
+    && useradd -r -u 10002 -g worthless -d /nonexistent -s /sbin/nologin worthless-crypto \
+    && mkdir -p /data /secrets /run/worthless \
+    && chown worthless-proxy:worthless /data /secrets \
+    && chown root:worthless /run/worthless \
+    && chmod 0770 /run/worthless
 
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin/worthless /usr/local/bin/worthless
@@ -40,7 +45,16 @@ EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/healthz')"
 
-USER worthless
+# WOR-310: no static USER directive — container starts as root so deploy/start.py
+# can spawn the sidecar as worthless-crypto (uid 10002) and drop self to
+# worthless-proxy (uid 10001) before exec uvicorn. A pre-dropped uid cannot
+# call setresuid() to a different uid; the runtime priv-drop dance requires
+# the entrypoint to begin as root.
+
+# Self-documenting security contract: docker inspect surfaces these so
+# operators see what flags the security claim depends on.
+LABEL org.worthless.required-run-flags="--security-opt=no-new-privileges"
+LABEL org.worthless.recommended-run-flags="--read-only --tmpfs /tmp --cap-drop=ALL"
 
 # Bind/host live in entrypoint.sh — don't re-add `--host` here, it bypasses deploy_mode.
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]

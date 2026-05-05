@@ -407,17 +407,136 @@ class TestDockerfile:
         assert healthcheck_match, "HEALTHCHECK instruction not found"
         assert "/healthz" in healthcheck_match.group()
 
-    def test_non_root_user(self, dockerfile_text: str):
-        """Container must not run as root.
+    def test_no_static_user_directive(self, dockerfile_text: str):
+        """Container must NOT pin a USER at build time (WOR-310 two-uid topology).
 
-        A USER instruction must appear AFTER the HEALTHCHECK and BEFORE
-        CMD/ENTRYPOINT, ensuring the app process is unprivileged.
+        Pre-WOR-310 the Dockerfile ended with ``USER worthless``. The
+        single-container blessed topology requires TWO uids (proxy +
+        crypto) and a runtime privilege drop in ``deploy/start.py`` —
+        which is impossible from a pre-dropped uid because the kernel
+        won't let a non-root process call ``setresuid`` to a different
+        uid. A static ``USER`` directive freezes the runtime uid at
+        build time and prevents the dance entirely.
+
+        See ``deploy/start.py::main`` for the runtime drop:
+        ``setresuid(worthless-proxy)`` after spawning the sidecar as
+        ``worthless-crypto`` and before ``execvp(uvicorn)``.
         """
-        assert re.search(r"^USER\s+(?!root)\S+", dockerfile_text, re.MULTILINE)
+        assert not re.search(r"^USER\s+\S+", dockerfile_text, re.MULTILINE), (
+            "WOR-310: Dockerfile must not pin a USER at build time. "
+            "Privilege drop happens at runtime in deploy/start.py so the "
+            "container can spawn the sidecar as worthless-crypto and run "
+            "uvicorn as worthless-proxy from a single root entrypoint."
+        )
 
-    def test_user_is_worthless(self, dockerfile_text: str):
-        """The runtime user must be 'worthless' (created in Dockerfile)."""
-        assert re.search(r"^USER worthless$", dockerfile_text, re.MULTILINE)
+    def test_creates_proxy_user_uid_10001(self, dockerfile_text: str):
+        """worthless-proxy must be a real user with a pinned uid (WOR-310).
+
+        Pinning the uid (10001) keeps the runtime check
+        ``assert os.getuid() == proxy_uid`` in ``deploy/start.py``
+        deterministic across image rebuilds — a drifting uid would let a
+        future Dockerfile edit silently flip uvicorn back to root.
+        """
+        assert re.search(r"useradd[^\n]*-u\s+10001[^\n]*worthless-proxy", dockerfile_text), (
+            "WOR-310: missing 'useradd ... -u 10001 ... worthless-proxy'"
+        )
+
+    def test_creates_crypto_user_uid_10002(self, dockerfile_text: str):
+        """worthless-crypto must be a real user with a pinned uid (WOR-310).
+
+        Distinct uid from worthless-proxy is the kernel-enforced wall
+        that defeats row 1 of the v1.1 red-team table: even with RCE in
+        the proxy, ``ptrace`` and ``/proc/<crypto-pid>/mem`` are blocked
+        because uid != uid. mlock + DUMPABLE=0 layer additional defense
+        (see WOR-310 Phase A).
+        """
+        assert re.search(r"useradd[^\n]*-u\s+10002[^\n]*worthless-crypto", dockerfile_text), (
+            "WOR-310: missing 'useradd ... -u 10002 ... worthless-crypto'"
+        )
+
+    def test_shared_group_worthless(self, dockerfile_text: str):
+        """A shared 'worthless' group must let both uids share /run/worthless.
+
+        Both uids belong to gid 10001 so the AF_UNIX socket file in
+        ``/run/worthless/<pid>/sidecar.sock`` is accessible to either
+        process via group permissions, while neither can read the
+        other's process memory because uids differ.
+        """
+        assert re.search(r"groupadd[^\n]*-g\s+10001[^\n]*worthless\b", dockerfile_text), (
+            "WOR-310: missing 'groupadd ... -g 10001 worthless'"
+        )
+
+    def test_worthless_crypto_home_nonexistent(self, dockerfile_text: str):
+        """worthless-crypto home dir must be /nonexistent (Q3 decision).
+
+        Debian convention for service users with no real home. If
+        anything tries to read $HOME for the crypto user, it errors
+        instead of silently writing to a real directory the user could
+        be tricked into accessing.
+        """
+        assert re.search(
+            r"useradd[^\n]*-d\s+/nonexistent[^\n]*worthless-crypto", dockerfile_text
+        ), "WOR-310: worthless-crypto must have -d /nonexistent (Q3 decision)"
+
+    def test_creates_run_worthless_dir(self, dockerfile_text: str):
+        """/run/worthless must be created so split_to_tmpfs has a writable home.
+
+        Phase C sets WORTHLESS_RUN_DIR=/run/worthless so per-PID share
+        and socket files land here. /run is normally tmpfs on Linux —
+        we mkdir at build time to set the right ownership and mode
+        before any process tries to write into it.
+        """
+        assert re.search(r"mkdir[^\n]*-p[^\n]*/run/worthless", dockerfile_text), (
+            "WOR-310: missing 'mkdir -p /run/worthless'"
+        )
+
+    def test_run_worthless_owned_root_worthless_group_0770(self, dockerfile_text: str):
+        """/run/worthless must be root:worthless 0770 (group-writable).
+
+        Owner=root means neither uid can rename or chmod the dir.
+        Group=worthless + mode 0770 means BOTH uids (proxy + crypto)
+        can create their per-PID subdirs and the socket file, but no
+        other user on the box (if /run/worthless ever leaks outside
+        the container) can read either.
+        """
+        assert re.search(r"chown\s+root:worthless\s+/run/worthless", dockerfile_text), (
+            "WOR-310: /run/worthless must be chown'd root:worthless"
+        )
+        assert re.search(r"chmod\s+0?770\s+/run/worthless", dockerfile_text), (
+            "WOR-310: /run/worthless must be chmod 0770 (group-writable, world-blocked)"
+        )
+
+    def test_image_label_required_run_flags(self, dockerfile_text: str):
+        """Image must advertise --security-opt=no-new-privileges as required.
+
+        ``no-new-privileges`` is what blocks the kernel's setuid-binary
+        escalation route. We can't enforce it from inside the image —
+        Docker has to be invoked with the flag — so we surface it via
+        a LABEL the operator (or `docker inspect`) can read.
+
+        Q2 decision: warn-loud at startup if the flag is absent, do
+        NOT refuse to boot (Render/Fly users can't set it).
+        """
+        assert re.search(
+            r'LABEL[^\n]*org\.worthless\.required-run-flags="?[^"\n]*--security-opt=no-new-privileges',
+            dockerfile_text,
+        ), (
+            "WOR-310: LABEL org.worthless.required-run-flags must mention "
+            "--security-opt=no-new-privileges"
+        )
+
+    def test_image_label_recommended_run_flags(self, dockerfile_text: str):
+        """Image must advertise --read-only + --cap-drop=ALL as recommended.
+
+        These are best-practice hardening flags users SHOULD set but
+        won't always be able to (Render/Fly defaults vary). The LABEL
+        documents intent without enforcing — the docs site (WOR-314)
+        will reference this label so the image is self-documenting.
+        """
+        assert re.search(
+            r"LABEL[^\n]*org\.worthless\.recommended-run-flags",
+            dockerfile_text,
+        ), "WOR-310: missing LABEL org.worthless.recommended-run-flags"
 
     def test_expose_8787(self, dockerfile_text: str):
         """Port 8787 must be exposed (the standard proxy port)."""
