@@ -229,6 +229,21 @@ install_or_upgrade_worthless() {
     # Env var pins; otherwise uv resolves the latest worthless from PyPI.
     spec="worthless${WORTHLESS_VERSION:+==${WORTHLESS_VERSION}}"
 
+    # WOR-317 fast-path: if the requested version is already installed,
+    # short-circuit. `uv tool install` followed by `uv tool upgrade` writes
+    # tool metadata even on a no-op, breaking byte-for-byte idempotency
+    # for repeated `curl ... | sh` runs. This guard keeps re-runs cheap
+    # and deterministic when the user pins WORTHLESS_VERSION (or when CI
+    # bootstraps the same installer twice).
+    if [ -n "${WORTHLESS_VERSION:-}" ]; then
+        installed_ver="$(uv tool list 2>/dev/null \
+            | awk '/^worthless / {sub("^v", "", $2); print $2; exit}')"
+        if [ -n "$installed_ver" ] && [ "$installed_ver" = "$WORTHLESS_VERSION" ]; then
+            ok "  worthless ${installed_ver} already installed"
+            return 0
+        fi
+    fi
+
     # First run: `uv tool install`. Re-run: that fails with "already installed",
     # so we fall through to `uv tool upgrade` for an idempotent upgrade path.
     if uv tool install "$spec" >/dev/null 2>&1; then

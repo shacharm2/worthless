@@ -65,17 +65,43 @@ recomputed from the live Astral CDN — not copied from release notes.
   curl -sSL "https://astral.sh/uv/${NEW}/install.sh" | sha256sum
   ```
 - [ ] Edit `install.sh`: update `UV_VERSION` and `ASTRAL_INSTALLER_SHA256` together in one commit
-- [ ] Edit `tests/install_fixtures/Dockerfile.ubuntu-with-uv`: bump the pinned
-      `https://astral.sh/uv/<VERSION>/install.sh` URL to match the new `UV_VERSION`.
-      Without this lockstep bump, the `ubuntu-with-uv` fixture pre-installs
-      a version that no longer matches install.sh's pin, install.sh re-installs,
-      and `verify_uv_reuse.sh` fails because the uv hash changed.
+- [ ] Edit `tests/install_fixtures/Dockerfile.ubuntu-with-uv` ONLY if the lockstep
+      `awk` extraction has been disabled — the fixture sources `UV_VERSION` and
+      `ASTRAL_INSTALLER_SHA256` directly from the copied `install.sh` at build
+      time, so a single edit in `install.sh` propagates automatically.
 - [ ] Re-run `pytest -m docker tests/test_install_docker.py` to confirm the bare-Ubuntu E2E still passes with the new pair
 
 Never accept a SHA256 from a pull request without re-fetching yourself.
 A malicious PR that bumps both `UV_VERSION` and the SHA together to
 attacker-controlled values is exactly the attack this pin is supposed
 to prevent.
+
+## Bumping base image digests (WOR-319)
+
+The Docker fixtures pin every base image by `@sha256:<digest>` instead of a
+floating tag (`ubuntu:24.04`). Floating tags let a compromised upstream ship
+malware through our matrix. Pinning makes the supply chain reproducible.
+
+When refreshing for a newer minor (e.g. ubuntu 24.04 patch refresh), bump
+all fixtures together — partial bumps drift one fixture against another.
+
+- [ ] Resolve the digest for each base via the registry API:
+  ```sh
+  TOKEN="$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/ubuntu:pull" | jq -r .token)"
+  curl -sI -H "Authorization: Bearer $TOKEN" \
+    -H "Accept: application/vnd.oci.image.index.v1+json" \
+    "https://registry-1.docker.io/v2/library/ubuntu/manifests/24.04" \
+    | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}'
+  ```
+- [ ] Repeat for `library/alpine:3.20`, `library/debian:12-slim`, `library/ubuntu:22.04`
+- [ ] Update every `FROM <name>:<tag>@sha256:<digest>` line under `tests/install_fixtures/`
+      in one commit (test_dockerfiles_pin_base_image_digests enforces all-or-nothing)
+- [ ] Re-run `pytest tests/test_install_static.py -k pin_base_image_digests` to confirm
+- [ ] Re-run `pytest -m docker tests/test_install_docker.py` to confirm matrix still builds
+
+Never accept a digest from a pull request without re-fetching yourself.
+The same supply-chain logic applies — a digest pinned to attacker-controlled
+content is the attack this pin is supposed to prevent.
 
 ## Sign-off
 

@@ -1,7 +1,7 @@
 # Bare Ubuntu image — NO python3 installed. Validates the fresh-box AC:
 # "fresh non-Python Linux box → curl install.sh | sh → worthless --version works."
 # Keep this image minimal. Adding python3 here defeats the test.
-FROM ubuntu:24.04
+FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
 
 ENV DEBIAN_FRONTEND=noninteractive
 

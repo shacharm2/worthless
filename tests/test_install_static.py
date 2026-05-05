@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from tests._install_helpers import INSTALL_SH
+from tests._install_helpers import INSTALL_FIXTURES, INSTALL_SH
 
 
 @pytest.fixture(scope="module")
@@ -27,6 +27,282 @@ def test_set_eu_present(install_text: str) -> None:
 def test_uv_version_pinned(install_text: str) -> None:
     assert re.search(r"\bUV_VERSION\s*=\s*['\"]?\d+\.\d+", install_text), (
         "install.sh must pin UV_VERSION to a specific release"
+    )
+
+
+# --- WOR-319: supply-chain pinning of base images + Astral installer SHA -----
+
+
+def test_dockerfiles_pin_base_image_digests() -> None:
+    """Every FROM line in install fixtures must pin to @sha256:<digest>.
+
+    Floating tags (`ubuntu:24.04`, `python:3.13-slim-bookworm`) let a
+    compromised upstream ship malware through our install matrix. Pinning
+    by sha256 digest makes the supply chain reproducible — the digest is
+    the contract, the tag is just a label.
+    """
+    dockerfiles = sorted(INSTALL_FIXTURES.glob("Dockerfile.*"))
+    assert dockerfiles, "expected Dockerfile fixtures under tests/install_fixtures/"
+
+    digest_re = re.compile(r"^FROM\s+\S+@sha256:[0-9a-f]{64}\b", re.MULTILINE)
+    from_re = re.compile(r"^FROM\s+\S+", re.MULTILINE)
+
+    unpinned: list[str] = []
+    for f in dockerfiles:
+        text = f.read_text(encoding="utf-8")
+        from_lines = from_re.findall(text)
+        digest_lines = digest_re.findall(text)
+        if len(from_lines) != len(digest_lines):
+            unpinned.append(f"{f.name}: {from_lines}")
+
+    assert not unpinned, (
+        "install fixtures must pin base images by @sha256 digest — "
+        "floating tags allow upstream tampering to enter the matrix.\n"
+        "Unpinned FROM lines:\n  " + "\n  ".join(unpinned)
+    )
+
+
+def test_ubuntu_with_uv_pins_astral_installer() -> None:
+    """Dockerfile.ubuntu-with-uv must verify the Astral installer SHA.
+
+    A raw `curl … | sh` pipeline executes whatever Astral serves at fetch
+    time. The fixture must instead: (1) download to a file, (2) verify
+    against the same SHA constant install.sh enforces, (3) only then run.
+    Without this, a compromised CDN slips arbitrary code into our test
+    matrix even though install.sh itself is hardened.
+    """
+    dockerfile = INSTALL_FIXTURES / "Dockerfile.ubuntu-with-uv"
+    text = dockerfile.read_text(encoding="utf-8")
+
+    # Negative: no `curl … astral.sh … | sh` pipe (raw remote-exec).
+    assert not re.search(
+        r"curl[^|]*astral\.sh[^|]*\|\s*sh\b",
+        text,
+    ), (
+        "Dockerfile.ubuntu-with-uv must NOT run `curl … astral.sh … | sh` — "
+        "fetch to a file and verify SHA256 before executing."
+    )
+
+    # Positive: download → sha256 verification → execute.
+    assert re.search(r"sha256sum|shasum\s+-a\s+256", text), (
+        "Dockerfile.ubuntu-with-uv must verify the downloaded Astral "
+        "installer with sha256sum (or shasum -a 256) before running it."
+    )
+
+    # Positive: SHA constant is sourced from install.sh, not a copy.
+    # We `awk` it out of the on-disk install.sh so a UV_VERSION bump in
+    # install.sh propagates into the fixture without manual edits.
+    assert re.search(r"ASTRAL_INSTALLER_SHA256", text), (
+        "Dockerfile.ubuntu-with-uv must reference ASTRAL_INSTALLER_SHA256 "
+        "(extracted from install.sh) so the SHA stays in lockstep."
+    )
+
+
+# --- WOR-320: BuildKit cache mount for uv downloads --------------------------
+
+
+def _run_blocks(dockerfile_text: str) -> list[str]:
+    """Return each RUN command in a Dockerfile as a single string.
+
+    A RUN command spans the `RUN` line plus any `\\`-continuation lines.
+    It ends when a line not ending in `\\` is reached. CMD / COPY lines
+    that follow the RUN do NOT belong to it.
+    """
+    blocks: list[str] = []
+    lines = dockerfile_text.splitlines()
+    i = 0
+    while i < len(lines):
+        if re.match(r"^RUN\b", lines[i]):
+            buf: list[str] = []
+            while i < len(lines):
+                stripped = lines[i].rstrip()
+                continuation = stripped.endswith("\\")
+                buf.append(stripped[:-1].rstrip() if continuation else stripped)
+                i += 1
+                if not continuation:
+                    break
+            blocks.append(" ".join(buf))
+        else:
+            i += 1
+    return blocks
+
+
+def _run_clauses(dockerfile_text: str) -> list[tuple[str, str]]:
+    """Return (block, clause) pairs for each command inside RUN blocks.
+
+    A multi-clause RUN (chained with `&&` or `;`) splits into one clause
+    per command so `chmod +x install.sh` and `sh /work/install.sh` are
+    classified independently. The full block is returned alongside so
+    callers can locate the cache-mount directive (which lives on the
+    RUN keyword, not inside individual clauses).
+    """
+    pairs: list[tuple[str, str]] = []
+    for block in _run_blocks(dockerfile_text):
+        body = block[3:]  # drop leading "RUN"
+        for clause in re.split(r"&&|;", body):
+            clause = clause.strip()
+            if clause:
+                pairs.append((block, clause))
+    return pairs
+
+
+def test_dockerfiles_use_uv_cache_mount() -> None:
+    """Build-time RUN that runs uv must use BuildKit cache mount.
+
+    /root/.cache/uv holds Astral installer downloads + Python bootstrap
+    tarballs (PBS) + wheel cache. Without the cache mount, every matrix
+    run re-fetches the same MB-sized payloads from astral.sh, slowing CI
+    and exposing us to upstream rate limits.
+
+    Scope: any Dockerfile fixture with a build-time RUN that executes
+    install.sh, the Astral installer, or a `uv …` command. CMD-only
+    fixtures (where install.sh runs at container start) are skipped —
+    BuildKit cache mounts apply at build time only.
+    """
+    dockerfiles = sorted(INSTALL_FIXTURES.glob("Dockerfile.*"))
+    cache_mount_re = re.compile(
+        r"--mount=type=cache,target=/root/\.cache/uv\b",
+    )
+    syntax_directive_re = re.compile(r"^#\s*syntax=docker/dockerfile:1\.\d", re.MULTILINE)
+
+    # A RUN clause is "uv-running" if its FIRST verb executes install.sh,
+    # downloads the Astral installer, runs the installer, or invokes a
+    # `uv` subcommand. Anchoring at the start of a clause excludes
+    # chmod-on-install.sh (sets bits) and `! command -v uv` (sentinel).
+    # The `(?:\S+/)?install\.sh\b` shape pins the WHOLE filename — earlier
+    # `\S*install\.sh` would over-match `verify_install.sh` if it ever
+    # appeared as the verb of a RUN clause.
+    uv_run_re = re.compile(
+        r"^(?:sh|bash)\s+(?:\S+/)?install\.sh\b"  # `sh /work/install.sh`
+        r"|^(?:sh|bash)\s+(?:\S+/)?uv-installer\.sh\b"  # `sh /tmp/uv-installer.sh`
+        r"|astral\.sh/uv/"  # downloading from astral
+        r"|^/\S*\.local/bin/uv\s"  # running the installed binary
+        r"|^uv\s+(?:tool|install|sync|run|cache|venv|python|self)\b"
+    )
+
+    missing: list[str] = []
+    for f in dockerfiles:
+        text = f.read_text(encoding="utf-8")
+        uv_blocks = sorted(
+            {block for block, clause in _run_clauses(text) if uv_run_re.search(clause)}
+        )
+        if not uv_blocks:
+            continue  # CMD-only fixture — cache mount doesn't apply
+        # EVERY uv-running RUN block must carry the cache mount, not just one.
+        # `any` here would silently allow a mixed fixture (one mounted RUN + one
+        # unmounted RUN) where the unmounted RUN keeps re-fetching from astral.
+        unmounted = [b for b in uv_blocks if not cache_mount_re.search(b)]
+        if unmounted:
+            missing.append(
+                f"{f.name}: {len(unmounted)} of {len(uv_blocks)} uv-running RUN "
+                "block(s) without cache mount"
+            )
+            continue
+        if not syntax_directive_re.search(text):
+            missing.append(
+                f"{f.name}: cache mount used but `# syntax=docker/dockerfile:1.x` "
+                "directive missing — RUN --mount requires the directive"
+            )
+
+    assert not missing, (
+        "Build-time RUN steps invoking uv must mount the BuildKit cache:\n  " + "\n  ".join(missing)
+    )
+
+
+# --- WOR-318: non-root user fixture ------------------------------------------
+
+
+def test_nonroot_fixture_exists() -> None:
+    """A hardened non-root container must be in the install matrix.
+
+    install.sh writes to ~/.local/bin and ~/.cache/uv — both rooted at
+    $HOME — so it should already work for non-root users. This fixture
+    proves it: a `worthless` UID under `useradd` (no sudo, no root)
+    completes install and ends up with the binary on PATH.
+
+    The actual matrix wiring lives in tests/test_install_docker.py
+    INSTALL_MATRIX. This static guard pins the file's existence and
+    minimal shape so the matrix entry can never reference a missing
+    fixture.
+    """
+    dockerfile = INSTALL_FIXTURES / "Dockerfile.ubuntu-nonroot"
+    assert dockerfile.is_file(), (
+        f"missing fixture: {dockerfile.name} — non-root install must be in the matrix"
+    )
+
+    text = dockerfile.read_text(encoding="utf-8")
+    assert re.search(r"^RUN\s+useradd\b", text, re.MULTILINE), (
+        f"{dockerfile.name} must `useradd` a non-root user before `USER` switch"
+    )
+    assert re.search(r"^USER\s+worthless\b", text, re.MULTILINE), (
+        f"{dockerfile.name} must drop privileges via `USER worthless`"
+    )
+
+
+# --- WOR-317: idempotency — second install.sh run is a no-op ----------------
+
+
+def test_idempotency_fixture_wired() -> None:
+    """Idempotency check must be present in the install matrix.
+
+    A re-run of `curl … | sh` must not bump the installed version, must
+    not re-download wheels, must not change the binary hash. This guards
+    the "safe to put in CI" promise — re-running the installer on every
+    job must be cheap and deterministic.
+
+    Pins both the Dockerfile and the verify script so the matrix entry
+    can never reference a half-built fixture.
+    """
+    dockerfile = INSTALL_FIXTURES / "Dockerfile.ubuntu-idempotency"
+    verify = INSTALL_FIXTURES / "verify_idempotency.sh"
+
+    assert dockerfile.is_file(), f"missing fixture: {dockerfile.name}"
+    assert verify.is_file(), f"missing fixture: {verify.name}"
+
+    df_text = dockerfile.read_text(encoding="utf-8")
+    sh_text = verify.read_text(encoding="utf-8")
+
+    # The fixture must pin WORTHLESS_VERSION so PyPI drift between the
+    # two install.sh runs cannot false-fail the diff.
+    assert re.search(r"^ENV\s+WORTHLESS_VERSION=", df_text, re.MULTILINE), (
+        f"{dockerfile.name} must `ENV WORTHLESS_VERSION=…` so a new release "
+        "between the two runs cannot make the diff drift."
+    )
+
+    # Verify script must run install.sh twice and diff snapshots.
+    assert sh_text.count("install.sh") >= 2, (
+        f"{verify.name} must invoke install.sh at least twice (idempotency check)"
+    )
+    assert re.search(r"\bdiff\b", sh_text), (
+        f"{verify.name} must `diff` the two snapshots — the test signal "
+        "is non-zero diff between snapshot 1 and snapshot 2."
+    )
+    assert re.search(r"FAIL.*idempoten[ct]", sh_text, re.IGNORECASE), (
+        f"{verify.name} must emit a 'FAIL: …idempoten…' message on diff "
+        "so a regression is grep-able in CI logs."
+    )
+
+
+def test_idempotency_marker_matches_python_dict() -> None:
+    """Drift guard: the success marker the verify script emits must match
+    the marker the test runner asserts on.
+
+    `tests/test_install_docker.py` imports SUCCESS_MARKER and checks for
+    `"OK: install.sh is idempotent"` in run.stdout. `verify_idempotency.sh`
+    `echo`s a corresponding success line. If either side gets edited
+    without the other, the test silently asserts on a string the script
+    never prints (false-pass risk).
+    """
+    from tests.test_install_docker import SUCCESS_MARKER
+
+    expected = SUCCESS_MARKER["ubuntu-idempotency"]
+    verify = INSTALL_FIXTURES / "verify_idempotency.sh"
+    sh_text = verify.read_text(encoding="utf-8")
+    assert expected in sh_text, (
+        f"SUCCESS_MARKER['ubuntu-idempotency']={expected!r} but "
+        f"{verify.name} does not echo that exact string. The test would "
+        "false-pass if the script changes its success message without "
+        "updating SUCCESS_MARKER, or vice versa."
     )
 
 
