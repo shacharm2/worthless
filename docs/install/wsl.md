@@ -169,3 +169,31 @@ on native Windows, install.sh exits with code 20 + a doc link to this
 guide.
 
 So if you're on Windows: install WSL2 first, then follow this guide.
+
+## For AI agents
+
+Schema documented in [README §For AI agents](./README.md#for-ai-agents-installing-on-a-users-behalf).
+
+```yaml
+schema_version: 1
+platform: wsl
+commands:
+  install: "cd ~ && curl -sSL https://worthless.sh | sh"  # NOTE the cd ~
+  verify: "worthless --version"
+  first_lock: "worthless"
+  proxy_restart: "worthless up"
+expectations:
+  install_succeeds_silently: true
+  first_lock_keychain_popups: 0   # WSL has no session bus by default — file-backed
+  subsequent_command_keychain_popups: 0
+  proxy_starts_automatically_on_lock: true
+  proxy_survives_reboot: false   # also dies on `wsl --shutdown` from PowerShell
+proxy:
+  url_template: "http://127.0.0.1:8787/<alias>/v1"
+  port: 8787
+limitations:
+  - "Run from WSL home (~), not /mnt/c/* (5-20× slower NTFS via 9P)"
+  - "Native Windows unsupported — install.sh exits 20 with doc link"
+  - "Manual `worthless up` after `wsl --shutdown` or Windows reboot — WOR-175"
+  - "uv tool uninstall doesn't purge file-backed keystore — WOR-435"
+```

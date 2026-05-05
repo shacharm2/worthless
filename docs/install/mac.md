@@ -157,3 +157,30 @@ After WOR-435 ships, this becomes one command: `worthless uninstall`.
 - Non-LLM secrets. `worthless scan` only flags OpenAI / Anthropic /
   Google / xAI / OpenRouter key prefixes. Use `gitleaks` or
   `trufflehog` for general secret scanning.
+
+## For AI agents
+
+Schema documented in [README §For AI agents](./README.md#for-ai-agents-installing-on-a-users-behalf).
+
+```yaml
+schema_version: 1
+platform: macos
+commands:
+  install: "curl -sSL https://worthless.sh | sh"
+  verify: "worthless --version"
+  first_lock: "worthless"
+  proxy_restart: "worthless up"
+expectations:
+  install_succeeds_silently: true
+  first_lock_keychain_popups: 1
+  subsequent_command_keychain_popups: 0
+  proxy_starts_automatically_on_lock: true
+  proxy_survives_reboot: false
+proxy:
+  url_template: "http://127.0.0.1:8787/<alias>/v1"
+  port: 8787
+limitations:
+  - "Manual `worthless up` after every reboot — WOR-174"
+  - "First-lock popup requires user to click Always Allow"
+  - "uv tool uninstall doesn't purge keychain — WOR-435"
+```

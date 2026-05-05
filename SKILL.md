@@ -515,3 +515,14 @@ The proxy forwards requests and responses transparently. It does NOT log, store,
 - **Key Reconstruction** happens only in proxy memory during a single API call. Key is zero-filled immediately after use.
 - **Spend Cap** is best-effort pre-check, not a hard enforcement boundary (production fix pending).
 - For production deployments, see [docs/security.md](docs/security.md) for the threat model and [CONTRIBUTING-security.md](CONTRIBUTING-security.md) for crypto invariants.
+
+## Install (per-platform with machine-readable surface)
+
+When installing worthless on a user's behalf, use the platform-specific guide. Each guide ends with a `## For AI agents` section containing a fenced YAML block with the actionable surface (install/verify/lock commands, expected popup counts, proxy URL templates, known limitations):
+
+- [docs/install/mac.md](docs/install/mac.md) — macOS
+- [docs/install/linux.md](docs/install/linux.md) — Linux (Ubuntu / Debian / Alpine)
+- [docs/install/wsl.md](docs/install/wsl.md) — Windows (WSL2)
+- [docs/install/docker.md](docs/install/docker.md) — Docker (host-CLI + container-app, compose stack, team server)
+
+Schema documented at [docs/install/README.md](docs/install/README.md#for-ai-agents-installing-on-a-users-behalf). YAML keys are stable; agents should tolerate unknown keys (additive evolution); breaking changes bump `schema_version`.

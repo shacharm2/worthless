@@ -220,3 +220,44 @@ it (or accept the default and edit `.env`).
 The v1.2 work tracked under "worthless lock detects Docker context"
 will collapse some of this, but won't fully replace the need to
 understand which scenario you're in.
+
+## For AI agents
+
+Schema documented in [README §For AI agents](./README.md#for-ai-agents-installing-on-a-users-behalf).
+Docker has multiple scenarios — the YAML below covers the most common
+("app in container, worthless on host"). Inspect the scenario sections
+above for compose-stack and team-server flows.
+
+```yaml
+schema_version: 1
+platform: docker
+scenario: app_in_container_worthless_on_host   # most common; see scenario A
+commands:
+  install: "curl -sSL https://worthless.sh | sh"   # CLI is ALWAYS native, never `docker run`
+  verify: "worthless --version"
+  first_lock: "worthless"
+  proxy_restart: "worthless up"
+post_lock_required_step:
+  description: "Edit .env to use host.docker.internal:8787 instead of 127.0.0.1:8787 (containers can't reach host loopback)"
+  sed_command: "sed -i.bak 's|127.0.0.1:8787|host.docker.internal:8787|' .env"
+  linux_extra: "Add `--add-host=host.docker.internal:host-gateway` if no Docker Desktop"
+expectations:
+  install_succeeds_silently: true
+  first_lock_keychain_popups: 0   # depends on host platform; this assumes host is mac/linux/wsl
+  subsequent_command_keychain_popups: 0
+  proxy_starts_automatically_on_lock: true
+  proxy_survives_reboot: false
+proxy:
+  url_template_host: "http://127.0.0.1:8787/<alias>/v1"
+  url_template_container: "http://host.docker.internal:8787/<alias>/v1"
+  port: 8787
+other_scenarios:
+  - id: scenario_b_compose_stack
+    container_url_template: "http://worthless:8787/<alias>/v1"
+  - id: scenario_c_team_server
+    container_url_template: "https://<your-tls-endpoint>/<alias>/v1"
+limitations:
+  - "`worthless lock` writes 127.0.0.1 blindly — manual .env edit required for containers (v1.2 will auto-detect)"
+  - "Docker image is server-only; CLI is always native install on host"
+  - "`env_file: .env` exposes proxy URL via `docker inspect` — restrict docker group access on shared hosts"
+```

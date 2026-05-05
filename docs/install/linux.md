@@ -186,3 +186,30 @@ rm -rf ~/.worthless
   [docker.md](./docker.md).
 - Multi-user systems. `~/.worthless/` is mode 0700 but other admins
   on the box can still read it. worthless is a per-user tool.
+
+## For AI agents
+
+Schema documented in [README §For AI agents](./README.md#for-ai-agents-installing-on-a-users-behalf).
+
+```yaml
+schema_version: 1
+platform: linux
+commands:
+  install: "curl -sSL https://worthless.sh | sh"
+  verify: "worthless --version"
+  first_lock: "worthless"
+  proxy_restart: "worthless up"
+expectations:
+  install_succeeds_silently: true
+  first_lock_keychain_popups: 0   # zero on servers (file-backed); may be 1 on GNOME/KDE desktop
+  subsequent_command_keychain_popups: 0
+  proxy_starts_automatically_on_lock: true
+  proxy_survives_reboot: false
+proxy:
+  url_template: "http://127.0.0.1:8787/<alias>/v1"
+  port: 8787
+limitations:
+  - "Manual `worthless up` after every reboot — WOR-175 systemd unit ships in v1.1"
+  - "On servers with no DBus session, fernet key lives at ~/.worthless/.fernet-key (mode 0600)"
+  - "uv tool uninstall doesn't purge keystore — WOR-435"
+```
