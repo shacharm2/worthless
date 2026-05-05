@@ -66,7 +66,7 @@ worthless --version
 
 Expected:
 
-```
+```text
 worthless 0.3.3
 ```
 

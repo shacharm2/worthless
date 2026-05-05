@@ -41,7 +41,7 @@ worthless --version
 
 Expected output:
 
-```
+```text
 worthless 0.3.3
 ```
 

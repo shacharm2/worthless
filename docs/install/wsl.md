@@ -51,7 +51,7 @@ SLOW from `/mnt/c`.
 
 If install.sh prints:
 
-```
+```text
 WSL detected, running from a Windows-mounted path (/mnt/...).
 Install will succeed but uv operations from /mnt/c are slow.
 For best performance, install from your Linux home (~).
