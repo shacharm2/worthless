@@ -229,6 +229,50 @@ def test_nonroot_fixture_exists() -> None:
     )
 
 
+# --- WOR-317: idempotency — second install.sh run is a no-op ----------------
+
+
+def test_idempotency_fixture_wired() -> None:
+    """Idempotency check must be present in the install matrix.
+
+    A re-run of `curl … | sh` must not bump the installed version, must
+    not re-download wheels, must not change the binary hash. This guards
+    the "safe to put in CI" promise — re-running the installer on every
+    job must be cheap and deterministic.
+
+    Pins both the Dockerfile and the verify script so the matrix entry
+    can never reference a half-built fixture.
+    """
+    dockerfile = INSTALL_FIXTURES / "Dockerfile.ubuntu-idempotency"
+    verify = INSTALL_FIXTURES / "verify_idempotency.sh"
+
+    assert dockerfile.is_file(), f"missing fixture: {dockerfile.name}"
+    assert verify.is_file(), f"missing fixture: {verify.name}"
+
+    df_text = dockerfile.read_text(encoding="utf-8")
+    sh_text = verify.read_text(encoding="utf-8")
+
+    # The fixture must pin WORTHLESS_VERSION so PyPI drift between the
+    # two install.sh runs cannot false-fail the diff.
+    assert re.search(r"^ENV\s+WORTHLESS_VERSION=", df_text, re.MULTILINE), (
+        f"{dockerfile.name} must `ENV WORTHLESS_VERSION=…` so a new release "
+        "between the two runs cannot make the diff drift."
+    )
+
+    # Verify script must run install.sh twice and diff snapshots.
+    assert sh_text.count("install.sh") >= 2, (
+        f"{verify.name} must invoke install.sh at least twice (idempotency check)"
+    )
+    assert re.search(r"\bdiff\b", sh_text), (
+        f"{verify.name} must `diff` the two snapshots — the test signal "
+        "is non-zero diff between snapshot 1 and snapshot 2."
+    )
+    assert re.search(r"FAIL.*idempoten[ct]", sh_text, re.IGNORECASE), (
+        f"{verify.name} must emit a 'FAIL: …idempoten…' message on diff "
+        "so a regression is grep-able in CI logs."
+    )
+
+
 def test_worthless_version_resolution(install_text: str) -> None:
     """Resolve-latest pattern (Ollama / Bun / Deno style):
 

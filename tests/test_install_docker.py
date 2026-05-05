@@ -30,9 +30,19 @@ INSTALL_MATRIX = [
     "ubuntu-2204-bare",  # 22.04 LTS — still the prod majority
     "ubuntu-with-uv",  # 24.04 + pre-installed uv (reuse path)
     "ubuntu-nonroot",  # 24.04 + non-root user, no sudo (WOR-318)
+    "ubuntu-idempotency",  # 24.04, runs install.sh twice → expects no-op (WOR-317)
     "debian-12-bare",  # second glibc distro
     "alpine-bare",  # musl — uv fetches musl-compatible Python via PBS
 ]
+
+# Per-fixture success marker. verify_install.sh (used by every fixture
+# that exercises the fresh-box install AC) prints "OK: install verified".
+# verify_idempotency.sh (WOR-317) prints "OK: install.sh is idempotent"
+# instead — it's a different invariant, different message.
+SUCCESS_MARKER = {
+    "ubuntu-idempotency": "OK: install.sh is idempotent",
+}
+DEFAULT_SUCCESS_MARKER = "OK: install verified"
 
 # Lock-lifecycle matrix — (distro_label, dockerfile_name). The compose file
 # selects the dockerfile via the LOCK_E2E_DOCKERFILE env var.
@@ -108,9 +118,11 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
             f"install + verify failed inside {fixture} container:\n"
             f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
         )
-        # verify_install.sh prints 'OK: install verified at ...' on success.
-        assert "OK: install verified" in run.stdout, (
-            f"verify_install.sh did not complete successfully in {fixture}:\n"
+        # Each fixture's verify script emits an "OK: …" marker on success.
+        # See SUCCESS_MARKER for the per-fixture overrides.
+        marker = SUCCESS_MARKER.get(fixture, DEFAULT_SUCCESS_MARKER)
+        assert marker in run.stdout, (
+            f"verify script did not emit '{marker}' in {fixture}:\n"
             f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
         )
     finally:
