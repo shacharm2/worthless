@@ -88,7 +88,9 @@ async def _enroll(
         nonce=bytearray(sr.nonce),
         provider=provider,
     )
-    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+    await repo.store(
+        alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
+    )
     if proxy_app is not None:
         pin_shard_b(proxy_app, alias, sr.shard_b)
     shard_a_utf8 = sr.shard_a.decode("utf-8")

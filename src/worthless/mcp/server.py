@@ -116,9 +116,9 @@ async def worthless_scan(
               and live environment variables.
     """
     from worthless.cli.commands.scan import (
-        _build_enrollment_checker_async,
         _collect_deep_paths,
         _collect_fast_paths,
+        _load_db_state_async,
     )
     from worthless.cli.scanner import scan_files
 
@@ -131,7 +131,9 @@ async def worthless_scan(
         else:
             scan_paths = _collect_fast_paths(explicit)
 
-        enrolled = await _build_enrollment_checker_async()
+        # HF5: scan also returns orphan rows; MCP server only needs enrolled
+        # locations for now (orphan-flagging in MCP would be a future bead).
+        enrolled, _orphans = await _load_db_state_async()
         enrollment_checker_available = enrolled is not None
         findings = scan_files(scan_paths, enrolled_locations=enrolled)
 

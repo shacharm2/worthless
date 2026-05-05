@@ -1,8 +1,10 @@
 """wrap command -- ephemeral proxy + child process lifecycle.
 
-``worthless wrap python main.py`` starts a transparent proxy on a random port,
-injects ``{PROVIDER}_BASE_URL`` env vars so API calls route through it, runs
-the child, and cleans up when the child exits.
+``worthless wrap python main.py`` starts a transparent proxy on a random port
+and runs the child against it. After 8rqs, the .env that ``worthless lock``
+already rewrote IS the contract — wrap no longer mutates ``*_BASE_URL`` vars
+in the child env. Its job is now process supervision only: spawn proxy,
+spawn child, wait, clean up.
 """
 
 from __future__ import annotations
@@ -37,17 +39,13 @@ from worthless.storage.repository import ShardRepository
 
 logger = logging.getLogger(__name__)
 
-# Provider -> env var mapping for BASE_URL injection
-_PROVIDER_ENV_MAP: dict[str, str] = {
-    "openai": "OPENAI_BASE_URL",
-    "anthropic": "ANTHROPIC_BASE_URL",
-}
-
 
 def _list_enrolled_aliases(home: WorthlessHome) -> list[tuple[str, str]]:
-    """List (alias, provider) pairs via ShardRepository.
+    """Return ``(alias, protocol)`` pairs. Empty when the DB is absent.
 
-    Returns an empty list when the database does not exist or is empty.
+    Kept for the empty-DB guard in ``wrap`` (no enrolled keys → friendly
+    error). The protocol field isn't used anymore but is preserved in the
+    return shape so existing tests stay green.
     """
     if not home.db_path.exists():
         return []
@@ -55,7 +53,8 @@ def _list_enrolled_aliases(home: WorthlessHome) -> list[tuple[str, str]]:
     async def _query():
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         await repo.initialize()
-        return await repo.list_aliases_with_provider()
+        rows = await repo.list_aliases_with_routing()
+        return [(alias, protocol) for alias, _var, _url, protocol in rows]
 
     try:
         return asyncio.run(_query())
@@ -67,29 +66,20 @@ def _build_child_env(
     port: int,
     aliases: list[tuple[str, str]],
 ) -> dict[str, str]:
-    """Build environment for the child process.
+    """Inherit the parent env unchanged.
 
-    Inherits the current env and adds {PROVIDER}_BASE_URL for each
-    enrolled provider so SDK calls route through the proxy via alias-in-URL.
+    Pre-8rqs, this used to inject ``OPENAI_BASE_URL`` (or
+    ``ANTHROPIC_BASE_URL``) per provider so the child SDK pointed at the
+    local proxy. Post-8rqs, ``worthless lock`` already wrote the right
+    values into the user's ``.env`` (preserving their var names — e.g.
+    ``OPENROUTER_BASE_URL`` stays ``OPENROUTER_BASE_URL``). Wrap shouldn't
+    overwrite that work.
+
+    ``port`` and ``aliases`` are kept in the signature for backwards
+    compatibility with existing tests; both are now ignored.
     """
-    env = dict(os.environ)
-    seen_providers: dict[str, str] = {}
-    for alias, provider in aliases:
-        env_var = _PROVIDER_ENV_MAP.get(provider)
-        if not env_var:
-            continue
-        if provider in seen_providers:
-            logger.warning(
-                "Multiple aliases for provider %r (%s, %s). Only %s will be used via %s.",
-                provider,
-                seen_providers[provider],
-                alias,
-                alias,
-                env_var,
-            )
-        seen_providers[provider] = alias
-        env[env_var] = f"http://127.0.0.1:{port}/{alias}/v1"
-    return env
+    del port, aliases  # parameters retained for signature stability
+    return dict(os.environ)
 
 
 def _run_child_and_wait(child: subprocess.Popen) -> int:

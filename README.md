@@ -6,132 +6,60 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Tests](https://github.com/shacharm2/worthless/actions/workflows/tests.yml/badge.svg)](https://github.com/shacharm2/worthless/actions/workflows/tests.yml)
 
-Your API key is split in two. Neither half works alone.
-The proxy enforces a hard spend cap **before** the key reconstructs — blow the budget, the key never forms, the request never leaves your machine.
+When your `.env` leaks, the keys inside are placeholders. The real key never sits in your repo, your shell history, or your laptop's memory.
 
 ## Quickstart
 
 ```bash
-curl -sSL https://worthless.sh | sh        # fresh machine — no Python needed
+curl -sSL https://worthless.sh | sh        # fresh machine, no Python needed
 # or, if you already have Python 3.10+:
 pipx install worthless
 ```
 
-Then, in your project:
+Then `cd` into your project and run `worthless`. It detects keys in your `.env`, splits them, starts a local proxy. No code changes.
 
-```bash
-cd your-project
-worthless
-```
+The Worker emits an `X-Worthless-Script-Sha256` header so you can [verify the bytes you ran match the bytes the Worker advertised](https://docs.wless.io/install-security/) before piping into `sh`. The check catches transit/cache tampering, not origin compromise — cosign-signed release manifests for that are tracked in [WOR-303](https://linear.app/plumbusai/issue/WOR-303).
 
-Detects keys in your `.env`, splits them, starts a local proxy. No code changes.
+Full install options (Docker, MCP for Claude Code / Cursor / Windsurf, GitHub Actions, the verified-install flow, kill-switch runbook): **[docs.wless.io](https://docs.wless.io)**
 
-### Verify before running
+## Scope
 
-Piping a script from the internet into `sh` is a supply-chain risk. Read it first:
-
-```bash
-curl -sSL https://worthless.sh -o install.sh
-less install.sh                                   # inspect, then run
-sh install.sh
-```
-
-See [docs/install-security.md](docs/install-security.md) for trust roots
-(what the installer talks to and what it verifies) and the kill-switch
-runbook.
-
-```
-$ worthless
-
-  Found 2 API keys:
-    OPENAI_API_KEY      openai
-    ANTHROPIC_API_KEY   anthropic
-
-  Lock these keys? [y/N] y
-    OPENAI_API_KEY      locked
-    ANTHROPIC_API_KEY   locked
-
-  Proxy ready on 127.0.0.1:8787
-```
+Worthless scans for **LLM provider API key prefixes only** — currently
+`openai` (`sk-`, `sk-proj-`), `anthropic` (`sk-ant-`), `google`
+(`AIza`), and `xai` (`xai-`). For general secret detection (cloud
+tokens, GitHub PATs, AWS access keys, npm tokens, Cloudflare API
+tokens, etc.), use
+[gitleaks](https://github.com/gitleaks/gitleaks) or
+[trufflehog](https://github.com/trufflesecurity/trufflehog) as a
+companion tool — worthless will not flag those and is not trying to
+replace them.
 
 ## How it works
 
-1. `worthless lock` splits each API key into two shards using XOR
-2. Shard A stays on your machine (encrypted). Shard B goes to the proxy database.
-3. Your `.env` is rewritten with shard-A (format-preserving — looks like a real key but is cryptographically useless alone)
+1. `worthless lock` splits each API key into two shards
+2. Shard A stays on your machine (encrypted). Shard B goes to the proxy database
+3. Your `.env` is rewritten with shard A — format-preserving, but cryptographically useless alone
 4. The proxy reconstructs the key only when the rules engine approves the request
-5. Spend cap blown? The key never forms. The request never reaches the provider.
-
-## Commands
-
-```bash
-worthless              # Auto-detect, lock, start proxy (the magic)
-worthless lock         # Lock keys in .env
-worthless unlock       # Restore original keys
-worthless scan         # Detect exposed keys without locking
-worthless status       # Show proxy and key status
-worthless up           # Start proxy (foreground)
-worthless up -d        # Start proxy (background daemon)
-worthless down         # Stop the proxy
-worthless wrap <cmd>   # Run a command through the proxy
-worthless revoke       # Revoke enrolled keys
-```
-
-## Docker
-
-`docker run ghcr.io/shacharm2/worthless-proxy:<version>` — multi-arch, vulnerability-scanned, cosign-signed. See [docs/install-docker.md](docs/install-docker.md).
+5. Spend cap blown? The key never forms. The request never reaches the provider
 
 ## Platforms
-
-Worthless runs on POSIX hosts. The proxy relies on `setsid`, `os.killpg`,
-fd-based key transport, and signal-group shutdown — primitives that have no
-reliable native-Windows equivalent. Rather than degrade silently, the CLI
-refuses to start on native Windows and tells you how to run it under WSL or
-Docker.
 
 | Platform | Status |
 |---|---|
 | macOS | Supported |
 | Linux | Supported |
 | Windows + WSL | Supported |
-| Windows + Docker | Supported |
-| Native Windows | Not supported — `up`, `wrap`, and the default command exit with `WRTLS-110`. `down` is allowed so existing state can be cleaned up. |
+| Native Windows | Not supported — use WSL or Docker |
 
-`WORTHLESS_WINDOWS_ACK=1` suppresses the soft warning on `down`; it does not
-bypass the hard gate on the other entry points.
+Native-Windows support is tracked in [WOR-237](https://linear.app/plumbusai/issue/WOR-237). See [docs.wless.io](https://docs.wless.io) for the full distro support matrix.
 
-**Planned:** native-Windows support (stdin Fernet key transport, Windows Job
-Objects, `DETACHED_PROCESS`) is tracked in
-[WOR-237](https://linear.app/plumbusai/issue/WOR-237/v12-native-windows-support-stdin-fernet-job-objects-detached-process) —
-target v1.2. If you need it sooner or want to help, comment on the issue
-rather than patching around the guard locally.
+## Versioning
 
-## Undo everything
+PyPI version, signed git tag (`vX.Y.Z`), and the `X-Worthless-Script-Tag` header on `worthless.sh` are kept aligned — CI fails fast if `pyproject.toml` and the tag disagree. `install.sh` resolves the latest `worthless` from PyPI at install time; pin via `WORTHLESS_VERSION=x.y.z curl -sSL https://worthless.sh | sh`.
 
-```console
-$ worthless unlock
-1 key(s) restored.
-```
+## Documentation
 
-Original key is back. No trace.
-
-## Pre-commit hook
-
-```yaml
-repos:
-  - repo: https://github.com/shacharm2/worthless
-    rev: main
-    hooks:
-      - id: worthless-scan
-```
-
-## For AI coding agents
-
-Worthless ships a `SKILL.md` that tells Claude Code, Cursor, and Windsurf what commands are available. Agents use `--json` for structured output:
-
-```bash
-worthless status --json
-```
+Everything lives at **[docs.wless.io](https://docs.wless.io)** — install guides, the security model, wire protocol, recovery runbook, the verified-install flow, and the agent skill file (Claude Code / Cursor / Windsurf).
 
 ## Development
 
@@ -141,13 +69,7 @@ uv sync --extra dev --extra test
 uv run pytest
 ```
 
-## Learn more
-
-- [Security model](docs/security.md) -- threat model, invariants, known limitations
-- [Engineering docs](engineering/README.md) -- internal developer documentation for the live codebase
-- [Engineering architecture](engineering/architecture.md) -- current internal architecture overview
-- [Contributor security rules](CONTRIBUTING-security.md) -- invariants all contributions must preserve
-- [SKILL.md](SKILL.md) -- agent discovery file
+Internal developer documentation lives in [`engineering/`](engineering/). Security invariants are in [`SECURITY.md`](SECURITY.md).
 
 ## Contributing
 

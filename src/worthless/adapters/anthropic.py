@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 import httpx
 
 from worthless.adapters.types import (
@@ -13,10 +11,6 @@ from worthless.adapters.types import (
     strip_internal_headers,
 )
 
-UPSTREAM_URL = os.environ.get(
-    "WORTHLESS_UPSTREAM_ANTHROPIC_URL",
-    "https://api.anthropic.com/v1/messages",
-)
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 
 
@@ -29,6 +23,7 @@ class AnthropicAdapter:
         body: bytes,
         headers: dict[str, str],
         api_key: bytearray,
+        base_url: str,
     ) -> AdapterRequest:
         out_headers = strip_internal_headers(headers)
         out_headers["x-api-key"] = api_key.decode()
@@ -36,7 +31,8 @@ class AnthropicAdapter:
         if "anthropic-version" not in out_headers:
             out_headers["anthropic-version"] = DEFAULT_ANTHROPIC_VERSION
 
-        return AdapterRequest(url=UPSTREAM_URL, headers=out_headers, body=body)
+        url = f"{base_url.rstrip('/')}/messages"
+        return AdapterRequest(url=url, headers=out_headers, body=body)
 
     async def relay_response(self, response: httpx.Response) -> AdapterResponse:
         return await relay_response(response)

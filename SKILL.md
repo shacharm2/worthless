@@ -6,9 +6,13 @@
 
 Worthless protects API keys in three scenarios:
 
-1. **Local Development**: `worthless wrap` runs your code through an ephemeral proxy that intercepts API calls, injects the real key only when needed, and cleans up on exit.
+1. **Local Development**: `worthless wrap` starts an ephemeral proxy and runs your command through it. Lock has already rewritten `*_BASE_URL` in your `.env` to point at the proxy, so your SDK picks it up via dotenv. The proxy reconstructs the real key only when the request passes the rules engine, then cleans up on exit.
 2. **Daemon Mode**: `worthless up` starts a persistent local proxy on port 8787 (configurable) that stays running and protects all enrolled keys.
 3. **CI/CD & Sidecar**: The proxy is designed to run as a sidecar container or process, protecting keys across environments with per-key spending limits and time-window gates.
+
+### Scope (important for agents)
+
+Worthless scans for **LLM provider API key prefixes only** — currently `openai` (`sk-`, `sk-proj-`), `anthropic` (`sk-ant-`), `google` (`AIza`), and `xai` (`xai-`). It will NOT detect general secrets: cloud-provider tokens (AWS, GCP, Azure), GitHub Personal Access Tokens, npm tokens, Cloudflare API tokens, database passwords, JWT signing keys, etc. If the user asks for a broad "find all secrets" or full `.env` audit, clarify the boundary and recommend [gitleaks](https://github.com/gitleaks/gitleaks) or [trufflehog](https://github.com/trufflesecurity/trufflehog) as a companion tool. `worthless scan --json` returns `{"schema_version": 2, "findings": [...], "orphans": [...]}` — `findings` are `.env` keys (each with `is_protected`), `orphans` are DB enrollments whose `.env` line was deleted (run `worthless doctor --fix` to clean them up). Both arrays are empty when nothing matches; an empty `findings` on a `.env` full of cloud tokens is correct behaviour, not a miss. Agents iterating findings: `for f in result["findings"]`. Guard against future shape breaks: `assert result["schema_version"] >= 2`. (HF5 changed shape from a bare findings array — schema 1.)
 
 ---
 
@@ -16,7 +20,7 @@ Worthless protects API keys in three scenarios:
 
 ### Package Info
 - **Package name**: `worthless`
-- **Version**: 0.3.0
+- **Version**: 0.3.2
 - **Entry point**: `worthless` (CLI command)
 - **Python**: 3.10+
 - **License**: AGPL-3.0
@@ -136,7 +140,7 @@ Proxy: http://127.0.0.1:8787 (running)
 #### `worthless wrap [OPTIONS] COMMAND [ARGS...]`
 **Ephemeral proxy + child process lifecycle.**
 
-Starts a temporary reverse proxy on a random port, injects `{PROVIDER}_BASE_URL` environment variables (e.g., `OPENAI_BASE_URL=http://127.0.0.1:XXXXX`), spawns a child process with those env vars, waits for the child to exit, and cleans up the proxy.
+Starts a temporary reverse proxy on a random port, spawns a child process with the parent environment unchanged, waits for the child to exit, and cleans up the proxy. Pre-8rqs, wrap synthesised `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` into the child env. Post-8rqs (Phase 8), `worthless lock` writes the per-enrollment `*_BASE_URL` directly into your `.env` (preserving your var names — `OPENROUTER_BASE_URL` stays `OPENROUTER_BASE_URL`), so your SDK picks them up via dotenv. Wrap is a passthrough.
 
 The child's API SDK calls automatically route through the proxy. No code changes required.
 
@@ -222,6 +226,53 @@ Lower-level than `lock` — enrolls one key by alias without scanning `.env`. De
 - `--provider, -p NAME`: Provider name (required)
 
 **Use case:** `echo "$OPENAI_KEY" | worthless enroll --alias ci-openai --provider openai --key-stdin`
+
+#### `worthless restore TARGET`
+**Atomically rewrite a `.env` from stdin bytes (recovery path).**
+
+Thin wrapper around `safe_restore` for ops runbooks and recovery scripts that need to stamp known-good bytes onto a `.env` while bypassing only the DELTA blowup-ratio gate. Every other invariant still fires (SYMLINK, CONTAINMENT, BASENAME, SNIFF, SIZE, TOCTOU, PATH_IDENTITY, FILESYSTEM).
+
+**Arguments:**
+- `TARGET`: Path to the `.env` file to restore.
+
+**Behavior:**
+- Reads replacement bytes from stdin; empty stdin refuses.
+- On any invariant violation: `.env` is byte-identical (unchanged), exit code 1.
+
+**Use case:** `cat backup.env | worthless restore ./.env`
+
+#### `worthless providers list|register [OPTIONS]`
+**Manage the LLM-provider registry (URL → wire-protocol mapping).**
+
+The registry maps known upstream URLs (e.g., `https://api.openai.com/v1`) to a wire protocol (`openai` / `anthropic`) so `worthless lock` can auto-detect protocol when scanning `.env` files.
+
+**Subcommands:**
+- `list` — Print the merged registry: bundled + optional `~/.worthless/providers.toml`. Use the global `--json` flag for machine-readable output.
+- `register --name NAME --url URL --protocol {openai,anthropic} [--force]` — Append a custom provider to `~/.worthless/providers.toml`. Refuses bundled-name conflicts; refuses bundled-URL conflicts unless `--force`.
+
+**Bundled providers:** openai, anthropic, openrouter, groq, together, ollama. Add more locally via `register` without modifying the package.
+
+**Use case:** Lock keys from any OpenAI-protocol-compatible provider (OpenRouter, Groq, Together, Ollama, internal LLM gateways). The proxy uses each enrollment's stored URL at request time, so multiple providers coexist in one `.env`.
+
+#### `worthless doctor [OPTIONS]`
+**Diagnose and repair stuck DB/.env states.**
+
+Currently handles ONE shape: DB enrollment rows whose `.env` line was deleted by the user. Surfaces and (with `--fix`) purges them. Closes the dogfood-discovered stuck state where `worthless unlock` says "no enrolled keys" but `worthless status` lists them as PROTECTED.
+
+**Options:**
+- `--fix`: Repair (destructive). Prompts unless `--yes`.
+- `--yes, -y`: Skip the confirmation prompt for `--fix`.
+- `--dry-run`: Show planned actions without writing.
+
+**Behavior:**
+- No flags: read-only diagnose mode, lists broken rows, exit 0.
+- `--fix`: prompts; on Y, deletes broken DB rows + their shard files atomically (same path as `revoke`).
+- `--fix --dry-run`: prints planned deletions, leaves DB intact.
+- `--fix --yes`: skip prompt, perform purge.
+
+**User-facing wording:** `"can't restore <alias>: .env line deleted"` — plain English, no engineer jargon. The fix command name is part of the canonical message so the user always sees the recovery path.
+
+**Use case:** user manually deleted a key line from `.env`; system is stuck. Run `worthless doctor --fix --dry-run` to preview, then `worthless doctor --fix` to clean up.
 
 #### `worthless mcp [OPTIONS]`
 **Start the MCP server (stdio transport).**
@@ -331,8 +382,7 @@ Token spend history. Pass alias for one key, omit for all. Returns JSON.
 
 - `WORTHLESS_PORT`: Default port for `worthless up` (default: 8787)
 - `WORTHLESS_DEBUG`: Enable debug logging (when set)
-- `OPENAI_BASE_URL`: (Set by `wrap` and `up`) Proxy endpoint for OpenAI SDK
-- `ANTHROPIC_BASE_URL`: (Set by `wrap` and `up`) Proxy endpoint for Anthropic SDK
+- `*_BASE_URL` (e.g., `OPENAI_BASE_URL`, `OPENROUTER_BASE_URL`): Set in your `.env` by `worthless lock` to point each enrolled key at the local proxy. Your SDK reads them via dotenv. Var names are preserved — lock does not rename `OPENROUTER_BASE_URL` to `OPENAI_BASE_URL`. Pre-8rqs these were synthesised by `wrap`; post-8rqs they live in `.env`.
 
 ---
 

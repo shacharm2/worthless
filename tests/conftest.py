@@ -82,14 +82,30 @@ def home_dir(tmp_path) -> WorthlessHome:
 
 
 @pytest.fixture()
-def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
-    """Home with one enrolled key (openai)."""
+def home_with_key(home_dir: WorthlessHome, tmp_path: Path) -> WorthlessHome:
+    """Home with one enrolled key (openai), bound to a real .env file.
+
+    HF5 (worthless-gmky): the env_path must point at a real file
+    containing the OPENAI_API_KEY line so ``is_orphan()`` returns False.
+    Pre-HF5 the fixture used a fake `/tmp/.env` path; status didn't check
+    .env content so PROTECTED was reported regardless. Post-HF5 a fake
+    path correctly reads as BROKEN — fixture updated to match the
+    healthy-state contract that its callers assume.
+    """
     import asyncio
 
     key = fake_openai_key()
     sr = split_key(key.encode())
     try:
         alias = "openai-a1b2c3d4"
+
+        # Write the SAME key into the fixture .env so the enrolled shard
+        # and the .env line agree. Using a fresh fake_openai_key() here would
+        # mismatch the enrolled value — fine today since is_orphan() only
+        # checks var-name presence, but fragile if a future check ever cares.
+        # CodeRabbit PR #131.
+        env_path = tmp_path / ".env"
+        env_path.write_text(f"OPENAI_API_KEY={key}\n")
 
         repo = make_repo(home_dir)
         asyncio.run(repo.initialize())
@@ -99,7 +115,7 @@ def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
                 alias,
                 stored,
                 var_name="OPENAI_API_KEY",
-                env_path="/tmp/.env",  # noqa: S108
+                env_path=str(env_path),
             )
         )
     finally:

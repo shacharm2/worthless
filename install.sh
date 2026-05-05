@@ -17,7 +17,16 @@ EXIT_PIPX_CONFLICT=30
 EXIT_INTERNAL=40
 
 UV_VERSION="0.11.7"
-WORTHLESS_VERSION="0.3.0"
+
+# Worthless version: install.sh resolves the latest worthless from PyPI
+# at install time. Override with `WORTHLESS_VERSION=x.y.z curl … | sh` to
+# pin. Pattern matches Ollama, Bun, Deno install scripts. See README
+# "Versioning" section for the rationale.
+#
+# TODO[hardening] worthless-1mg3: planned defense against the PyPI-compromise
+# window — Worker will emit X-Worthless-Recommended-Version header, install.sh
+# will read+pin to it. Until then the env-var escape hatch is the security
+# user's defense; default callers run latest.
 
 # SHA256 of https://astral.sh/uv/${UV_VERSION}/install.sh — bump with UV_VERSION.
 ASTRAL_INSTALLER_SHA256="efed99618cb5c31e4e36a700ab7c3698e83c0ae0f3c336714043d0f932c8d32c"
@@ -202,27 +211,66 @@ ensure_uv() {
 }
 
 install_or_upgrade_worthless() {
+    # Validate WORTHLESS_VERSION against a PEP-440-ish charset before it
+    # reaches `uv tool install`. Catches:
+    #   WORTHLESS_VERSION="; rm -rf /"  → shell-metachar (rejected)
+    #   WORTHLESS_VERSION="-e ."        → leading-`-` arg-confusion (rejected)
+    #   WORTHLESS_VERSION="latest"      → uv rejects later as non-PEP-440
+    if [ -n "${WORTHLESS_VERSION:-}" ]; then
+        case "$WORTHLESS_VERSION" in
+            ''|*[!0-9A-Za-z.+!-]*)
+                die "$EXIT_INTERNAL" \
+                    "Invalid WORTHLESS_VERSION='${WORTHLESS_VERSION}' — must match [0-9A-Za-z.+!-]+." \
+                    "Example: WORTHLESS_VERSION=0.3.2 curl https://worthless.sh | sh"
+                ;;
+        esac
+    fi
+
+    # Env var pins; otherwise uv resolves the latest worthless from PyPI.
+    spec="worthless${WORTHLESS_VERSION:+==${WORTHLESS_VERSION}}"
+
+    # WOR-317 fast-path: if the requested version is already installed,
+    # short-circuit. `uv tool install` followed by `uv tool upgrade` writes
+    # tool metadata even on a no-op, breaking byte-for-byte idempotency
+    # for repeated `curl ... | sh` runs. This guard keeps re-runs cheap
+    # and deterministic when the user pins WORTHLESS_VERSION (or when CI
+    # bootstraps the same installer twice).
+    if [ -n "${WORTHLESS_VERSION:-}" ]; then
+        installed_ver="$(uv tool list 2>/dev/null \
+            | awk '/^worthless / {sub("^v", "", $2); print $2; exit}')"
+        if [ -n "$installed_ver" ] && [ "$installed_ver" = "$WORTHLESS_VERSION" ]; then
+            ok "  worthless ${installed_ver} already installed"
+            return 0
+        fi
+    fi
+
     # First run: `uv tool install`. Re-run: that fails with "already installed",
     # so we fall through to `uv tool upgrade` for an idempotent upgrade path.
-    if uv tool install "worthless==${WORTHLESS_VERSION}" >/dev/null 2>&1; then
-        ok "  worthless ${WORTHLESS_VERSION} installed"
+    if uv tool install "$spec" >/dev/null 2>&1; then
+        :
     elif uv tool upgrade worthless >/dev/null 2>&1; then
-        ok "  worthless upgraded to ${WORTHLESS_VERSION}"
+        :
     else
-        err "Failed to install worthless==${WORTHLESS_VERSION}."
+        err "Failed to install ${spec}."
         proxy_hints
         exit "$EXIT_NETWORK"
     fi
+    # Success message is emitted by smoke_test, which already invokes the
+    # binary — folding the version-display there saves a redundant
+    # `uv run` cold start (~300ms on a fresh box).
 }
 
 smoke_test() {
     # `uv run` works even before the user activates PATH — uv knows where
-    # it put the binary.
-    if ! uv run --no-project worthless --version >/dev/null 2>&1; then
+    # it put the binary. Capture output so we can both verify the install
+    # AND display the resolved version without a second invocation.
+    if ! version_output="$(uv run --no-project worthless --version 2>/dev/null)"; then
         die "$EXIT_INTERNAL" "worthless installed but failed to run." \
             "Try: uv run --no-project worthless --version" \
             "Or:  worthless doctor"
     fi
+    actual_ver="$(printf '%s' "$version_output" | awk '{print $2}' | head -1)"
+    ok "  worthless ${actual_ver:-installed}"
 }
 
 # --- Per-shell PATH activation guidance --------------------------------------
@@ -324,10 +372,12 @@ main() {
         print_activation_hint
     fi
     printf "\n"
-    printf "  Get started:\n"
-    printf "    ${BOLD}worthless enroll${RESET}     Set up your first API key\n"
-    printf "    ${BOLD}worthless --help${RESET}     See all commands\n"
-    printf "    ${BOLD}worthless doctor${RESET}     Run if anything looks off\n"
+    printf "  ${BOLD}Try it:${RESET}        cd your-project && worthless lock\n"
+    printf "  ${BOLD}Audit script:${RESET}  curl worthless.sh?explain=1 | less\n"
+    printf "  ${BOLD}Source:${RESET}        https://github.com/shacharm2/worthless\n"
+    printf "\n"
+    printf "  worthless lock rewrites .env, splits your API keys, and starts a\n"
+    printf "  local proxy. Your app code doesn't change.\n"
     printf "\n"
     printf "  Docs: %s\n\n" "$DOCS_URL"
 }

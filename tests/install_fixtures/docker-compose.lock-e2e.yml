@@ -25,9 +25,15 @@ services:
   worthless-installed:
     build:
       context: ../..
-      dockerfile: tests/install_fixtures/Dockerfile.ubuntu-bare-lock-e2e
+      dockerfile: tests/install_fixtures/${LOCK_E2E_DOCKERFILE:-Dockerfile.ubuntu-bare-lock-e2e}
     environment:
       # Point the proxy at the fake upstream instead of api.openai.com.
+      # NOTE: this env var is a no-op on the 8rqs branch (Phase 5+6
+      # ripped per-provider URL overrides), but this fixture installs
+      # Worthless from PyPI via install.sh, which has the OLDER worthless
+      # that still honors this var. Once 8rqs lands on PyPI, lock_e2e.py
+      # will switch to the per-enrollment OPENAI_BASE_URL+providers-toml
+      # flow (see openclaw/docker-compose.yml for the new pattern).
       WORTHLESS_UPSTREAM_OPENAI_URL: "http://mock-upstream:9999/v1/chat/completions"
       # Allow http:// upstream — required to hit mock-upstream without TLS.
       WORTHLESS_ALLOW_INSECURE: "true"

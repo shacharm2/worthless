@@ -143,7 +143,7 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
 
 
 # ---------------------------------------------------------------------------
-# spawn_sidecar (WRTLS-113 SIDECAR_NOT_READY) + SidecarHandle
+# spawn_sidecar (WRTLS-114 SIDECAR_NOT_READY) + SidecarHandle
 # ---------------------------------------------------------------------------
 
 
@@ -245,7 +245,7 @@ def spawn_sidecar(
 
     Returns the handle once the sidecar's Unix socket exists. Raises
     :class:`WorthlessError` with :attr:`ErrorCode.SIDECAR_NOT_READY`
-    (WRTLS-113) if the socket does not appear within *ready_timeout*.
+    (WRTLS-114) if the socket does not appear within *ready_timeout*.
 
     Args:
         socket_path: Path the sidecar will bind. Must NOT already exist.
@@ -256,7 +256,7 @@ def spawn_sidecar(
             ``WORTHLESS_SIDECAR_DRAIN_TIMEOUT``.
 
     Raises:
-        WorthlessError: WRTLS-113 if the path is too long for AF_UNIX or
+        WorthlessError: WRTLS-114 if the path is too long for AF_UNIX or
             the sidecar does not become ready.
     """
     # AF_UNIX sun_path is 104 on macOS, 108 on Linux. Eager check surfaces
@@ -300,7 +300,7 @@ def spawn_sidecar(
         stderr=subprocess.PIPE,
     )
 
-    # Reap the child on ANY BaseException — WRTLS-113 timeout, KeyboardInterrupt
+    # Reap the child on ANY BaseException — WRTLS-114 timeout, KeyboardInterrupt
     # from the poll loop, signal-mapped-to-KbdInt — otherwise the spawned
     # sidecar PID leaks as an orphan the caller can't see.
     try:
@@ -382,7 +382,7 @@ def shutdown_sidecar(handle: SidecarHandle) -> None:
                 proc.wait(timeout=_SHUTDOWN_KILL_GRACE_S)
             except subprocess.TimeoutExpired:
                 # Kernel didn't reap; the up.py supervisor surfaces this as
-                # WRTLS-112 if the runaway persists.
+                # WRTLS-113 if the runaway persists.
                 pass
 
     for path in (

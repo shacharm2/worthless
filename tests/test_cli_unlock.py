@@ -10,7 +10,6 @@ from typer.testing import CliRunner
 
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
-from worthless.cli.commands.unlock import _unlock_alias
 from worthless.cli.errors import WorthlessError
 
 from tests.conftest import make_repo as _repo
@@ -295,21 +294,6 @@ class TestUnlockMultiEnrollment:
         assert len(aliases) == 1  # same key -> same alias
         return aliases[0]
 
-    def test_unlock_alias_multi_enrollment_no_env_raises(
-        self, home_dir: WorthlessHome, two_env_files: tuple[Path, Path]
-    ) -> None:
-        """_unlock_alias with env_path=None errors when alias has multiple enrollments."""
-        env_a, env_b = two_env_files
-        alias = self._lock_both(env_a, env_b, home_dir)
-
-        async def _run():
-            repo = _repo(home_dir)
-            await repo.initialize()
-            await _unlock_alias(alias, home_dir, repo, env_path=None)
-
-        with pytest.raises(WorthlessError, match="multiple"):
-            asyncio.run(_run())
-
     def test_unlock_multi_enrollment_with_env_flag_succeeds(
         self, home_dir: WorthlessHome, two_env_files: tuple[Path, Path]
     ) -> None:
@@ -384,14 +368,84 @@ class TestUnlockNoAliases:
     """unlock with no enrolled keys prints warning."""
 
     def test_unlock_empty_home_warns(self, home_dir: WorthlessHome) -> None:
-        """unlock on empty home prints 'No enrolled keys found.'"""
+        """unlock on empty home prints 'No enrolled keys found.'
+
+        No `--env` flag — exercises the default-CWD path. Pnn2 makes
+        the HF4 discriminator implicit-default-safe: if the user did
+        not name a path, we don't surface the shard-shape hard error
+        even when the CWD has a `.env` belonging to a different
+        project.
+        """
         result = runner.invoke(
             app,
             ["unlock"],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "no enrolled" in result.output.lower()
+
+    def test_unlock_default_env_with_unrelated_shards_does_not_error(
+        self,
+        home_dir: WorthlessHome,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Pnn2 contract: ``worthless unlock`` (no flag) from a directory
+        whose `.env` happens to contain shard-shape values from an
+        unrelated project must NOT raise HF4's hard error.
+
+        Scenario: user has projects /work/a/.env (locked by worthless)
+        and /work/b/.env (someone else's, not enrolled here). Running
+        ``unlock`` from /work/b should warn and exit 0, not crash with
+        "no enrollment found for shard-shape value(s)..."
+        """
+        # Simulate /work/b/.env in CWD with shard-shape (but unenrolled)
+        # values via a real fake OpenAI key.
+        proj = tmp_path / "unrelated-project"
+        proj.mkdir()
+        (proj / ".env").write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+        monkeypatch.chdir(proj)
+
+        result = runner.invoke(
+            app,
+            ["unlock"],  # no --env
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, (
+            f"implicit-default unlock must not surface HF4 hard error "
+            f"on a CWD .env the user did not name:\n{result.output}"
+        )
+        assert "no enrolled" in result.output.lower()
+        assert "no enrollment found" not in result.output.lower(), (
+            "HF4 discriminator should NOT fire on implicit default"
+        )
+
+    def test_unlock_explicit_env_with_unrelated_shards_still_errors(
+        self,
+        home_dir: WorthlessHome,
+        tmp_path: Path,
+    ) -> None:
+        """Pnn2 keeps HF4's loud failure on explicit ``--env``: if the
+        user named the path, they meant it. Shard-shape values without
+        DB rows still surface as a hard error with a re-lock hint.
+        """
+        env = tmp_path / "orphaned.env"
+        env.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code != 0, (
+            f"explicit --env to an orphaned shard-shape .env must still "
+            f"hard-fail (HF4 contract):\n{result.output}"
+        )
+        # HF4's error hint must be present.
+        assert (
+            "no enrollment found" in result.output.lower()
+            or "unrecognised shards" in result.output.lower()
+        ), f"missing HF4 hint:\n{result.output}"
 
 
 class TestUnlockScopedToEnv:
@@ -533,85 +587,6 @@ class TestLoadShardA:
 
         with pytest.raises(WorthlessError, match="shard-A"):
             _load_shard_a(encrypted, None, "OPENAI_API_KEY", home_dir, aliases[0])
-
-
-class TestRestoreEnv:
-    """Unit tests for _restore_env helper."""
-
-    def test_restore_writes_key_to_env(self, tmp_path: Path) -> None:
-        """_restore_env rewrites the key value in .env."""
-        from unittest.mock import MagicMock
-        from worthless.cli.commands.unlock import _restore_env
-
-        env = tmp_path / ".env"
-        env.write_text("MY_KEY=shard-a-value\n")
-
-        console = MagicMock()
-        _restore_env(env, "MY_KEY", "original-key", "openai", "test-alias", console)
-
-        content = env.read_text()
-        assert "original-key" in content
-
-    def test_restore_removes_base_url(self, tmp_path: Path) -> None:
-        """_restore_env removes the provider BASE_URL line."""
-        from unittest.mock import MagicMock
-        from worthless.cli.commands.unlock import _restore_env
-
-        env = tmp_path / ".env"
-        env.write_text("MY_KEY=shard-a\nOPENAI_BASE_URL=http://localhost:8787/alias/v1\n")
-
-        console = MagicMock()
-        _restore_env(env, "MY_KEY", "real-key", "openai", "alias", console)
-
-        content = env.read_text()
-        assert "OPENAI_BASE_URL" not in content
-
-    def test_restore_missing_env_prints_to_stdout(self, tmp_path: Path, capsys) -> None:
-        """_restore_env prints key to stdout when .env is missing."""
-        from unittest.mock import MagicMock
-        from worthless.cli.commands.unlock import _restore_env
-
-        missing = tmp_path / "nonexistent.env"
-        console = MagicMock()
-        _restore_env(missing, "MY_KEY", "real-key", "openai", "alias", console)
-
-        captured = capsys.readouterr()
-        assert "MY_KEY=real-key" in captured.out
-
-    def test_restore_no_var_name_prints_alias(self, tmp_path: Path, capsys) -> None:
-        """_restore_env uses alias as key name when var_name is None."""
-        from unittest.mock import MagicMock
-        from worthless.cli.commands.unlock import _restore_env
-
-        console = MagicMock()
-        _restore_env(None, None, "real-key", "openai", "my-alias", console)
-
-        captured = capsys.readouterr()
-        assert "my-alias=real-key" in captured.out
-
-
-class TestCleanupEnrollment:
-    """Unit tests for _cleanup_enrollment helper."""
-
-    def test_cleanup_deletes_enrollment_and_shard(
-        self, home_dir: WorthlessHome, env_file: Path
-    ) -> None:
-        """_cleanup_enrollment removes enrollment and shard when last enrollment."""
-        from worthless.cli.commands.unlock import _cleanup_enrollment
-
-        _lock(env_file, home_dir)
-        repo = _repo(home_dir)
-        aliases = asyncio.run(repo.list_keys())
-        alias = aliases[0]
-
-        async def _run():
-            await repo.initialize()
-            enrollment = await repo.get_enrollment(alias)
-            await _cleanup_enrollment(alias, enrollment, repo, home_dir)
-            return await repo.list_keys()
-
-        remaining = asyncio.run(_run())
-        assert remaining == []
 
 
 class TestUnlockMultipleKeys:

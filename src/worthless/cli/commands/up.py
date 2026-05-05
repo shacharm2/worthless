@@ -239,7 +239,7 @@ def _start_foreground(
     """Start sidecar + proxy in foreground (blocks until SIGINT/SIGTERM).
 
     Sidecar spawns BEFORE the proxy. Mid-session sidecar crash surfaces as
-    WRTLS-112. On any exit path the proxy is terminated first, then the
+    WRTLS-113. On any exit path the proxy is terminated first, then the
     sidecar.
 
     Concurrent ``worthless up`` invocations are serialized via flock on
@@ -370,7 +370,7 @@ def _supervise_proxy_with_sidecar(
 
     Wired by :func:`_start_foreground`. On every exit path the proxy is
     terminated first, then ``shutdown_sidecar`` runs. A sidecar crash
-    raises WRTLS-112 after both processes are reaped.
+    raises WRTLS-113 after both processes are reaped.
     """
     # Write PID file immediately so a racing second invocation has
     # something to detect. Rewrite below once /healthz reports the

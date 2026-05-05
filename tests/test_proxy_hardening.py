@@ -10,6 +10,7 @@ Tests for Phase 3.1:
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -30,7 +31,7 @@ from worthless.proxy.app import (
     _extract_alias_and_path,
     create_app,
 )
-from worthless.proxy.config import ProxySettings
+from worthless.proxy.config import DeployMode, ProxySettings
 from worthless.proxy.errors import ErrorResponse, gateway_error_response
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
 from worthless.storage.repository import EncryptedShard, ShardRepository, StoredShard
@@ -74,7 +75,9 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings, proxy_app):
         nonce=bytearray(sr.nonce),
         provider="openai",
     )
-    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+    await repo.store(
+        alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
+    )
 
     pin_shard_b(proxy_app, alias, sr.shard_b)
 
@@ -481,6 +484,219 @@ class TestGateBeforeDecrypt:
         assert resp.status_code == 402
         assert not ipc_open_called
 
+    @respx.mock
+    async def test_proxy_response_pipe_is_consistent_with_gzip_upstream(
+        self, proxy_app, enrolled_alias
+    ):
+        """M2 (Blocker #3 / true-pipe minimum): when upstream returns a gzipped
+        body with Content-Encoding: gzip, the proxy's forwarded response must be
+        internally consistent — either the body is decompressed AND
+        Content-Encoding is removed, OR the body stays gzipped AND
+        Content-Encoding is preserved.
+
+        Failure mode pre-fix: proxy auto-decompresses upstream gzip via httpx's
+        aread()/aiter_bytes(), but forwards the original Content-Encoding: gzip
+        header back to the SDK. SDK tries to gunzip plain JSON → DecodingError.
+        Live smoke during PR #127 review required Accept-Encoding: identity to
+        bypass — which means default SDK calls (which advertise gzip) don't work.
+
+        worthless-yo9o (P2 follow-up) will deepen this to a true byte-transparent
+        pipe with aiter_raw — no decompression at all. M2 is the minimum to
+        unblock real SDKs today: header gets stripped after decompression.
+        """
+        import gzip
+        import json as _json
+
+        alias, shard_a_utf8, _ = enrolled_alias
+        expected_payload = {
+            "id": "chatcmpl-test",
+            "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        }
+        body_bytes = _json.dumps(expected_payload).encode()
+        gzipped_body = gzip.compress(body_bytes)
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                content=gzipped_body,
+                headers={
+                    "content-encoding": "gzip",
+                    "content-type": "application/json",
+                    "content-length": str(len(gzipped_body)),
+                },
+            )
+        )
+
+        transport = httpx.ASGITransport(app=proxy_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/{alias}/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {shard_a_utf8}",
+                    "content-type": "application/json",
+                },
+                content=(
+                    b'{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]}'
+                ),
+            )
+
+        # Status forwards through.
+        assert resp.status_code == 200, f"got {resp.status_code}: {resp.text[:200]!r}"
+
+        # Critical: the proxy's response must be consistent.
+        # Either Content-Encoding is gone (because we already decompressed)
+        # OR the body is still gzipped (true raw pipe).
+        ce = resp.headers.get("content-encoding", "").lower()
+        body_raw = resp.content  # this is what's on the wire to the SDK
+
+        if ce == "gzip":
+            # Raw pipe: body must still be gzipped — gunzip should yield JSON.
+            try:
+                ungz = gzip.decompress(body_raw)
+            except OSError as exc:
+                pytest.fail(
+                    f"proxy returned Content-Encoding: gzip but body is NOT gzipped — "
+                    f"SDK clients will error decompressing. {exc}. "
+                    f"First 32 bytes: {body_raw[:32]!r}"
+                )
+            data = _json.loads(ungz)
+        else:
+            # Header stripped: body must be decompressed JSON directly.
+            data = resp.json()
+
+        # In both consistent states, the JSON payload must round-trip.
+        assert data["usage"]["total_tokens"] == 4
+        assert data["choices"][0]["message"]["content"] == "OK"
+
+    @respx.mock
+    async def test_null_base_url_refused_before_reconstruction(
+        self, proxy_app, enrolled_alias, caplog
+    ):
+        """SR-03 + anti-enumeration: a row with NULL base_url (legacy /
+        pre-8rqs enrollment) must be refused BEFORE any key reconstruction
+        AND BEFORE rules-engine evaluation, AND with the same uniform 401
+        an unknown alias would get — no content-shape oracle.
+
+        Three contracts pinned here:
+
+        1. SR-03 (gate before reconstruct). Reconstruction must not fire.
+           Original 8rqs Phase 6 placed the NULL check AFTER reconstruction;
+           M1 hoists it above. Rules engine must not fire either —
+           ``rules_engine.evaluate`` runs BETWEEN the row fetch and the
+           reconstruction, so any leak there would also count as
+           pre-reconstruction key-material exposure once worthless-rzi1
+           lands per-request DB re-validation inside the rules path.
+
+        2. Anti-enumeration. The original M1 fix returned a distinctive
+           503 with a relock hint. That let an attacker probe the DB by
+           content-shape (random alias → 401, real legacy alias → 503).
+           Same oracle class as worthless-bi7h's timing oracle. M5 changes
+           the response to ``_uniform_401()`` — byte-identical to the
+           unknown-alias path.
+
+        3. Operator signal preserved. The relock hint moved from the wire
+           to the server log. Without a server-side log line, the
+           legacy-row condition would be silent to operators. caplog
+           assertion below pins that.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+
+        # Inject a row that fetch_encrypted returns with base_url=None.
+        # EncryptedShard is a NamedTuple — use _replace to clone with NULL base_url.
+        orig_fetch = proxy_app.state.repo.fetch_encrypted
+
+        async def fetch_with_null_base_url(a):
+            row = await orig_fetch(a)
+            return row._replace(base_url=None) if row is not None else None
+
+        proxy_app.state.repo.fetch_encrypted = fetch_with_null_base_url
+
+        # Track every gate that must NOT fire on the NULL base_url denial
+        # path: reconstruction (SR-03 strict) + rules-engine evaluate.
+        with (
+            patch("worthless.proxy.app.reconstruct_key") as mock_reconstruct,
+            patch("worthless.proxy.app.reconstruct_key_fp") as mock_reconstruct_fp,
+            patch.object(
+                proxy_app.state.rules_engine,
+                "evaluate",
+                wraps=proxy_app.state.rules_engine.evaluate,
+            ) as mock_evaluate,
+            caplog.at_level(logging.WARNING, logger="worthless.proxy.app"),
+        ):
+            transport = httpx.ASGITransport(app=proxy_app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(
+                    f"/{alias}/v1/chat/completions",
+                    headers={
+                        "authorization": f"Bearer {shard_a_utf8}",
+                        "content-type": "application/json",
+                    },
+                    content=b'{"model": "gpt-4", "messages": []}',
+                )
+
+                # Anti-enumeration: capture an unknown-alias response from the
+                # SAME proxy and assert byte-equality. If they differ, the
+                # legacy-row path is leaking existence.
+                unknown_resp = await client.post(
+                    "/this-alias-never-existed/v1/chat/completions",
+                    headers={
+                        "authorization": f"Bearer {shard_a_utf8}",
+                        "content-type": "application/json",
+                    },
+                    content=b'{"model": "gpt-4", "messages": []}',
+                )
+
+        # Assertion order: gate-bypass call_counts FIRST so a regression in
+        # any one gate surfaces at the precise contract it broke, instead
+        # of being masked by a later status-code mismatch.
+
+        # SR-03 contract: NEITHER reconstruction function called.
+        assert mock_reconstruct.call_count == 0, (
+            f"reconstruct_key called {mock_reconstruct.call_count} times — "
+            "SR-03 violated: NULL base_url should refuse BEFORE reconstruction"
+        )
+        assert mock_reconstruct_fp.call_count == 0, (
+            f"reconstruct_key_fp called {mock_reconstruct_fp.call_count} times — "
+            "SR-03 violated: NULL base_url should refuse BEFORE reconstruction"
+        )
+
+        # Rules-engine must also be skipped on this denial path.
+        assert mock_evaluate.call_count == 0, (
+            f"rules_engine.evaluate called {mock_evaluate.call_count} times — "
+            "the SR-03 docstring promises gating BEFORE rules evaluation, "
+            "but rules ran anyway"
+        )
+
+        # Anti-enumeration: legacy-row response is byte-identical to the
+        # unknown-alias response. No content-shape oracle.
+        assert resp.status_code == 401, (
+            f"expected uniform 401 (anti-enumeration), got {resp.status_code}: {resp.text}"
+        )
+        assert resp.status_code == unknown_resp.status_code, (
+            f"legacy-row response status {resp.status_code} != unknown-alias "
+            f"status {unknown_resp.status_code} — content-shape oracle leaks "
+            "DB membership"
+        )
+        assert resp.content == unknown_resp.content, (
+            "legacy-row response body differs from unknown-alias body — "
+            "content-shape oracle leaks DB membership"
+        )
+
+        # Operator signal preserved. The relock hint moved from the wire to
+        # the server log. Without a logged warning, operators have no way
+        # to know a legacy row was hit.
+        legacy_warnings = [
+            r
+            for r in caplog.records
+            if "NULL base_url" in r.getMessage() and alias in r.getMessage()
+        ]
+        assert legacy_warnings, (
+            "no operator warning logged for NULL-base_url path — "
+            f"legacy-row condition is silent. caplog records: "
+            f"{[r.getMessage() for r in caplog.records]}"
+        )
+
 
 # ------------------------------------------------------------------
 # B-3: Bytearray zeroing
@@ -767,7 +983,13 @@ class TestUpstreamSanitizationAnthropic:
             nonce=bytearray(sr.nonce),
             provider="anthropic",
         )
-        await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+        await repo.store(
+            alias,
+            shard,
+            prefix=sr.prefix,
+            charset=sr.charset,
+            base_url="https://api.anthropic.com/v1",
+        )
         pin_shard_b(proxy_app, alias, sr.shard_b)
         shard_a_utf8 = sr.shard_a.decode("utf-8")
 
@@ -1019,7 +1241,13 @@ class TestAntiEnumeration:
         self, proxy_settings: ProxySettings, repo, enrolled_alias
     ):
         """TLS enforcement failure returns the same 401 as other failure modes."""
-        tls_settings = replace(proxy_settings, allow_insecure=False)
+        tls_settings = replace(
+            proxy_settings,
+            allow_insecure=False,
+            deploy_mode=DeployMode.PUBLIC,
+            host="0.0.0.0",  # noqa: S104 — testing public-mode bind/TLS contract
+            trusted_proxies=("10.0.0.0/8",),
+        )
         app = create_app(tls_settings)
         db = await aiosqlite.connect(proxy_settings.db_path)
         try:
@@ -1185,7 +1413,9 @@ async def attack_scenario(
         nonce=bytearray(sr.nonce),
         provider="openai",
     )
-    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+    await repo.store(
+        alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
+    )
 
     app = create_app(settings)
     db = await aiosqlite.connect(tmp_db_path)
@@ -1648,7 +1878,13 @@ class TestShardAExtractionAttacks:
             nonce=bytearray(sr_b.nonce),
             provider="openai",
         )
-        await repo.store(alias_b, shard_b, prefix=sr_b.prefix, charset=sr_b.charset)
+        await repo.store(
+            alias_b,
+            shard_b,
+            prefix=sr_b.prefix,
+            charset=sr_b.charset,
+            base_url="https://api.openai.com/v1",
+        )
 
         # Use shard-A from alias_a against alias_b
         transport = httpx.ASGITransport(app=proxy_app)

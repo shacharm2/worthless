@@ -25,6 +25,7 @@ class TestOpenAIRequestTransform:
             body=sample_openai_body,
             headers={"content-type": "application/json"},
             api_key=sample_api_key,
+            base_url="https://api.openai.com/v1",
         )
         assert isinstance(req, AdapterRequest)
         assert req.url == "https://api.openai.com/v1/chat/completions"
@@ -76,6 +77,7 @@ class TestAnthropicRequestTransform:
             body=sample_anthropic_body,
             headers={"content-type": "application/json"},
             api_key=sample_api_key,
+            base_url="https://api.anthropic.com/v1",
         )
         assert isinstance(req, AdapterRequest)
         assert req.url == "https://api.anthropic.com/v1/messages"
@@ -91,6 +93,7 @@ class TestAnthropicRequestTransform:
             body=sample_anthropic_body,
             headers={"content-type": "application/json"},
             api_key=sample_api_key,
+            base_url="https://api.anthropic.com/v1",
         )
         assert req.headers["anthropic-version"] == "2023-06-01"
 
@@ -106,6 +109,7 @@ class TestAnthropicRequestTransform:
                 "anthropic-version": "2024-01-01",
             },
             api_key=sample_api_key,
+            base_url="https://api.anthropic.com/v1",
         )
         assert req.headers["anthropic-version"] == "2024-01-01"
 
@@ -192,6 +196,7 @@ class TestHopByHopStrippingAdapterLevel:
                 "connection": "close",
             },
             api_key=sample_api_key,
+            base_url="https://api.openai.com/v1",
         )
         for key in req.headers:
             assert key not in ("host", "transfer-encoding", "connection")
@@ -208,6 +213,7 @@ class TestHopByHopStrippingAdapterLevel:
                 "proxy-authorization": "Basic evil",
             },
             api_key=sample_api_key,
+            base_url="https://api.anthropic.com/v1",
         )
         for key in req.headers:
             assert key not in ("host", "proxy-authorization")
@@ -221,20 +227,29 @@ class TestHopByHopStrippingAdapterLevel:
 class TestEdgeCases:
     def test_openai_empty_body(self, sample_api_key: bytearray) -> None:
         adapter = OpenAIAdapter()
-        req = adapter.prepare_request(body=b"", headers={}, api_key=sample_api_key)
+        req = adapter.prepare_request(
+            body=b"", headers={}, api_key=sample_api_key, base_url="https://api.openai.com/v1"
+        )
         assert req.body == b""
         assert req.url == "https://api.openai.com/v1/chat/completions"
 
     def test_anthropic_empty_body(self, sample_api_key: bytearray) -> None:
         adapter = AnthropicAdapter()
-        req = adapter.prepare_request(body=b"", headers={}, api_key=sample_api_key)
+        req = adapter.prepare_request(
+            body=b"",
+            headers={},
+            api_key=sample_api_key,
+            base_url="https://api.anthropic.com/v1",
+        )
         assert req.body == b""
         assert req.url == "https://api.anthropic.com/v1/messages"
 
     def test_openai_unicode_body(self, sample_api_key: bytearray) -> None:
         body = '{"messages":[{"role":"user","content":"Hello \U0001f600"}]}'.encode()
         adapter = OpenAIAdapter()
-        req = adapter.prepare_request(body=body, headers={}, api_key=sample_api_key)
+        req = adapter.prepare_request(
+            body=body, headers={}, api_key=sample_api_key, base_url="https://api.openai.com/v1"
+        )
         assert req.body == body
 
     def test_anthropic_preserves_extra_headers(self, sample_api_key: bytearray) -> None:
@@ -243,6 +258,7 @@ class TestEdgeCases:
             body=b"{}",
             headers={"content-type": "application/json", "x-custom": "val"},
             api_key=sample_api_key,
+            base_url="https://api.anthropic.com/v1",
         )
         assert req.headers["x-custom"] == "val"
 
@@ -252,6 +268,7 @@ class TestEdgeCases:
             body=b"{}",
             headers={"content-type": "application/json", "x-custom": "val"},
             api_key=sample_api_key,
+            base_url="https://api.openai.com/v1",
         )
         assert req.headers["x-custom"] == "val"
 
@@ -262,6 +279,7 @@ class TestEdgeCases:
             body=b"{}",
             headers={"authorization": "Bearer old-key"},
             api_key=sample_api_key,
+            base_url="https://api.openai.com/v1",
         )
         assert req.headers["authorization"] == f"Bearer {sample_api_key.decode()}"
 
@@ -271,6 +289,7 @@ class TestEdgeCases:
             body=b"{}",
             headers={"x-api-key": "old-key"},
             api_key=sample_api_key,
+            base_url="https://api.anthropic.com/v1",
         )
         assert req.headers["x-api-key"] == sample_api_key.decode()
 
@@ -294,6 +313,7 @@ class TestHeaderStripping:
                 "x-worthless-session": "xyz",
             },
             api_key=sample_api_key,
+            base_url="https://api.openai.com/v1",
         )
         for key in req.headers:
             assert not key.lower().startswith("x-worthless-")
@@ -311,6 +331,102 @@ class TestHeaderStripping:
                 "x-worthless-session": "xyz",
             },
             api_key=sample_api_key,
+            base_url="https://api.anthropic.com/v1",
         )
         for key in req.headers:
             assert not key.lower().startswith("x-worthless-")
+
+
+# ---------------------------------------------------------------------------
+# worthless-8rqs Phase 5: per-enrollment base_url
+# ---------------------------------------------------------------------------
+
+
+class TestPerEnrollmentBaseURL:
+    """Adapters take ``base_url`` per request — the env var WORTHLESS_UPSTREAM_*
+    is gone. Every prepare_request call must specify the upstream explicitly,
+    and the resulting URL appends the protocol-specific path."""
+
+    def test_openai_uses_passed_base_url(
+        self, sample_openai_body: bytes, sample_api_key: bytearray
+    ) -> None:
+        adapter = OpenAIAdapter()
+        req = adapter.prepare_request(
+            body=sample_openai_body,
+            headers={},
+            api_key=sample_api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        assert req.url == "https://openrouter.ai/api/v1/chat/completions"
+
+    def test_anthropic_uses_passed_base_url(
+        self, sample_anthropic_body: bytes, sample_api_key: bytearray
+    ) -> None:
+        adapter = AnthropicAdapter()
+        req = adapter.prepare_request(
+            body=sample_anthropic_body,
+            headers={},
+            api_key=sample_api_key,
+            base_url="https://my.anthropic.example/v1",
+        )
+        assert req.url == "https://my.anthropic.example/v1/messages"
+
+    def test_base_url_trailing_slash_normalized(
+        self, sample_openai_body: bytes, sample_api_key: bytearray
+    ) -> None:
+        adapter = OpenAIAdapter()
+        req = adapter.prepare_request(
+            body=sample_openai_body,
+            headers={},
+            api_key=sample_api_key,
+            base_url="https://x.example/v1/",  # trailing slash
+        )
+        assert req.url == "https://x.example/v1/chat/completions"
+
+    def test_base_url_required(self, sample_openai_body: bytes, sample_api_key: bytearray) -> None:
+        """Missing ``base_url`` raises TypeError — there's no default."""
+        adapter = OpenAIAdapter()
+        with pytest.raises(TypeError):
+            adapter.prepare_request(  # type: ignore[call-arg]
+                body=sample_openai_body,
+                headers={},
+                api_key=sample_api_key,
+            )
+
+    def test_env_var_has_no_effect_on_openai(
+        self,
+        sample_openai_body: bytes,
+        sample_api_key: bytearray,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Anti-regression: setting the legacy env var must NOT influence the URL.
+        After 8rqs the adapter does not read os.environ at all."""
+        monkeypatch.setenv("WORTHLESS_UPSTREAM_OPENAI_URL", "https://attacker.example/v1")
+        adapter = OpenAIAdapter()
+        req = adapter.prepare_request(
+            body=sample_openai_body,
+            headers={},
+            api_key=sample_api_key,
+            base_url="https://api.openai.com/v1",
+        )
+        assert "attacker" not in req.url, (
+            f"env var leaked into URL: {req.url} — adapter is reading os.environ"
+        )
+        assert req.url == "https://api.openai.com/v1/chat/completions"
+
+    def test_env_var_has_no_effect_on_anthropic(
+        self,
+        sample_anthropic_body: bytes,
+        sample_api_key: bytearray,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("WORTHLESS_UPSTREAM_ANTHROPIC_URL", "https://attacker.example/v1")
+        adapter = AnthropicAdapter()
+        req = adapter.prepare_request(
+            body=sample_anthropic_body,
+            headers={},
+            api_key=sample_api_key,
+            base_url="https://api.anthropic.com/v1",
+        )
+        assert "attacker" not in req.url
+        assert req.url == "https://api.anthropic.com/v1/messages"

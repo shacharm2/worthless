@@ -5,7 +5,7 @@ Covers:
 * D1 — sidecar spawns before the proxy, and the proxy env carries
   ``WORTHLESS_SIDECAR_SOCKET``.
 * D2 — clean shutdown terminates the proxy first, then the sidecar.
-* D3 — sidecar crash mid-session surfaces as WRTLS-112 SIDECAR_CRASHED.
+* D3 — sidecar crash mid-session surfaces as WRTLS-113 SIDECAR_CRASHED.
 * D4 — orphan cleanup if proxy spawn raises after sidecar is up.
 * D5 — daemon mode (``-d``) is rejected with a clear error.
 * D6 — error-code numbering: 111 < 112 < 113.
@@ -258,12 +258,12 @@ class TestShutdownOrdering:
 
 
 # ---------------------------------------------------------------------------
-# D3 — sidecar crash mid-session → WRTLS-112
+# D3 — sidecar crash mid-session → WRTLS-113
 # ---------------------------------------------------------------------------
 
 
 class TestSidecarCrashDetected:
-    def test_up_exits_with_wrtls_112_when_sidecar_crashes_midsession(
+    def test_up_exits_with_wrtls_113_when_sidecar_crashes_midsession(
         self, home: WorthlessHome
     ) -> None:
         from worthless.cli.commands import up as up_mod
@@ -317,7 +317,7 @@ class TestSidecarCrashDetected:
         # Proxy must be torn down BEFORE the error escapes.
         assert events.index("proxy.terminate") < events.index("shutdown_sidecar")
 
-    def test_sidecar_crash_during_health_poll_surfaces_wrtls_112_not_104(
+    def test_sidecar_crash_during_health_poll_surfaces_wrtls_113_not_104(
         self, home: WorthlessHome
     ) -> None:
         """Jenny REJECT #1: if the sidecar dies during the 15-second
@@ -327,7 +327,7 @@ class TestSidecarCrashDetected:
 
         The fix: before declaring the proxy unreachable, check
         ``handle.proc.poll() is not None``. If the sidecar is the dead
-        party, surface ``WRTLS-112 SIDECAR_CRASHED`` instead.
+        party, surface ``WRTLS-113 SIDECAR_CRASHED`` instead.
         """
         from worthless.cli.commands import up as up_mod
 
@@ -346,7 +346,7 @@ class TestSidecarCrashDetected:
             patch.object(up_mod, "spawn_proxy", lambda *, env, port: (proxy_proc, port)),
             # poll_health_pid returns None — proxy never became healthy.
             # Pre-fix: this triggers WRTLS-104. Post-fix: we check the
-            # sidecar first, see it's dead, and raise WRTLS-112 instead.
+            # sidecar first, see it's dead, and raise WRTLS-113 instead.
             patch.object(up_mod, "poll_health_pid", return_value=None),
             patch.object(up_mod, "write_pid"),
             patch.object(up_mod, "shutdown_sidecar"),
@@ -362,7 +362,7 @@ class TestSidecarCrashDetected:
                 )
 
         assert excinfo.value.code == ErrorCode.SIDECAR_CRASHED, (
-            f"sidecar-died-during-health-poll must surface WRTLS-112, "
+            f"sidecar-died-during-health-poll must surface WRTLS-113, "
             f"got {excinfo.value.code.name} (WRTLS-{excinfo.value.code.value})"
         )
 
@@ -475,7 +475,7 @@ class TestDaemonModeRejected:
         # WOR-384 fix-11/11: pin the numeric error code so a future change
         # to the rejection's ErrorCode surfaces explicitly. Was substring-
         # only before — would silently couple to the wrong code (Jenny CONCERN #4).
-        assert "WRTLS-114" in out, f"Expected WRTLS-114 (DAEMON_NOT_SUPPORTED), got: {out!r}"
+        assert "WRTLS-115" in out, f"Expected WRTLS-115 (DAEMON_NOT_SUPPORTED), got: {out!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -484,8 +484,8 @@ class TestDaemonModeRejected:
 
 
 class TestErrorCodeOrdering:
-    def test_error_code_sidecar_crashed_is_112(self) -> None:
-        assert ErrorCode.SIDECAR_CRASHED == 112
+    def test_error_code_sidecar_crashed_is_113(self) -> None:
+        assert ErrorCode.SIDECAR_CRASHED == 113
         assert (
             int(ErrorCode.UNSAFE_REWRITE_REFUSED)
             < int(ErrorCode.SIDECAR_CRASHED)

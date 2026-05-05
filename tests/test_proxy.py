@@ -62,7 +62,9 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings, proxy_app):
         nonce=bytearray(sr.nonce),
         provider="openai",
     )
-    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+    await repo.store(
+        alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
+    )
 
     pin_shard_b(proxy_app, alias, sr.shard_b)
 
@@ -397,7 +399,13 @@ class TestTransparentRouting:
             nonce=bytearray(sr.nonce),
             provider="anthropic",
         )
-        await repo.store("ant-key", shard, prefix=sr.prefix, charset=sr.charset)
+        await repo.store(
+            "ant-key",
+            shard,
+            prefix=sr.prefix,
+            charset=sr.charset,
+            base_url="https://api.anthropic.com/v1",
+        )
 
         pin_shard_b(proxy_app, "ant-key", sr.shard_b)
 
@@ -593,7 +601,9 @@ async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo):
         nonce=bytearray(sr.nonce),
         provider="openai",
     )
-    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+    await repo.store(
+        alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
+    )
 
     app = create_app(proxy_settings)
     pin_shard_b(app, alias, sr.shard_b)

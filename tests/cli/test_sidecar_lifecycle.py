@@ -132,7 +132,7 @@ def _short_socket_path() -> Path:
     macOS pytest ``tmp_path`` lives under ``/private/var/folders/.../`` —
     typically 90+ bytes — so ``shares.run_dir / "sidecar.sock"`` exceeds
     the 104-byte ``sun_path`` limit. Production code (post WOR-384 fix
-    7/8) validates that limit and raises WRTLS-113 before ``Popen``,
+    7/8) validates that limit and raises WRTLS-114 before ``Popen``,
     which short-circuits any test that wanted to exercise the body.
     Tests that don't care about the path semantically should use this
     helper to get a short, unique path under ``/tmp``.
@@ -294,8 +294,8 @@ def test_spawn_sidecar_passes_current_uid_in_env(home: Path, key: bytearray) -> 
     assert env["WORTHLESS_SIDECAR_SHARE_B"] == str(shares.share_b_path)
 
 
-def test_spawn_sidecar_times_out_with_wrtls_113(home: Path, key: bytearray) -> None:
-    """B3: a non-sidecar child that never binds raises WRTLS-113 and is reaped."""
+def test_spawn_sidecar_times_out_with_wrtls_114(home: Path, key: bytearray) -> None:
+    """B3: a non-sidecar child that never binds raises WRTLS-114 and is reaped."""
     shares = split_to_tmpfs(key, home)
     socket_path = _short_socket_path()
 
@@ -323,7 +323,7 @@ def test_spawn_sidecar_times_out_with_wrtls_113(home: Path, key: bytearray) -> N
             )
 
     assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
-    assert exc_info.value.code.value == 113
+    assert exc_info.value.code.value == 114
     # The bogus child must be reaped, not orphaned.
     assert spawned, "Popen replacement was never invoked"
     proc = spawned[0]
@@ -765,7 +765,7 @@ def test_split_to_tmpfs_recovers_from_stale_run_dir(
 
 # ---------------------------------------------------------------------------
 # QA #5 — AF_UNIX sun_path 104-byte limit (macOS) must be validated BEFORE
-# spawn so the user gets a clear error rather than a confusing WRTLS-113
+# spawn so the user gets a clear error rather than a confusing WRTLS-114
 # "sidecar did not become ready" timeout when bind() actually failed with
 # ENAMETOOLONG.
 # ---------------------------------------------------------------------------
@@ -776,8 +776,8 @@ def test_spawn_sidecar_rejects_oversized_socket_path(home: Path, key: bytearray)
     long ``$HOME`` + ``run/<pid>/sidecar.sock`` can exceed this. Pre-fix:
     sidecar's ``bind()`` fails with ``ENAMETOOLONG``, sidecar exits, and
     ``_wait_for_ready`` returns False — surfaced as the misleading
-    WRTLS-113 "did not become ready". Post-fix: ``spawn_sidecar``
-    validates the path BEFORE ``Popen`` and raises WRTLS-113 with an
+    WRTLS-114 "did not become ready". Post-fix: ``spawn_sidecar``
+    validates the path BEFORE ``Popen`` and raises WRTLS-114 with an
     explicit "AF_UNIX path too long" message — no subprocess spawned,
     no time wasted.
     """

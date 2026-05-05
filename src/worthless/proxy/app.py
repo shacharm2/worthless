@@ -30,7 +30,7 @@ from starlette.middleware.cors import CORSMiddleware
 from worthless.adapters.registry import get_adapter
 from worthless.adapters.types import INTERNAL_HEADER_PREFIX
 from worthless.crypto.reconstruction import reconstruct_key, reconstruct_key_fp, secure_key
-from worthless.proxy.config import ProxySettings
+from worthless.proxy.config import DeployMode, ProxySettings
 from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
 from worthless.proxy.ipc_supervisor import IPCSupervisor, IPCUnavailable
 from worthless.proxy.metering import (
@@ -73,6 +73,16 @@ def _uniform_401() -> Response:
         headers=_AUTH_HEADERS,
         media_type="application/json",
     )
+
+
+def _scheme_is_trusted(request: Request, settings: ProxySettings) -> bool:
+    # PUBLIC: scope["scheme"] reflects forwarded proto only when uvicorn's
+    # --forwarded-allow-ips already gated the peer; otherwise the raw socket scheme.
+    if settings.deploy_mode is DeployMode.LOOPBACK:
+        return True
+    if settings.deploy_mode is DeployMode.LAN:
+        return True
+    return request.scope.get("scheme", "http") == "https"
 
 
 def _extract_shard_a(request: Request) -> bytearray | None:
@@ -306,10 +316,8 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             return _uniform_401()
         alias, clean_path = parsed
 
-        if not settings.allow_insecure:
-            proto = request.scope.get("scheme", "http")
-            if proto != "https":
-                return _uniform_401()
+        if not _scheme_is_trusted(request, settings):
+            return _uniform_401()
 
         # Reject null/CR/LF in header keys or values
         for key, value in request.headers.items():
@@ -319,6 +327,27 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         # Fetch encrypted shard (gate-before-decrypt: no Fernet yet)
         encrypted = await repo.fetch_encrypted(alias)
         if encrypted is None:
+            return _uniform_401()
+
+        # SR-03: gate before reconstruct. Refuse legacy rows missing
+        # base_url BEFORE any rules-engine evaluation, BEFORE shard_a
+        # extraction, BEFORE reconstruction. The denial path must not
+        # trigger key materialisation. (worthless-2pdi will promote this
+        # into a structural validate_encrypted_row helper covering all
+        # row-shape denials; the inline guard is the minimum.)
+        #
+        # Anti-enumeration: return the same _uniform_401() that unknown
+        # aliases get. A distinctive response (e.g. 503 with a relock
+        # hint) would let an attacker probe the DB by content-shape,
+        # breaking the anti-enumeration contract worthless-bi7h tracks
+        # for the timing-oracle variant. The relock hint surfaces in
+        # operator logs and via authenticated paths only.
+        if encrypted.base_url is None:
+            logger.warning(
+                "alias %r has NULL base_url (legacy pre-8rqs row); "
+                "operator should run `worthless relock`",
+                alias,
+            )
             return _uniform_401()
 
         # SR-09: shard-A from request header only (no disk, no files)
@@ -400,7 +429,12 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         try:
             with secure_key(key_buf) as k:
                 # Prepare upstream request
-                adapter_req = adapter.prepare_request(body=body, headers=req_headers, api_key=k)
+                adapter_req = adapter.prepare_request(
+                    body=body,
+                    headers=req_headers,
+                    api_key=k,
+                    base_url=encrypted.base_url,
+                )
 
                 # Build the httpx request object
                 upstream_req = httpx_client.build_request(
@@ -437,8 +471,14 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 tokens = usage.total_tokens if usage else 0
                 model = usage.model if usage else None
                 if usage is None:
-                    logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                        "Token extraction failed for alias=%s provider=%s",
+                    # Renamed from "Token extraction failed" — Semgrep's
+                    # python-logger-credential-disclosure rule fires on
+                    # the word "Token" in log messages, but here we mean
+                    # the LLM response usage-tokens count (for metering),
+                    # not an auth token. Renaming clears the rule
+                    # without needing a # nosemgrep annotation.
+                    logger.warning(
+                        "Usage extraction failed for alias=%s provider=%s",
                         alias,
                         provider,
                     )

@@ -88,14 +88,22 @@ def migrate_file_to_keyring(home_dir: Path | None = None) -> bool:
     """
     try:
         if not keyring_available():
+            logger.debug("migrate_file_to_keyring: keyring unavailable, skip")
             return False
-        # Already in keyring? Nothing to do.
-        username = _keyring_username(home_dir)
-        if keyring.get_password(_SERVICE, username) is not None:
-            return False
-        # File exists?
+        # File-existence check FIRST so we don't fire keyring.get_password on
+        # every CLI invocation just to confirm "no migration needed". When
+        # there is no fernet.key file (the common case post-migration), we
+        # return immediately without touching the keyring — preserves the
+        # HF2 1-keyring-read-per-CLI promise on the existing-key path.
         fernet_path = _fernet_file_path(home_dir)
         if not fernet_path.exists():
+            logger.debug("migrate_file_to_keyring: no file at %s, skip", fernet_path)
+            return False
+        # File exists. Now check keyring — worth a get_password only when a
+        # file is present and migration is actually possible.
+        username = _keyring_username(home_dir)
+        if keyring.get_password(_SERVICE, username) is not None:
+            logger.debug("migrate_file_to_keyring: keyring already has key, skip")
             return False
         # Read from file and store to keyring (which also cleans up the file).
         # store_fernet_key deletes the file on keyring success and re-creates
@@ -111,6 +119,44 @@ def migrate_file_to_keyring(home_dir: Path | None = None) -> bool:
     except Exception:
         logger.debug("File-to-keyring migration skipped", exc_info=True)
         return False
+
+
+# HF3 (worthless-cmpf): valid-shape Fernet key for code paths that need
+# to instantiate Fernet/ShardRepository but never actually call decrypt
+# (e.g. ``commands/scan.py:_build_enrollment_checker_async`` reads only
+# plaintext metadata via ``list_enrollments``). Co-located here next to
+# ``read_fernet_key`` so any future "decrypt-free" path finds it without
+# importing from a CLI command module.
+PLACEHOLDER_FERNET_KEY: bytes = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+
+def read_fernet_key_from_file(home_dir: Path | None = None) -> bytearray:
+    """Read the Fernet key directly from the on-disk file fallback.
+
+    HF3 (worthless-cmpf): companion to ``read_fernet_key`` for callers
+    that know the file is the authoritative source and want to bypass
+    the keyring step in the cascade. ``read_fernet_key``'s order is
+    env → keyring → file, so calling it on a file-only system still
+    invokes the keyring backend (silent on macOS when no entry exists,
+    but still an API touch — and prompts on backends that authenticate
+    the lookup itself). Use this helper from bootstrap when
+    ``_fernet_key_present`` is True via file alone.
+
+    Returns ``bytearray`` per SR-01.
+
+    Raises ``WorthlessError(KEY_NOT_FOUND)`` if the file does not exist.
+    """
+    fernet_path = _fernet_file_path(home_dir)
+    try:
+        return bytearray(fernet_path.read_bytes().strip())
+    except FileNotFoundError as exc:
+        # Skip the upfront ``exists()`` stat: ``read_bytes`` already
+        # raises on a missing file, and the TOCTOU race is harmless
+        # (we'd just fail with the same error a microsecond later).
+        raise WorthlessError(
+            ErrorCode.KEY_NOT_FOUND,
+            f"Fernet key file not found at {fernet_path}.",
+        ) from exc
 
 
 def _fernet_file_path(home_dir: Path | None) -> Path:

@@ -1,3 +1,8 @@
+---
+title: "Install — GitHub Actions"
+description: "Protect API keys during CI test runs and scan for exposed secrets."
+---
+
 # Install -- GitHub Actions
 
 Run Worthless in CI to protect API keys during test runs and scan for exposed secrets.

@@ -31,10 +31,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  bare-ubuntu:
-    name: install.sh on bare ubuntu:24.04 (no python/pipx/uv)
+  install-matrix:
+    name: install.sh host matrix (Ubuntu/Debian/Alpine, lock lifecycle)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 9 install fixtures + 2 lock-lifecycle fixtures = 11 docker-marked tests.
+    # ubuntu-idempotency runs install.sh TWICE (~2x install fixture time). On
+    # the first PR run BuildKit caches are cold, so PBS Python + wheels are
+    # fetched per-fixture. 40m gives margin without being absurd.
+    timeout-minutes: 40
     steps:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -44,9 +48,18 @@ jobs:
       - name: Set up uv + Python (pytest harness only; not used inside container)
         uses: ./.github/actions/setup-uv-python
 
-      - name: Run docker-marked integration test
+      - name: Run docker-marked integration tests in parallel
         env:
           UV_CACHE_DIR: /tmp/uv-cache
+          # Force BuildKit so RUN --mount=type=cache directives in fixtures
+          # (WOR-320) are not silently stripped by the legacy builder.
+          DOCKER_BUILDKIT: "1"
+          COMPOSE_DOCKER_CLI_BUILD: "1"
+        # -n 2 --dist load: 9 install + 2 lock-lifecycle tests, one module →
+        # `loadscope` would pin them all to one worker. `load` distributes
+        # individual items. Docker daemon serializes layer commits anyway;
+        # 2 concurrent builds is the sweet spot — higher counts thrash disk
+        # I/O without speedup.
         run: |
           uv sync --extra test
-          uv run pytest -m docker -q tests/test_install_docker.py
+          uv run pytest -m docker -q -n 2 --dist load tests/test_install_docker.py

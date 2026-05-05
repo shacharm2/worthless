@@ -16,8 +16,11 @@ from worthless.cli.bootstrap import get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.key_patterns import KEY_PATTERN
+from worthless.cli.dotenv_rewriter import build_enrolled_locations
+from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY
+from worthless.cli.orphans import FIX_PHRASE, PROBLEM_PHRASE, find_orphans
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
-from worthless.storage.repository import ShardRepository
+from worthless.storage.repository import EnrollmentRecord, ShardRepository
 
 
 def _find_git_dir() -> Path | None:
@@ -79,11 +82,16 @@ def _collect_deep_paths(explicit_paths: list[Path]) -> tuple[list[Path], Path | 
 
 def _format_human(
     findings: list[ScanFinding],
+    orphans: list[EnrollmentRecord] | None = None,
     show_suffix: bool = False,
     is_tty: bool = True,
 ) -> str:
-    """Format findings as human-readable text."""
-    if not findings:
+    """Format findings as human-readable text. HF5: ``orphans`` (broken DB
+    rows whose ``.env`` line was deleted) get a dedicated ``Can't be
+    restored:`` section + a ``, N broken`` segment in the trailing total.
+    """
+    orphans = orphans or []
+    if not findings and not orphans:
         return "No API keys found.\n"
 
     lines: list[str] = []
@@ -116,11 +124,22 @@ def _format_human(
         else:
             unprotected_count += 1
 
+    # HF5: dedicated section for broken DB rows + recovery hint.
+    # Section header uses the canonical PROBLEM_PHRASE so reword in one
+    # place (cli/orphans.py) flows here too.
+    if orphans:
+        lines.append("")
+        lines.append(f"{PROBLEM_PHRASE.capitalize()} these keys (.env line deleted):")
+        for o in orphans:
+            lines.append(f"  {PROBLEM_PHRASE} {o.key_alias}  ({o.var_name} -> {o.env_path}) BROKEN")
+        lines.append(f"  Run `{FIX_PHRASE}` to clean up.")
+
     total = len(findings)
     lines.append("")
-    lines.append(
-        f"Found {total} keys: {protected_count} protected, {unprotected_count} unprotected"
-    )
+    summary = f"Found {total} keys: {protected_count} protected, {unprotected_count} unprotected"
+    if orphans:
+        summary += f", {len(orphans)} broken"
+    lines.append(summary)
 
     if unprotected_count > 0:
         if is_tty:
@@ -131,8 +150,13 @@ def _format_human(
     return "\n".join(lines) + "\n"
 
 
-def _format_json_findings(findings: list[ScanFinding]) -> str:
-    """Format findings as JSON array."""
+def _format_json_findings(findings: list[ScanFinding], orphans: list | None = None) -> str:
+    """Format findings as JSON. HF5: shape changed from bare array to
+    ``{"findings": [...], "orphans": [...]}`` so we can carry the broken
+    DB rows alongside the .env findings. JSON consumers iterating
+    findings need to switch from ``for f in result`` to
+    ``for f in result["findings"]`` — documented in SKILL.md.
+    """
     items = []
     for f in findings:
         items.append(
@@ -145,7 +169,21 @@ def _format_json_findings(findings: list[ScanFinding]) -> str:
                 "value_preview": f.value_preview,
             }
         )
-    return json.dumps(items, indent=2) + "\n"
+    orphan_items = [
+        {
+            "alias": o.key_alias,
+            "var_name": o.var_name,
+            "env_path": o.env_path,
+        }
+        for o in (orphans or [])
+    ]
+    return (
+        json.dumps(
+            {"schema_version": 2, "findings": items, "orphans": orphan_items},
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def _install_hook() -> None:
@@ -173,43 +211,50 @@ def _install_hook() -> None:
     hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-async def _build_enrollment_checker_async():
-    """Build a set of enrolled (var_name, env_path) from the worthless DB.
+async def _load_db_state_async():
+    """Return ``(enrolled_locations, orphans)`` from the worthless DB.
 
-    Returns None if the DB is unavailable (CI/offline mode).
-    Exceptions are intentionally swallowed — graceful degradation
-    when running without a worthless home (e.g. CI, first scan).
+    HF5 / worthless-gmky: scan now needs BOTH the (var_name, env_path) set
+    used to mark findings as PROTECTED, AND the list of orphan enrollments
+    (DB rows whose ``.env`` line is gone) so it can surface them in a
+    dedicated section. ``find_orphans`` from ``cli/orphans.py`` is the
+    shared predicate (HF7).
+
+    Returns ``(None, [])`` when the DB is unavailable — graceful
+    degradation in CI / first-scan / no-home contexts.
     """
     try:
         home = get_home()
     except Exception:
-        return None
+        return None, []
 
     if not home.db_path.exists():
-        return None
+        return None, []
 
     try:
-        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        # HF3 (worthless-cmpf): placeholder Fernet — list_enrollments only
+        # reads plaintext metadata, no decrypt path triggered, no keychain
+        # prompt for this read-only command. Contract pinned in
+        # tests/test_scan_no_keystore.py.
+        placeholder_fernet = bytearray(PLACEHOLDER_FERNET_KEY)
+        repo = ShardRepository(str(home.db_path), placeholder_fernet)
         await repo.initialize()
         enrollments = await repo.list_enrollments()
     except Exception:
-        return None
+        return None, []
 
     if not enrollments:
-        return None
+        return None, []
 
-    from worthless.cli.dotenv_rewriter import build_enrolled_locations
-
-    return build_enrolled_locations(enrollments)
+    return build_enrolled_locations(enrollments), find_orphans(enrollments)
 
 
-def _build_enrollment_checker():
-    """Sync wrapper for CLI (typer) context."""
-
+def _load_db_state():
+    """Sync wrapper for CLI (typer) context. Returns (enrolled, orphans)."""
     try:
-        return asyncio.run(_build_enrollment_checker_async())
+        return asyncio.run(_load_db_state_async())
     except Exception:
-        return None
+        return None, []
 
 
 def register_scan_commands(app: typer.Typer) -> None:
@@ -286,8 +331,8 @@ def register_scan_commands(app: typer.Typer) -> None:
             else:
                 scan_paths = _collect_fast_paths(explicit)
 
-            # Build enrollment checker from DB if available
-            enrolled = _build_enrollment_checker()
+            # Build enrollment checker + orphan list from DB if available
+            enrolled, orphans = _load_db_state()
 
             # Run scan
             findings = scan_files(scan_paths, enrolled_locations=enrolled)
@@ -301,12 +346,14 @@ def register_scan_commands(app: typer.Typer) -> None:
                 sys.stdout.write(json.dumps(sarif, indent=2) + "\n")
                 sys.stdout.flush()
             elif fmt == "json":
-                sys.stdout.write(_format_json_findings(findings))
+                sys.stdout.write(_format_json_findings(findings, orphans))
                 sys.stdout.flush()
             else:
                 # Human-readable to stderr
                 is_tty = hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
-                text = _format_human(findings, show_suffix=show_suffix, is_tty=is_tty)
+                text = _format_human(
+                    findings, orphans=orphans, show_suffix=show_suffix, is_tty=is_tty
+                )
                 if not console.quiet:
                     sys.stderr.write(text)
                     sys.stderr.flush()

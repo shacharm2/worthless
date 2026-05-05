@@ -46,7 +46,7 @@ class ShardReader:
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT shard_b_enc, commitment, nonce, provider, prefix, charset "
+                "SELECT shard_b_enc, commitment, nonce, provider, prefix, charset, base_url "
                 "FROM shards WHERE key_alias = ?",
                 (alias,),
             )
@@ -66,4 +66,5 @@ class ShardReader:
                 provider=row["provider"],
                 prefix=row["prefix"],
                 charset=row["charset"],
+                base_url=row["base_url"],
             )

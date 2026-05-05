@@ -81,6 +81,7 @@ class ShardRepository:
         shard: StoredShard,
         prefix: str | None = None,
         charset: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         """Encrypt *shard.shard_b* with Fernet and INSERT into the shards table.
 
@@ -93,8 +94,8 @@ class ShardRepository:
         async with self._connect() as db:
             await db.execute(
                 "INSERT INTO shards "
-                "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset, base_url) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     alias,
                     shard_b_enc,
@@ -103,6 +104,7 @@ class ShardRepository:
                     shard.provider,
                     prefix,
                     charset,
+                    base_url,
                 ),
             )
             await db.commit()
@@ -116,7 +118,7 @@ class ShardRepository:
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT shard_b_enc, commitment, nonce, provider, prefix, charset "
+                "SELECT shard_b_enc, commitment, nonce, provider, prefix, charset, base_url "
                 "FROM shards WHERE key_alias = ?",
                 (alias,),
             )
@@ -136,6 +138,7 @@ class ShardRepository:
                 provider=row["provider"],
                 prefix=row["prefix"],
                 charset=row["charset"],
+                base_url=row["base_url"],
             )
 
     def decrypt_shard(self, encrypted: EncryptedShard) -> StoredShard:
@@ -175,12 +178,26 @@ class ShardRepository:
             rows = await cursor.fetchall()
             return [r[0] for r in rows]
 
-    async def list_aliases_with_provider(self) -> list[tuple[str, str]]:
-        """Return ``(alias, provider)`` pairs for all enrolled keys."""
+    async def list_aliases_with_routing(
+        self,
+    ) -> list[tuple[str, str, str | None, str]]:
+        """Return ``(alias, var_name, base_url, protocol)`` for every enrollment.
+
+        Joins ``shards`` × ``enrollments`` so callers (worthless wrap, status,
+        etc.) get the full routing tuple in one query. Multiple enrollments
+        per alias produce multiple rows. ``base_url`` is ``None`` for legacy
+        rows enrolled before worthless-8rqs — the proxy refuses to use those
+        and prompts for re-lock.
+        """
         async with self._connect() as db:
-            cursor = await db.execute("SELECT key_alias, provider FROM shards")
+            cursor = await db.execute(
+                "SELECT s.key_alias, e.var_name, s.base_url, s.provider "
+                "FROM shards s "
+                "JOIN enrollments e ON s.key_alias = e.key_alias "
+                "ORDER BY s.key_alias"
+            )
             rows = await cursor.fetchall()
-            return [(r[0], r[1]) for r in rows if r[0] and r[1]]
+            return [(r[0], r[1], r[2], r[3]) for r in rows if r[0] and r[1] and r[3]]
 
     # ------------------------------------------------------------------
     # Metadata
@@ -220,6 +237,7 @@ class ShardRepository:
         token_budget_daily: int | None = None,
         prefix: str | None = None,
         charset: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         """Atomically store a shard, enrollment record, and enrollment config.
 
@@ -247,8 +265,8 @@ class ShardRepository:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
                 "INSERT OR IGNORE INTO shards "
-                "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset, base_url) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     alias,
                     shard_b_enc,
@@ -257,6 +275,7 @@ class ShardRepository:
                     shard.provider,
                     prefix,
                     charset,
+                    base_url,
                 ),
             )
             await db.execute(
@@ -344,18 +363,25 @@ class ShardRepository:
         self,
         alias: str | None = None,
     ) -> list[EnrollmentRecord]:
-        """Return enrollment records, optionally filtered by *alias*."""
+        """Return enrollment records, optionally filtered by *alias*.
+
+        LEFT JOIN with ``shards`` denormalizes ``provider`` onto each
+        record so callers don't have to look it up separately. Records
+        whose alias has no matching shard row keep ``provider=None``.
+        """
         async with self._connect() as db:
             if alias is not None:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path, decoy_hash "
-                    "FROM enrollments WHERE key_alias = ?",
+                    "SELECT e.key_alias, e.var_name, e.env_path, e.decoy_hash, s.provider "
+                    "FROM enrollments e LEFT JOIN shards s ON e.key_alias = s.key_alias "
+                    "WHERE e.key_alias = ?",
                     (alias,),
                 )
             else:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path, decoy_hash "
-                    "FROM enrollments ORDER BY key_alias"
+                    "SELECT e.key_alias, e.var_name, e.env_path, e.decoy_hash, s.provider "
+                    "FROM enrollments e LEFT JOIN shards s ON e.key_alias = s.key_alias "
+                    "ORDER BY e.key_alias"
                 )
             rows = await cursor.fetchall()
             return [
@@ -364,6 +390,7 @@ class ShardRepository:
                     var_name=r[1],
                     env_path=r[2],
                     decoy_hash=r[3],
+                    provider=r[4],
                 )
                 for r in rows
             ]

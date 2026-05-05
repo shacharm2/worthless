@@ -93,7 +93,9 @@ async def _enroll_test_alias(repo: Any, alias: str = "test-key") -> tuple[str, b
         nonce=bytearray(sr.nonce),
         provider="openai",
     )
-    await repo.store(alias, shard, prefix=sr.prefix, charset=sr.charset)
+    await repo.store(
+        alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
+    )
     return alias, bytes(sr.shard_a)
 
 

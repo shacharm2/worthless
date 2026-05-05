@@ -1,6 +1,6 @@
 [project]
 name = "worthless"
-version = "0.3.0"
+version = "0.3.2"
 description = "Split-key reverse proxy that makes leaked API keys worthless"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
@@ -31,6 +31,9 @@ dependencies = [
     "psutil>=5.9",
     "keyring>=25.0",
     "msgpack>=1.0",
+    # TOML reader for the provider registry (worthless-8rqs). Stdlib `tomllib`
+    # is 3.11+; for 3.10 we fall back to the `tomli` backport at runtime.
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.scripts]
@@ -126,11 +129,14 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+worthless = ["providers.toml"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 timeout = 30
-addopts = "--strict-config --strict-markers -n auto --dist loadscope --reruns 1 -m 'not live and not docker'"
+addopts = "--strict-config --strict-markers -n auto --dist loadscope --reruns 1 -m 'not live and not docker and not user_flow'"
 markers = [
     "benchmark: performance and latency regression checks",
     "contract: schema-driven API and protocol checks",
@@ -144,6 +150,7 @@ markers = [
     "e2e: end-to-end smoke tests — full lifecycle (lock, proxy, healthz)",
     "openclaw: OpenClaw integration tests (requires Docker + network pull)",
     "real_ipc: opt out of the autouse FakeIPCSupervisor injection — these tests bring their own real or subprocess sidecar (WOR-309 Phase 5)",
+    "user_flow: end-to-end user-flow tests — real keyring, real CLI, real fs. Run with `pytest -m user_flow`. See worthless-bwu6 for the full suite scope.",
 ]
 
 [tool.coverage.run]
@@ -202,6 +209,9 @@ ignore = [
 # Only scan src/ — dev/test/qa deps are CLI tools, not imported by app code
 optional_dependencies_dev_groups = ["dev", "test", "qa", "fuzz"]
 [tool.deptry.per_rule_ignores]
+# tomllib: stdlib in Python 3.11+ (provider registry uses it conditionally;
+# 3.10 falls back to the `tomli` backport, which IS a runtime dep).
+DEP001 = ["tomllib"]
 # uvicorn: runtime ASGI server invoked via CLI, never imported
 # python-dotenv: planned refactor to replace custom parser (worthless-ic6)
 DEP002 = ["uvicorn", "python-dotenv"]

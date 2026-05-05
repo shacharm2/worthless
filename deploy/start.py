@@ -16,6 +16,9 @@ Env contract on entry (set by ``deploy/entrypoint.sh``):
     WORTHLESS_FERNET_KEY_PATH   fernet key location (optional, defaults to
                                 ``$WORTHLESS_HOME/fernet.key``)
     PORT                        port for the proxy to bind (default 8787)
+    WORTHLESS_DEPLOY_MODE       loopback | lan | public (default loopback)
+    WORTHLESS_HOST              explicit bind host (optional)
+    WORTHLESS_TRUSTED_PROXIES   CSV of CIDRs (required when mode=public)
 
 The Fernet key is loaded from disk here rather than passed via fd because
 the sidecar reads it back from a share file the parent writes — no fd
@@ -35,6 +38,45 @@ from worthless.crypto.types import zero_buf
 def _socket_path(run_dir: Path) -> Path:
     """Return the AF_UNIX socket path inside the run dir."""
     return run_dir / "sidecar.sock"
+
+
+def _resolve_bind(mode: str) -> str:
+    """Pick the uvicorn bind host for *mode*.
+
+    Mirrors :func:`worthless.proxy.config._read_default_host` — explicit
+    ``WORTHLESS_HOST`` always wins; otherwise ``public`` defaults to
+    ``0.0.0.0`` (PaaS edge) and the others to loopback. ProxySettings'
+    own ``validate()`` re-checks the (mode, host) tuple before the app
+    binds, so a misconfigured combination still refuses to start.
+    """
+    explicit = os.environ.get("WORTHLESS_HOST", "").strip()
+    if explicit:
+        return explicit
+    if mode == "public":
+        return "0.0.0.0"  # noqa: S104 — public mode binds the edge-facing iface by design
+    return "127.0.0.1"
+
+
+def _build_uvicorn_argv(port: str) -> list[str]:
+    mode = os.environ.get("WORTHLESS_DEPLOY_MODE", "loopback").strip().lower() or "loopback"
+    host = _resolve_bind(mode)
+    argv: list[str] = [
+        "uvicorn",
+        "worthless.proxy.app:create_app",
+        "--factory",
+        "--host",
+        host,
+        "--port",
+        port,
+    ]
+    trusted = os.environ.get("WORTHLESS_TRUSTED_PROXIES", "").strip()
+    # ``public`` REQUIRES the trusted-proxy list (entrypoint.sh refuses
+    # boot without it). ``lan`` enables --proxy-headers iff the operator
+    # opted in by setting the env. ``loopback`` never trusts forwarded
+    # headers — there is no edge.
+    if mode == "public" or (mode == "lan" and trusted):
+        argv += ["--proxy-headers", f"--forwarded-allow-ips={trusted}"]
+    return argv
 
 
 def main() -> None:
@@ -75,16 +117,9 @@ def main() -> None:
 
     os.environ["WORTHLESS_SIDECAR_SOCKET"] = str(socket_path)
 
-    uvicorn_argv = [
-        "uvicorn",
-        "worthless.proxy.app:create_app",
-        "--factory",
-        "--host",
-        "0.0.0.0",  # noqa: S104 — Docker container; bind on all interfaces
-        "--port",
-        port,
-    ]
-    # uvicorn_argv is static (no user input); no shell, no injection surface.
+    uvicorn_argv = _build_uvicorn_argv(port)
+    # uvicorn_argv is static (no user input apart from CIDR allowlist
+    # which uvicorn parses); no shell, no injection surface.
     os.execvp(uvicorn_argv[0], uvicorn_argv)  # noqa: S606
 
 
