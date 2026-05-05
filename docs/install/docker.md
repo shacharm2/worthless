@@ -198,7 +198,7 @@ services:
 - Image supply chain. Use the cosign-signed image (regex must match
   the publish workflow's Fulcio SAN exactly — workflow path is the
   `LOAD-BEARING` filename `publish-docker.yml`):
-  ```
+  ```bash
   cosign verify ghcr.io/shacharm2/worthless-proxy:0.3.3 \
     --certificate-identity-regexp 'https://github.com/shacharm2/worthless/\.github/workflows/publish-docker\.yml@refs/tags/v.*' \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
