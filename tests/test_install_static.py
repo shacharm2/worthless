@@ -188,8 +188,15 @@ def test_dockerfiles_use_uv_cache_mount() -> None:
         )
         if not uv_blocks:
             continue  # CMD-only fixture — cache mount doesn't apply
-        if not any(cache_mount_re.search(b) for b in uv_blocks):
-            missing.append(f"{f.name}: uv-running RUN without cache mount")
+        # EVERY uv-running RUN block must carry the cache mount, not just one.
+        # `any` here would silently allow a mixed fixture (one mounted RUN + one
+        # unmounted RUN) where the unmounted RUN keeps re-fetching from astral.
+        unmounted = [b for b in uv_blocks if not cache_mount_re.search(b)]
+        if unmounted:
+            missing.append(
+                f"{f.name}: {len(unmounted)} of {len(uv_blocks)} uv-running RUN "
+                "block(s) without cache mount"
+            )
             continue
         if not syntax_directive_re.search(text):
             missing.append(

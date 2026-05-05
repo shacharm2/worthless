@@ -39,8 +39,14 @@ snapshot() {
         # real changes (new wheels, removed files, re-linked metadata).
         tools_dir="$HOME/.local/share/uv/tools/worthless"
         if [ -d "$tools_dir" ]; then
-            find "$tools_dir" -type f -printf '%P %s\n' 2>/dev/null | sort \
-                || find "$tools_dir" -type f | sort
+            # Detect `-printf` support explicitly: piping through `sort`
+            # masks `find`'s exit code, so a `... -printf … || ...` chain
+            # silently falls through to an empty snapshot on BusyBox.
+            if find "$tools_dir" -maxdepth 0 -printf '' 2>/dev/null; then
+                find "$tools_dir" -type f -printf '%P %s\n' | sort
+            else
+                find "$tools_dir" -type f | sort
+            fi
         fi
     } > "$out"
 }
