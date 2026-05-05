@@ -2,6 +2,11 @@
 
 > Internal reference for the worthless × OpenClaw integration. Public install
 > docs live in `docs/install-openclaw.md`. This file is for contributors.
+>
+> Per-child deep-dive research: `openclaw-WOR-430-decisions.md`,
+> `openclaw-WOR-431-skill-authoring.md`, `openclaw-WOR-432-e2e-design.md`,
+> `openclaw-WOR-433-publish-flow.md`. Read those for verdicts and live-test
+> evidence; this file is the umbrella.
 
 ## TL;DR
 
@@ -50,6 +55,43 @@ Different product from Claude Code, but adopted Anthropic's open SKILL.md
 "Just ask OpenClaw to install it" via chat is technically possible but slower
 and chicken-and-egg (requires the skill to already exist on ClawHub). Not a
 real path.
+
+---
+
+## Corrections after deep-dive research (supersede earlier sections)
+
+After per-child deep-dives in WOR-430/431/432/433, three claims in this doc were
+wrong or incomplete. The newer research files supersede this section if they
+disagree.
+
+1. **OpenClaw does NOT expose OpenAI-compatible `/v1/chat/completions`.** Port
+   18789 serves the Control SPA only — `POST /v1/chat/completions` returns 404.
+   The headless test harness for skills is `openclaw agent --local --json
+   --message …` invoked via `docker exec`. The earlier Integration-paths table
+   implied a direct HTTP API; that's wrong. See
+   `openclaw-WOR-432-e2e-design.md`.
+
+2. **No GitHub-URL sideload for skills.** `clawhub install` accepts only `<slug>`
+   + `--version`. GitHub-source publish is a *package*-only feature, not skills.
+   The Plan B fallback if registry publish blocks is `git clone` + manual copy
+   into `~/.openclaw/skills/`. See `openclaw-WOR-433-publish-flow.md`.
+
+3. **Skills have no appeal process if the scanner flags.** Only `clawhub skill
+   rescan <slug>` (rate-limited). Packages have a full appeal/report/triage
+   surface; skills don't. Risk on registry publish is higher than this doc
+   originally implied. See `openclaw-WOR-433-publish-flow.md`.
+
+Other findings worth promoting from the per-child files:
+
+- `clawhub skill publish` has **no `--dry-run`** (only `sync` does). We can't
+  preview the scanner verdict before going live.
+- Local CLI does zero security scanning; all scans are server-side post-upload.
+- Publishing implicitly **MIT-0**-licenses uploaded files. Confirm with legal
+  before launch.
+- Existing security skills published cleanly: `steipete/1password`,
+  `kmjones1979/1claw`, `asleep123/bitwarden` — precedent for credential-handling
+  exists.
+- Skill bind-mount path inside container: `/home/node/.openclaw/skills/<name>/`.
 
 ---
 
