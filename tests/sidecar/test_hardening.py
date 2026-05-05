@@ -20,7 +20,7 @@ This file pins the API and the call order. Phase A GREEN ships
 
 from __future__ import annotations
 
-import platform
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -49,7 +49,7 @@ def test_yama_error_code_is_116() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(platform.system() != "Linux", reason="prctl is Linux-only")
+@pytest.mark.skipif(sys.platform != "linux", reason="prctl is Linux-only")
 def test_set_dumpable_zero_invokes_prctl_with_zero() -> None:
     """``libc.prctl(PR_SET_DUMPABLE=4, 0, 0, 0, 0)`` is the one shape that disables core dumps.
 
@@ -59,7 +59,10 @@ def test_set_dumpable_zero_invokes_prctl_with_zero() -> None:
     """
     fake_libc = MagicMock()
     fake_libc.prctl.return_value = 0
-    with patch("worthless.sidecar._hardening.ctypes.CDLL", return_value=fake_libc):
+    with (
+        patch("worthless.sidecar._hardening.ctypes.util.find_library", return_value="libc.so.6"),
+        patch("worthless.sidecar._hardening.ctypes.CDLL", return_value=fake_libc),
+    ):
         _hardening.set_dumpable_zero()
     fake_libc.prctl.assert_called_once_with(_hardening.PR_SET_DUMPABLE, 0, 0, 0, 0)
 
@@ -71,13 +74,15 @@ def test_set_dumpable_zero_is_noop_on_non_linux(monkeypatch: pytest.MonkeyPatch)
     current user; the dumpable bit doesn't exist there. Ensuring the
     helper is silent on non-Linux keeps the dev experience clean.
     """
-    monkeypatch.setattr(_hardening.platform, "system", lambda: "Darwin")
-    sentinel = MagicMock(side_effect=AssertionError("CDLL must not be invoked on non-Linux"))
-    monkeypatch.setattr(_hardening.ctypes, "CDLL", sentinel)
+    monkeypatch.setattr(_hardening.sys, "platform", "darwin")
+    sentinel_cdll = MagicMock(side_effect=AssertionError("CDLL must not be invoked on non-Linux"))
+    sentinel_find = MagicMock(side_effect=AssertionError("find_library must not be invoked"))
+    monkeypatch.setattr(_hardening.ctypes, "CDLL", sentinel_cdll)
+    monkeypatch.setattr(_hardening.ctypes.util, "find_library", sentinel_find)
     _hardening.set_dumpable_zero()  # must not raise
 
 
-@pytest.mark.skipif(platform.system() != "Linux", reason="prctl is Linux-only")
+@pytest.mark.skipif(sys.platform != "linux", reason="prctl is Linux-only")
 def test_set_dumpable_zero_raises_on_prctl_failure() -> None:
     """A non-zero return from ``prctl`` is a hard error — never silently ignored.
 
@@ -89,12 +94,31 @@ def test_set_dumpable_zero_raises_on_prctl_failure() -> None:
     fake_libc = MagicMock()
     fake_libc.prctl.return_value = -1
     with (
+        patch("worthless.sidecar._hardening.ctypes.util.find_library", return_value="libc.so.6"),
         patch("worthless.sidecar._hardening.ctypes.CDLL", return_value=fake_libc),
         pytest.raises(WorthlessError) as exc_info,
     ):
         _hardening.set_dumpable_zero()
     assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
     assert "PR_SET_DUMPABLE" in exc_info.value.message or "dumpable" in exc_info.value.message
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="prctl is Linux-only")
+def test_set_dumpable_zero_raises_when_libc_unreachable() -> None:
+    """``find_library('c')`` returning ``None`` is a hard error.
+
+    On Linux this is exotic (statically-linked Python? broken
+    ldconfig?), but if it happens the sidecar cannot set
+    ``PR_SET_DUMPABLE=0`` and the security claim is silently broken.
+    Refuse to start with a structured WRTLS-114 instead.
+    """
+    with (
+        patch("worthless.sidecar._hardening.ctypes.util.find_library", return_value=None),
+        pytest.raises(WorthlessError) as exc_info,
+    ):
+        _hardening.set_dumpable_zero()
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    assert "find_library" in exc_info.value.message or "libc" in exc_info.value.message
 
 
 # ---------------------------------------------------------------------------

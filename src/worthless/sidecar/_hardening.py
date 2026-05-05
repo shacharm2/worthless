@@ -21,8 +21,9 @@ Both are stdlib-only and avoid touching any cryptographic state.
 from __future__ import annotations
 
 import ctypes
+import ctypes.util
 import logging
-import platform
+import sys
 from pathlib import Path
 
 from worthless.cli.errors import ErrorCode, WorthlessError
@@ -50,13 +51,26 @@ def set_dumpable_zero() -> None:
     * ``ptrace`` from non-parent processes is refused (independent of
       YAMA — defense in depth on top of :func:`check_yama_ptrace_scope`).
 
-    Silent no-op on macOS/Windows. A non-zero ``prctl`` return is
-    surfaced as ``SIDECAR_NOT_READY`` because proceeding with dumpable=1
-    would silently break the security claim.
+    Silent no-op on macOS/Windows. A non-zero ``prctl`` return — or a
+    libc that ``ctypes.util.find_library("c")`` can't locate — surfaces as
+    ``SIDECAR_NOT_READY`` because proceeding without dumpable=0 would
+    silently break the security claim.
     """
-    if platform.system() != "Linux":
+    # ``sys.platform == "linux"`` matches the gating idiom used elsewhere
+    # in the codebase (peercred.py, fs_check.py).
+    if sys.platform != "linux":
         return
-    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    # ``find_library`` returns the soname for both glibc (``libc.so.6``)
+    # and musl (``libc.musl-x86_64.so.1``); hardcoding ``libc.so.6`` would
+    # break Alpine, which is in the install matrix.
+    libc_path = ctypes.util.find_library("c")
+    if libc_path is None:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            "ctypes.util.find_library('c') returned None on Linux; "
+            "refusing to start without PR_SET_DUMPABLE=0.",
+        )
+    libc = ctypes.CDLL(libc_path, use_errno=True)
     rc = libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
     if rc != 0:
         errno = ctypes.get_errno()

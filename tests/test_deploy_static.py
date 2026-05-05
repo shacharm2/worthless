@@ -437,8 +437,12 @@ class TestDockerfile:
         deterministic across image rebuilds — a drifting uid would let a
         future Dockerfile edit silently flip uvicorn back to root.
         """
-        assert re.search(r"useradd[^\n]*-u\s+10001[^\n]*worthless-proxy", dockerfile_text), (
-            "WOR-310: missing 'useradd ... -u 10001 ... worthless-proxy'"
+        assert re.search(
+            r"useradd[^\n]*-r[^\n]*-u\s+10001[^\n]*worthless-proxy", dockerfile_text
+        ), (
+            "WOR-310: missing 'useradd -r ... -u 10001 ... worthless-proxy' "
+            "(-r pins this as a system account; without it useradd creates a "
+            "login-capable user with a mailbox)"
         )
 
     def test_creates_crypto_user_uid_10002(self, dockerfile_text: str):
@@ -450,8 +454,11 @@ class TestDockerfile:
         because uid != uid. mlock + DUMPABLE=0 layer additional defense
         (see WOR-310 Phase A).
         """
-        assert re.search(r"useradd[^\n]*-u\s+10002[^\n]*worthless-crypto", dockerfile_text), (
-            "WOR-310: missing 'useradd ... -u 10002 ... worthless-crypto'"
+        assert re.search(
+            r"useradd[^\n]*-r[^\n]*-u\s+10002[^\n]*worthless-crypto", dockerfile_text
+        ), (
+            "WOR-310: missing 'useradd -r ... -u 10002 ... worthless-crypto' "
+            "(-r pins this as a system account)"
         )
 
     def test_shared_group_worthless(self, dockerfile_text: str):
@@ -462,8 +469,8 @@ class TestDockerfile:
         process via group permissions, while neither can read the
         other's process memory because uids differ.
         """
-        assert re.search(r"groupadd[^\n]*-g\s+10001[^\n]*worthless\b", dockerfile_text), (
-            "WOR-310: missing 'groupadd ... -g 10001 worthless'"
+        assert re.search(r"groupadd[^\n]*-r[^\n]*-g\s+10001[^\n]*worthless\b", dockerfile_text), (
+            "WOR-310: missing 'groupadd -r ... -g 10001 worthless' (-r pins system group)"
         )
 
     def test_worthless_crypto_home_nonexistent(self, dockerfile_text: str):

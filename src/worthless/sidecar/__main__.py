@@ -42,6 +42,12 @@ import sys
 from pathlib import Path
 
 from worthless.cli.errors import WorthlessError
+
+# Module-level import is load-bearing: tests patch
+# ``_hardening.set_dumpable_zero``/``_hardening.check_yama_ptrace_scope``
+# as module attributes to verify call order and refusal behaviour.
+# Replacing this with ``from ._hardening import set_dumpable_zero, ...``
+# silently breaks those tests (patches wouldn't apply to the local name).
 from worthless.sidecar import _hardening
 from worthless.sidecar.backends.fernet import FernetBackend
 from worthless.sidecar.server import start_sidecar
