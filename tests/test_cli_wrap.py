@@ -578,12 +578,22 @@ class TestWrapSetsEnvAndRunsCommand:
 
 
 class TestWrapDaemonCoexistence:
-    """wrap always uses port=0 (ephemeral), ignoring daemon state."""
+    """v0.3.4 contract: wrap binds the same port lock wrote to .env (not 0).
 
-    def test_wrap_always_requests_ephemeral_port(
+    Pre-v0.3.4 wrap used port=0 (OS-random) on the theory that wrap should
+    co-exist with `worthless up`. But wrap stopped injecting *_BASE_URL
+    into the child env (8rqs), so the only port the child can see is the
+    one in .env — which is whatever lock wrote (default 8787 or
+    WORTHLESS_PORT). Random-port wrap was unreachable. v0.3.4 binds the
+    same port; if it's already in use (e.g. up is running), wrap errors
+    cleanly instead of silently spawning unreachable proxies.
+    """
+
+    def test_wrap_binds_resolved_port_matching_lock(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """wrap passes port=0 to spawn_proxy even when WORTHLESS_PORT is set."""
+        """wrap passes _resolve_port(None) to spawn_proxy — same value lock
+        writes to .env so child .env URL → wrap proxy."""
         captured_kwargs: dict = {}
 
         def _capture_spawn(**kw):
@@ -592,7 +602,7 @@ class TestWrapDaemonCoexistence:
             mock_proxy.pid = 77777
             mock_proxy.poll.return_value = None
             mock_proxy.wait.return_value = 0
-            return (mock_proxy, 11111)
+            return (mock_proxy, kw["port"])
 
         mock_child = MagicMock()
         mock_child.pid = 77778
@@ -604,7 +614,6 @@ class TestWrapDaemonCoexistence:
         monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
         monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
         monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
-        monkeypatch.setenv("WORTHLESS_PORT", "8787")
 
         result = runner.invoke(
             app,
@@ -612,7 +621,9 @@ class TestWrapDaemonCoexistence:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir), "WORTHLESS_PORT": "8787"},
         )
         assert result.exit_code == 0, f"wrap failed: {result.output}"
-        assert captured_kwargs.get("port") == 0
+        assert captured_kwargs.get("port") == 8787, (
+            f"wrap should bind 8787 (matching lock); got {captured_kwargs.get('port')}"
+        )
 
 
 # ------------------------------------------------------------------
@@ -766,3 +777,140 @@ class TestWrapKeyboardInterruptCleanup:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
         assert result.exit_code == 130
+
+
+class TestWrapPortDiscovery:
+    """v0.3.4 (worthless-djoe): wrap must bind the port lock wrote to .env."""
+
+    def test_wrap_passes_resolved_port_not_zero(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The headline contract: wrap calls spawn_proxy with _resolve_port(None),
+        not 0. v0.3.3 used port=0 (OS-random), which the child cannot discover
+        because wrap stopped injecting BASE_URLs (8rqs). v0.3.4 binds the same
+        port lock wrote to .env so child .env URL → wrap proxy."""
+        captured: dict[str, int] = {}
+
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 66670
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+
+        mock_child = MagicMock()
+        mock_child.pid = 66671
+        mock_child.wait.return_value = 0
+        mock_child.returncode = 0
+
+        def _capture_port(**kw):
+            captured["port"] = kw["port"]
+            return (mock_proxy, kw["port"])
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _capture_port)
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
+        monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
+        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+        # Default port is 8787 (same as lock writes to .env).
+        assert captured["port"] == 8787, (
+            f"wrap should bind 8787 (matching lock's default); got {captured.get('port')}"
+        )
+
+    def test_wrap_honors_worthless_port_env(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """WORTHLESS_PORT env var overrides the 8787 default — same priority
+        chain lock and up use, so all three commands agree."""
+        captured: dict[str, int] = {}
+
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 66672
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+
+        mock_child = MagicMock()
+        mock_child.pid = 66673
+        mock_child.wait.return_value = 0
+        mock_child.returncode = 0
+
+        def _capture_port(**kw):
+            captured["port"] = kw["port"]
+            return (mock_proxy, kw["port"])
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _capture_port)
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
+        monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
+        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={
+                "WORTHLESS_HOME": str(home_with_key.base_dir),
+                "WORTHLESS_PORT": "9876",
+            },
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["port"] == 9876, (
+            f"wrap should honor WORTHLESS_PORT=9876; got {captured.get('port')}"
+        )
+
+
+class TestWrapPortConflict:
+    """v0.3.4: clean errors when wrap's target port is occupied."""
+
+    def test_conflict_with_worthless_daemon_names_up(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When spawn_proxy fails because `worthless up` is on the port,
+        the error message names `worthless up` so the user knows which
+        process to stop (or that they don't need wrap at all)."""
+
+        def _fail_bind(**_kw):
+            raise OSError("Address already in use")
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _fail_bind)
+        monkeypatch.setattr("worthless.cli.commands.wrap._port_in_use", lambda *_a, **_kw: True)
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap._is_worthless_proxy_on", lambda *_a, **_kw: True
+        )
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code != 0
+        assert "worthless up" in result.output, (
+            f"error message should name `worthless up`:\n{result.output}"
+        )
+
+    def test_conflict_with_random_process_names_port(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the port is busy with a non-worthless process, the error
+        names the port and tells the user to free it or use WORTHLESS_PORT."""
+
+        def _fail_bind(**_kw):
+            raise OSError("Address already in use")
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _fail_bind)
+        monkeypatch.setattr("worthless.cli.commands.wrap._port_in_use", lambda *_a, **_kw: True)
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap._is_worthless_proxy_on", lambda *_a, **_kw: False
+        )
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code != 0
+        assert "8787" in result.output and "WORTHLESS_PORT" in result.output, (
+            f"error should name port + escape hatch:\n{result.output}"
+        )
