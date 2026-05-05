@@ -33,6 +33,7 @@ from worthless.cli.providers import (
     bundled_names,
     load_bundled,
     load_user,
+    lookup_by_url,
     user_names,
     user_registry_path,
 )
@@ -170,7 +171,6 @@ def register_providers_commands(app: typer.Typer) -> None:
         _validate_url(url)
         _validate_protocol(protocol)
 
-        bundled = load_bundled()
         # Two name-collision sources, same shape: refuse and suggest a
         # qualified alternative. Bundled names (``openai``, ``anthropic``,
         # …) are reserved. User names are refused too — otherwise this
@@ -190,11 +190,23 @@ def register_providers_commands(app: typer.Typer) -> None:
             f"remove it from that file first, or pick a different name "
             f"(e.g., {name}-v2)",
         )
-        if url in bundled and not force:
+        # CodeRabbit catch on M14 review: use lookup_by_url (which
+        # normalises trailing slash) instead of `url in bundled` (which
+        # is exact-string against the already-normalised bundled keys).
+        # Without this, a user passing `--url https://api.openai.com/v1/`
+        # (extra slash) would bypass the bundled-URL collision check
+        # because bundled stores the URL without trailing slash. The new
+        # entry then normalises on load and silently overrides the
+        # bundled `openai` entry — including swapping its protocol,
+        # which would misroute adapter dispatch. lookup_by_url applies
+        # the same normalisation to the candidate URL and to the
+        # registry, so the comparison is symmetric.
+        existing = lookup_by_url(url)
+        if existing is not None and existing.name in bundled_names() and not force:
             raise WorthlessError(
                 ErrorCode.INVALID_INPUT,
                 f"URL {url!r} is already bundled (under name "
-                f"{bundled[url].name!r}); pass --force to override locally",
+                f"{existing.name!r}); pass --force to override locally",
             )
 
         path = user_registry_path()

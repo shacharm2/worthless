@@ -683,7 +683,15 @@ class TestLockWrapE2E:
             "OPENAI_BASE_URL not in .env after lock — the lock-side rewrite "
             "didn't fire (or wrote a different var name)"
         )
-        assert "127.0.0.1" in base_url, f"OPENAI_BASE_URL does not point to local proxy: {base_url}"
+        # Tightened (CodeRabbit catch): exact match on the alias-qualified URL
+        # instead of just "127.0.0.1 in base_url". A regression that drops
+        # /{alias}/v1 from the rewritten URL would still pass the loose check
+        # because localhost would still appear, but the proxy wouldn't route.
+        alias = _make_alias("openai", fake_key)
+        expected_base_url = f"http://127.0.0.1:8787/{alias}/v1"
+        assert base_url == expected_base_url, (
+            f"OPENAI_BASE_URL mismatch. expected={expected_base_url!r} actual={base_url!r}"
+        )
 
     def test_proxy_reachable_during_wrap(self, container: tuple[str, int]) -> None:
         """During wrap, the ephemeral proxy responds on /healthz.
