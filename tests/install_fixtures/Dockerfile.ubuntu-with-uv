@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # Ubuntu 24.04 with uv pre-installed.
 # Validates that install.sh reuses an existing uv rather than reinstalling.
 FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
@@ -32,7 +33,8 @@ RUN chmod +x /work/install.sh /work/verify_install.sh /work/verify_uv_reuse.sh
 # The pinned UV_VERSION + ASTRAL_INSTALLER_SHA256 still need to track upstream
 # releases — bump procedure is in MANUAL_SMOKE.md §"Bumping UV_VERSION" and
 # §"Bumping base image digests".
-RUN UV_VERSION="$(awk -F'"' '/^UV_VERSION=/{print $2}' /work/install.sh)" \
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    UV_VERSION="$(awk -F'"' '/^UV_VERSION=/{print $2}' /work/install.sh)" \
     && ASTRAL_INSTALLER_SHA256="$(awk -F'"' '/^ASTRAL_INSTALLER_SHA256=/{print $2}' /work/install.sh)" \
     && test -n "$UV_VERSION" -a -n "$ASTRAL_INSTALLER_SHA256" \
     && curl -LsSf --fail \

@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # Post-install lock-lifecycle e2e image. Builds on the same bare-Ubuntu
 # baseline as Dockerfile.ubuntu-bare (proves the fresh-box AC), then runs
 # install.sh at build time and layers on python3 for orchestration.
@@ -28,8 +29,11 @@ RUN chmod +x /work/install.sh
 # Run install.sh at build time — mirrors what a user would `curl | sh`.
 # UV_PYTHON_PREFERENCE=only-managed matches install-smoke.yml so we exercise
 # the same managed-Python path CI users see on a fresh box.
+# Cache uv's download dir between builds (PBS Python tarballs + wheels)
+# so matrix re-runs don't re-fetch ~50MB from astral.sh each time.
 ENV UV_PYTHON_PREFERENCE=only-managed
-RUN sh /work/install.sh
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    sh /work/install.sh
 
 # Harness-only tooling. Added AFTER install.sh so its absence is proven
 # during the fresh-box AC check above; the e2e orchestration then needs

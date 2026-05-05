@@ -63,6 +63,11 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
     assert dockerfile.is_file(), f"missing fixture: {dockerfile}"
 
     try:
+        # DOCKER_BUILDKIT=1 forces the BuildKit frontend so RUN --mount=type=cache
+        # directives in the fixtures (WOR-320) actually cache uv downloads
+        # between matrix runs. Modern docker defaults to BuildKit, but older
+        # CI runners and some daemon configs still fall back to the legacy
+        # builder, which silently strips --mount.
         build = subprocess.run(  # noqa: S603
             [  # noqa: S607
                 "docker",
@@ -85,6 +90,7 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
             # job timeout is 25min so there's still 5x headroom.
             timeout=480,
             check=False,
+            env={**os.environ, "DOCKER_BUILDKIT": "1"},
         )
         assert build.returncode == 0, (
             f"docker build failed for {fixture}:\nstdout:\n{build.stdout}\nstderr:\n{build.stderr}"
@@ -145,10 +151,14 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
     # Minimal env — avoid leaking arbitrary WORTHLESS_* / provider keys from
     # the host into the compose build context and service env. Compose needs
     # HOME to locate its context cache; fall back to the runner's real HOME.
+    # DOCKER_BUILDKIT=1 + COMPOSE_DOCKER_CLI_BUILD=1 ensure the lock-e2e
+    # Dockerfiles' cache mounts (WOR-320) are honored on older daemons.
     env = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": os.environ["HOME"],
         "LOCK_E2E_DOCKERFILE": dockerfile_name,
+        "DOCKER_BUILDKIT": "1",
+        "COMPOSE_DOCKER_CLI_BUILD": "1",
     }
 
     up_stdout, up_stderr, up_rc = "", "", None

@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # Debian 12 counterpart to Dockerfile.ubuntu-bare-lock-e2e. Same shape:
 # fresh-box AC guard → install.sh at build time → add python3 for
 # orchestration → run lock_e2e.py. Catches glibc-version drift that
@@ -23,7 +24,10 @@ COPY install.sh /work/install.sh
 RUN chmod +x /work/install.sh
 
 ENV UV_PYTHON_PREFERENCE=only-managed
-RUN sh /work/install.sh
+# Cache uv's download dir between builds (PBS Python tarballs + wheels)
+# so matrix re-runs don't re-fetch ~50MB from astral.sh each time.
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    sh /work/install.sh
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 \

@@ -98,6 +98,107 @@ def test_ubuntu_with_uv_pins_astral_installer() -> None:
     )
 
 
+# --- WOR-320: BuildKit cache mount for uv downloads --------------------------
+
+
+def _run_blocks(dockerfile_text: str) -> list[str]:
+    """Return each RUN command in a Dockerfile as a single string.
+
+    A RUN command spans the `RUN` line plus any `\\`-continuation lines.
+    It ends when a line not ending in `\\` is reached. CMD / COPY lines
+    that follow the RUN do NOT belong to it.
+    """
+    blocks: list[str] = []
+    lines = dockerfile_text.splitlines()
+    i = 0
+    while i < len(lines):
+        if re.match(r"^RUN\b", lines[i]):
+            buf: list[str] = []
+            while i < len(lines):
+                stripped = lines[i].rstrip()
+                continuation = stripped.endswith("\\")
+                buf.append(stripped[:-1].rstrip() if continuation else stripped)
+                i += 1
+                if not continuation:
+                    break
+            blocks.append(" ".join(buf))
+        else:
+            i += 1
+    return blocks
+
+
+def _run_clauses(dockerfile_text: str) -> list[tuple[str, str]]:
+    """Return (block, clause) pairs for each command inside RUN blocks.
+
+    A multi-clause RUN (chained with `&&` or `;`) splits into one clause
+    per command so `chmod +x install.sh` and `sh /work/install.sh` are
+    classified independently. The full block is returned alongside so
+    callers can locate the cache-mount directive (which lives on the
+    RUN keyword, not inside individual clauses).
+    """
+    pairs: list[tuple[str, str]] = []
+    for block in _run_blocks(dockerfile_text):
+        body = block[3:]  # drop leading "RUN"
+        for clause in re.split(r"&&|;", body):
+            clause = clause.strip()
+            if clause:
+                pairs.append((block, clause))
+    return pairs
+
+
+def test_dockerfiles_use_uv_cache_mount() -> None:
+    """Build-time RUN that runs uv must use BuildKit cache mount.
+
+    /root/.cache/uv holds Astral installer downloads + Python bootstrap
+    tarballs (PBS) + wheel cache. Without the cache mount, every matrix
+    run re-fetches the same MB-sized payloads from astral.sh, slowing CI
+    and exposing us to upstream rate limits.
+
+    Scope: any Dockerfile fixture with a build-time RUN that executes
+    install.sh, the Astral installer, or a `uv …` command. CMD-only
+    fixtures (where install.sh runs at container start) are skipped —
+    BuildKit cache mounts apply at build time only.
+    """
+    dockerfiles = sorted(INSTALL_FIXTURES.glob("Dockerfile.*"))
+    cache_mount_re = re.compile(
+        r"--mount=type=cache,target=/root/\.cache/uv\b",
+    )
+    syntax_directive_re = re.compile(r"^#\s*syntax=docker/dockerfile:1\.\d", re.MULTILINE)
+
+    # A RUN clause is "uv-running" if its FIRST verb executes install.sh,
+    # downloads the Astral installer, runs the installer, or invokes a
+    # `uv` subcommand. Anchoring at the start of a clause excludes
+    # chmod-on-install.sh (sets bits) and `! command -v uv` (sentinel).
+    uv_run_re = re.compile(
+        r"^(?:sh|bash)\s+\S*install\.sh"  # `sh /work/install.sh`
+        r"|^(?:sh|bash)\s+\S*uv-installer"  # `sh /tmp/uv-installer.sh`
+        r"|astral\.sh/uv/"  # downloading from astral
+        r"|^/\S*\.local/bin/uv\s"  # running the installed binary
+        r"|^uv\s+(?:tool|install|sync|run|cache|venv|python|self)\b"
+    )
+
+    missing: list[str] = []
+    for f in dockerfiles:
+        text = f.read_text(encoding="utf-8")
+        uv_blocks = sorted(
+            {block for block, clause in _run_clauses(text) if uv_run_re.search(clause)}
+        )
+        if not uv_blocks:
+            continue  # CMD-only fixture — cache mount doesn't apply
+        if not any(cache_mount_re.search(b) for b in uv_blocks):
+            missing.append(f"{f.name}: uv-running RUN without cache mount")
+            continue
+        if not syntax_directive_re.search(text):
+            missing.append(
+                f"{f.name}: cache mount used but `# syntax=docker/dockerfile:1.x` "
+                "directive missing — RUN --mount requires the directive"
+            )
+
+    assert not missing, (
+        "Build-time RUN steps invoking uv must mount the BuildKit cache:\n  " + "\n  ".join(missing)
+    )
+
+
 def test_worthless_version_resolution(install_text: str) -> None:
     """Resolve-latest pattern (Ollama / Bun / Deno style):
 
