@@ -95,9 +95,13 @@ def home_with_key(home_dir: WorthlessHome, tmp_path: Path) -> WorthlessHome:
     try:
         alias = "openai-a1b2c3d4"
 
-        # Write a real .env so the enrollment isn't an orphan post-HF5.
+        # Write the SAME key into the fixture .env so the enrolled shard
+        # and the .env line agree. Using a fresh fake_openai_key() here would
+        # mismatch the enrolled value — fine today since is_orphan() only
+        # checks var-name presence, but fragile if a future check ever cares.
+        # CodeRabbit PR #131.
         env_path = tmp_path / ".env"
-        env_path.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
+        env_path.write_text(f"OPENAI_API_KEY={key}\n")
 
         repo = make_repo(home_dir)
         asyncio.run(repo.initialize())

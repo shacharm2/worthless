@@ -172,7 +172,10 @@ class TestScanFormats:
         assert result.exit_code == 1
         data = json.loads(result.stdout)
         assert isinstance(data, dict)
-        assert data["schema_version"] >= 2
+        # Contract test: pin EXACT schema_version. A future shape change
+        # bumps this to 3 and the test fails on purpose so the CHANGELOG +
+        # SKILL.md update can't be skipped. CodeRabbit PR #131.
+        assert data["schema_version"] == 2
         assert isinstance(data["findings"], list)
         assert len(data["findings"]) >= 1
         assert "provider" in data["findings"][0]
