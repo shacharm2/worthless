@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from tests._install_helpers import INSTALL_SH
+from tests._install_helpers import INSTALL_FIXTURES, INSTALL_SH
 
 
 @pytest.fixture(scope="module")
@@ -27,6 +27,74 @@ def test_set_eu_present(install_text: str) -> None:
 def test_uv_version_pinned(install_text: str) -> None:
     assert re.search(r"\bUV_VERSION\s*=\s*['\"]?\d+\.\d+", install_text), (
         "install.sh must pin UV_VERSION to a specific release"
+    )
+
+
+# --- WOR-319: supply-chain pinning of base images + Astral installer SHA -----
+
+
+def test_dockerfiles_pin_base_image_digests() -> None:
+    """Every FROM line in install fixtures must pin to @sha256:<digest>.
+
+    Floating tags (`ubuntu:24.04`, `python:3.13-slim-bookworm`) let a
+    compromised upstream ship malware through our install matrix. Pinning
+    by sha256 digest makes the supply chain reproducible — the digest is
+    the contract, the tag is just a label.
+    """
+    dockerfiles = sorted(INSTALL_FIXTURES.glob("Dockerfile.*"))
+    assert dockerfiles, "expected Dockerfile fixtures under tests/install_fixtures/"
+
+    digest_re = re.compile(r"^FROM\s+\S+@sha256:[0-9a-f]{64}\b", re.MULTILINE)
+    from_re = re.compile(r"^FROM\s+\S+", re.MULTILINE)
+
+    unpinned: list[str] = []
+    for f in dockerfiles:
+        text = f.read_text(encoding="utf-8")
+        from_lines = from_re.findall(text)
+        digest_lines = digest_re.findall(text)
+        if len(from_lines) != len(digest_lines):
+            unpinned.append(f"{f.name}: {from_lines}")
+
+    assert not unpinned, (
+        "install fixtures must pin base images by @sha256 digest — "
+        "floating tags allow upstream tampering to enter the matrix.\n"
+        "Unpinned FROM lines:\n  " + "\n  ".join(unpinned)
+    )
+
+
+def test_ubuntu_with_uv_pins_astral_installer() -> None:
+    """Dockerfile.ubuntu-with-uv must verify the Astral installer SHA.
+
+    A raw `curl … | sh` pipeline executes whatever Astral serves at fetch
+    time. The fixture must instead: (1) download to a file, (2) verify
+    against the same SHA constant install.sh enforces, (3) only then run.
+    Without this, a compromised CDN slips arbitrary code into our test
+    matrix even though install.sh itself is hardened.
+    """
+    dockerfile = INSTALL_FIXTURES / "Dockerfile.ubuntu-with-uv"
+    text = dockerfile.read_text(encoding="utf-8")
+
+    # Negative: no `curl … astral.sh … | sh` pipe (raw remote-exec).
+    assert not re.search(
+        r"curl[^|]*astral\.sh[^|]*\|\s*sh\b",
+        text,
+    ), (
+        "Dockerfile.ubuntu-with-uv must NOT run `curl … astral.sh … | sh` — "
+        "fetch to a file and verify SHA256 before executing."
+    )
+
+    # Positive: download → sha256 verification → execute.
+    assert re.search(r"sha256sum|shasum\s+-a\s+256", text), (
+        "Dockerfile.ubuntu-with-uv must verify the downloaded Astral "
+        "installer with sha256sum (or shasum -a 256) before running it."
+    )
+
+    # Positive: SHA constant is sourced from install.sh, not a copy.
+    # We `awk` it out of the on-disk install.sh so a UV_VERSION bump in
+    # install.sh propagates into the fixture without manual edits.
+    assert re.search(r"ASTRAL_INSTALLER_SHA256", text), (
+        "Dockerfile.ubuntu-with-uv must reference ASTRAL_INSTALLER_SHA256 "
+        "(extracted from install.sh) so the SHA stays in lockstep."
     )
 
 
