@@ -199,6 +199,36 @@ def test_dockerfiles_use_uv_cache_mount() -> None:
     )
 
 
+# --- WOR-318: non-root user fixture ------------------------------------------
+
+
+def test_nonroot_fixture_exists() -> None:
+    """A hardened non-root container must be in the install matrix.
+
+    install.sh writes to ~/.local/bin and ~/.cache/uv — both rooted at
+    $HOME — so it should already work for non-root users. This fixture
+    proves it: a `worthless` UID under `useradd` (no sudo, no root)
+    completes install and ends up with the binary on PATH.
+
+    The actual matrix wiring lives in tests/test_install_docker.py
+    INSTALL_MATRIX. This static guard pins the file's existence and
+    minimal shape so the matrix entry can never reference a missing
+    fixture.
+    """
+    dockerfile = INSTALL_FIXTURES / "Dockerfile.ubuntu-nonroot"
+    assert dockerfile.is_file(), (
+        f"missing fixture: {dockerfile.name} — non-root install must be in the matrix"
+    )
+
+    text = dockerfile.read_text(encoding="utf-8")
+    assert re.search(r"^RUN\s+useradd\b", text, re.MULTILINE), (
+        f"{dockerfile.name} must `useradd` a non-root user before `USER` switch"
+    )
+    assert re.search(r"^USER\s+worthless\b", text, re.MULTILINE), (
+        f"{dockerfile.name} must drop privileges via `USER worthless`"
+    )
+
+
 def test_worthless_version_resolution(install_text: str) -> None:
     """Resolve-latest pattern (Ollama / Bun / Deno style):
 

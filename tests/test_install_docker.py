@@ -29,6 +29,7 @@ INSTALL_MATRIX = [
     "ubuntu-bare",  # 24.04, no python, no uv
     "ubuntu-2204-bare",  # 22.04 LTS — still the prod majority
     "ubuntu-with-uv",  # 24.04 + pre-installed uv (reuse path)
+    "ubuntu-nonroot",  # 24.04 + non-root user, no sudo (WOR-318)
     "debian-12-bare",  # second glibc distro
     "alpine-bare",  # musl — uv fetches musl-compatible Python via PBS
 ]
