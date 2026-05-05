@@ -29,7 +29,7 @@ RUN ! command -v python3 \
 # Pin the worthless version so PyPI drift between the two install.sh runs
 # cannot make the snapshots disagree. Update this line in lockstep with
 # pyproject.toml `version`.
-ENV WORTHLESS_VERSION=0.3.2
+ENV WORTHLESS_VERSION=0.3.3
 
 WORKDIR /work
 COPY install.sh /work/install.sh
