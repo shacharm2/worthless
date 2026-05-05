@@ -72,12 +72,15 @@ class TestScanBuildsEnrollmentCheckerWithoutKeystore:
     """scan must not call home.fernet_key when building the enrollment checker."""
 
     def test_build_enrollment_checker_does_not_access_fernet_key(self, tmp_path: Path) -> None:
-        """``_build_enrollment_checker_async`` must NOT read ``home.fernet_key``.
+        """``_load_db_state_async`` must NOT read ``home.fernet_key``.
 
         list_enrollments() only reads var_name + env_path (non-encrypted
         metadata). The Fernet key is dead weight for this code path —
         instantiating it just to satisfy ShardRepository's constructor
         triggers a keychain prompt for nothing.
+
+        HF5 renamed ``_build_enrollment_checker_async`` → ``_load_db_state_async``
+        (now returns ``(enrolled, orphans)``). Same contract: no fernet read.
         """
         # Set up a usable home with a DB but no enrollments — scan should
         # short-circuit at the empty-enrollments check, but on the way
@@ -105,11 +108,12 @@ class TestScanBuildsEnrollmentCheckerWithoutKeystore:
             # Patch get_home so scan's helper sees our prepared home.
             with patch("worthless.cli.commands.scan.get_home", return_value=home):
                 # Run the async helper directly so we don't pull in CliRunner.
-                result = asyncio.run(scan_module._build_enrollment_checker_async())
+                enrolled, orphans = asyncio.run(scan_module._load_db_state_async())
 
         assert not accessed["value"], "home.fernet_key must not be touched on scan path"
-        # No enrollments — checker is None (graceful degrade).
-        assert result is None
+        # No enrollments — checker is None, orphans empty (graceful degrade).
+        assert enrolled is None
+        assert orphans == []
 
     def test_shard_repository_list_enrollments_does_not_decrypt(self, tmp_path: Path) -> None:
         """Pin the contract that ShardRepository.list_enrollments() does NOT

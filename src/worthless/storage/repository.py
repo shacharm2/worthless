@@ -50,12 +50,19 @@ class EncryptedShard(NamedTuple):
 
 @dataclass
 class EnrollmentRecord:
-    """A single enrollment binding a key alias to a var name and optional env path."""
+    """A single enrollment binding a key alias to a var name and optional env path.
+
+    ``provider`` is denormalized via JOIN with ``shards`` at load time so
+    callers don't need a separate lookup or alias-prefix parsing. The
+    canonical source remains ``shards.provider``; this is a read-side
+    convenience.
+    """
 
     key_alias: str
     var_name: str
     env_path: str | None = None
     decoy_hash: str | None = field(default=None, repr=False)
+    provider: str | None = None
 
 
 @dataclass
@@ -420,18 +427,25 @@ class ShardRepository:
         self,
         alias: str | None = None,
     ) -> list[EnrollmentRecord]:
-        """Return enrollment records, optionally filtered by *alias*."""
+        """Return enrollment records, optionally filtered by *alias*.
+
+        LEFT JOIN with ``shards`` denormalizes ``provider`` onto each
+        record so callers don't have to look it up separately. Records
+        whose alias has no matching shard row keep ``provider=None``.
+        """
         async with self._connect() as db:
             if alias is not None:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path, decoy_hash "
-                    "FROM enrollments WHERE key_alias = ?",
+                    "SELECT e.key_alias, e.var_name, e.env_path, e.decoy_hash, s.provider "
+                    "FROM enrollments e LEFT JOIN shards s ON e.key_alias = s.key_alias "
+                    "WHERE e.key_alias = ?",
                     (alias,),
                 )
             else:
                 cursor = await db.execute(
-                    "SELECT key_alias, var_name, env_path, decoy_hash "
-                    "FROM enrollments ORDER BY key_alias"
+                    "SELECT e.key_alias, e.var_name, e.env_path, e.decoy_hash, s.provider "
+                    "FROM enrollments e LEFT JOIN shards s ON e.key_alias = s.key_alias "
+                    "ORDER BY e.key_alias"
                 )
             rows = await cursor.fetchall()
             return [
@@ -440,6 +454,7 @@ class ShardRepository:
                     var_name=r[1],
                     env_path=r[2],
                     decoy_hash=r[3],
+                    provider=r[4],
                 )
                 for r in rows
             ]

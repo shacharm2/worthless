@@ -99,39 +99,32 @@ class TestOrphanState:
             f"unlock did not use plain-English wording (AND-bound):\n{result.output}"
         )
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="RED: HF5 (worthless-gmky) — status must flag orphan rows. "
-        "Remove this marker when HF5 lands.",
-    )
     def test_status_on_orphan_flags_inconsistency(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
+        """HF5 contract: status row reads BROKEN + the doctor-fix hint appears."""
         self._orphan(env_file, home_dir)
         result = cli_invoke(["status"], home_dir)
 
         assert not looks_like_traceback(result.output)
-        # Status must do MORE than list the enrollment as PROTECTED — it must
-        # mark the row as orphan/inconsistent. Require a bug-specific token.
-        assert has_actionable_hint(
-            result.output, "orphan", "ORPHAN-IN-DB", "inconsistent state", "no .env row"
-        ), f"status did not flag orphan DB row:\n{result.output}"
+        # Plain English (consistent with HF7 unlock + doctor wording).
+        # AND-bound, not OR-of-five — the OR pattern was the false-positive
+        # class HF4/PR #123 caught (tmp_path embeds test name).
+        assert has_all_tokens(result.output, "BROKEN", "worthless doctor --fix"), (
+            f"status must mark broken rows AND name the fix command:\n{result.output}"
+        )
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="RED: HF5 (worthless-gmky) — scan must flag orphan rows. "
-        "Remove this marker when HF5 lands.",
-    )
     def test_scan_on_orphan_flags_inconsistency(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
+        """HF5 contract: scan emits a `Can't be restored:` section + doctor hint."""
         self._orphan(env_file, home_dir)
         result = cli_invoke(["scan", str(env_file.parent)], home_dir)
 
         assert not looks_like_traceback(result.output)
-        assert has_actionable_hint(
-            result.output, "orphan", "ORPHAN-IN-DB", "inconsistent state", "no .env row"
-        ), f"scan did not flag orphan DB row:\n{result.output}"
+        assert has_all_tokens(result.output, "can't restore", "worthless doctor --fix"), (
+            f"scan must surface broken rows AND name the fix command:\n{result.output}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -522,19 +515,10 @@ class TestPurgeOrphans:
 
 
 class TestDoctorFixOrphans:
-    """Companion red to TestPurgeOrphans: the bead's recommended option is
-    `worthless doctor --fix`. If HF7 lands doctor instead of purge, this
-    red turns green. Either fix is acceptable, but at least one must exist.
-
-    RED today: neither command exists in the CLI registry.
+    """HF7 (worthless-3907) shipped option C — `worthless doctor --fix`.
+    This test is no longer RED: doctor exists and repairs broken DB rows.
     """
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="RED: HF7 (worthless-3907) option C — `worthless doctor --fix`. "
-        "Remove this marker if HF7 lands as `doctor`. If HF7 lands as `purge` "
-        "instead, this marker stays and the purge companion test xfail flips green.",
-    )
     def test_doctor_fix_detects_and_repairs_orphans(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:

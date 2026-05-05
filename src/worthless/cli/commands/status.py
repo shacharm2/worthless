@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import sqlite3
 import sys
 from typing import Any
 
@@ -13,26 +15,58 @@ import typer
 from worthless.cli.bootstrap import WorthlessHome, resolve_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import error_boundary
+from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY
+from worthless.cli.orphans import FIX_PHRASE, is_orphan
 from worthless.cli.process import read_pid
+from worthless.storage.repository import EnrollmentRecord, ShardRepository
 
 
 def _list_enrolled_keys(home: WorthlessHome) -> list[dict[str, str]]:
-    """List enrolled key aliases with providers from the DB."""
-    import sqlite3
+    """List enrolled aliases with PROTECTED/BROKEN state.
 
+    BROKEN = every enrollment for this alias references a deleted ``.env``
+    line. PROTECTED = at least one enrollment is healthy (recovery is
+    still possible from that ``.env``). HF5 / worthless-gmky.
+
+    Loads via the shared async ``ShardRepository.list_enrollments()`` so
+    ``provider`` arrives denormalized on each record (HF5 storage change).
+    """
     keys: list[dict[str, str]] = []
     if not home.db_path.exists():
         return keys
 
+    # Reading plaintext metadata only — no decrypt path triggered. Safe
+    # to use the placeholder Fernet key (matches scan.py's pattern).
+    try:
+        repo = ShardRepository(str(home.db_path), bytearray(PLACEHOLDER_FERNET_KEY))
+        enrollments = asyncio.run(repo.list_enrollments())
+    except Exception:
+        return keys
+
+    # Also enumerate shards so aliases with no enrollment row still appear
+    # (edge state: shard exists, enrollment row was deleted out-of-band).
     conn = sqlite3.connect(str(home.db_path))
     try:
         cursor = conn.execute("SELECT key_alias, provider FROM shards ORDER BY key_alias")
-        for alias, provider in cursor.fetchall():
-            keys.append({"alias": alias, "provider": provider})
+        all_aliases = {alias: provider for alias, provider in cursor.fetchall()}
     except sqlite3.OperationalError:
-        pass
+        all_aliases = {}
     finally:
         conn.close()
+
+    by_alias: dict[str, list[EnrollmentRecord]] = {}
+    for e in enrollments:
+        by_alias.setdefault(e.key_alias, []).append(e)
+
+    for alias, provider in all_aliases.items():
+        rows = by_alias.get(alias, [])
+        if not rows:
+            status = "PROTECTED"  # shard-without-enrollment edge — not HF5 scope
+        elif all(is_orphan(e) for e in rows):
+            status = "BROKEN"
+        else:
+            status = "PROTECTED"
+        keys.append({"alias": alias, "provider": provider, "status": status})
 
     return keys
 
@@ -80,7 +114,13 @@ def register_status_commands(app: typer.Typer) -> None:
 
     @app.command()
     @error_boundary
-    def status() -> None:
+    def status(
+        json_output: bool = typer.Option(
+            False,
+            "--json",
+            help="Emit machine-readable JSON (alias for the top-level --json).",
+        ),
+    ) -> None:
         """Show enrolled keys and proxy health."""
         console = get_console()
 
@@ -98,8 +138,8 @@ def register_status_commands(app: typer.Typer) -> None:
             if port is not None:
                 proxy_info = _check_proxy_health(port)
 
-        # Output
-        if console.json_mode:
+        # Output. Sub-command --json mirrors scan/wrap; honors top-level --json too.
+        if console.json_mode or json_output:
             result = {"keys": keys, "proxy": proxy_info}
             sys.stdout.write(json.dumps(result, default=str) + "\n")
             sys.stdout.flush()
@@ -109,8 +149,16 @@ def register_status_commands(app: typer.Typer) -> None:
             else:
                 lines = ["Enrolled keys:"]
                 for k in keys:
-                    lines.append(f"  {k['alias']}  {k['provider']}  PROTECTED")
+                    lines.append(f"  {k['alias']}  {k['provider']}  {k['status']}")
                 sys.stderr.write("\n".join(lines) + "\n\n")
+                # HF5: if any row is BROKEN, point the user at doctor.
+                # Phrase tokens come from cli/orphans.py — single source of
+                # truth shared with unlock/doctor/scan.
+                if any(k["status"] == "BROKEN" for k in keys):
+                    sys.stderr.write(
+                        f"Can't restore the keys marked BROKEN — their .env "
+                        f"line was deleted. Run `{FIX_PHRASE}` to clean up.\n\n"
+                    )
 
             if proxy_info["healthy"]:
                 sys.stderr.write(
