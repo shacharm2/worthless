@@ -448,9 +448,18 @@ class TestEnrollUx:
 class TestScanUx:
     """User-facing messages and exit codes from the scan command."""
 
-    def test_scan_no_keys_message(self, env_clean: Path) -> None:
-        """'No API keys found.' when scanning a clean .env."""
-        result = runner.invoke(app, ["scan", str(env_clean)])
+    def test_scan_no_keys_message(self, env_clean: Path, tmp_path: Path) -> None:
+        """'No API keys found.' when scanning a clean .env.
+
+        Isolated WORTHLESS_HOME so dev-box orphans (HF5 surfaces orphan DB
+        rows in scan output, which would otherwise contribute to the
+        no-findings early-exit being skipped).
+        """
+        result = runner.invoke(
+            app,
+            ["scan", str(env_clean)],
+            env={"WORTHLESS_HOME": str(tmp_path / ".worthless")},
+        )
         assert result.exit_code == 0
         combined = result.stdout + result.stderr
         assert "No API keys found" in combined
@@ -471,13 +480,16 @@ class TestScanUx:
         assert result.exit_code == 2
 
     def test_scan_format_json_valid(self, env_with_openai: Path) -> None:
-        """--format json returns valid JSON array."""
+        """--format json returns valid JSON object with schema_version+findings+orphans (HF5)."""
         result = runner.invoke(app, ["scan", "--format", "json", str(env_with_openai)])
         assert result.exit_code == 1
-        findings = json.loads(result.stdout)
-        assert isinstance(findings, list)
-        assert len(findings) >= 1
-        assert "provider" in findings[0]
+        data = json.loads(result.stdout)
+        assert isinstance(data, dict)
+        assert data["schema_version"] >= 2
+        assert isinstance(data["findings"], list)
+        assert len(data["findings"]) >= 1
+        assert "provider" in data["findings"][0]
+        assert "orphans" in data and isinstance(data["orphans"], list)
 
     def test_scan_format_sarif_valid(self, env_with_openai: Path) -> None:
         """--format sarif returns valid SARIF v2.1.0."""
@@ -628,9 +640,12 @@ class TestJsonMode:
         assert data["keys"][0]["alias"] == "openai-a1b2c3d4"
         assert data["keys"][0]["provider"] == "openai"
 
-    def test_json_scan_emits_array(self, env_with_openai: Path) -> None:
-        """--json scan emits a JSON array of findings."""
+    def test_json_scan_emits_object(self, env_with_openai: Path) -> None:
+        """--json scan emits a JSON object with findings + orphans (HF5)."""
         result = runner.invoke(app, ["scan", "--json", str(env_with_openai)])
         assert result.exit_code == 1
-        findings = json.loads(result.stdout)
-        assert isinstance(findings, list)
+        data = json.loads(result.stdout)
+        assert isinstance(data, dict)
+        assert "findings" in data and isinstance(data["findings"], list)
+        assert "orphans" in data and isinstance(data["orphans"], list)
+        assert data["schema_version"] >= 2
