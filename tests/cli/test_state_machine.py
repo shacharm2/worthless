@@ -100,38 +100,41 @@ class TestOrphanState:
         )
 
     @pytest.mark.xfail(
-        strict=False,
-        reason="RED: HF5 (worthless-gmky) — status must flag orphan rows. "
+        strict=True,
+        reason="RED: HF5 (worthless-gmky) — status must flag broken rows. "
         "Remove this marker when HF5 lands.",
     )
     def test_status_on_orphan_flags_inconsistency(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
+        """HF5 contract: status row reads BROKEN + the doctor-fix hint appears."""
         self._orphan(env_file, home_dir)
         result = cli_invoke(["status"], home_dir)
 
         assert not looks_like_traceback(result.output)
-        # Status must do MORE than list the enrollment as PROTECTED — it must
-        # mark the row as orphan/inconsistent. Require a bug-specific token.
-        assert has_actionable_hint(
-            result.output, "orphan", "ORPHAN-IN-DB", "inconsistent state", "no .env row"
-        ), f"status did not flag orphan DB row:\n{result.output}"
+        # Plain English (consistent with HF7 unlock + doctor wording).
+        # AND-bound, not OR-of-five — the OR pattern was the false-positive
+        # class HF4/PR #123 caught (tmp_path embeds test name).
+        assert has_all_tokens(result.output, "BROKEN", "worthless doctor --fix"), (
+            f"status must mark broken rows AND name the fix command:\n{result.output}"
+        )
 
     @pytest.mark.xfail(
-        strict=False,
-        reason="RED: HF5 (worthless-gmky) — scan must flag orphan rows. "
+        strict=True,
+        reason="RED: HF5 (worthless-gmky) — scan must flag broken rows. "
         "Remove this marker when HF5 lands.",
     )
     def test_scan_on_orphan_flags_inconsistency(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
+        """HF5 contract: scan emits a `Can't be restored:` section + doctor hint."""
         self._orphan(env_file, home_dir)
         result = cli_invoke(["scan", str(env_file.parent)], home_dir)
 
         assert not looks_like_traceback(result.output)
-        assert has_actionable_hint(
-            result.output, "orphan", "ORPHAN-IN-DB", "inconsistent state", "no .env row"
-        ), f"scan did not flag orphan DB row:\n{result.output}"
+        assert has_all_tokens(result.output, "can't be restored", "worthless doctor --fix"), (
+            f"scan must surface broken rows AND name the fix command:\n{result.output}"
+        )
 
 
 # ---------------------------------------------------------------------------
