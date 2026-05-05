@@ -175,7 +175,13 @@ def _format_json_findings(findings: list[ScanFinding], orphans: list | None = No
         }
         for o in (orphans or [])
     ]
-    return json.dumps({"findings": items, "orphans": orphan_items}, indent=2) + "\n"
+    return (
+        json.dumps(
+            {"schema_version": 2, "findings": items, "orphans": orphan_items},
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def _install_hook() -> None:

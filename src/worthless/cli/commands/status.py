@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -14,9 +15,10 @@ import typer
 from worthless.cli.bootstrap import WorthlessHome, resolve_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import error_boundary
+from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY
 from worthless.cli.orphans import FIX_PHRASE, is_orphan
 from worthless.cli.process import read_pid
-from worthless.storage.repository import EnrollmentRecord
+from worthless.storage.repository import EnrollmentRecord, ShardRepository
 
 
 def _list_enrolled_keys(home: WorthlessHome) -> list[dict[str, str]]:
@@ -25,51 +27,46 @@ def _list_enrolled_keys(home: WorthlessHome) -> list[dict[str, str]]:
     BROKEN = every enrollment for this alias references a deleted ``.env``
     line. PROTECTED = at least one enrollment is healthy (recovery is
     still possible from that ``.env``). HF5 / worthless-gmky.
+
+    Loads via the shared async ``ShardRepository.list_enrollments()`` so
+    ``provider`` arrives denormalized on each record (HF5 storage change).
     """
     keys: list[dict[str, str]] = []
     if not home.db_path.exists():
         return keys
 
+    # Reading plaintext metadata only — no decrypt path triggered. Safe
+    # to use the placeholder Fernet key (matches scan.py's pattern).
+    try:
+        repo = ShardRepository(str(home.db_path), bytearray(PLACEHOLDER_FERNET_KEY))
+        enrollments = asyncio.run(repo.list_enrollments())
+    except Exception:
+        return keys
+
+    # Also enumerate shards so aliases with no enrollment row still appear
+    # (edge state: shard exists, enrollment row was deleted out-of-band).
     conn = sqlite3.connect(str(home.db_path))
     try:
-        # LEFT JOIN drives from `shards` (1:1 with alias) so each row is
-        # guaranteed to carry the alias's provider — even when no
-        # enrollment exists yet (var_name + env_path will be NULL but
-        # provider is always populated).
-        cursor = conn.execute(
-            "SELECT s.key_alias, s.provider, e.var_name, e.env_path "
-            "FROM shards s LEFT JOIN enrollments e ON s.key_alias = e.key_alias "
-            "ORDER BY s.key_alias"
-        )
-        rows = cursor.fetchall()
+        cursor = conn.execute("SELECT key_alias, provider FROM shards ORDER BY key_alias")
+        all_aliases = {alias: provider for alias, provider in cursor.fetchall()}
     except sqlite3.OperationalError:
-        rows = []
+        all_aliases = {}
     finally:
         conn.close()
 
-    # Group rows by alias and decide PROTECTED vs BROKEN per alias.
-    by_alias: dict[str, dict[str, Any]] = {}
-    for alias, provider, var_name, env_path in rows:
-        entry = by_alias.setdefault(
-            alias, {"alias": alias, "provider": provider, "enrollments": []}
-        )
-        if var_name is not None and env_path is not None:
-            entry["enrollments"].append(
-                EnrollmentRecord(key_alias=alias, var_name=var_name, env_path=env_path)
-            )
+    by_alias: dict[str, list[EnrollmentRecord]] = {}
+    for e in enrollments:
+        by_alias.setdefault(e.key_alias, []).append(e)
 
-    for entry in by_alias.values():
-        enrollments: list[EnrollmentRecord] = entry["enrollments"]
-        if not enrollments:
-            # Shard with no enrollment row at all — HF5 scope doesn't cover
-            # this edge state. Default to PROTECTED so we don't false-flag.
-            entry["status"] = "PROTECTED"
-        elif all(is_orphan(e) for e in enrollments):
-            entry["status"] = "BROKEN"
+    for alias, provider in all_aliases.items():
+        rows = by_alias.get(alias, [])
+        if not rows:
+            status = "PROTECTED"  # shard-without-enrollment edge — not HF5 scope
+        elif all(is_orphan(e) for e in rows):
+            status = "BROKEN"
         else:
-            entry["status"] = "PROTECTED"
-        entry.pop("enrollments")  # internal scratch, not part of the public dict
-        keys.append(entry)
+            status = "PROTECTED"
+        keys.append({"alias": alias, "provider": provider, "status": status})
 
     return keys
 
@@ -117,7 +114,13 @@ def register_status_commands(app: typer.Typer) -> None:
 
     @app.command()
     @error_boundary
-    def status() -> None:
+    def status(
+        json_output: bool = typer.Option(
+            False,
+            "--json",
+            help="Emit machine-readable JSON (alias for the top-level --json).",
+        ),
+    ) -> None:
         """Show enrolled keys and proxy health."""
         console = get_console()
 
@@ -135,8 +138,8 @@ def register_status_commands(app: typer.Typer) -> None:
             if port is not None:
                 proxy_info = _check_proxy_health(port)
 
-        # Output
-        if console.json_mode:
+        # Output. Sub-command --json mirrors scan/wrap; honors top-level --json too.
+        if console.json_mode or json_output:
             result = {"keys": keys, "proxy": proxy_info}
             sys.stdout.write(json.dumps(result, default=str) + "\n")
             sys.stdout.flush()
