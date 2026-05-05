@@ -225,7 +225,7 @@
   }
 }</span><button class="copy-btn" onclick="copy('cmd-cc-mcp',this)" style="align-self:flex-start;">⎘</button></pre>
           </div>
-          <p class="note">Claude Code picks up MCP servers automatically on next launch. <a href="how-it-works.html">How the split-key proxy works →</a></p>
+          <p class="note">Needs the MCP extra: <code>pip install worthless[mcp]</code>. Claude Code picks up the server automatically on next launch. <a href="how-it-works.html">How the split-key proxy works →</a></p>
         </div>
       </div>
 
@@ -249,7 +249,7 @@
             <span class="cmd" id="cmd-oc-mcp">worthless mcp</span>
             <button class="copy-btn" onclick="copy('cmd-oc-mcp',this)">⎘</button>
           </div>
-          <p class="note">OpenClaw discovers it via ClawHub. <a href="how-it-works.html">How the split-key proxy works →</a></p>
+          <p class="note">OpenClaw picks it up as a standard MCP server. Same config shape as Claude Code — add <code>"worthless": {"command":"worthless","args":["mcp"]}</code> to your agent's MCP server list. <a href="how-it-works.html">How the split-key proxy works →</a></p>
         </div>
       </div>
 
