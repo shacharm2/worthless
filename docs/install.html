@@ -192,7 +192,10 @@
             <button class="copy-btn" onclick="copy('cmd-solo',this)">⎘</button>
           </div>
           <p class="note">
-            No flags needed. <code>worthless</code> auto-detects <code>.env</code>, asks to lock your keys, and starts the proxy daemon on port 8787. Takes about 90 seconds.
+            No flags needed. <code>worthless</code> auto-detects your <code>.env</code>, asks which keys to protect, then starts the proxy daemon on port 8787. Takes about 90 seconds.
+          </p>
+          <p class="note" style="margin-top:0.6rem; padding:0.55rem 0.75rem; background:rgba(74,111,165,0.06); border-radius:6px; border-left:2px solid var(--slate);">
+            Your <code>.env</code> looks exactly the same after locking. The key format is preserved — an attacker who steals your file gets a dead shard that's indistinguishable from the real key.
           </p>
         </div>
       </div>
@@ -202,7 +205,7 @@
         <div class="panel-inner">
           <p class="panel-headline">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>
-            Start the proxy, then point Claude Code at it
+            Start the proxy, then register as an MCP server
           </p>
           <div class="code-block">
             <span class="prompt">$</span>
@@ -210,13 +213,19 @@
             <button class="copy-btn" onclick="copy('cmd-cc',this)">⎘</button>
           </div>
           <p class="note" style="margin-bottom:0.75rem;">
-            Proxy starts on <code>localhost:8787</code>. Then in your Claude Code settings, add:
+            Then add worthless as an MCP server in your project's <code>.mcp.json</code>:
           </p>
-          <div class="code-block" style="margin-bottom:0.5rem;">
-            <span class="cmd" id="cmd-cc-url" style="color:#93c5fd;">"baseUrl": "http://localhost:8787/v1"</span>
-            <button class="copy-btn" onclick="copy('cmd-cc-url',this)">⎘</button>
+          <div class="code-block" style="display:block; padding:13px 16px; margin-bottom:0.5rem;">
+            <pre id="cmd-cc-mcp" style="color:#e6edf3; font-family:var(--mono); font-size:0.8rem; white-space:pre; margin:0; display:flex; justify-content:space-between; align-items:flex-start;"><span>{
+  "mcpServers": {
+    "worthless": {
+      "command": "worthless",
+      "args": ["mcp"]
+    }
+  }
+}</span><button class="copy-btn" onclick="copy('cmd-cc-mcp',this)" style="align-self:flex-start;">⎘</button></pre>
           </div>
-          <p class="note"><a href="how-it-works.html">How the split-key proxy works →</a></p>
+          <p class="note">Claude Code picks up MCP servers automatically on next launch. <a href="how-it-works.html">How the split-key proxy works →</a></p>
         </div>
       </div>
 
@@ -225,7 +234,7 @@
         <div class="panel-inner">
           <p class="panel-headline">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 C9 7 8 11 10 15"/><path d="M12 3 C15 7 16 11 14 15"/><path d="M10 15 C8 18 9 21 12 22 C15 21 16 18 14 15"/></svg>
-            Start the proxy, then configure openclaw.json
+            Start the proxy, then launch the MCP server
           </p>
           <div class="code-block">
             <span class="prompt">$</span>
@@ -233,13 +242,14 @@
             <button class="copy-btn" onclick="copy('cmd-oc',this)">⎘</button>
           </div>
           <p class="note" style="margin-bottom:0.75rem;">
-            Then in your <code>openclaw.json</code>, set <code>baseUrl</code> for your provider:
+            Worthless exposes an MCP server over stdio. Start it with:
           </p>
-          <div class="code-block" style="margin-bottom:0.5rem;">
-            <span class="cmd" id="cmd-oc-url" style="color:#93c5fd;">"baseUrl": "http://localhost:8787/v1"</span>
-            <button class="copy-btn" onclick="copy('cmd-oc-url',this)">⎘</button>
+          <div class="code-block" style="margin-bottom:0.75rem;">
+            <span class="prompt">$</span>
+            <span class="cmd" id="cmd-oc-mcp">worthless mcp</span>
+            <button class="copy-btn" onclick="copy('cmd-oc-mcp',this)">⎘</button>
           </div>
-          <p class="note"><a href="how-it-works.html">How the split-key proxy works →</a></p>
+          <p class="note">OpenClaw discovers it via ClawHub. <a href="how-it-works.html">How the split-key proxy works →</a></p>
         </div>
       </div>
 
@@ -263,6 +273,19 @@
       </div>
 
     </div><!-- /persona-panels -->
+
+    <!-- Verification -->
+    <div style="margin-top:1.75rem;">
+      <p class="step-label">Verify it's working</p>
+      <div class="code-block">
+        <span class="prompt">$</span>
+        <span class="cmd" id="cmd-status">worthless status</span>
+        <button class="copy-btn" onclick="copy('cmd-status',this)">⎘</button>
+      </div>
+      <p class="note" style="margin-top:0.4rem;">
+        You should see <code>PROTECTED</code> next to each locked key, the proxy address, and live spend. If a key still shows <code>ACTIVE</code>, re-run <code>worthless</code> inside that project folder.
+      </p>
+    </div>
 
     <hr>
 
@@ -299,8 +322,12 @@
   <script>
     // Copy button
     function copy(id, btn) {
-      const text = document.getElementById(id)?.textContent || '';
-      navigator.clipboard.writeText(text).then(() => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      // For the MCP JSON block, grab only the first <span> child text (skip nested button)
+      const span = el.querySelector('span');
+      const text = span ? span.textContent : el.textContent;
+      navigator.clipboard.writeText(text.trim()).then(() => {
         btn.textContent = '✓'; btn.classList.add('ok');
         setTimeout(() => { btn.textContent = '⎘'; btn.classList.remove('ok'); }, 1500);
       });
