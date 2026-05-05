@@ -123,9 +123,9 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
             return
 
         plural = "s" if len(orphans) != 1 else ""
-        console.print_warning(
-            f"{len(orphans)} broken record{plural} — their .env line was deleted:"
-        )
+        # Parenthetical sidesteps the their/its pronoun mismatch on the
+        # singular case ("1 broken record — their..." reads wrong).
+        console.print_warning(f"{len(orphans)} broken record{plural} (.env line deleted):")
         _print_orphan_lines(
             orphans,
             dry_run=fix and dry_run,
