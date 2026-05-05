@@ -135,10 +135,11 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
         )
 
 
-# 480s test timeout covers: compose up (360) + logs (30) + down (60)
-# with buffer. Otherwise the teardown and log-capture `finally` blocks
-# the test was designed around could be preempted before they run.
-@pytest.mark.timeout(480)
+# 660s test timeout covers: compose up (540) + logs (30) + down (60) + buffer.
+# Bumped from 480 → 660 after WOR-320: the BuildKit cache mount + pinned digest
+# pulls add cold-cache build cost on first runs. Also dockerfile:1.7 frontend
+# image needs to be pulled the first time on a fresh runner.
+@pytest.mark.timeout(660)
 @pytest.mark.parametrize(("distro", "dockerfile_name"), LOCK_E2E_MATRIX)
 def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
     """Post-install: `worthless lock` + proxied request → real key at upstream.
@@ -193,7 +194,9 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
                 # mock-upstream build PLUS lock_e2e.py (proxy startup,
                 # health probe, request, response check). 360s was tight;
                 # bumped to 600s for the same CI-runner-load reasons that
-                # bumped the build timeout above. Outer job: 25min.
+                # bumped the build timeout above. WOR-320 cache-mount
+                # additions also push cold-cache builds longer; 600s
+                # carries that margin too.
                 timeout=600,
                 check=False,
                 env=env,
