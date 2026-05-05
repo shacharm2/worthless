@@ -169,9 +169,12 @@ def test_dockerfiles_use_uv_cache_mount() -> None:
     # downloads the Astral installer, runs the installer, or invokes a
     # `uv` subcommand. Anchoring at the start of a clause excludes
     # chmod-on-install.sh (sets bits) and `! command -v uv` (sentinel).
+    # The `(?:\S+/)?install\.sh\b` shape pins the WHOLE filename — earlier
+    # `\S*install\.sh` would over-match `verify_install.sh` if it ever
+    # appeared as the verb of a RUN clause.
     uv_run_re = re.compile(
-        r"^(?:sh|bash)\s+\S*install\.sh"  # `sh /work/install.sh`
-        r"|^(?:sh|bash)\s+\S*uv-installer"  # `sh /tmp/uv-installer.sh`
+        r"^(?:sh|bash)\s+(?:\S+/)?install\.sh\b"  # `sh /work/install.sh`
+        r"|^(?:sh|bash)\s+(?:\S+/)?uv-installer\.sh\b"  # `sh /tmp/uv-installer.sh`
         r"|astral\.sh/uv/"  # downloading from astral
         r"|^/\S*\.local/bin/uv\s"  # running the installed binary
         r"|^uv\s+(?:tool|install|sync|run|cache|venv|python|self)\b"
@@ -270,6 +273,29 @@ def test_idempotency_fixture_wired() -> None:
     assert re.search(r"FAIL.*idempoten[ct]", sh_text, re.IGNORECASE), (
         f"{verify.name} must emit a 'FAIL: …idempoten…' message on diff "
         "so a regression is grep-able in CI logs."
+    )
+
+
+def test_idempotency_marker_matches_python_dict() -> None:
+    """Drift guard: the success marker the verify script emits must match
+    the marker the test runner asserts on.
+
+    `tests/test_install_docker.py` imports SUCCESS_MARKER and checks for
+    `"OK: install.sh is idempotent"` in run.stdout. `verify_idempotency.sh`
+    `echo`s a corresponding success line. If either side gets edited
+    without the other, the test silently asserts on a string the script
+    never prints (false-pass risk).
+    """
+    from tests.test_install_docker import SUCCESS_MARKER
+
+    expected = SUCCESS_MARKER["ubuntu-idempotency"]
+    verify = INSTALL_FIXTURES / "verify_idempotency.sh"
+    sh_text = verify.read_text(encoding="utf-8")
+    assert expected in sh_text, (
+        f"SUCCESS_MARKER['ubuntu-idempotency']={expected!r} but "
+        f"{verify.name} does not echo that exact string. The test would "
+        "false-pass if the script changes its success message without "
+        "updating SUCCESS_MARKER, or vice versa."
     )
 
 

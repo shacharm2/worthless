@@ -26,7 +26,7 @@ RUN chmod +x /work/install.sh
 ENV UV_PYTHON_PREFERENCE=only-managed
 # Cache uv's download dir between builds (PBS Python tarballs + wheels)
 # so matrix re-runs don't re-fetch ~50MB from astral.sh each time.
-RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=shared \
     sh /work/install.sh
 
 RUN apt-get update \

@@ -53,6 +53,29 @@ LOCK_E2E_MATRIX = [
 
 BUILD_PLATFORM = "linux/amd64"
 
+# Per-step subprocess budgets (seconds). Comments capture WHY each value:
+#
+# BUILD_S — cold-cache CI runner: pulls pinned base-image digests (~50MB,
+#   no shared layer reuse across digests), runs apt-get + install.sh which
+#   downloads uv + worthless from PyPI. 240s was tight; bumped on PR #127.
+# RUN_S — runs install.sh inside the container; bounded by uv tool install
+#   + smoke test on a fresh-box.
+# RMI_S — local-only image deletion.
+# COMPOSE_UP_S — pulls 2 base images + builds 2 services + runs lock_e2e.py.
+# COMPOSE_LOGS_S / COMPOSE_DOWN_S — local docker compose teardown.
+# OUTER_BUFFER_S — buffer above sum-of-subprocess-budgets so pytest-timeout
+#   doesn't preempt a legitimately slow stage before it can report.
+BUILD_S = 480
+RUN_S = 180
+RMI_S = 30
+COMPOSE_UP_S = 600
+COMPOSE_LOGS_S = 30
+COMPOSE_DOWN_S = 60
+OUTER_BUFFER_S = 30
+
+INSTALL_TIMEOUT = BUILD_S + RUN_S + RMI_S + OUTER_BUFFER_S
+LOCK_E2E_TIMEOUT = COMPOSE_UP_S + COMPOSE_LOGS_S + COMPOSE_DOWN_S + OUTER_BUFFER_S
+
 
 pytestmark = [
     pytest.mark.docker,
@@ -60,13 +83,7 @@ pytestmark = [
 ]
 
 
-# Test timeout must exceed the sum of subprocess budgets below
-# (build=480 + run=180 + rmi=30) so pytest-timeout doesn't preempt
-# a legitimately slow build before it gets a chance to report.
-# Bumped 480→720 to stay >sum-of-subprocess-budgets after main bumped
-# build to 480s (PR #127 8rqs) and WOR-319 pinned digests added cold-
-# cache layer-pull pressure on top.
-@pytest.mark.timeout(720)
+@pytest.mark.timeout(INSTALL_TIMEOUT)
 @pytest.mark.parametrize("fixture", INSTALL_MATRIX)
 def test_install_succeeds_on_distro(fixture: str) -> None:
     """Build image, run install.sh + verify_install.sh, assert both succeed."""
@@ -96,14 +113,7 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
             ],
             capture_output=True,
             text=True,
-            # GitHub Actions runners can be slow; the build does
-            # `apt-get update && install ca-certs curl tar` + `install.sh`
-            # which downloads uv + worthless from PyPI (network-bound).
-            # 240s was tight for the original baseline, started timing out
-            # routinely on PR #127 (8rqs). Bumped to 480s. WOR-319 pinned
-            # digests force layer re-pulls (~50MB each, no shared cache
-            # across digests) so cold runners need this margin too.
-            timeout=480,
+            timeout=BUILD_S,
             check=False,
             env={**os.environ, "DOCKER_BUILDKIT": "1"},
         )
@@ -115,7 +125,7 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
             ["docker", "run", "--rm", "--platform", BUILD_PLATFORM, image_tag],  # noqa: S607
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=RUN_S,
             check=False,
         )
         assert run.returncode == 0, (
@@ -134,16 +144,12 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
             ["docker", "rmi", "-f", image_tag],  # noqa: S607
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=RMI_S,
             check=False,
         )
 
 
-# 660s test timeout covers: compose up (540) + logs (30) + down (60) + buffer.
-# Bumped from 480 → 660 after WOR-320: the BuildKit cache mount + pinned digest
-# pulls add cold-cache build cost on first runs. Also dockerfile:1.7 frontend
-# image needs to be pulled the first time on a fresh runner.
-@pytest.mark.timeout(660)
+@pytest.mark.timeout(LOCK_E2E_TIMEOUT)
 @pytest.mark.parametrize(("distro", "dockerfile_name"), LOCK_E2E_MATRIX)
 def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
     """Post-install: `worthless lock` + proxied request → real key at upstream.
@@ -194,14 +200,7 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
                 ],
                 capture_output=True,
                 text=True,
-                # docker compose --build does the bare-OS build PLUS the
-                # mock-upstream build PLUS lock_e2e.py (proxy startup,
-                # health probe, request, response check). 360s was tight;
-                # bumped to 600s for the same CI-runner-load reasons that
-                # bumped the build timeout above. WOR-320 cache-mount
-                # additions also push cold-cache builds longer; 600s
-                # carries that margin too.
-                timeout=600,
+                timeout=COMPOSE_UP_S,
                 check=False,
                 env=env,
             )
@@ -213,7 +212,7 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
                 [*compose_base, "logs", "--no-color"],  # noqa: S607
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=COMPOSE_LOGS_S,
                 check=False,
                 env=env,
             )
@@ -223,7 +222,7 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
             [*compose_base, "down", "-v", "--remove-orphans"],  # noqa: S607
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=COMPOSE_DOWN_S,
             check=False,
             env=env,
         )
