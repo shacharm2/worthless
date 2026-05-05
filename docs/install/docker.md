@@ -15,9 +15,9 @@ run worthless`?") doesn't happen.
 | Your setup | What to do | Container URL |
 |---|---|---|
 | **Solo dev. App runs natively. No Docker.** | Use [mac.md](./mac.md) / [linux.md](./linux.md) / [wsl.md](./wsl.md) | n/a (`127.0.0.1:8787`) |
-| **Solo dev. App in container. worthless on host.** | [Scenario A](#scenario-a--your-app-in-docker-worthless-on-host) | `host.docker.internal:8787` |
-| **Solo dev. worthless + app in same Compose stack.** | [Scenario B](#scenario-b--both-worthless-and-app-in-the-same-compose-stack) | service-name `worthless:8787` |
-| **Team. Shared worthless server (single-tenant).** | [Scenario C](#scenario-c--single-tenant-team-server) | your TLS endpoint |
+| **Solo dev. App in container. worthless on host.** | [Scenario A](#scenario-a-your-app-in-docker-worthless-on-host) | `host.docker.internal:8787` |
+| **Solo dev. worthless + app in same Compose stack.** | [Scenario B](#scenario-b-both-worthless-and-app-in-the-same-compose-stack) | service-name `worthless:8787` |
+| **Team. Shared worthless server (single-tenant).** | [Scenario C](#scenario-c-single-tenant-team-server) | your TLS endpoint |
 
 ## Scenario A — your app in Docker, worthless on host
 
