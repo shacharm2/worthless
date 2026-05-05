@@ -91,10 +91,16 @@ def _validate_protocol(protocol: str) -> str:
 
 def _atomic_write_text(path: Path, content: str, mode: int = 0o644) -> None:
     """Write ``content`` to ``path`` atomically. Mode 0644 is fine for the
-    registry — it's public data, not a secret."""
+    registry — it's public data, not a secret.
+
+    UTF-8 explicit (TOML spec mandates UTF-8). Without ``encoding=``,
+    ``write_text`` falls back to the platform locale — cp1252 on a
+    fresh Windows install — which would silently corrupt non-ASCII
+    provider names / URLs. Same reasoning the loader uses on read.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content)
+    tmp.write_text(content, encoding="utf-8")
     tmp.chmod(mode)
     tmp.replace(path)
 
@@ -210,7 +216,9 @@ def register_providers_commands(app: typer.Typer) -> None:
             )
 
         path = user_registry_path()
-        existing = path.read_text() if path.is_file() else ""
+        # UTF-8 explicit; default would use platform locale and corrupt
+        # any non-ASCII content already in the user's providers.toml.
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
         new_block = _append_provider_block(name, url, protocol)
         _atomic_write_text(path, existing + new_block)
 

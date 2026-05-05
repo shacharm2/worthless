@@ -167,13 +167,20 @@ async def _prune_old_spend_log(db: aiosqlite.Connection) -> None:
 
 
 async def _migrate_decoy_hash_column(db: aiosqlite.Connection) -> None:
-    """WOR-31: add decoy_hash column to enrollments."""
+    """WOR-31: add decoy_hash column to enrollments.
+
+    The early-return-on-column-exists guard used to skip BOTH the ALTER
+    and the CREATE INDEX. If a previous migration crashed AFTER ALTER
+    but BEFORE the index commit, subsequent runs would see the column
+    and exit — never converging on the missing index. Now: ALTER is
+    column-conditional (skipped if present), CREATE INDEX is always
+    attempted (idempotent via IF NOT EXISTS).
+    """
     cursor = await db.execute("PRAGMA table_info(enrollments)")
     columns = {row[1] for row in await cursor.fetchall()}
-    if "decoy_hash" in columns:
-        return
     try:
-        await db.execute("ALTER TABLE enrollments ADD COLUMN decoy_hash TEXT")
+        if "decoy_hash" not in columns:
+            await db.execute("ALTER TABLE enrollments ADD COLUMN decoy_hash TEXT")
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_enrollments_decoy_hash "
             "ON enrollments (decoy_hash) WHERE decoy_hash IS NOT NULL"
