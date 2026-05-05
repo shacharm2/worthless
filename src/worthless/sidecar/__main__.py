@@ -41,6 +41,8 @@ import stat
 import sys
 from pathlib import Path
 
+from worthless.cli.errors import WorthlessError
+from worthless.sidecar import _hardening
 from worthless.sidecar.backends.fernet import FernetBackend
 from worthless.sidecar.server import start_sidecar
 
@@ -291,6 +293,15 @@ def main() -> int:
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Hardening must run before share bytes enter the address space
+    # (PR_SET_DUMPABLE=0 covers crashes mid-decrypt) and before the
+    # IPC socket binds (YAMA refusal short-circuits with WRTLS-116).
+    try:
+        _hardening.set_dumpable_zero()
+        _hardening.check_yama_ptrace_scope()
+    except WorthlessError as exc:
+        print(f"sidecar: {exc}", file=sys.stderr, flush=True)
+        return 1
     return asyncio.run(_run())
 
 
