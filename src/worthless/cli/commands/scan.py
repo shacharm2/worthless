@@ -16,6 +16,7 @@ from worthless.cli.bootstrap import get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.key_patterns import KEY_PATTERN
+from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
 from worthless.storage.repository import ShardRepository
 
@@ -189,7 +190,18 @@ async def _build_enrollment_checker_async():
         return None
 
     try:
-        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        # HF3 (worthless-cmpf): pass a placeholder Fernet key.
+        # ``list_enrollments()`` reads only plaintext metadata
+        # (var_name, env_path) — no decrypt happens on this code
+        # path, so the real key would be wasted work AND a macOS
+        # Keychain prompt for a documented read-only command.
+        # The constant below is valid Fernet shape (urlsafe_b64 of
+        # 32 zero bytes) so the constructor accepts it; Fernet is
+        # never invoked by list_enrollments(). Contract pinned in
+        # tests/test_scan_no_keystore.py so a future schema change
+        # that encrypts metadata fails loudly, not silently.
+        placeholder_fernet = bytearray(PLACEHOLDER_FERNET_KEY)
+        repo = ShardRepository(str(home.db_path), placeholder_fernet)
         await repo.initialize()
         enrollments = await repo.list_enrollments()
     except Exception:

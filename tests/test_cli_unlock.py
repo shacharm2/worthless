@@ -367,23 +367,85 @@ class TestUnlockErrorBranches:
 class TestUnlockNoAliases:
     """unlock with no enrolled keys prints warning."""
 
-    def test_unlock_empty_home_warns(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+    def test_unlock_empty_home_warns(self, home_dir: WorthlessHome) -> None:
         """unlock on empty home prints 'No enrolled keys found.'
 
-        Pass an explicit `--env` to a nonexistent path so the test does not
-        accidentally read whatever `.env` happens to live in the test
-        runner's CWD. HF4's discriminator deliberately treats shard-shape
-        values without a DB row as a hard error; this test exercises the
-        legitimate "empty home, no enrollments" path.
+        No `--env` flag — exercises the default-CWD path. Pnn2 makes
+        the HF4 discriminator implicit-default-safe: if the user did
+        not name a path, we don't surface the shard-shape hard error
+        even when the CWD has a `.env` belonging to a different
+        project.
         """
-        nope = tmp_path / "nope.env"
         result = runner.invoke(
             app,
-            ["unlock", "--env", str(nope)],
+            ["unlock"],
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 0, result.output
         assert "no enrolled" in result.output.lower()
+
+    def test_unlock_default_env_with_unrelated_shards_does_not_error(
+        self,
+        home_dir: WorthlessHome,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Pnn2 contract: ``worthless unlock`` (no flag) from a directory
+        whose `.env` happens to contain shard-shape values from an
+        unrelated project must NOT raise HF4's hard error.
+
+        Scenario: user has projects /work/a/.env (locked by worthless)
+        and /work/b/.env (someone else's, not enrolled here). Running
+        ``unlock`` from /work/b should warn and exit 0, not crash with
+        "no enrollment found for shard-shape value(s)..."
+        """
+        # Simulate /work/b/.env in CWD with shard-shape (but unenrolled)
+        # values via a real fake OpenAI key.
+        proj = tmp_path / "unrelated-project"
+        proj.mkdir()
+        (proj / ".env").write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+        monkeypatch.chdir(proj)
+
+        result = runner.invoke(
+            app,
+            ["unlock"],  # no --env
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, (
+            f"implicit-default unlock must not surface HF4 hard error "
+            f"on a CWD .env the user did not name:\n{result.output}"
+        )
+        assert "no enrolled" in result.output.lower()
+        assert "no enrollment found" not in result.output.lower(), (
+            "HF4 discriminator should NOT fire on implicit default"
+        )
+
+    def test_unlock_explicit_env_with_unrelated_shards_still_errors(
+        self,
+        home_dir: WorthlessHome,
+        tmp_path: Path,
+    ) -> None:
+        """Pnn2 keeps HF4's loud failure on explicit ``--env``: if the
+        user named the path, they meant it. Shard-shape values without
+        DB rows still surface as a hard error with a re-lock hint.
+        """
+        env = tmp_path / "orphaned.env"
+        env.write_text(f"OPENAI_API_KEY={_TEST_KEY}\n")
+
+        result = runner.invoke(
+            app,
+            ["unlock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code != 0, (
+            f"explicit --env to an orphaned shard-shape .env must still "
+            f"hard-fail (HF4 contract):\n{result.output}"
+        )
+        # HF4's error hint must be present.
+        assert (
+            "no enrollment found" in result.output.lower()
+            or "unrecognised shards" in result.output.lower()
+        ), f"missing HF4 hint:\n{result.output}"
 
 
 class TestUnlockScopedToEnv:

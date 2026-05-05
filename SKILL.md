@@ -254,6 +254,26 @@ The registry maps known upstream URLs (e.g., `https://api.openai.com/v1`) to a w
 
 **Use case:** Lock keys from any OpenAI-protocol-compatible provider (OpenRouter, Groq, Together, Ollama, internal LLM gateways). The proxy uses each enrollment's stored URL at request time, so multiple providers coexist in one `.env`.
 
+#### `worthless doctor [OPTIONS]`
+**Diagnose and repair stuck DB/.env states.**
+
+Currently handles ONE shape: DB enrollment rows whose `.env` line was deleted by the user. Surfaces and (with `--fix`) purges them. Closes the dogfood-discovered stuck state where `worthless unlock` says "no enrolled keys" but `worthless status` lists them as PROTECTED.
+
+**Options:**
+- `--fix`: Repair (destructive). Prompts unless `--yes`.
+- `--yes, -y`: Skip the confirmation prompt for `--fix`.
+- `--dry-run`: Show planned actions without writing.
+
+**Behavior:**
+- No flags: read-only diagnose mode, lists broken rows, exit 0.
+- `--fix`: prompts; on Y, deletes broken DB rows + their shard files atomically (same path as `revoke`).
+- `--fix --dry-run`: prints planned deletions, leaves DB intact.
+- `--fix --yes`: skip prompt, perform purge.
+
+**User-facing wording:** `"can't restore <alias>: .env line deleted"` — plain English, no engineer jargon. The fix command name is part of the canonical message so the user always sees the recovery path.
+
+**Use case:** user manually deleted a key line from `.env`; system is stuck. Run `worthless doctor --fix --dry-run` to preview, then `worthless doctor --fix` to clean up.
+
 #### `worthless mcp [OPTIONS]`
 **Start the MCP server (stdio transport).**
 
