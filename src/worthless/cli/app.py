@@ -112,6 +112,13 @@ from worthless.cli.commands.restore import register_restore_commands  # noqa: E4
 
 register_restore_commands(app)
 
+# Both subcommand groups landed in parallel: 8rqs added `providers` for
+# the multi-provider registry; main added `doctor` for orphan-row purging
+# (HF7). Keep both registrations.
+from worthless.cli.commands.providers import register_providers_commands  # noqa: E402
+
+register_providers_commands(app)
+
 from worthless.cli.commands.doctor import register_doctor_commands  # noqa: E402
 
 register_doctor_commands(app)

@@ -3697,6 +3697,7 @@ dependencies = [
     { name = "keyring" },
     { name = "psutil" },
     { name = "python-dotenv" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -3828,6 +3829,7 @@ requires-dist = [
     { name = "scipy", marker = "extra == 'test'", specifier = ">=1.12" },
     { name = "semgrep", marker = "extra == 'qa'", specifier = ">=1.155.0" },
     { name = "syrupy", marker = "extra == 'test'", specifier = ">=4.8" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "tomli", marker = "python_full_version < '3.11' and extra == 'test'", specifier = ">=2.0" },
     { name = "typer", specifier = ">=0.15" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },

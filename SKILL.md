@@ -6,7 +6,7 @@
 
 Worthless protects API keys in three scenarios:
 
-1. **Local Development**: `worthless wrap` runs your code through an ephemeral proxy that intercepts API calls, injects the real key only when needed, and cleans up on exit.
+1. **Local Development**: `worthless wrap` starts an ephemeral proxy and runs your command through it. Lock has already rewritten `*_BASE_URL` in your `.env` to point at the proxy, so your SDK picks it up via dotenv. The proxy reconstructs the real key only when the request passes the rules engine, then cleans up on exit.
 2. **Daemon Mode**: `worthless up` starts a persistent local proxy on port 8787 (configurable) that stays running and protects all enrolled keys.
 3. **CI/CD & Sidecar**: The proxy is designed to run as a sidecar container or process, protecting keys across environments with per-key spending limits and time-window gates.
 
@@ -140,7 +140,7 @@ Proxy: http://127.0.0.1:8787 (running)
 #### `worthless wrap [OPTIONS] COMMAND [ARGS...]`
 **Ephemeral proxy + child process lifecycle.**
 
-Starts a temporary reverse proxy on a random port, injects `{PROVIDER}_BASE_URL` environment variables (e.g., `OPENAI_BASE_URL=http://127.0.0.1:XXXXX`), spawns a child process with those env vars, waits for the child to exit, and cleans up the proxy.
+Starts a temporary reverse proxy on a random port, spawns a child process with the parent environment unchanged, waits for the child to exit, and cleans up the proxy. Pre-8rqs, wrap synthesised `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` into the child env. Post-8rqs (Phase 8), `worthless lock` writes the per-enrollment `*_BASE_URL` directly into your `.env` (preserving your var names — `OPENROUTER_BASE_URL` stays `OPENROUTER_BASE_URL`), so your SDK picks them up via dotenv. Wrap is a passthrough.
 
 The child's API SDK calls automatically route through the proxy. No code changes required.
 
@@ -240,6 +240,19 @@ Thin wrapper around `safe_restore` for ops runbooks and recovery scripts that ne
 - On any invariant violation: `.env` is byte-identical (unchanged), exit code 1.
 
 **Use case:** `cat backup.env | worthless restore ./.env`
+
+#### `worthless providers list|register [OPTIONS]`
+**Manage the LLM-provider registry (URL → wire-protocol mapping).**
+
+The registry maps known upstream URLs (e.g., `https://api.openai.com/v1`) to a wire protocol (`openai` / `anthropic`) so `worthless lock` can auto-detect protocol when scanning `.env` files.
+
+**Subcommands:**
+- `list` — Print the merged registry: bundled + optional `~/.worthless/providers.toml`. Use the global `--json` flag for machine-readable output.
+- `register --name NAME --url URL --protocol {openai,anthropic} [--force]` — Append a custom provider to `~/.worthless/providers.toml`. Refuses bundled-name conflicts; refuses bundled-URL conflicts unless `--force`.
+
+**Bundled providers:** openai, anthropic, openrouter, groq, together, ollama. Add more locally via `register` without modifying the package.
+
+**Use case:** Lock keys from any OpenAI-protocol-compatible provider (OpenRouter, Groq, Together, Ollama, internal LLM gateways). The proxy uses each enrollment's stored URL at request time, so multiple providers coexist in one `.env`.
 
 #### `worthless doctor [OPTIONS]`
 **Diagnose and repair stuck DB/.env states.**
@@ -369,8 +382,7 @@ Token spend history. Pass alias for one key, omit for all. Returns JSON.
 
 - `WORTHLESS_PORT`: Default port for `worthless up` (default: 8787)
 - `WORTHLESS_DEBUG`: Enable debug logging (when set)
-- `OPENAI_BASE_URL`: (Set by `wrap` and `up`) Proxy endpoint for OpenAI SDK
-- `ANTHROPIC_BASE_URL`: (Set by `wrap` and `up`) Proxy endpoint for Anthropic SDK
+- `*_BASE_URL` (e.g., `OPENAI_BASE_URL`, `OPENROUTER_BASE_URL`): Set in your `.env` by `worthless lock` to point each enrolled key at the local proxy. Your SDK reads them via dotenv. Var names are preserved — lock does not rename `OPENROUTER_BASE_URL` to `OPENAI_BASE_URL`. Pre-8rqs these were synthesised by `wrap`; post-8rqs they live in `.env`.
 
 ---
 

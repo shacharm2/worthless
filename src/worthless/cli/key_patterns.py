@@ -39,7 +39,23 @@ def detect_provider(api_key: str) -> str | None:
     return None
 
 
-ENTROPY_THRESHOLD: float = 4.5
+ENTROPY_THRESHOLD: float = 3.9
+# Lowered 4.5 → 3.9 so legitimate OpenRouter keys (entropy ~4.118) clear the
+# scan, while common placeholders ("sk-your-key-here" 3.03, "sk-aaaa" 0.88,
+# WRTLS-decoy 3.63, "sk-PLACEHOLDER" 3.74) remain rejected. Mirrors the fix
+# in the WOR-306 epic (commit f087180); merging that epic to main will be a
+# no-op merge for this line.
+
+
+# Canonical API-key env var convention: ``<PROVIDER>_API_KEY`` (with the
+# underscores between PROVIDER, API, and KEY individually optional). Used
+# by ``lock`` to warn users whose ``.env`` uses non-canonical names like
+# ``MY_OPENAI_KEY`` — apps that read such vars directly (without passing
+# ``base_url=`` to the SDK client) bypass the proxy and send shard-A
+# upstream. The end anchor ``$`` is critical: it prevents accidental
+# matches like ``OPENAI_API_KEY_OLD``. ``worthless-v5sy`` (P3 follow-up)
+# upgrades the warning to a refusal under ``worthless lock --strict``.
+CANONICAL_KEY_VAR_RE: re.Pattern[str] = re.compile(r"^[A-Z][A-Z0-9]*_?API_?KEY$")
 
 
 def detect_prefix(api_key: str, provider: str) -> str:

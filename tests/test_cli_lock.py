@@ -75,6 +75,247 @@ class TestLockFormatPreserving:
         else:
             pytest.fail("OPENAI_BASE_URL not found in .env")
 
+    def test_lock_reads_existing_base_url_from_env(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """If user's .env has OPENROUTER_API_KEY + OPENROUTER_BASE_URL pointing
+        at OpenRouter, lock stores that URL in DB and rewrites the var (NAME
+        unchanged) to the local proxy URL — not the canonical OPENAI_BASE_URL.
+
+        worthless-8rqs core flow: respect the user's variable names, route
+        per-enrollment to the right upstream.
+        """
+        from worthless.storage.repository import ShardRepository
+
+        env = tmp_path / ".env"
+        env.write_text(
+            f"OPENROUTER_API_KEY={fake_openai_key()}\n"
+            "OPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n"
+        )
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        # DB row stores the user's base_url (the upstream — OpenRouter).
+        async def _check():
+            repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+            await repo.initialize()
+            aliases = await repo.list_keys()
+            assert len(aliases) == 1
+            enc = await repo.fetch_encrypted(aliases[0])
+            return enc.base_url, aliases[0]
+
+        base_url_in_db, alias = asyncio.run(_check())
+        assert base_url_in_db == "https://openrouter.ai/api/v1"
+
+        # .env rewrite preserves the var NAME (OPENROUTER_BASE_URL, not OPENAI_BASE_URL).
+        from dotenv import dotenv_values
+
+        parsed = dotenv_values(env)
+        assert "OPENROUTER_BASE_URL" in parsed
+        assert "OPENAI_BASE_URL" not in parsed, (
+            "lock rewrote to canonical OPENAI_BASE_URL — should preserve OPENROUTER_BASE_URL"
+        )
+        assert parsed["OPENROUTER_BASE_URL"].startswith("http://127.0.0.1:")
+        assert alias in parsed["OPENROUTER_BASE_URL"]
+
+    def test_lock_refuses_unregistered_attacker_base_url(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """M3 (Blocker #1): if the user's .env has a *_BASE_URL pointing at a
+        URL not in the provider registry, lock must refuse rather than store
+        the attacker-controlled URL in the DB.
+
+        Threat: attacker tampers with .env, sets
+        OPENROUTER_BASE_URL=https://attacker.example/v1. Pre-fix, lock pulled
+        that URL into the DB unchanged; the proxy then forwarded the
+        reconstructed shard-A as Bearer to attacker.example — exfiltration.
+
+        worthless-rzi1 (P1 follow-up) adds per-request re-validation against
+        the registry to close the post-lock-tamper variant of the same attack.
+        worthless-8fbg adds RFC1918/loopback hardening on the URL shape itself.
+        M3 here is the lock-time minimum: refuse unknown URLs with a hint to
+        worthless providers register.
+        """
+        env = tmp_path / ".env"
+        env.write_text(
+            f"OPENROUTER_API_KEY={fake_openai_key()}\n"
+            "OPENROUTER_BASE_URL=https://attacker.example/v1\n"
+        )
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+
+        assert result.exit_code != 0, (
+            f"lock should refuse unknown upstream URL, but exit_code={result.exit_code}; "
+            f"output={result.output[:300]}"
+        )
+        # Error message should name the offending URL and point at the fix.
+        out = result.output.lower()
+        assert "attacker.example" in out, (
+            f"error message should name the rejected URL; got: {result.output[:400]}"
+        )
+        assert "providers register" in out or "register" in out, (
+            "error message should hint at 'worthless providers register'; "
+            f"got: {result.output[:400]}"
+        )
+
+        # DB must not have stored the attacker URL — no enrollment created.
+        async def _check_no_enrollment():
+            from worthless.storage.repository import ShardRepository
+
+            repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+            await repo.initialize()
+            aliases = await repo.list_keys()
+            return aliases
+
+        aliases = asyncio.run(_check_no_enrollment())
+        assert aliases == [], f"DB should have no enrollments after refused lock, found: {aliases}"
+
+    def test_lock_enrolls_openrouter_key_post_hf1(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Regression: post-HF1 (`detect_provider("sk-or-v1-...") == "openrouter"`),
+        an `OPENROUTER_API_KEY` in `.env` must enroll successfully via the
+        OpenAI wire protocol — NOT be silently skipped with "provider not
+        yet supported."
+
+        Pre-HF1, the OpenRouter `sk-or-v1-` prefix wasn't in
+        ``PROVIDER_PREFIXES``, so ``detect_provider`` fell through to
+        ``"openai"`` and the lock flow worked. HF1 (commit fcf75f6) added
+        the prefix and made detection return ``"openrouter"``. The
+        existing ``_SUPPORTED_PROVIDERS = {"openai", "anthropic"}`` gate
+        then SKIPPED any OpenRouter key with a warning, leaving the
+        plaintext key in ``.env`` — the exact "shard-A on the wire" leak
+        8rqs is meant to close.
+
+        Fix (this commit, M8 merge resolution): translate the registry
+        name to its wire protocol via ``lookup_by_name`` before the
+        supported gate. ``lookup_by_name("openrouter")`` returns the
+        bundled registry entry with ``protocol="openai"``, so the gate
+        passes, the alias is built with ``protocol`` as the prefix
+        (matches pre-HF1 behaviour, namespace stable across re-locks),
+        and the proxy dispatches the OpenAI adapter to the OpenRouter
+        upstream URL — same flow that the M3 live-smoke validated.
+        """
+        from tests.helpers import fake_key
+
+        # OpenRouter-shaped key (the "sk-" + "or-v1-" form HF1 added).
+        or_key = fake_key("sk-" + "or-v1-")
+
+        env = tmp_path / ".env"
+        env.write_text(
+            f"OPENROUTER_API_KEY={or_key}\nOPENROUTER_BASE_URL=https://openrouter.ai/api/v1\n"
+        )
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+
+        assert result.exit_code == 0, (
+            f"OpenRouter lock failed: exit={result.exit_code}; output={result.output[:400]}"
+        )
+
+        # Lock must NOT have emitted "provider 'openrouter' not yet supported".
+        out_l = result.output.lower()
+        assert "not yet supported" not in out_l, (
+            f"OpenRouter key was silently skipped — the M8 fix didn't take. "
+            f"output: {result.output[:400]}"
+        )
+
+        # DB row exists and stores wire protocol (openai), not registry name.
+        async def _check():
+            from worthless.storage.repository import ShardRepository
+
+            repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+            await repo.initialize()
+            aliases = await repo.list_keys()
+            return aliases
+
+        aliases = asyncio.run(_check())
+        assert len(aliases) == 1, f"expected 1 enrollment, got: {aliases}"
+        # Alias namespace stable: openai-XXXX prefix, not openrouter-XXXX.
+        # Pre-merge enrollments used "openai-" prefix because pre-HF1
+        # detect_provider returned "openai" for sk-or-v1-* keys.
+        # Post-merge with the M8 translation, alias prefix stays "openai-"
+        # so existing DB rows still resolve.
+        assert aliases[0].startswith("openai-"), (
+            f"expected alias to start with 'openai-' (wire protocol), got: {aliases[0]!r}"
+        )
+
+        # The .env was rewritten — OpenROUTER_BASE_URL points at local proxy.
+        rewritten = env.read_text()
+        assert "OPENROUTER_BASE_URL=http://127.0.0.1" in rewritten, (
+            f"OPENROUTER_BASE_URL should point at local proxy after lock; got .env: {rewritten!r}"
+        )
+
+    def test_lock_warns_on_non_canonical_var_name(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """M4 (Blocker #2): if the user's API-key var doesn't match the
+        canonical ``<PROVIDER>_API_KEY`` convention, lock emits a soft
+        warning naming proxy bypass / shard-A leakage as the consequence.
+
+        Threat: app reads the non-canonical var (e.g. ``MY_OPENAI_KEY``)
+        directly and constructs an OpenAI client without ``base_url=``.
+        SDKs only auto-detect ``OPENAI_BASE_URL`` when no explicit base
+        URL is set; with the var read explicitly the SDK falls through
+        to ``api.openai.com`` — bypassing the proxy and sending shard-A
+        on the wire.
+
+        Per product-manager review the right behavior is a SOFT warning
+        (lock proceeds) so users learn about the gotcha without being
+        blocked. ``worthless-v5sy`` (P3 follow-up) adds
+        ``worthless lock --strict`` for CI/team policy that upgrades the
+        warning to a refusal.
+        """
+        env = tmp_path / ".env"
+        env.write_text(f"MY_OPENAI_KEY={fake_openai_key()}\n")
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+
+        # Soft warning: lock proceeds.
+        assert result.exit_code == 0, (
+            f"warning is soft, not a refusal; got exit_code={result.exit_code}; "
+            f"output={result.output[:400]}"
+        )
+        out = result.output
+        # Warning must name the offending var so the user can find it in .env.
+        assert "MY_OPENAI_KEY" in out, (
+            f"warning should name the non-canonical var; got: {out[:400]}"
+        )
+        # Warning must explain the consequence so users know why they care.
+        out_l = out.lower()
+        assert "shard-a" in out_l or "bypass" in out_l, (
+            f"warning should explain shard-A leakage / proxy bypass; got: {out[:400]}"
+        )
+
+        # Lock still proceeded — DB has the enrollment.
+        async def _check_enrollment():
+            from worthless.storage.repository import ShardRepository
+
+            repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+            await repo.initialize()
+            return await repo.list_keys()
+
+        aliases = asyncio.run(_check_enrollment())
+        assert len(aliases) == 1, (
+            f"lock should still create the enrollment despite the warning; got: {aliases}"
+        )
+
     def test_lock_keys_only_skips_base_url(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """--keys-only flag should skip BASE_URL writing."""
         result = runner.invoke(

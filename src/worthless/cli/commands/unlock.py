@@ -17,7 +17,15 @@ from dotenv import dotenv_values
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
-from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
+
+# 8rqs Phase 8 moved _PROVIDER_ENV_MAP from wrap.py into lock.py
+# (wrap is now a passthrough; lock owns BASE_URL ownership). HF4 on main
+# pre-dated that move and still imported from wrap.py — that import would
+# fail at module-load post-merge. Importing from the new home, lock.py.
+from worthless.cli.commands.lock import _PROVIDER_ENV_MAP
+
+# scan_env_keys is used by HF4's per-key messaging logic (the
+# "no DB row here" hard-error path further down in this module).
 from worthless.cli.dotenv_rewriter import rewrite_env_keys, scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.orphans import format_orphan_error

@@ -310,6 +310,27 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         if encrypted is None:
             return _uniform_401()
 
+        # SR-03: gate before reconstruct. Refuse legacy rows missing
+        # base_url BEFORE any rules-engine evaluation, BEFORE shard_a
+        # extraction, BEFORE reconstruction. The denial path must not
+        # trigger key materialisation. (worthless-2pdi will promote this
+        # into a structural validate_encrypted_row helper covering all
+        # row-shape denials; the inline guard is the minimum.)
+        #
+        # Anti-enumeration: return the same _uniform_401() that unknown
+        # aliases get. A distinctive response (e.g. 503 with a relock
+        # hint) would let an attacker probe the DB by content-shape,
+        # breaking the anti-enumeration contract worthless-bi7h tracks
+        # for the timing-oracle variant. The relock hint surfaces in
+        # operator logs and via authenticated paths only.
+        if encrypted.base_url is None:
+            logger.warning(
+                "alias %r has NULL base_url (legacy pre-8rqs row); "
+                "operator should run `worthless relock`",
+                alias,
+            )
+            return _uniform_401()
+
         # SR-09: shard-A from request header only (no disk, no files)
         # OpenAI: Authorization: Bearer <shard-A>
         # Anthropic: x-api-key: <shard-A>
@@ -381,7 +402,12 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         try:
             with secure_key(key_buf) as k:
                 # Prepare upstream request
-                adapter_req = adapter.prepare_request(body=body, headers=req_headers, api_key=k)
+                adapter_req = adapter.prepare_request(
+                    body=body,
+                    headers=req_headers,
+                    api_key=k,
+                    base_url=encrypted.base_url,
+                )
 
                 # Build the httpx request object
                 upstream_req = httpx_client.build_request(
@@ -418,8 +444,14 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 tokens = usage.total_tokens if usage else 0
                 model = usage.model if usage else None
                 if usage is None:
-                    logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                        "Token extraction failed for alias=%s provider=%s",
+                    # Renamed from "Token extraction failed" — Semgrep's
+                    # python-logger-credential-disclosure rule fires on
+                    # the word "Token" in log messages, but here we mean
+                    # the LLM response usage-tokens count (for metering),
+                    # not an auth token. Renaming clears the rule
+                    # without needing a # nosemgrep annotation.
+                    logger.warning(
+                        "Usage extraction failed for alias=%s provider=%s",
                         alias,
                         provider,
                     )

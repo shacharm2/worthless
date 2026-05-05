@@ -77,7 +77,13 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
             ],
             capture_output=True,
             text=True,
-            timeout=240,
+            # GitHub Actions runners can be slow; the build does
+            # `apt-get update && install ca-certs curl tar` + `install.sh`
+            # which downloads uv + worthless from PyPI (network-bound).
+            # 240s was tight for the original baseline, started timing
+            # out routinely on PR #127 (8rqs). Bumped to 480s; the outer
+            # job timeout is 25min so there's still 5x headroom.
+            timeout=480,
             check=False,
         )
         assert build.returncode == 0, (
@@ -160,7 +166,12 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
                 ],
                 capture_output=True,
                 text=True,
-                timeout=360,
+                # docker compose --build does the bare-OS build PLUS the
+                # mock-upstream build PLUS lock_e2e.py (proxy startup,
+                # health probe, request, response check). 360s was tight;
+                # bumped to 600s for the same CI-runner-load reasons that
+                # bumped the build timeout above. Outer job: 25min.
+                timeout=600,
                 check=False,
                 env=env,
             )

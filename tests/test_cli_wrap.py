@@ -32,23 +32,30 @@ class TestWrapEnvInjection:
     """wrap injects BASE_URL env vars for enrolled providers."""
 
     def test_child_env_has_base_url(self):
-        """wrap should inject OPENAI_BASE_URL into child environment."""
-        child_env = _build_child_env(port=9999, aliases=[("my-alias", "openai")])
-        assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:9999/my-alias/v1"
+        """8rqs Phase 8: wrap NO LONGER injects OPENAI_BASE_URL — lock writes
+        the right value into the user's .env at lock time and wrap respects it.
 
-    def test_child_env_anthropic(self):
-        """wrap should inject ANTHROPIC_BASE_URL for anthropic provider."""
-        child_env = _build_child_env(port=8888, aliases=[("anth-alias", "anthropic")])
-        assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888/anth-alias/v1"
+        We don't assert the var is absent (parent env may still have it
+        from .env loading); the strict ``no synthesis`` contract is verified
+        in :meth:`test_child_env_no_injection` below.
+        """
+        # Smoke: function callable, no exception with a real-shape input.
+        _ = _build_child_env(port=9999, aliases=[("my-alias", "openai")])
 
-    def test_child_env_multiple_providers(self):
-        """wrap injects env vars for all enrolled providers."""
+    def test_child_env_no_injection(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The headline 8rqs Phase 8 contract: wrap does not synthesise *_BASE_URL
+        from the alias list. If the parent env is clean, the child env is too."""
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
         child_env = _build_child_env(
-            port=7777,
-            aliases=[("oai-alias", "openai"), ("anth-alias", "anthropic")],
+            port=9999,
+            aliases=[("oai", "openai"), ("ant", "anthropic"), ("or", "openai")],
         )
-        assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:7777/oai-alias/v1"
-        assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:7777/anth-alias/v1"
+        # No URL synthesis from aliases.
+        assert "OPENAI_BASE_URL" not in child_env
+        assert "ANTHROPIC_BASE_URL" not in child_env
+        assert "OPENROUTER_BASE_URL" not in child_env
 
     def test_child_env_no_session_token(self):
         """Session token should not be in child env (dead code removed)."""
@@ -57,37 +64,10 @@ class TestWrapEnvInjection:
 
 
 class TestBuildChildEnvEdgeCases:
-    """Edge cases for _build_child_env."""
-
-    def test_unknown_provider_skipped(self, monkeypatch: pytest.MonkeyPatch):
-        """Unknown provider should not inject any env var."""
-        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
-        child_env = _build_child_env(port=9999, aliases=[("gem-alias", "gemini")])
-        assert "OPENAI_BASE_URL" not in child_env
-        assert "ANTHROPIC_BASE_URL" not in child_env
-
-    def test_multi_alias_same_provider_last_wins(self):
-        """When multiple aliases map to the same provider, the last one wins."""
-        child_env = _build_child_env(
-            port=9999,
-            aliases=[("first-oai", "openai"), ("second-oai", "openai")],
-        )
-        assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:9999/second-oai/v1"
-
-    def test_multi_alias_same_provider_warns(self, caplog):
-        """Multiple aliases for the same provider should log a warning."""
-        import logging
-
-        with caplog.at_level(logging.WARNING):
-            _build_child_env(
-                port=9999,
-                aliases=[("first-oai", "openai"), ("second-oai", "openai")],
-            )
-        assert any("Multiple aliases" in r.message for r in caplog.records)
+    """Edge cases for _build_child_env (post-8rqs Phase 8 — wrap is a passthrough)."""
 
     def test_empty_aliases(self, monkeypatch: pytest.MonkeyPatch):
-        """Empty aliases list produces env without any BASE_URL vars."""
+        """Empty aliases list — env still inherits from parent."""
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
         child_env = _build_child_env(port=9999, aliases=[])
@@ -98,6 +78,13 @@ class TestBuildChildEnvEdgeCases:
         """Child env should include current process env vars."""
         child_env = _build_child_env(port=9999, aliases=[("a", "openai")])
         assert "PATH" in child_env
+
+    def test_parent_baseurl_passes_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If parent has OPENROUTER_BASE_URL set (from user's .env), wrap
+        does not overwrite it — the user's value reaches the child."""
+        monkeypatch.setenv("OPENROUTER_BASE_URL", "http://127.0.0.1:8787/openrouter-x/v1")
+        child_env = _build_child_env(port=9999, aliases=[("openrouter-x", "openai")])
+        assert child_env["OPENROUTER_BASE_URL"] == "http://127.0.0.1:8787/openrouter-x/v1"
 
 
 class TestListEnrolledAliasesWithDB:
@@ -575,11 +562,14 @@ class TestWrapSetsEnvAndRunsCommand:
         )
         assert result.exit_code == 0, f"wrap failed: {result.output}"
 
-        # Verify env vars were injected for the enrolled provider
-        assert "OPENAI_BASE_URL" in captured_env, (
-            "wrap should inject OPENAI_BASE_URL for enrolled openai key"
+        # 8rqs Phase 8: wrap no longer injects OPENAI_BASE_URL (lock owns
+        # that now via the user's own .env). The child env is the parent
+        # env passed through; we verify it's NOT the synthetic alias-URL
+        # form that pre-8rqs wrap would have produced.
+        synthetic = "http://127.0.0.1:9999/"
+        assert not captured_env.get("OPENAI_BASE_URL", "").startswith(synthetic), (
+            f"wrap synthesised OPENAI_BASE_URL post-8rqs: {captured_env.get('OPENAI_BASE_URL')!r}"
         )
-        assert "127.0.0.1" in captured_env["OPENAI_BASE_URL"]
 
 
 # ------------------------------------------------------------------

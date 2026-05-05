@@ -637,17 +637,22 @@ class TestLockWrapE2E:
         assert count > 0, "No enrollment records in DB after lock"
 
     def test_wrap_injects_base_url(self, container: tuple[str, int]) -> None:
-        """After lock, wrap injects OPENAI_BASE_URL into child environment.
+        """After lock, the child reads OPENAI_BASE_URL from .env via dotenv.
 
-        What it tests: The ``worthless wrap`` command sets OPENAI_BASE_URL
-        in the child process environment, pointing to the ephemeral proxy.
+        Post-8rqs Phase 8 (commit 20be134), ``worthless wrap`` is a
+        passthrough that inherits the parent env unchanged. ``worthless
+        lock`` writes ``*_BASE_URL`` directly into ``.env``; the child
+        loads it via dotenv (or shell sourcing) the same way real apps
+        do. Pre-8rqs the test could read ``os.environ['OPENAI_BASE_URL']``
+        directly because wrap synthesised it into the child env.
 
-        Why it matters: Without BASE_URL injection, SDK calls go directly
-        to the provider, bypassing the proxy entirely -- defeating the
-        purpose of Worthless.
+        Test technique: shell-source ``/tmp/.env`` before ``exec python`` so
+        the child's environ reflects the file lock just rewrote.
 
-        Failure looks like: OPENAI_BASE_URL is None or does not contain
-        127.0.0.1.
+        Failure looks like: BASE_URL not pointing at 127.0.0.1, or the
+        var is missing from the sourced environment.
+
+        Closes worthless-1td5 (Phase-8 docker-e2e drift).
         """
         name, _port = container
         fake_key = fake_openai_key()
@@ -658,22 +663,35 @@ class TestLockWrapE2E:
         lock = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
-        # Wrap a child that prints OPENAI_BASE_URL
+        # Wrap a child that sources .env and prints OPENAI_BASE_URL.
+        # Shell-sourcing is POSIX, no extra deps needed in the image.
         wrap_result = docker_exec(
             name,
             [
                 "worthless",
                 "wrap",
                 "--",
-                "python",
+                "sh",
                 "-c",
-                "import os; print(os.environ.get('OPENAI_BASE_URL', 'MISSING'))",
+                "set -a; . /tmp/.env; set +a; "
+                "python -c \"import os; print(os.environ.get('OPENAI_BASE_URL', 'MISSING'))\"",
             ],
         )
         assert wrap_result.returncode == 0, f"wrap failed: {wrap_result.stderr}"
         base_url = wrap_result.stdout.strip()
-        assert base_url != "MISSING", "OPENAI_BASE_URL not injected into child environment"
-        assert "127.0.0.1" in base_url, f"OPENAI_BASE_URL does not point to local proxy: {base_url}"
+        assert base_url != "MISSING", (
+            "OPENAI_BASE_URL not in .env after lock — the lock-side rewrite "
+            "didn't fire (or wrote a different var name)"
+        )
+        # Tightened (CodeRabbit catch): exact match on the alias-qualified URL
+        # instead of just "127.0.0.1 in base_url". A regression that drops
+        # /{alias}/v1 from the rewritten URL would still pass the loose check
+        # because localhost would still appear, but the proxy wouldn't route.
+        alias = _make_alias("openai", fake_key)
+        expected_base_url = f"http://127.0.0.1:8787/{alias}/v1"
+        assert base_url == expected_base_url, (
+            f"OPENAI_BASE_URL mismatch. expected={expected_base_url!r} actual={base_url!r}"
+        )
 
     def test_proxy_reachable_during_wrap(self, container: tuple[str, int]) -> None:
         """During wrap, the ephemeral proxy responds on /healthz.
@@ -750,35 +768,37 @@ class TestLockWrapE2E:
         lock = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
-        # Wrap a child that makes a request to the proxy's /v1/chat/completions
-        wrap_result = docker_exec(
-            name,
-            [
-                "worthless",
-                "wrap",
-                "--",
-                "python",
-                "-c",
-                (
-                    "import os, urllib.request, urllib.error, json\n"
-                    "base = os.environ['OPENAI_BASE_URL']\n"
-                    "key = os.environ.get('OPENAI_API_KEY', 'fake')\n"
-                    "url = f'{base}/chat/completions'\n"
-                    "msg = [{'role': 'user', 'content': 'hi'}]\n"
-                    "data = json.dumps({'model': 'gpt-4', 'messages': msg}).encode()\n"
-                    "hdrs = {'Content-Type': 'application/json', "
-                    "'Authorization': f'Bearer {key}'}\n"
-                    "req = urllib.request.Request(url, data=data, headers=hdrs)\n"
-                    "try:\n"
-                    "    urllib.request.urlopen(req)\n"
-                    "    print('STATUS=200')\n"
-                    "except urllib.error.HTTPError as e:\n"
-                    "    print(f'STATUS={e.code}')\n"
-                    "except urllib.error.URLError as e:\n"
-                    "    print(f'ERROR={e.reason}')\n"
-                ),
-            ],
+        # Wrap a child that sources .env (post-8rqs contract: lock writes
+        # *_BASE_URL into .env, child reads via dotenv/shell), then makes
+        # a request to the proxy's /v1/chat/completions. Closes
+        # worthless-1td5 (Phase-8 docker-e2e drift).
+        #
+        # Pass the Python source via heredoc on stdin (`python3 -`) instead
+        # of `python -c "..."`. `python -c` requires the source as a
+        # shell-quoted string, and `repr()`-ing a multi-line script puts
+        # literal `\n` characters into the shell argument that Python
+        # interprets as line-continuation followed by garbage — fails with
+        # "unexpected character after line continuation character".
+        py_snippet = (
+            "import os, urllib.request, urllib.error, json\n"
+            "base = os.environ['OPENAI_BASE_URL']\n"
+            "key = os.environ.get('OPENAI_API_KEY', 'fake')\n"
+            "url = f'{base}/chat/completions'\n"
+            "msg = [{'role': 'user', 'content': 'hi'}]\n"
+            "data = json.dumps({'model': 'gpt-4', 'messages': msg}).encode()\n"
+            "hdrs = {'Content-Type': 'application/json', "
+            "'Authorization': f'Bearer {key}'}\n"
+            "req = urllib.request.Request(url, data=data, headers=hdrs)\n"
+            "try:\n"
+            "    urllib.request.urlopen(req)\n"
+            "    print('STATUS=200')\n"
+            "except urllib.error.HTTPError as e:\n"
+            "    print(f'STATUS={e.code}')\n"
+            "except urllib.error.URLError as e:\n"
+            "    print(f'ERROR={e.reason}')\n"
         )
+        shell_cmd = f"set -a; . /tmp/.env; set +a; python3 - <<'PYEOF'\n{py_snippet}PYEOF\n"
+        wrap_result = docker_exec(name, ["worthless", "wrap", "--", "sh", "-c", shell_cmd])
         assert wrap_result.returncode == 0, f"wrap failed: {wrap_result.stderr}"
         output = wrap_result.stdout.strip()
         # The proxy MUST receive the request (not connection refused).

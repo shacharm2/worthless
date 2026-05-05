@@ -211,6 +211,27 @@ def _anthropic_stream_events(
     yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
 
 
+# Path prefix aliases for post-8rqs registry membership.
+# 8rqs Phase 5+6 ripped the per-provider env-var override; the proxy now
+# uses the per-enrollment ``base_url`` stored at lock time. Lock-time
+# validation (M3) requires the URL to be in the merged registry. Tests
+# register two mock URLs under different prefixes so the registry can
+# distinguish "openai-mock" (protocol=openai) from "anthropic-mock"
+# (protocol=anthropic) — registry keys are URL-based, can't have two
+# entries on the same URL with different protocols. The /v1 routes
+# stay for backward-compat with any pre-8rqs caller.
+@app.post("/openai/v1/chat/completions")
+async def openai_chat_completions_aliased(request: Request):
+    """Alias of /v1/chat/completions under the /openai prefix."""
+    return await chat_completions(request)
+
+
+@app.post("/anthropic/v1/messages")
+async def anthropic_messages_aliased(request: Request):
+    """Alias of /v1/messages under the /anthropic prefix."""
+    return await messages(request)
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """Capture Authorization header and return an OpenAI chat completion."""

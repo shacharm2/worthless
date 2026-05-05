@@ -34,13 +34,17 @@ class EncryptedShard(NamedTuple):
     provider: str
     prefix: str | None = None
     charset: str | None = None
+    # worthless-8rqs: per-enrollment upstream URL. None means the row was
+    # created before 8rqs landed; Phase-6 readers refuse to use it and prompt
+    # the user to re-lock.
+    base_url: str | None = None
 
     def __repr__(self) -> str:
         return (
             f"EncryptedShard(shard_b_enc=<{len(self.shard_b_enc)} bytes>, "
             f"commitment=<{len(self.commitment)} bytes>, "
             f"nonce=<{len(self.nonce)} bytes>, provider={self.provider!r}, "
-            f"prefix={self.prefix!r})"
+            f"prefix={self.prefix!r}, base_url={self.base_url!r})"
         )
 
 
@@ -134,6 +138,7 @@ class ShardRepository:
         shard: StoredShard,
         prefix: str | None = None,
         charset: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         """Encrypt *shard.shard_b* with Fernet and INSERT into the shards table.
 
@@ -146,8 +151,8 @@ class ShardRepository:
         async with self._connect() as db:
             await db.execute(
                 "INSERT INTO shards "
-                "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset, base_url) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     alias,
                     shard_b_enc,
@@ -156,6 +161,7 @@ class ShardRepository:
                     shard.provider,
                     prefix,
                     charset,
+                    base_url,
                 ),
             )
             await db.commit()
@@ -169,7 +175,7 @@ class ShardRepository:
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT shard_b_enc, commitment, nonce, provider, prefix, charset "
+                "SELECT shard_b_enc, commitment, nonce, provider, prefix, charset, base_url "
                 "FROM shards WHERE key_alias = ?",
                 (alias,),
             )
@@ -189,6 +195,7 @@ class ShardRepository:
                 provider=row["provider"],
                 prefix=row["prefix"],
                 charset=row["charset"],
+                base_url=row["base_url"],
             )
 
     def decrypt_shard(self, encrypted: EncryptedShard) -> StoredShard:
@@ -228,12 +235,26 @@ class ShardRepository:
             rows = await cursor.fetchall()
             return [r[0] for r in rows]
 
-    async def list_aliases_with_provider(self) -> list[tuple[str, str]]:
-        """Return ``(alias, provider)`` pairs for all enrolled keys."""
+    async def list_aliases_with_routing(
+        self,
+    ) -> list[tuple[str, str, str | None, str]]:
+        """Return ``(alias, var_name, base_url, protocol)`` for every enrollment.
+
+        Joins ``shards`` × ``enrollments`` so callers (worthless wrap, status,
+        etc.) get the full routing tuple in one query. Multiple enrollments
+        per alias produce multiple rows. ``base_url`` is ``None`` for legacy
+        rows enrolled before worthless-8rqs — the proxy refuses to use those
+        and prompts for re-lock.
+        """
         async with self._connect() as db:
-            cursor = await db.execute("SELECT key_alias, provider FROM shards")
+            cursor = await db.execute(
+                "SELECT s.key_alias, e.var_name, s.base_url, s.provider "
+                "FROM shards s "
+                "JOIN enrollments e ON s.key_alias = e.key_alias "
+                "ORDER BY s.key_alias"
+            )
             rows = await cursor.fetchall()
-            return [(r[0], r[1]) for r in rows if r[0] and r[1]]
+            return [(r[0], r[1], r[2], r[3]) for r in rows if r[0] and r[1] and r[3]]
 
     # ------------------------------------------------------------------
     # Metadata
@@ -273,6 +294,7 @@ class ShardRepository:
         token_budget_daily: int | None = None,
         prefix: str | None = None,
         charset: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         """Atomically store a shard, enrollment record, and enrollment config.
 
@@ -300,8 +322,8 @@ class ShardRepository:
             await db.execute("BEGIN IMMEDIATE")
             await db.execute(
                 "INSERT OR IGNORE INTO shards "
-                "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset, base_url) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     alias,
                     shard_b_enc,
@@ -310,6 +332,7 @@ class ShardRepository:
                     shard.provider,
                     prefix,
                     charset,
+                    base_url,
                 ),
             )
             await db.execute(
