@@ -125,13 +125,13 @@ def _format_human(
             unprotected_count += 1
 
     # HF5: dedicated section for broken DB rows + recovery hint.
-    # Section header uses the canonical PROBLEM_PHRASE so reword in one
-    # place (cli/orphans.py) flows here too.
+    # Section header carries the canonical PROBLEM_PHRASE; per-row drops
+    # it to avoid the redundant "can't restore <alias> ... BROKEN" double-up.
     if orphans:
         lines.append("")
         lines.append(f"{PROBLEM_PHRASE.capitalize()} these keys (.env line deleted):")
         for o in orphans:
-            lines.append(f"  {PROBLEM_PHRASE} {o.key_alias}  ({o.var_name} -> {o.env_path}) BROKEN")
+            lines.append(f"  {o.key_alias}  BROKEN  ({o.var_name} -> {o.env_path})")
         lines.append(f"  Run `{FIX_PHRASE}` to clean up.")
 
     total = len(findings)
