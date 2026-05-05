@@ -32,8 +32,10 @@ def _list_enrolled_keys(home: WorthlessHome) -> list[dict[str, str]]:
 
     conn = sqlite3.connect(str(home.db_path))
     try:
-        # LEFT JOIN so aliases with no enrollment rows (edge case: shard
-        # exists, enrollment row was deleted out-of-band) still appear.
+        # LEFT JOIN drives from `shards` (1:1 with alias) so each row is
+        # guaranteed to carry the alias's provider — even when no
+        # enrollment exists yet (var_name + env_path will be NULL but
+        # provider is always populated).
         cursor = conn.execute(
             "SELECT s.key_alias, s.provider, e.var_name, e.env_path "
             "FROM shards s LEFT JOIN enrollments e ON s.key_alias = e.key_alias "

@@ -84,15 +84,21 @@ def test_full_dogfood_lock_break_doctor_recover(tmp_path: Path) -> None:
         f"unlock must name the recovery command:\n{unlock.output}"
     )
 
-    # Step 5 — status STILL lists the key (the surprising part — DB row
-    # exists, .env line is gone, status reads from DB). Asserting it
-    # explicitly: if a regression silently cleared the enrollment during
-    # unlock, exit_code alone wouldn't catch that. CodeRabbit PR #128.
+    # Step 5 — status STILL lists the key (DB row exists), but HF5 now
+    # marks it BROKEN. Pre-HF5 status said PROTECTED here (the user-confusing
+    # dual answer the dogfood reported). HF5 contract: row appears AND is
+    # flagged BROKEN AND the doctor-fix hint accompanies it.
     status2 = runner.invoke(app, ["status"], env=cli_env)
     assert status2.exit_code == 0, f"status after break failed:\n{status2.output}"
     assert "OPENAI_API_KEY" in status2.output or "openai-" in status2.output, (
-        f"status must STILL list the key after the .env line is deleted "
-        f"(this is the user-confusing dual answer the bug created):\n{status2.output}"
+        f"status must STILL list the key after the .env line is deleted:\n{status2.output}"
+    )
+    # HF5 contract: row reads BROKEN, hint names the recovery command.
+    assert "BROKEN" in status2.output, (
+        f"HF5: status must mark the broken row BROKEN (not PROTECTED):\n{status2.output}"
+    )
+    assert "worthless doctor --fix" in status2.output.lower(), (
+        f"HF5: status must point at the recovery command:\n{status2.output}"
     )
 
     # Step 6 — doctor: diagnose-only, lists the row, exit 0, DB unchanged

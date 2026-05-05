@@ -20,7 +20,7 @@ from worthless.cli.dotenv_rewriter import build_enrolled_locations
 from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY
 from worthless.cli.orphans import FIX_PHRASE, find_orphans
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
-from worthless.storage.repository import ShardRepository
+from worthless.storage.repository import EnrollmentRecord, ShardRepository
 
 
 def _find_git_dir() -> Path | None:
@@ -82,7 +82,7 @@ def _collect_deep_paths(explicit_paths: list[Path]) -> tuple[list[Path], Path | 
 
 def _format_human(
     findings: list[ScanFinding],
-    orphans: list | None = None,
+    orphans: list[EnrollmentRecord] | None = None,
     show_suffix: bool = False,
     is_tty: bool = True,
 ) -> str:
