@@ -134,10 +134,12 @@ async def _migrate_base_url_column(
     backup_path = f"{db_path}.bak.{int(time.time())}"
     # SQLite VACUUM INTO has no parameter form; path is inlined. Validator
     # above proves the inlining is safe (rejects ', NUL, CR, LF, TAB).
-    # nosemgrep: formatted-sql-query
-    # nosemgrep: sqlalchemy-execute-raw-query
-    vacuum_sql = f"VACUUM INTO '{backup_path}'"  # noqa: S608
-    await db.execute(vacuum_sql)
+    # The nosemgrep annotation MUST be on the line immediately above the
+    # flagged call — not 2-3 lines up — or Semgrep's parser ignores it
+    # and the rule fires on the next CI scan (PR #127 had this regress
+    # twice). Inline form keeps the annotation locked to the call site.
+    # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query
+    await db.execute(f"VACUUM INTO '{backup_path}'")  # noqa: S608
     try:
         await db.execute("ALTER TABLE shards ADD COLUMN base_url TEXT")
         await db.commit()
