@@ -49,9 +49,10 @@ class TestScanFlagsBrokenEnrollments:
         result = cli_invoke(["scan", str(env_file.parent)], home_dir)
 
         assert not looks_like_traceback(result.output)
-        # Plain-English phrase contract (mirrors HF7 unlock + doctor):
+        # Canonical PROBLEM_PHRASE = "can't restore" (cli/orphans.py — reword
+        # in one place). Per CodeRabbit PR #131.
         assert has_all_tokens(
-            result.output, "can't be restored", orphan_alias, "worthless doctor --fix"
+            result.output, "can't restore", orphan_alias, "worthless doctor --fix"
         ), f"scan must surface the broken alias with the canonical wording:\n{result.output}"
 
     def test_scan_total_includes_broken_count(

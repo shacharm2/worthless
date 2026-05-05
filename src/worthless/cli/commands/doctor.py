@@ -117,7 +117,7 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
             return
 
         console.print_warning(
-            f"{len(orphans)} key(s) can't be restored — their .env line was deleted:"
+            f"{len(orphans)} key(s) {PROBLEM_PHRASE} — their .env line was deleted:"
         )
         _print_orphan_lines(orphans, dry_run=fix and dry_run)
 

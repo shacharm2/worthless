@@ -166,15 +166,18 @@ class TestScanFormats:
         assert len(sarif["runs"]) == 1
         assert len(sarif["runs"][0]["results"]) >= 1
 
-    def test_format_json_valid_array(self, file_with_key: Path) -> None:
-        """--json should produce a JSON array of findings on stdout."""
+    def test_format_json_valid_object(self, file_with_key: Path) -> None:
+        """--json produces {schema_version, findings, orphans} object on stdout (HF5)."""
         result = runner.invoke(app, ["scan", "--json", str(file_with_key)])
         assert result.exit_code == 1
-        findings = json.loads(result.stdout)
-        assert isinstance(findings, list)
-        assert len(findings) >= 1
-        assert "provider" in findings[0]
-        assert "is_protected" in findings[0]
+        data = json.loads(result.stdout)
+        assert isinstance(data, dict)
+        assert data["schema_version"] >= 2
+        assert isinstance(data["findings"], list)
+        assert len(data["findings"]) >= 1
+        assert "provider" in data["findings"][0]
+        assert "is_protected" in data["findings"][0]
+        assert "orphans" in data and isinstance(data["orphans"], list)
 
     def test_quiet_suppresses_output(self, file_with_key: Path) -> None:
         """--quiet should produce no stderr output (exit code only)."""
@@ -445,12 +448,13 @@ class TestScanShowSuffixFormat:
         assert result.exit_code == 0
 
     def test_show_suffix_combined_with_json(self, file_with_key: Path) -> None:
-        """--show-suffix with --json should still produce valid JSON."""
+        """--show-suffix with --json produces valid JSON object (HF5 shape)."""
         result = runner.invoke(app, ["scan", "--show-suffix", "--json", str(file_with_key)])
         assert result.exit_code == 1
-        findings = json.loads(result.stdout)
-        assert isinstance(findings, list)
-        assert len(findings) >= 1
+        data = json.loads(result.stdout)
+        assert isinstance(data, dict)
+        assert isinstance(data["findings"], list)
+        assert len(data["findings"]) >= 1
 
 
 # ---------------------------------------------------------------------------

@@ -122,7 +122,7 @@ class TestOrphanState:
         result = cli_invoke(["scan", str(env_file.parent)], home_dir)
 
         assert not looks_like_traceback(result.output)
-        assert has_all_tokens(result.output, "can't be restored", "worthless doctor --fix"), (
+        assert has_all_tokens(result.output, "can't restore", "worthless doctor --fix"), (
             f"scan must surface broken rows AND name the fix command:\n{result.output}"
         )
 

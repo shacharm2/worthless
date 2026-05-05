@@ -18,7 +18,7 @@ from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.key_patterns import KEY_PATTERN
 from worthless.cli.dotenv_rewriter import build_enrolled_locations
 from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY
-from worthless.cli.orphans import FIX_PHRASE, find_orphans
+from worthless.cli.orphans import FIX_PHRASE, PROBLEM_PHRASE, find_orphans
 from worthless.cli.scanner import ScanFinding, format_sarif, scan_files
 from worthless.storage.repository import EnrollmentRecord, ShardRepository
 
@@ -125,11 +125,13 @@ def _format_human(
             unprotected_count += 1
 
     # HF5: dedicated section for broken DB rows + recovery hint.
+    # Section header uses the canonical PROBLEM_PHRASE so reword in one
+    # place (cli/orphans.py) flows here too.
     if orphans:
         lines.append("")
-        lines.append("Can't be restored:")
+        lines.append(f"{PROBLEM_PHRASE.capitalize()} these keys (.env line deleted):")
         for o in orphans:
-            lines.append(f"  {o.key_alias}  ({o.var_name} -> {o.env_path}) BROKEN")
+            lines.append(f"  {PROBLEM_PHRASE} {o.key_alias}  ({o.var_name} -> {o.env_path}) BROKEN")
         lines.append(f"  Run `{FIX_PHRASE}` to clean up.")
 
     total = len(findings)
