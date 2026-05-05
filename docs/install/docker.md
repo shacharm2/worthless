@@ -1,3 +1,8 @@
+---
+title: "Install — Docker"
+description: "When your app runs in a container — how the host CLI, Docker image, and host.docker.internal fit together."
+---
+
 # Install with Docker
 
 Docker is **not a way to run the worthless CLI**. It's a way to run a

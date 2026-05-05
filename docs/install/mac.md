@@ -1,3 +1,8 @@
+---
+title: "Install — macOS"
+description: "Native install on Apple Silicon or Intel Mac, ~90 seconds zero to working proxy."
+---
+
 # Install on macOS
 
 Zero to working proxy in ~90 seconds. Apple Silicon (M1/M2/M3/M4) and
@@ -116,8 +121,8 @@ without your real key ever leaving the proxy process.
 | Wake from sleep | Proxy keeps running | Nothing |
 | Switch projects (`cd`) | Each project's `.env` has its own proxy URL | Nothing — same daemon serves all |
 
-**The reboot gap is real.** Until [WOR-174](https://linear.app/) ships
-a launchd LaunchAgent, you manually `worthless up` after every reboot.
+**The reboot gap is real.** Until WOR-174 ships a launchd LaunchAgent
+in v1.1, you manually `worthless up` after every reboot.
 Workaround: add `worthless up &> /dev/null &` to your `~/.zshrc`.
 
 ## 7. Uninstall (manual, until WOR-435 ships)

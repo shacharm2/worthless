@@ -1,3 +1,8 @@
+---
+title: "Install — Windows (WSL2)"
+description: "Native install inside WSL2 Linux subsystem on Windows 10/11."
+---
+
 # Install on WSL2 (Windows + Linux subsystem)
 
 WSL2 is the **documented happy path for Windows developers**. worthless

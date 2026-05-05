@@ -1,3 +1,8 @@
+---
+title: "Install — Pick Your Platform"
+description: "Zero-to-working-proxy install guides for macOS, Linux, WSL2, and Docker."
+---
+
 # Installing worthless
 
 Pick the platform that matches your setup. Each guide is end-to-end —
@@ -44,4 +49,4 @@ Honest list — these are tracked, not unknown.
 | `uv tool uninstall worthless` doesn't purge the keychain entry or `~/.worthless/` | WOR-435, v1.2 |
 | No `worthless` CLI is exposed by `docker run ghcr.io/.../worthless` — you still install natively | by design; documented in [docker.md](./docker.md) |
 
-If you hit something that isn't on this list, file a Github issue.
+If you hit something that isn't on this list, file a GitHub issue.

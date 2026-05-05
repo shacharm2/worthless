@@ -1,3 +1,8 @@
+---
+title: "Install — Linux"
+description: "Native install on Ubuntu / Debian / Alpine, ~60 seconds."
+---
+
 # Install on Linux
 
 Zero to working proxy in ~60 seconds. Tested on Ubuntu 22.04 / 24.04,
@@ -132,8 +137,8 @@ Expected: JSON list of models.
 | Reboot machine | **Proxy is gone** | `worthless up` |
 | Logout / login | Depends on your session manager — usually proxy dies | `worthless up` |
 
-**Reboot gap is real.** [WOR-175](https://linear.app/) (Linux systemd
-user service) ships in v1.1 — installs a `~/.config/systemd/user/worthless-proxy.service`
+**Reboot gap is real.** WOR-175 (Linux systemd user service) ships in
+v1.1 — installs a `~/.config/systemd/user/worthless-proxy.service`
 unit with `Restart=on-failure`. Until then:
 
 ```bash
@@ -141,8 +146,7 @@ unit with `Restart=on-failure`. Until then:
 echo 'pgrep -f "worthless up" >/dev/null || worthless up &> /dev/null &' >> ~/.bashrc
 ```
 
-Or write your own systemd user unit (template in
-[WOR-175](https://linear.app/) once it ships).
+Or write your own systemd user unit (template in WOR-175 once it ships).
 
 ## 7. Uninstall (manual, until WOR-435 ships)
 
