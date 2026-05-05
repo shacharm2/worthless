@@ -37,10 +37,6 @@ class TestScanFlagsBrokenEnrollments:
         lock_env(env_file, home)
         env_file.write_text("")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RED: HF5 (worthless-gmky) — scan doesn't yet emit the broken section.",
-    )
     def test_scan_lists_broken_section_when_orphans_exist(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -58,10 +54,6 @@ class TestScanFlagsBrokenEnrollments:
             result.output, "can't be restored", orphan_alias, "worthless doctor --fix"
         ), f"scan must surface the broken alias with the canonical wording:\n{result.output}"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RED: HF5 (worthless-gmky) — scan total doesn't yet count broken rows.",
-    )
     def test_scan_total_includes_broken_count(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -75,10 +67,6 @@ class TestScanFlagsBrokenEnrollments:
             f"scan total must call out the orphan count:\n{result.output}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RED: HF5 (worthless-gmky) — scan JSON doesn't yet expose `orphans`.",
-    )
     def test_scan_json_includes_orphans_array(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -87,7 +75,7 @@ class TestScanFlagsBrokenEnrollments:
         before = list_enrollments(home_dir)
         orphan_alias = before[0].key_alias
 
-        result = cli_invoke(["--json", "scan", str(env_file.parent)], home_dir)
+        result = cli_invoke(["scan", str(env_file.parent), "--json"], home_dir)
 
         assert not looks_like_traceback(result.output)
         # The JSON shape can change over time — assert the additive `orphans`
@@ -105,10 +93,6 @@ class TestScanFlagsBrokenEnrollments:
             f"orphans array must contain the orphan alias {orphan_alias!r}:\n{parsed}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RED: HF5 (worthless-gmky) — scan json schema for healthy state.",
-    )
     def test_scan_json_orphans_empty_when_clean(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -116,7 +100,7 @@ class TestScanFlagsBrokenEnrollments:
         lock_env(env_file, home_dir)  # locked, NOT broken
         # Re-lock keeps env_file healthy. No orphan present.
 
-        result = cli_invoke(["--json", "scan", str(env_file.parent)], home_dir)
+        result = cli_invoke(["scan", str(env_file.parent), "--json"], home_dir)
         assert not looks_like_traceback(result.output)
         try:
             parsed = json.loads(result.output)

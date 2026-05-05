@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from worthless.cli.bootstrap import WorthlessHome
 
@@ -45,10 +44,6 @@ class TestStatusFlagsBrokenAliases:
         lock_env(env_file, home)
         env_file.write_text("")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RED: HF5 (worthless-gmky) — status doesn't yet flag broken rows.",
-    )
     def test_status_marks_broken_alias_as_broken(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -103,10 +98,6 @@ class TestStatusFlagsBrokenAliases:
             f"alias with one healthy enrollment must NOT be marked BROKEN:\n{result.output}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="RED: HF5 (worthless-gmky) — status doesn't yet emit the doctor hint.",
-    )
     def test_status_emits_doctor_fix_hint_only_when_broken(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:

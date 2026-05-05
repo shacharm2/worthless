@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 from typing import Any
 
@@ -13,26 +14,60 @@ import typer
 from worthless.cli.bootstrap import WorthlessHome, resolve_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import error_boundary
+from worthless.cli.orphans import FIX_PHRASE, is_orphan
 from worthless.cli.process import read_pid
+from worthless.storage.repository import EnrollmentRecord
 
 
 def _list_enrolled_keys(home: WorthlessHome) -> list[dict[str, str]]:
-    """List enrolled key aliases with providers from the DB."""
-    import sqlite3
+    """List enrolled aliases with PROTECTED/BROKEN state.
 
+    BROKEN = every enrollment for this alias references a deleted ``.env``
+    line. PROTECTED = at least one enrollment is healthy (recovery is
+    still possible from that ``.env``). HF5 / worthless-gmky.
+    """
     keys: list[dict[str, str]] = []
     if not home.db_path.exists():
         return keys
 
     conn = sqlite3.connect(str(home.db_path))
     try:
-        cursor = conn.execute("SELECT key_alias, provider FROM shards ORDER BY key_alias")
-        for alias, provider in cursor.fetchall():
-            keys.append({"alias": alias, "provider": provider})
+        # LEFT JOIN so aliases with no enrollment rows (edge case: shard
+        # exists, enrollment row was deleted out-of-band) still appear.
+        cursor = conn.execute(
+            "SELECT s.key_alias, s.provider, e.var_name, e.env_path "
+            "FROM shards s LEFT JOIN enrollments e ON s.key_alias = e.key_alias "
+            "ORDER BY s.key_alias"
+        )
+        rows = cursor.fetchall()
     except sqlite3.OperationalError:
-        pass
+        rows = []
     finally:
         conn.close()
+
+    # Group rows by alias and decide PROTECTED vs BROKEN per alias.
+    by_alias: dict[str, dict[str, Any]] = {}
+    for alias, provider, var_name, env_path in rows:
+        entry = by_alias.setdefault(
+            alias, {"alias": alias, "provider": provider, "enrollments": []}
+        )
+        if var_name is not None and env_path is not None:
+            entry["enrollments"].append(
+                EnrollmentRecord(key_alias=alias, var_name=var_name, env_path=env_path)
+            )
+
+    for entry in by_alias.values():
+        enrollments: list[EnrollmentRecord] = entry["enrollments"]
+        if not enrollments:
+            # Shard with no enrollment row at all — HF5 scope doesn't cover
+            # this edge state. Default to PROTECTED so we don't false-flag.
+            entry["status"] = "PROTECTED"
+        elif all(is_orphan(e) for e in enrollments):
+            entry["status"] = "BROKEN"
+        else:
+            entry["status"] = "PROTECTED"
+        entry.pop("enrollments")  # internal scratch, not part of the public dict
+        keys.append(entry)
 
     return keys
 
@@ -109,8 +144,16 @@ def register_status_commands(app: typer.Typer) -> None:
             else:
                 lines = ["Enrolled keys:"]
                 for k in keys:
-                    lines.append(f"  {k['alias']}  {k['provider']}  PROTECTED")
+                    lines.append(f"  {k['alias']}  {k['provider']}  {k['status']}")
                 sys.stderr.write("\n".join(lines) + "\n\n")
+                # HF5: if any row is BROKEN, point the user at doctor.
+                # Phrase tokens come from cli/orphans.py — single source of
+                # truth shared with unlock/doctor/scan.
+                if any(k["status"] == "BROKEN" for k in keys):
+                    sys.stderr.write(
+                        f"Can't restore the keys marked BROKEN — their .env "
+                        f"line was deleted. Run `{FIX_PHRASE}` to clean up.\n\n"
+                    )
 
             if proxy_info["healthy"]:
                 sys.stderr.write(
