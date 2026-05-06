@@ -282,9 +282,26 @@ def spawn_sidecar(
             preexec_fn; Phase C1 only plumbs the kwarg through.
 
     Raises:
-        WorthlessError: WRTLS-114 if the path is too long for AF_UNIX or
-            the sidecar does not become ready.
+        WorthlessError: WRTLS-114 if the path is too long for AF_UNIX,
+            the sidecar does not become ready, or *service_uids* contains
+            a root id (uid/gid 0) that would silently no-op the drop.
     """
+    # If the caller asked for a privilege drop, the ids must be non-root.
+    # ``pw_uid == 0`` means "drop to root" — a no-op that silently breaks
+    # the v1.1 security claim. Validating here so a future Dockerfile
+    # drift / shadowed /etc/passwd that resolves worthless-proxy to uid 0
+    # is caught before we Popen the sidecar.  C2 wires the preexec_fn that
+    # actually consumes ``service_uids``.
+    if service_uids is not None and (
+        service_uids.proxy_uid < 1 or service_uids.crypto_uid < 1 or service_uids.worthless_gid < 1
+    ):
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"service_uids must have non-root ids "
+            f"(proxy={service_uids.proxy_uid}, crypto={service_uids.crypto_uid}, "
+            f"gid={service_uids.worthless_gid}); refusing to spawn",
+        )
+
     # AF_UNIX sun_path is 104 on macOS, 108 on Linux. Eager check surfaces
     # the real cause; otherwise the sidecar's bind() fails with ENAMETOOLONG
     # and we'd report a misleading "did not become ready" timeout.

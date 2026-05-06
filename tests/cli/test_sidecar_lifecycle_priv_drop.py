@@ -33,6 +33,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import worthless.cli.sidecar_lifecycle as _sidecar_lifecycle
+from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.sidecar_lifecycle import ServiceUids, ShareFiles, spawn_sidecar
 from worthless.sidecar import _hardening
 
@@ -68,6 +69,41 @@ def test_service_uids_field_order_is_proxy_crypto_gid() -> None:
     if any caller used positional args.
     """
     assert ServiceUids._fields == ("proxy_uid", "crypto_uid", "worthless_gid")
+
+
+@pytest.mark.parametrize(
+    ("proxy_uid", "crypto_uid", "worthless_gid"),
+    [
+        (0, 10002, 10001),  # proxy=root → no-op drop
+        (10001, 0, 10001),  # crypto=root → silently breaks claim
+        (10001, 10002, 0),  # gid=root group → group-permission escape
+        (-1, 10002, 10001),  # negative uid (impossible but defensive)
+    ],
+)
+def test_spawn_sidecar_rejects_service_uids_with_root_or_negative_id(
+    _share_files: ShareFiles, proxy_uid: int, crypto_uid: int, worthless_gid: int
+) -> None:
+    """``spawn_sidecar`` refuses to start when any id is < 1 (root or negative).
+
+    A future Dockerfile drift / shadowed ``/etc/passwd`` that resolves
+    ``worthless-proxy`` to uid 0 would silently no-op the privilege drop
+    in C2 — the sidecar would still run as root, killing the v1.1
+    security claim with no log line. Eager validation at the spawn
+    boundary turns the silent failure into a structured WRTLS-114.
+    """
+    import uuid
+
+    socket_path = Path(f"/tmp/wor310-c1-{uuid.uuid4().hex[:8]}.sock")  # noqa: S108
+    bad_uids = ServiceUids(proxy_uid=proxy_uid, crypto_uid=crypto_uid, worthless_gid=worthless_gid)
+    with pytest.raises(WorthlessError) as exc_info:
+        spawn_sidecar(
+            socket_path=socket_path,
+            shares=_share_files,
+            allowed_uid=1000,
+            service_uids=bad_uids,
+        )
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    assert "non-root" in exc_info.value.message
 
 
 # ---------------------------------------------------------------------------
