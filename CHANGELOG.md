@@ -4,6 +4,14 @@ All notable changes to Worthless are documented here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-05-06
+
+The "make `worthless wrap` actually work end-to-end" hotfix. v0.3.3's HF10 fresh-install verification surfaced that `worthless wrap python main.py` on a clean machine left the child unable to reach the proxy: `lock` writes port 8787 to `.env` but `wrap` was binding a random port the child had no way to discover. The earlier "wrap works" verdict was contaminated by a stale `worthless up` daemon hogging 8787 across sessions. Fix: `wrap` now binds the same port `lock` wrote.
+
+### Fixed
+- **`worthless wrap` proxy now binds the port `lock` wrote to `.env`** (worthless-djoe, closes worthless-hyb1). Pre-fix `wrap` called `spawn_proxy(port=0)` (OS-random), which gave the proxy a port the child couldn't discover — post-8rqs `wrap` had stopped injecting `*_BASE_URL` vars into child env, so the only port the child saw was `.env`'s. With lock writing 8787 and wrap binding random, the child hit 8787 and got connection-refused. Now `wrap` calls `_resolve_port(None)` (same priority chain `lock` and `up` use: arg → `WORTHLESS_PORT` env → `8787` default), so child + proxy agree. Regression introduced in v0.3.3 / PR #127 (worthless-8rqs).
+- **`worthless wrap` gives a clean error when its port is already in use.** If `worthless up` is already running on the same port, wrap names it: *"port 8787 is already serving a worthless proxy (`worthless up` is running). Either run your command directly (the daemon proxies it already), or stop the daemon and re-run wrap."* If a non-worthless process holds the port, wrap names that case too. `up` and `wrap` are alternatives, not combinable on the same port.
+
 ## [0.3.3] — 2026-05-05
 
 The "make `curl install.sh | sh` actually work" release. v0.3.2 dogfood surfaced 9 hotfixes (HF1-9) covering keychain UX, scan/status correctness, unlock messaging, and orphan recovery. Plus install-matrix supply-chain hardening (WOR-317-320) so the release pipeline can't be tampered with via floating-tag base images.
@@ -68,5 +76,6 @@ First release published to PyPI. `pip install worthless` now works.
 - Gate evaluation strictly precedes shard reconstruction (SR-03).
 - Published artifacts built via PyPI trusted publishing (OIDC, no long-lived tokens).
 
+[0.3.4]: https://github.com/shacharm2/worthless/releases/tag/v0.3.4
 [0.3.3]: https://github.com/shacharm2/worthless/releases/tag/v0.3.3
 [0.3.0]: https://github.com/shacharm2/worthless/releases/tag/v0.3.0

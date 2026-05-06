@@ -1,10 +1,16 @@
 """wrap command -- ephemeral proxy + child process lifecycle.
 
-``worthless wrap python main.py`` starts a transparent proxy on a random port
-and runs the child against it. After 8rqs, the .env that ``worthless lock``
-already rewrote IS the contract — wrap no longer mutates ``*_BASE_URL`` vars
-in the child env. Its job is now process supervision only: spawn proxy,
-spawn child, wait, clean up.
+``worthless wrap python main.py`` starts a transparent proxy on the same
+port ``worthless lock`` wrote into the user's ``.env`` (default 8787,
+overridable via ``WORTHLESS_PORT``) and runs the child against it. After
+8rqs, the .env that ``worthless lock`` already rewrote IS the contract —
+wrap no longer mutates ``*_BASE_URL`` vars in the child env. Its job is
+process supervision only: spawn proxy on lock's port, spawn child, wait,
+clean up.
+
+If lock's port is already serving (e.g. ``worthless up`` is running), wrap
+fails fast with a clean error — the two commands are alternatives, not
+combinable. Run one or the other.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import subprocess  # nosec B404
 import sys
 import threading
@@ -23,15 +30,63 @@ from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sani
 from worthless.cli.platform import fail_if_windows, popen_platform_kwargs
 from worthless.cli.process import (
     build_proxy_env,
+    check_proxy_health,
     create_liveness_pipe,
     disable_core_dumps,
     forward_signals,
     poll_health,
+    resolve_port,
     spawn_proxy,
 )
 from worthless.storage.repository import ShardRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _port_in_use(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:
+    """True if *port* on *host* currently accepts a TCP connection.
+
+    Used to give a precise error message when ``spawn_proxy`` fails to
+    bind. A best-effort probe; TOCTOU between this check and the actual
+    bind is fine because we only use it for diagnostic messaging.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def _diagnose_proxy_failure(port: int, exc: Exception) -> str:
+    """Return a precise user-facing message when ``spawn_proxy`` fails.
+
+    Three cases:
+      1. Port serves a worthless proxy → ``up`` is already running, name it.
+      2. Port serves something else → tell the user how to switch ports.
+      3. Port is free → bubble up the original exception (some other bug).
+
+    Uses :func:`worthless.cli.process.check_proxy_health` for the daemon
+    probe — same canonical heuristic as ``status``, the MCP server, and
+    the default-command flow, so wrap doesn't drift.
+    """
+    if not _port_in_use(port):
+        return sanitize_exception(exc, generic="failed to start proxy")
+    if check_proxy_health(port).get("healthy"):
+        return (
+            f"wrap couldn't bind port {port}: a worthless daemon is already "
+            f"serving it (`worthless up` is running). Either run your command "
+            f"directly (the daemon proxies it already), or stop the daemon "
+            f"and re-run wrap."
+        )
+    return (
+        f"wrap couldn't bind port {port}: another process holds it. "
+        f"Stop that process, or set `WORTHLESS_PORT` to a free port "
+        f"and re-run `worthless lock` so .env points at the same port."
+    )
 
 
 def _list_enrolled_aliases(home: WorthlessHome) -> list[tuple[str, str]]:
@@ -143,11 +198,46 @@ def register_wrap_commands(app: typer.Typer) -> None:
         # Build proxy environment
         proxy_env = build_proxy_env(home)
 
-        # Spawn proxy on random port
+        # Spawn proxy on the same port `lock` wrote to .env so the child's
+        # *_BASE_URL values resolve. (v0.3.4 fix: pre-fix this was port=0,
+        # which gave the proxy a random port the child couldn't discover —
+        # post-8rqs wrap stopped injecting BASE_URLs into child env, so the
+        # child only sees .env, which holds lock's port.)
+        target_port = resolve_port(None)
+
+        # Pre-check the port BEFORE spawn_proxy. The realistic conflict
+        # (e.g. ``worthless up`` already running on this port) is far
+        # nastier than a clean failure: ``Popen(port=8787)`` returns
+        # successfully because Popen doesn't wait on uvicorn's bind;
+        # the new uvicorn child fails to bind in the background; then
+        # ``poll_health(8787)`` polls the *foreign* daemon (which IS
+        # healthy) and returns True. Wrap thinks ITS proxy is up, the
+        # child runs against the foreign daemon, and the child never
+        # learns it's piggybacking. No exception ever raises — neither
+        # this function's exception path nor the ``poll_health``-timeout
+        # fallback below — so this pre-check is the ONLY guard against
+        # the silent-piggyback bug. Do not delete it on the assumption
+        # the timeout fallback covers it (empirically: it never fires
+        # in this case, because there's no timeout to fall back from).
+        # TOCTOU between this check and spawn_proxy is sub-millisecond
+        # in practice; the post-spawn ``poll_health``-timeout fallback
+        # below catches the rare race where a daemon starts AFTER our
+        # pre-check passed.
+        if _port_in_use(target_port):
+            os.close(read_fd)
+            os.close(write_fd)
+            raise WorthlessError(
+                ErrorCode.PROXY_UNREACHABLE,
+                _diagnose_proxy_failure(
+                    target_port,
+                    OSError(f"port {target_port} already in use"),
+                ),
+            )
+
         try:
             proxy, port = spawn_proxy(
                 env=proxy_env,
-                port=0,
+                port=target_port,
                 liveness_fd=read_fd,
             )
         except Exception as exc:
@@ -155,17 +245,27 @@ def register_wrap_commands(app: typer.Typer) -> None:
             os.close(write_fd)
             raise WorthlessError(
                 ErrorCode.PROXY_UNREACHABLE,
-                sanitize_exception(exc, generic="failed to start proxy"),
+                _diagnose_proxy_failure(target_port, exc),
             ) from exc
 
         # Close read_fd in parent (proxy has it)
         os.close(read_fd)
 
-        # Poll health
+        # Poll health. If we time out it usually means uvicorn child
+        # failed to bind asynchronously (race that slipped past the
+        # pre-check above) or a slower startup issue. Run the same
+        # diagnostic so the user gets the actionable message instead of
+        # a generic timeout.
         healthy = poll_health(port, timeout=15.0)
         if not healthy:
             _cleanup_proxy(proxy, write_fd)
-            raise WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
+            raise WorthlessError(
+                ErrorCode.PROXY_UNREACHABLE,
+                _diagnose_proxy_failure(
+                    target_port,
+                    TimeoutError("proxy failed to become healthy within 15s"),
+                ),
+            )
 
         # Build child env with BASE_URL injection
         full_command = list(command) + ctx.args
@@ -205,11 +305,10 @@ def register_wrap_commands(app: typer.Typer) -> None:
         # Wait for child
         exit_code = _run_child_and_wait(child)
 
-        # Print post-run summary before cleanup
+        # Print post-run summary before cleanup. Uses the same canonical
+        # health probe as ``_diagnose_proxy_failure`` above and ``status``.
         try:
-            from worthless.cli.commands.status import _check_proxy_health
-
-            info = _check_proxy_health(port)
+            info = check_proxy_health(port)
             count = info.get("requests_proxied", 0)
             if count:
                 sys.stderr.write(f"worthless: proxied {count} requests\n")

@@ -9,7 +9,6 @@ import sqlite3
 import sys
 from typing import Any
 
-import httpx
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, resolve_home
@@ -17,8 +16,14 @@ from worthless.cli.console import get_console
 from worthless.cli.errors import error_boundary
 from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY
 from worthless.cli.orphans import FIX_PHRASE, is_orphan
-from worthless.cli.process import read_pid
+from worthless.cli.process import check_proxy_health, read_pid
 from worthless.storage.repository import EnrollmentRecord, ShardRepository
+
+# Backward-compatible alias — the canonical home is now
+# ``worthless.cli.process.check_proxy_health``. Kept so existing
+# imports from ``worthless.cli.commands.status`` (mcp/server.py,
+# tests) keep working without churn.
+_check_proxy_health = check_proxy_health
 
 
 def _list_enrolled_keys(home: WorthlessHome) -> list[dict[str, str]]:
@@ -89,24 +94,6 @@ def _discover_proxy_port(home: WorthlessHome) -> int | None:
             return info[1]
 
     return None
-
-
-def _check_proxy_health(port: int) -> dict[str, Any]:
-    """Hit /healthz and return proxy status dict."""
-    try:
-        resp = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=2.0)
-        if resp.status_code == 200:
-            data = resp.json()
-            return {
-                "healthy": True,
-                "port": port,
-                "mode": data.get("mode", "up"),
-                "requests_proxied": data.get("requests_proxied", 0),
-            }
-    except Exception:  # noqa: S110 — proxy may not be running; absence is the expected default state  # nosec B110
-        pass
-
-    return {"healthy": False, "port": port, "mode": None, "requests_proxied": 0}
 
 
 def register_status_commands(app: typer.Typer) -> None:

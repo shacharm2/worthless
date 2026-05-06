@@ -130,7 +130,7 @@ class TestStatusProxy:
             def json(self):
                 return {"status": "ok", "mode": "up"}
 
-        with patch("worthless.cli.commands.status.httpx") as mock_httpx:
+        with patch("worthless.cli.process.httpx") as mock_httpx:
             mock_httpx.get.return_value = MockResponse()
             result = runner.invoke(
                 app,
@@ -153,7 +153,7 @@ class TestStatusProxy:
             def json(self):
                 return {"status": "ok", "mode": "up"}
 
-        with patch("worthless.cli.commands.status.httpx") as mock_httpx:
+        with patch("worthless.cli.process.httpx") as mock_httpx:
             mock_httpx.get.return_value = MockResponse()
             result = runner.invoke(
                 app,
@@ -187,7 +187,7 @@ class TestStatusRequestsProxied:
             def json(self):
                 return {"status": "ok", "mode": "up", "requests_proxied": 42}
 
-        with patch("worthless.cli.commands.status.httpx") as mock_httpx:
+        with patch("worthless.cli.process.httpx") as mock_httpx:
             mock_httpx.get.return_value = MockResponse()
             result = runner.invoke(
                 app,
@@ -211,7 +211,7 @@ class TestStatusRequestsProxied:
             def json(self):
                 return {"status": "ok", "mode": "up", "requests_proxied": 7}
 
-        with patch("worthless.cli.commands.status.httpx") as mock_httpx:
+        with patch("worthless.cli.process.httpx") as mock_httpx:
             mock_httpx.get.return_value = MockResponse()
             result = runner.invoke(
                 app,
@@ -234,7 +234,7 @@ class TestStatusRequestsProxied:
             def json(self):
                 return {"status": "ok", "mode": "up", "requests_proxied": 0}
 
-        with patch("worthless.cli.commands.status.httpx") as mock_httpx:
+        with patch("worthless.cli.process.httpx") as mock_httpx:
             mock_httpx.get.return_value = MockResponse()
             result = runner.invoke(
                 app,

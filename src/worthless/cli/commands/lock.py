@@ -14,7 +14,7 @@ from pathlib import Path
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
-from worthless.cli.commands.up import _resolve_port
+from worthless.cli.process import resolve_port
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import (
     build_enrolled_locations,
@@ -72,7 +72,7 @@ def _make_alias(provider: str, api_key: str) -> str:
 
 def _proxy_base_url(alias: str) -> str:
     """Build the proxy BASE_URL for a given alias."""
-    return f"http://127.0.0.1:{_resolve_port(None)}/{alias}/v1"
+    return f"http://127.0.0.1:{resolve_port(None)}/{alias}/v1"
 
 
 def _derive_base_url_var(var_name: str, provider: str) -> str:
