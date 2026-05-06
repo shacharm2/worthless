@@ -21,9 +21,7 @@ import os
 import re
 import shutil
 import tempfile
-from importlib import (  # noqa: E501  # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
-    resources,
-)
+from importlib import resources  # nosemgrep
 from pathlib import Path
 
 from worthless.openclaw.errors import (
