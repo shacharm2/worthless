@@ -1030,3 +1030,191 @@ def test_drop_in_child_does_not_call_setgid_or_setuid() -> None:
         "WOR-310 C2d: os.setuid() found in production code — saved-uid leak guard violated. "
         "Use os.setresuid(uid, uid, uid) which locks all three atomically."
     )
+
+
+# ---------------------------------------------------------------------------
+# Segment C2e — Property-based (Hypothesis) tests.
+#
+# Parametrized tests pin specific cases (uid 0, negative); Hypothesis
+# searches the full space — uid_max boundaries, large values,
+# combinations the parametrize list didn't enumerate. Catches the
+# "we forgot one edge case" class of bugs that bites every parameter
+# matrix.
+# ---------------------------------------------------------------------------
+
+from hypothesis import HealthCheck, given  # noqa: E402  (kept here so C2a–C2d don't need hypothesis to run)
+from hypothesis import settings as hsettings  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
+
+# Function-scoped fixtures (``_share_files``, ``monkeypatch``) are safe
+# to share across Hypothesis-generated inputs here: the fixture state is
+# independent of the strategy values (no path-specific or uid-specific
+# state captured). Suppressing the health check is the documented
+# escape hatch for this exact case.
+_FIXTURE_SAFE = hsettings(
+    max_examples=20, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+
+# Linux uid_t / gid_t are uint32; max is 4_294_967_295. Real systems
+# reserve ranges, but the kernel itself accepts any uint32. Hypothesis
+# explores the full positive range above 0 (root is rejected by our
+# validation, see C1).
+_VALID_UID = st.integers(min_value=1, max_value=4_294_967_295)
+_INVALID_UID = st.integers(min_value=-(2**31), max_value=0)  # negative + zero (root)
+
+
+@given(
+    proxy_uid=_VALID_UID,
+    crypto_uid=_VALID_UID,
+    worthless_gid=_VALID_UID,
+)
+@hsettings(max_examples=50)
+def test_property_service_uids_accepts_any_positive_id_triple(
+    proxy_uid: int, crypto_uid: int, worthless_gid: int
+) -> None:
+    """Hypothesis: any non-root uid/gid triple constructs a valid ServiceUids.
+
+    No kernel-imposed upper bound below uint32_max — our code shouldn't
+    add one accidentally either. If a future refactor caps uids at
+    65535 (forgetting modern Linux supports uid > that), this test
+    finds it.
+    """
+    uids = ServiceUids(proxy_uid=proxy_uid, crypto_uid=crypto_uid, worthless_gid=worthless_gid)
+    assert uids.proxy_uid == proxy_uid
+    assert uids.crypto_uid == crypto_uid
+    assert uids.worthless_gid == worthless_gid
+
+
+@given(
+    proxy_uid=_VALID_UID,
+    crypto_uid=_VALID_UID,
+    worthless_gid=_VALID_UID,
+)
+@_FIXTURE_SAFE  # share _share_files / monkeypatch across iterations (state-independent)
+def test_property_spawn_sidecar_accepts_any_valid_uid_triple(
+    _share_files: ShareFiles, proxy_uid: int, crypto_uid: int, worthless_gid: int
+) -> None:
+    """Any valid (>=1) uid triple lets ``spawn_sidecar`` proceed past validation.
+
+    Hypothesis explores the boundary at 1 and the upper end at
+    4_294_967_295. Validation must accept ALL positive ids, not silently
+    cap at e.g. 65535.
+    """
+    import uuid
+
+    socket_path = Path(f"/tmp/wor310-c2e-{uuid.uuid4().hex[:8]}.sock")  # noqa: S108
+    uids = ServiceUids(proxy_uid=proxy_uid, crypto_uid=crypto_uid, worthless_gid=worthless_gid)
+    fake_proc = MagicMock()
+    fake_proc.pid = 12345
+    fake_proc.poll.return_value = None
+
+    with (
+        patch.object(_sidecar_lifecycle.subprocess, "Popen", return_value=fake_proc),
+        patch.object(_sidecar_lifecycle, "_wait_for_ready", return_value=True),
+    ):
+        # Should NOT raise — any positive id is valid.
+        spawn_sidecar(
+            socket_path=socket_path,
+            shares=_share_files,
+            allowed_uid=proxy_uid,
+            service_uids=uids,
+        )
+
+
+@given(
+    proxy_uid=_INVALID_UID,
+    crypto_uid=_VALID_UID,
+    worthless_gid=_VALID_UID,
+)
+@_FIXTURE_SAFE
+def test_property_spawn_sidecar_rejects_any_non_positive_proxy_uid(
+    _share_files: ShareFiles, proxy_uid: int, crypto_uid: int, worthless_gid: int
+) -> None:
+    """Any non-positive (<=0) proxy_uid is refused — no exception escapes."""
+    import uuid
+
+    socket_path = Path(f"/tmp/wor310-c2e-{uuid.uuid4().hex[:8]}.sock")  # noqa: S108
+    uids = ServiceUids(proxy_uid=proxy_uid, crypto_uid=crypto_uid, worthless_gid=worthless_gid)
+    with pytest.raises(WorthlessError) as exc_info:
+        spawn_sidecar(
+            socket_path=socket_path,
+            shares=_share_files,
+            allowed_uid=1000,
+            service_uids=uids,
+        )
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    assert "non-root" in exc_info.value.message
+
+
+@given(
+    crypto_uid=_INVALID_UID,
+    proxy_uid=_VALID_UID,
+    worthless_gid=_VALID_UID,
+)
+@_FIXTURE_SAFE
+def test_property_spawn_sidecar_rejects_any_non_positive_crypto_uid(
+    _share_files: ShareFiles, proxy_uid: int, crypto_uid: int, worthless_gid: int
+) -> None:
+    """Any non-positive crypto_uid is refused — sidecar must never run as root."""
+    import uuid
+
+    socket_path = Path(f"/tmp/wor310-c2e-{uuid.uuid4().hex[:8]}.sock")  # noqa: S108
+    uids = ServiceUids(proxy_uid=proxy_uid, crypto_uid=crypto_uid, worthless_gid=worthless_gid)
+    with pytest.raises(WorthlessError) as exc_info:
+        spawn_sidecar(
+            socket_path=socket_path,
+            shares=_share_files,
+            allowed_uid=1000,
+            service_uids=uids,
+        )
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    assert "non-root" in exc_info.value.message
+
+
+@given(
+    proxy_uid=_VALID_UID,
+    crypto_uid=_VALID_UID,
+    worthless_gid=_VALID_UID,
+)
+@_FIXTURE_SAFE
+def test_property_preexec_calls_in_pinned_order_for_any_valid_uids(
+    monkeypatch: pytest.MonkeyPatch,
+    proxy_uid: int,
+    crypto_uid: int,
+    worthless_gid: int,
+) -> None:
+    """The syscall order is invariant under any valid uid/gid combination.
+
+    Mocked execution; we don't observe kernel state. Hypothesis explores
+    that the chosen order doesn't accidentally depend on specific values
+    (e.g., a future bug "if proxy_uid == 0xFFFF, skip setgroups").
+    """
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        _sidecar_lifecycle.os,
+        "setresgid",
+        lambda r, e, s: calls.append("setresgid"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _sidecar_lifecycle.os,
+        "setgroups",
+        lambda g: calls.append("setgroups"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _sidecar_lifecycle.os,
+        "setresuid",
+        lambda r, e, s: calls.append("setresuid"),
+        raising=False,
+    )
+    monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", lambda: calls.append("nnp"))
+    monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", lambda: calls.append("dump"))
+
+    uids = ServiceUids(proxy_uid=proxy_uid, crypto_uid=crypto_uid, worthless_gid=worthless_gid)
+    _sidecar_lifecycle._make_priv_drop_preexec(uids)()
+
+    assert calls == ["setresgid", "setgroups", "nnp", "setresuid", "dump"], (
+        f"WOR-310 C2e: order broken for uids={uids}; got {calls}"
+    )
