@@ -1528,11 +1528,17 @@ def test_assert_hardening_applied_passes_when_proc_status_reports_correct_values
     _hardening.assert_hardening_applied()  # must not raise
 
 
-def test_assert_hardening_applied_raises_when_no_new_privs_is_zero(
+def test_assert_hardening_applied_raises_when_no_new_privs_is_zero_in_docker_mode(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """LSM/seccomp filter silently no-op'd PR_SET_NO_NEW_PRIVS → refuse to bind."""
+    """In Docker mode, LSM/seccomp filter silently no-op'd PR_SET_NO_NEW_PRIVS → refuse to bind.
+
+    NoNewPrivs is a preexec_fn-only primitive; in Docker mode the
+    parent's preexec_fn must have set it, so NNP=0 here means the
+    kernel silently dropped a security primitive.  Refuse loudly.
+    """
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
     fake_status = tmp_path / "status"
     fake_status.write_text("NoNewPrivs:\t0\nDumpable:\t0\n")
     monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: fake_status)
@@ -1541,6 +1547,28 @@ def test_assert_hardening_applied_raises_when_no_new_privs_is_zero(
         _hardening.assert_hardening_applied()
     assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
     assert "NoNewPrivs" in exc_info.value.message
+
+
+def test_assert_hardening_applied_allows_no_new_privs_zero_in_bare_metal_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """In bare-metal/dev mode, NoNewPrivs=0 is expected — no preexec_fn ran.
+
+    ``set_no_new_privs`` is invoked only inside the Docker preexec_fn
+    (before exec), so the bare-metal sidecar path inherits whatever
+    NNP the parent had — almost always 0.  Asserting NNP=1 here would
+    refuse every legitimate bare-metal sidecar boot, which is exactly
+    what was breaking the real-sidecar CI tests.  Dumpable=0 stays
+    mandatory because ``set_dumpable_zero`` IS called inline in
+    ``__main__.main()`` on every path.
+    """
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    monkeypatch.delenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", raising=False)
+    fake_status = tmp_path / "status"
+    fake_status.write_text("NoNewPrivs:\t0\nDumpable:\t0\n")
+    monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: fake_status)
+
+    _hardening.assert_hardening_applied()  # must not raise
 
 
 def test_assert_hardening_applied_raises_when_dumpable_is_one(

@@ -23,6 +23,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -300,9 +301,18 @@ def assert_hardening_applied() -> None:
     ``NoNewPrivs: 0`` or ``Dumpable: 1`` and we refuse to bind the
     socket.
 
-    The dropped sidecar process should NEVER be running with NNP=0:
-    that means a future setuid binary on PATH could escalate the
-    crypto uid back to root. Refuse loudly is the only safe action.
+    Mode gating (``WORTHLESS_DOCKER_PRIVDROP_REQUIRED``):
+
+    * **Docker two-uid mode** (env=1): both ``NoNewPrivs=1`` and
+      ``Dumpable=0`` are required — the parent's ``preexec_fn`` set
+      both before exec, and either being absent means the kernel
+      silently dropped a security primitive.
+    * **Bare-metal / dev mode** (env unset): only ``Dumpable=0`` is
+      required.  ``set_no_new_privs`` is never called in this path
+      (NNP is a preexec_fn-only primitive — once we ``exec()`` python
+      it would be too late and would also break test infrastructure
+      that relies on subprocess.Popen).  Asserting NNP=1 here would
+      refuse every legitimate bare-metal sidecar boot.
 
     Raises ``WorthlessError(SIDECAR_NOT_READY)`` if expectations fail.
     Linux-only — silent no-op on Darwin/Windows.
@@ -330,7 +340,8 @@ def assert_hardening_applied() -> None:
     no_new_privs = fields.get("NoNewPrivs", "missing")
     dumpable = fields.get("Dumpable", "missing")
 
-    if no_new_privs != "1":
+    docker_mode = os.environ.get("WORTHLESS_DOCKER_PRIVDROP_REQUIRED") == "1"
+    if docker_mode and no_new_privs != "1":
         raise WorthlessError(
             ErrorCode.SIDECAR_NOT_READY,
             f"/proc/self/status::NoNewPrivs={no_new_privs!r} (expected '1'); "
@@ -342,11 +353,16 @@ def assert_hardening_applied() -> None:
         raise WorthlessError(
             ErrorCode.SIDECAR_NOT_READY,
             f"/proc/self/status::Dumpable={dumpable!r} (expected '0'); "
-            "preexec_fn's PR_SET_DUMPABLE=0 was no-op'd. Refusing to bind "
+            "set_dumpable_zero() was no-op'd. Refusing to bind "
             "without core-dump / non-parent-ptrace defense.",
         )
 
-    _LOG.debug("hardening assertion passed: NoNewPrivs=1, Dumpable=0")
+    _LOG.debug(
+        "hardening assertion passed: docker_mode=%s, NoNewPrivs=%s, Dumpable=%s",
+        docker_mode,
+        no_new_privs,
+        dumpable,
+    )
 
 
 def check_yama_ptrace_scope() -> None:
