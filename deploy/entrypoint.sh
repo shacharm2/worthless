@@ -62,4 +62,13 @@ export WORTHLESS_FERNET_FD=3
 export WORTHLESS_DEPLOY_MODE="$MODE"
 export PORT="$PORT"
 
+# WOR-310 C3: signal to deploy/start.py that we're in the Docker single-
+# container topology. start.py uses this AND euid==0 to decide whether
+# to resolve worthless-proxy/worthless-crypto via getpwnam and run the
+# priv-drop dance. Bare-metal install.sh never sets this; bare-metal
+# start.py path returns service_uids=None and preserves single-uid
+# behavior. Without this signal, even sudo-running this script would
+# skip the drop — only the container path triggers it.
+export WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1
+
 exec python /deploy/start.py

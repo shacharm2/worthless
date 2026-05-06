@@ -340,6 +340,28 @@ class TestEntrypoint:
             "Fernet migration should not use bare 'cp' before 'install -m 0400'."
         )
 
+    def test_privdrop_required_env_exported(self, entrypoint_text: str):
+        """WOR-310 C3: entrypoint MUST export WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1.
+
+        Without this export, deploy/start.py's _resolve_service_uids()
+        sees the env unset → returns None → no priv-drop dance runs.
+        The container would silently boot under bare-metal semantics
+        (single uid for proxy + crypto), defeating the v1.1 security
+        claim with no log line. This signal is the ONLY way for
+        start.py to distinguish "Docker container" from "sudo bare
+        metal" — both have euid=0 but only one should drop.
+        """
+        assert re.search(
+            r"^export\s+WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1\b",
+            entrypoint_text,
+            re.MULTILINE,
+        ), (
+            "WOR-310 C3: entrypoint.sh must export "
+            "WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1 before exec'ing start.py. "
+            "Without it the priv-drop dance silently no-ops and the v1.1 "
+            "security claim is broken with no log line."
+        )
+
     def test_bootstrap_locks_fernet_key(self, entrypoint_text: str):
         """Bootstrap must chmod fernet.key to 0400 after creation.
 

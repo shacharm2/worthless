@@ -210,3 +210,419 @@ class TestDeployStartZeroizesOnSpawnFailure:
         assert not fake_shares.share_a_path.exists(), "share_a not unlinked"
         assert not fake_shares.share_b_path.exists(), "share_b not unlinked"
         assert not fake_shares.run_dir.exists(), "run_dir not rmdir'd"
+
+
+# ---------------------------------------------------------------------------
+# WOR-310 C3 — _resolve_service_uids: gateway between bare-metal and Docker
+#
+# bare metal (env unset, any euid)        → return None  (no drop)
+# Docker (env=1) + euid==0 + uids match   → return ServiceUids
+# Docker (env=1) + euid != 0              → raise (silent-degrade guard)
+# Docker (env=1) + getpwnam KeyError      → raise (Dockerfile bug)
+# Docker (env=1) + getpwnam returns wrong uid → raise (literal pin)
+# ---------------------------------------------------------------------------
+
+
+from worthless.cli.errors import ErrorCode, WorthlessError  # noqa: E402
+from worthless.cli.sidecar_lifecycle import ServiceUids  # noqa: E402
+
+
+def _make_pwnam_record(uid: int, gid: int) -> MagicMock:
+    """Stand-in for ``pwd.struct_passwd`` with the fields ``getpwnam`` returns."""
+    rec = MagicMock()
+    rec.pw_uid = uid
+    rec.pw_gid = gid
+    return rec
+
+
+class TestResolveServiceUids:
+    """Pin the env-signal + euid + literal-uid gating contract."""
+
+    def test_returns_none_when_env_unset_regardless_of_euid(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bare metal path: WORTHLESS_DOCKER_PRIVDROP_REQUIRED unset → no drop.
+
+        Even ``sudo worthless up`` on bare-metal Linux (where euid is 0)
+        must NOT attempt the drop — the entrypoint.sh sets the env var
+        only inside the Docker container. Absence of the signal means
+        bare-metal, no matter what euid says.
+        """
+        monkeypatch.delenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", raising=False)
+        monkeypatch.setattr(deploy_start_module.os, "geteuid", lambda: 0)
+        assert deploy_start_module._resolve_service_uids() is None
+
+    def test_returns_none_when_env_set_to_zero(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``WORTHLESS_DOCKER_PRIVDROP_REQUIRED=0`` is treated as unset.
+
+        Honest-bool semantics: only the literal ``"1"`` enables the drop.
+        ``"0"``, ``"false"``, empty string all return None.
+        """
+        monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "0")
+        monkeypatch.setattr(deploy_start_module.os, "geteuid", lambda: 0)
+        assert deploy_start_module._resolve_service_uids() is None
+
+    def test_returns_uids_when_env_set_and_root(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Docker happy path: env=1, euid=0, getpwnam returns 10001/10002 → ServiceUids."""
+        monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
+        monkeypatch.setattr(deploy_start_module.os, "geteuid", lambda: 0)
+
+        proxy_record = _make_pwnam_record(uid=10001, gid=10001)
+        crypto_record = _make_pwnam_record(uid=10002, gid=10001)
+        getpwnam = MagicMock(
+            side_effect=lambda name: {
+                "worthless-proxy": proxy_record,
+                "worthless-crypto": crypto_record,
+            }[name]
+        )
+        monkeypatch.setattr(deploy_start_module.pwd, "getpwnam", getpwnam)
+
+        result = deploy_start_module._resolve_service_uids()
+        assert result == ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+
+    def test_raises_when_env_set_but_not_root(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``docker run -u 10001:10001`` would silently degrade — must fail loud.
+
+        If the entrypoint.sh set the env signal (we ARE in Docker) but
+        we're somehow not euid=0, the priv-drop dance can't run and the
+        security claim collapses silently. Refuse to start.
+        """
+        monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
+        monkeypatch.setattr(deploy_start_module.os, "geteuid", lambda: 1000)
+
+        with pytest.raises(WorthlessError) as exc_info:
+            deploy_start_module._resolve_service_uids()
+        assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+        assert "non-root" in exc_info.value.message or "euid" in exc_info.value.message
+
+    def test_raises_when_user_missing(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """getpwnam KeyError = Dockerfile drift (the user wasn't created)."""
+        monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
+        monkeypatch.setattr(deploy_start_module.os, "geteuid", lambda: 0)
+        monkeypatch.setattr(
+            deploy_start_module.pwd,
+            "getpwnam",
+            MagicMock(side_effect=KeyError("worthless-proxy")),
+        )
+
+        with pytest.raises(WorthlessError) as exc_info:
+            deploy_start_module._resolve_service_uids()
+        assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+        assert "worthless-proxy" in exc_info.value.message or "missing" in exc_info.value.message
+
+    def test_raises_when_proxy_uid_does_not_match_dockerfile_literal(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``getpwnam`` returning uid != 10001 means /etc/passwd was shadowed."""
+        monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
+        monkeypatch.setattr(deploy_start_module.os, "geteuid", lambda: 0)
+
+        proxy_record = _make_pwnam_record(uid=999, gid=10001)  # WRONG uid
+        crypto_record = _make_pwnam_record(uid=10002, gid=10001)
+        getpwnam = MagicMock(
+            side_effect=lambda name: {
+                "worthless-proxy": proxy_record,
+                "worthless-crypto": crypto_record,
+            }[name]
+        )
+        monkeypatch.setattr(deploy_start_module.pwd, "getpwnam", getpwnam)
+
+        with pytest.raises(WorthlessError) as exc_info:
+            deploy_start_module._resolve_service_uids()
+        assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+        assert "10001" in exc_info.value.message or "uid" in exc_info.value.message
+
+    def test_raises_when_crypto_uid_does_not_match_dockerfile_literal(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same literal pin for crypto uid (10002)."""
+        monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
+        monkeypatch.setattr(deploy_start_module.os, "geteuid", lambda: 0)
+
+        proxy_record = _make_pwnam_record(uid=10001, gid=10001)
+        crypto_record = _make_pwnam_record(uid=999, gid=10001)  # WRONG
+        getpwnam = MagicMock(
+            side_effect=lambda name: {
+                "worthless-proxy": proxy_record,
+                "worthless-crypto": crypto_record,
+            }[name]
+        )
+        monkeypatch.setattr(deploy_start_module.pwd, "getpwnam", getpwnam)
+
+        with pytest.raises(WorthlessError) as exc_info:
+            deploy_start_module._resolve_service_uids()
+        assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+
+
+# ---------------------------------------------------------------------------
+# WOR-310 C3 — main() integration: passes service_uids, drops self post-spawn
+# ---------------------------------------------------------------------------
+
+
+class TestMainPrivilegeDrop:
+    """Pin that ``main()`` uses ServiceUids and drops self before execvp."""
+
+    def _wire_minimal_main(self, mod, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Minimal mocks so main() runs to execvp without touching disk."""
+        fake_home = MagicMock()
+        fake_home.fernet_key = bytearray(b"k" * 44)
+        fake_home.base_dir = Path("/data")
+        fake_shares = _make_fake_shares(b"a" * 44, b"b" * 44)
+        monkeypatch.setattr(mod, "ensure_home", lambda _: fake_home)
+        monkeypatch.setattr(mod, "split_to_tmpfs", lambda _k, _h: fake_shares)
+        monkeypatch.setattr(mod.os, "execvp", lambda *_a: None)
+
+    def test_main_passes_service_uids_to_spawn_sidecar_when_docker(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Docker path: spawn_sidecar gets ServiceUids."""
+        self._wire_minimal_main(deploy_start_module, monkeypatch)
+        captured: dict[str, object] = {}
+
+        def fake_spawn(*_a: object, **kw: object) -> MagicMock:
+            captured.update(kw)
+            return MagicMock()
+
+        monkeypatch.setattr(deploy_start_module, "spawn_sidecar", fake_spawn)
+        monkeypatch.setattr(
+            deploy_start_module,
+            "_resolve_service_uids",
+            lambda: ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001),
+        )
+        # Mock the post-spawn priv-drop syscalls to no-ops.
+        monkeypatch.setattr(
+            deploy_start_module.os, "setresgid", lambda r, e, s: None, raising=False
+        )
+        monkeypatch.setattr(deploy_start_module.os, "setgroups", lambda g: None, raising=False)
+        monkeypatch.setattr(
+            deploy_start_module.os, "setresuid", lambda r, e, s: None, raising=False
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os, "getresuid", lambda: (10001, 10001, 10001), raising=False
+        )
+
+        deploy_start_module.main()
+
+        assert captured.get("service_uids") == ServiceUids(10001, 10002, 10001), (
+            f"WOR-310 C3: spawn_sidecar must receive service_uids; got {captured}"
+        )
+
+    def test_main_passes_service_uids_none_on_bare_metal(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bare-metal path: spawn_sidecar gets service_uids=None."""
+        self._wire_minimal_main(deploy_start_module, monkeypatch)
+        captured: dict[str, object] = {}
+
+        def fake_spawn(*_a: object, **kw: object) -> MagicMock:
+            captured.update(kw)
+            return MagicMock()
+
+        monkeypatch.setattr(deploy_start_module, "spawn_sidecar", fake_spawn)
+        monkeypatch.setattr(deploy_start_module, "_resolve_service_uids", lambda: None)
+
+        deploy_start_module.main()
+
+        assert captured.get("service_uids") is None, (
+            f"WOR-310 C3: bare-metal must pass service_uids=None; got {captured}"
+        )
+
+    def test_main_drops_self_to_proxy_uid_after_spawn_when_docker(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Docker path: parent process must drop to proxy_uid before execvp.
+
+        Pinning the call sequence (setresgid → setgroups → setresuid)
+        AFTER spawn returns. Mirror of the preexec_fn dance, in the
+        parent process this time.
+        """
+        self._wire_minimal_main(deploy_start_module, monkeypatch)
+        calls: list[str] = []
+
+        monkeypatch.setattr(
+            deploy_start_module,
+            "spawn_sidecar",
+            lambda *_a, **_kw: calls.append("spawn") or MagicMock(),
+        )
+        monkeypatch.setattr(
+            deploy_start_module,
+            "_resolve_service_uids",
+            lambda: ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001),
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "setresgid",
+            lambda r, e, s: calls.append(f"setresgid({r})"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os, "setgroups", lambda g: calls.append("setgroups"), raising=False
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "setresuid",
+            lambda r, e, s: calls.append(f"setresuid({r})"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os, "getresuid", lambda: (10001, 10001, 10001), raising=False
+        )
+
+        deploy_start_module.main()
+
+        # spawn first, then parent drops privs. Order: gid → groups → uid.
+        spawn_idx = calls.index("spawn")
+        gid_idx = calls.index("setresgid(10001)")
+        groups_idx = calls.index("setgroups")
+        uid_idx = calls.index("setresuid(10001)")
+        assert spawn_idx < gid_idx < groups_idx < uid_idx, (
+            f"WOR-310 C3: parent drop must follow spawn in order spawn→gid→groups→uid; got {calls}"
+        )
+
+    def test_main_skips_drop_on_bare_metal(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bare metal: NO setresgid/setresuid called in parent."""
+        self._wire_minimal_main(deploy_start_module, monkeypatch)
+        calls: list[str] = []
+
+        monkeypatch.setattr(deploy_start_module, "spawn_sidecar", lambda *_a, **_kw: MagicMock())
+        monkeypatch.setattr(deploy_start_module, "_resolve_service_uids", lambda: None)
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "setresgid",
+            lambda r, e, s: calls.append("setresgid"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "setresuid",
+            lambda r, e, s: calls.append("setresuid"),
+            raising=False,
+        )
+
+        deploy_start_module.main()
+
+        assert calls == [], f"WOR-310 C3: bare-metal must skip the parent priv-drop; got {calls}"
+
+    def test_main_uses_getresuid_post_drop_check_not_getuid(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Post-drop verification must use ``os.getresuid()`` (3-tuple), not getuid.
+
+        ``getuid()`` only returns real uid; saved uid could still be 0.
+        ``getresuid() == (proxy, proxy, proxy)`` proves all three locked.
+        """
+        self._wire_minimal_main(deploy_start_module, monkeypatch)
+        getresuid_calls: list[tuple[int, ...]] = []
+
+        def fake_getresuid() -> tuple[int, int, int]:
+            getresuid_calls.append((10001, 10001, 10001))
+            return (10001, 10001, 10001)
+
+        monkeypatch.setattr(deploy_start_module, "spawn_sidecar", lambda *_a, **_kw: MagicMock())
+        monkeypatch.setattr(
+            deploy_start_module,
+            "_resolve_service_uids",
+            lambda: ServiceUids(10001, 10002, 10001),
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os, "setresgid", lambda r, e, s: None, raising=False
+        )
+        monkeypatch.setattr(deploy_start_module.os, "setgroups", lambda g: None, raising=False)
+        monkeypatch.setattr(
+            deploy_start_module.os, "setresuid", lambda r, e, s: None, raising=False
+        )
+        monkeypatch.setattr(deploy_start_module.os, "getresuid", fake_getresuid, raising=False)
+
+        deploy_start_module.main()
+        assert getresuid_calls == [(10001, 10001, 10001)], (
+            "WOR-310 C3: main() must call os.getresuid() exactly once post-drop"
+        )
+
+    def test_main_raises_when_post_drop_resuid_does_not_match_proxy(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If getresuid != (proxy, proxy, proxy) the drop didn't take — refuse."""
+        self._wire_minimal_main(deploy_start_module, monkeypatch)
+
+        monkeypatch.setattr(deploy_start_module, "spawn_sidecar", lambda *_a, **_kw: MagicMock())
+        monkeypatch.setattr(
+            deploy_start_module,
+            "_resolve_service_uids",
+            lambda: ServiceUids(10001, 10002, 10001),
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os, "setresgid", lambda r, e, s: None, raising=False
+        )
+        monkeypatch.setattr(deploy_start_module.os, "setgroups", lambda g: None, raising=False)
+        monkeypatch.setattr(
+            deploy_start_module.os, "setresuid", lambda r, e, s: None, raising=False
+        )
+        # Saved uid still root — drop didn't lock.
+        monkeypatch.setattr(
+            deploy_start_module.os, "getresuid", lambda: (10001, 10001, 0), raising=False
+        )
+
+        with pytest.raises(WorthlessError) as exc_info:
+            deploy_start_module.main()
+        assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+        assert "drop" in exc_info.value.message.lower() or "10001" in exc_info.value.message
+
+    def test_main_wraps_setresuid_oserror_as_worthless_error(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``OSError`` from setresuid (kernel rejection) → WorthlessError, not raw OSError.
+
+        Without the wrap, the parent process crashes with a stack trace
+        instead of a structured WRTLS-114 — which is what Docker's
+        restart loop / orchestrator log will see.
+        """
+        self._wire_minimal_main(deploy_start_module, monkeypatch)
+
+        monkeypatch.setattr(deploy_start_module, "spawn_sidecar", lambda *_a, **_kw: MagicMock())
+        monkeypatch.setattr(
+            deploy_start_module,
+            "_resolve_service_uids",
+            lambda: ServiceUids(10001, 10002, 10001),
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os, "setresgid", lambda r, e, s: None, raising=False
+        )
+        monkeypatch.setattr(deploy_start_module.os, "setgroups", lambda g: None, raising=False)
+
+        def fake_setresuid(*_a: int) -> None:
+            raise OSError(1, "Operation not permitted")
+
+        monkeypatch.setattr(deploy_start_module.os, "setresuid", fake_setresuid, raising=False)
+
+        with pytest.raises(WorthlessError) as exc_info:
+            deploy_start_module.main()
+        assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+
+    def test_main_asserts_single_threaded_before_spawn(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BPO-34394: forking from a multi-threaded process is undefined behavior.
+
+        ``preexec_fn`` calls glibc-allocator-using helpers (ctypes, logger)
+        that can deadlock if any thread held the dynamic-linker mutex
+        at fork. main() must hard-assert single-threaded before spawn.
+        """
+        self._wire_minimal_main(deploy_start_module, monkeypatch)
+
+        monkeypatch.setattr(deploy_start_module, "spawn_sidecar", lambda *_a, **_kw: MagicMock())
+        monkeypatch.setattr(deploy_start_module, "_resolve_service_uids", lambda: None)
+        # Pretend pytest started a side thread before main().
+        monkeypatch.setattr(deploy_start_module.threading, "active_count", lambda: 4)
+
+        with pytest.raises(AssertionError, match="single-threaded"):
+            deploy_start_module.main()
