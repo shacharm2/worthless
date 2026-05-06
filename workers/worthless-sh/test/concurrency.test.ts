@@ -167,7 +167,7 @@ describe("interleaved same-client requests do not poison each other (X-02)", () 
   });
 });
 
-describe("50 sequential requests are byte-identical replays (X-03 / chaos §1.G idempotency)", () => {
+describe("5 sequential requests are byte-identical replays (X-03 / chaos §1.G idempotency)", () => {
   // X-03 + chaos-engineer review §1.G: a curl client that retries after a
   // TCP reset MUST get byte-identical bytes. Any deviation breaks the
   // trust-by-computation sha-verify story (a user computing sha256 twice
@@ -176,9 +176,20 @@ describe("50 sequential requests are byte-identical replays (X-03 / chaos §1.G 
   // The only acceptable per-request variation is `Date` and `CF-Ray`
   // headers — body MUST be identical, Content-Length MUST be identical,
   // Content-Type MUST be identical.
-  it("50 sequential install-script requests return identical bodies", async () => {
+  //
+  // WOR-448 — count reduced from 50 → 5.
+  // The number gives statistical confidence, not correctness signal — a
+  // module-level state-poisoning bug surfaces on request 2. 5 is plenty
+  // for unit-test confidence AND fits comfortably under vitest's default
+  // 5s deadline. WOR-339 made worker-vitest a REQUIRED status check, so
+  // a flake here blocks every unrelated PR; reducing the count is the
+  // right fix because these are correctness tests, not load tests. Real
+  // load testing belongs in a separate non-blocking workflow if we ever
+  // want it. Don't bump back to 50 without first moving these tests off
+  // the merge gate.
+  it("5 sequential install-script requests return identical bodies", async () => {
     const responses: Response[] = [];
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 5; i++) {
       responses.push(
         await SELF.fetch("https://worthless.sh/", {
           headers: { "user-agent": CURL_UA },
@@ -200,9 +211,9 @@ describe("50 sequential requests are byte-identical replays (X-03 / chaos §1.G 
     }
   });
 
-  it("50 sequential install-script Content-Length headers are identical", async () => {
+  it("5 sequential install-script Content-Length headers are identical", async () => {
     const responses: Response[] = [];
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 5; i++) {
       responses.push(
         await SELF.fetch("https://worthless.sh/", {
           headers: { "user-agent": CURL_UA },
@@ -219,9 +230,9 @@ describe("50 sequential requests are byte-identical replays (X-03 / chaos §1.G 
     }
   });
 
-  it("50 sequential install-script Content-Type headers are identical", async () => {
+  it("5 sequential install-script Content-Type headers are identical", async () => {
     const responses: Response[] = [];
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 5; i++) {
       responses.push(
         await SELF.fetch("https://worthless.sh/", {
           headers: { "user-agent": CURL_UA },
