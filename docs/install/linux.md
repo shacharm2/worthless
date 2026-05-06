@@ -203,8 +203,11 @@ commands:
   proxy_restart: "worthless up"
 expectations:
   install_succeeds_silently: true
-  first_lock_keychain_popups: 0   # zero on servers (file-backed); may be 1 on GNOME/KDE desktop
-  first_lock_requires_human_interaction: false   # on server; true if GNOME/KDE prompts for keyring unlock
+  # Servers (no DBus): 0. GNOME/KDE desktop with keyring: 1. Strict YAML
+  # readers should treat 0 as the headless-server default and add 1 if a
+  # session bus is detected at runtime.
+  first_lock_keychain_popups: 0
+  first_lock_requires_human_interaction: false   # true on GNOME/KDE if keyring is locked
   subsequent_command_keychain_popups: 0
   proxy_starts_automatically_on_lock: true
   proxy_survives_reboot: false

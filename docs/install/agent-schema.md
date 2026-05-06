@@ -37,12 +37,13 @@ limitations:
 
 ### Optional keys
 
-| Key | Used in | Purpose |
-|---|---|---|
-| `service_install` | `linux.md` | systemd user-unit text + enable + linger commands so an agent can fulfill "survive reboot" without inferring from prose. Will appear in `mac.md` once WOR-174 ships launchd integration. |
-| `post_lock_required_step` | `docker.md` | Captures the `127.0.0.1` → `host.docker.internal` `.env` rewrite that today's `worthless lock` doesn't auto-do for containers. |
-| `other_scenarios` | `docker.md` | Lists alternate Docker scenarios (compose stack, team server) with their `container_url_template` overrides. |
-| `scenario` | `docker.md` | Names the YAML block's default scenario (Scenario A — app in container, worthless on host). |
+| Key | Used in | Purpose | Sub-keys |
+|---|---|---|---|
+| `service_install` | `linux.md` | systemd user-unit text + enable + linger so an agent can fulfill "survive reboot" without inferring from prose. Will also appear in `mac.md` once WOR-174 ships launchd integration. | `unit_path: <string>`, `unit_text: <multiline string — full unit file>`, `enable_commands: <list of shell strings — run all in order>` |
+| `post_lock_required_step` | `docker.md` | Captures the `127.0.0.1` → `host.docker.internal` `.env` rewrite that today's `worthless lock` doesn't auto-do for containers. | `description: <string>`, `sed_command: <string — runnable as-is>`, `linux_extra: <string — Docker-on-Linux-without-Desktop addendum>` |
+| `other_scenarios` | `docker.md` | Lists alternate Docker scenarios (compose stack, team server) with their container URL overrides. | List of `{id: <string>, container_url_template: <string with <alias> placeholder>}` |
+| `scenario` | `docker.md` | Names the YAML block's default scenario (Scenario A — app in container, worthless on host). | — |
+| `proxy.url_template_host` + `proxy.url_template_container` | `docker.md` | Replaces the single `proxy.url_template` for Docker because the host-side and container-side URLs differ (`127.0.0.1:8787` vs `host.docker.internal:8787`). | strings |
 
 ## Agent contract
 
@@ -50,14 +51,18 @@ limitations:
 |---|---|
 | Tolerate unknown keys | Lets the schema evolve additively without breaking existing agents |
 | `schema_version` bumps on **breaking** changes only | Renamed/removed/retyped keys → new version. Additive is free. |
-| `requires_human_interaction: true` is a hard stop | Agent must hand control back to the human before proceeding. macOS first-lock keychain popup is the v0.3.3 case. |
+| `first_lock_requires_human_interaction: true` is a hard stop | Agent must hand control back to the human before proceeding. macOS first-lock keychain popup is the v0.3.3 case. |
 | Treat YAML as authoritative when it disagrees with prose | Prose is for humans and may lag the YAML. If you find drift, file an issue. |
 
-## Schema evolution
+### What an agent does on a `schema_version` it doesn't recognize
 
-| Version | Notes |
-|---|---|
-| `1` | Current. Added in v0.3.3 via WOR-438. |
+| Agent's pinned version | YAML's version | Required behavior |
+|---|---|---|
+| ≥ YAML's | ≤ agent's | Proceed normally — backward compatible. |
+| `1` | `2+` | **Warn**, then **proceed best-effort** by reading only the keys you recognize. Skip steps whose semantics depend on schema-version-specific keys. Surface the version mismatch to the user. |
+| Any | absent | Treat as `1` (this is v0.3.3-era behavior; future PRs may make this a hard fail). |
+
+`schema_version: 1` is the initial schema (added in v0.3.3 via WOR-438). The next breaking change bumps to `2` and updates this section with the explicit migration steps.
 
 ## Discoverability
 

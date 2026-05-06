@@ -246,8 +246,10 @@ post_lock_required_step:
   linux_extra: "Add `--add-host=host.docker.internal:host-gateway` if no Docker Desktop"
 expectations:
   install_succeeds_silently: true
-  first_lock_keychain_popups: 0   # if host is Mac, this is 1 (see mac.md) — Docker per se adds no popup
-  first_lock_requires_human_interaction: false   # but inherit from host platform's flag
+  # Docker itself adds no popup. The host platform's keystore is what fires.
+  # Strict YAML readers: substitute the host's value from mac.md / linux.md / wsl.md.
+  first_lock_keychain_popups: 0
+  first_lock_requires_human_interaction: false   # inherit from host platform's flag (mac=true)
   subsequent_command_keychain_popups: 0
   proxy_starts_automatically_on_lock: true
   proxy_survives_reboot: false
