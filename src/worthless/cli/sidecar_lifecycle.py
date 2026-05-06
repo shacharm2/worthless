@@ -347,6 +347,20 @@ def spawn_sidecar(
             f"gid={service_uids.worthless_gid}); refusing to spawn",
         )
 
+    # Brutus's distinctness check: if proxy_uid == crypto_uid the entire
+    # uid-wall security claim collapses — both processes share memory
+    # access via same-uid ptrace/proc-mem and can signal each other via
+    # kill(2). The Dockerfile creates them as 10001 and 10002; this
+    # guard catches a future Dockerfile drift OR a misconfigured
+    # pwd.getpwnam shadowing that returns the same uid for both.
+    if service_uids is not None and service_uids.proxy_uid == service_uids.crypto_uid:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"service_uids.proxy_uid == service_uids.crypto_uid == "
+            f"{service_uids.proxy_uid}; uid wall requires distinct uids. "
+            "Refusing to spawn — security claim would silently break.",
+        )
+
     # AF_UNIX sun_path is 104 on macOS, 108 on Linux. Eager check surfaces
     # the real cause; otherwise the sidecar's bind() fails with ENAMETOOLONG
     # and we'd report a misleading "did not become ready" timeout.

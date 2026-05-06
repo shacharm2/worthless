@@ -1482,3 +1482,65 @@ def test_main_invokes_assert_hardening_applied_after_other_checks(
     assert calls == ["dump", "yama", "assert", "_run"], (
         f"WOR-310 C2f2: hardening order broken; got {calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# C2f3 — Distinctness validation: proxy_uid != crypto_uid (brutus #6)
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_sidecar_rejects_when_proxy_uid_equals_crypto_uid(
+    _share_files: ShareFiles,
+) -> None:
+    """If proxy_uid == crypto_uid the uid-wall claim collapses.
+
+    Same-uid ptrace and same-uid kill() are kernel-allowed; both
+    processes can read each other's memory and signal each other.
+    Validating distinctness at the spawn boundary catches a future
+    Dockerfile drift OR a shadowed /etc/passwd that resolves both
+    names to the same uid.
+    """
+    import uuid
+
+    socket_path = Path(f"/tmp/wor310-c2f3-{uuid.uuid4().hex[:8]}.sock")  # noqa: S108
+    same_uids = ServiceUids(proxy_uid=10001, crypto_uid=10001, worthless_gid=10001)
+    with pytest.raises(WorthlessError) as exc_info:
+        spawn_sidecar(
+            socket_path=socket_path,
+            shares=_share_files,
+            allowed_uid=10001,
+            service_uids=same_uids,
+        )
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    assert "distinct uids" in exc_info.value.message
+
+
+def test_spawn_sidecar_accepts_when_proxy_and_crypto_share_gid(
+    _share_files: ShareFiles,
+) -> None:
+    """Sharing a GID is the WHOLE POINT — they're in the worthless group together.
+
+    Distinctness applies to UIDs only. ``worthless_gid`` IS shared
+    between proxy and crypto so they can both connect to /run/worthless.
+    A test that pinned ALL three to be distinct would be wrong.
+    """
+    import uuid
+
+    socket_path = Path(f"/tmp/wor310-c2f3-{uuid.uuid4().hex[:8]}.sock")  # noqa: S108
+    # proxy_uid == worthless_gid is fine (10001 in the production Dockerfile).
+    uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+    fake_proc = MagicMock()
+    fake_proc.pid = 12345
+    fake_proc.poll.return_value = None
+
+    with (
+        patch.object(_sidecar_lifecycle.subprocess, "Popen", return_value=fake_proc),
+        patch.object(_sidecar_lifecycle, "_wait_for_ready", return_value=True),
+    ):
+        # MUST NOT raise — gid sharing is intentional.
+        spawn_sidecar(
+            socket_path=socket_path,
+            shares=_share_files,
+            allowed_uid=10001,
+            service_uids=uids,
+        )
