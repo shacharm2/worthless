@@ -722,3 +722,201 @@ def test_preexec_fn_runs_in_forked_child_via_subprocess(tmp_path: Path) -> None:
         f"WOR-310 C2b: preexec_fn did not execute in forked child; "
         f"marker {marker} not created — Popen preexec contract broken."
     )
+
+
+# ---------------------------------------------------------------------------
+# Segment C2c — Chaos injection (failure mid-drop, partial-drop semantics).
+#
+# The preexec_fn is a sequence of 5 syscalls. Each can fail (kernel
+# under load, seccomp filter, custom LSM, kernel bug). Tests here pin
+# the partial-drop semantics: when an OSError raises mid-sequence, the
+# function MUST halt — never silently proceed with the wrong privilege
+# state. Tests for the ``_or_log`` variants pin the "log don't raise"
+# contract that keeps preexec_fn deterministic for forked children.
+# ---------------------------------------------------------------------------
+
+
+def test_chaos_setresgid_eperm_halts_preexec_no_partial_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``setresgid`` raising EPERM must halt — setgroups/setresuid NOT reached.
+
+    If setresgid fails (kernel under seccomp, no CAP_SETGID), the gid
+    state is unchanged. Continuing to setgroups([]) (which needs
+    CAP_SETGID) or setresuid (which would lock saved-gid as root)
+    leaves the process in a worse state than before the attempted
+    drop. The preexec must halt — Python OSError propagates, subprocess
+    fails the spawn with a clear error.
+    """
+    calls: list[str] = []
+    eperm = OSError(1, "Operation not permitted")
+
+    def _setresgid_eperm(r: int, e: int, s: int) -> None:
+        calls.append("setresgid")
+        raise eperm
+
+    def _track(name: str) -> MagicMock:
+        m = MagicMock(side_effect=lambda *a, **k: calls.append(name))
+        return m
+
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresgid", _setresgid_eperm, raising=False)
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setgroups", _track("setgroups"), raising=False)
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresuid", _track("setresuid"), raising=False)
+    monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", _track("no_new_privs"))
+    monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", _track("dumpable"))
+
+    uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+    preexec = _sidecar_lifecycle._make_priv_drop_preexec(uids)
+    with pytest.raises(OSError, match="not permitted"):
+        preexec()
+
+    assert calls == ["setresgid"], (
+        f"WOR-310 C2c: after setresgid EPERM, NO subsequent syscall must run; got {calls}"
+    )
+
+
+def test_chaos_setgroups_eperm_halts_before_setresuid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``setgroups`` failing after successful setresgid must halt the dance.
+
+    Partial-drop scenario: gid is locked (good), but supplementary
+    groups are still inherited from root (bad). Continuing to
+    setresuid would let the dropped uid retain root's supplementary
+    group memberships — a real escalation path. Halt instead.
+    """
+    calls: list[str] = []
+
+    def _track(name: str, raise_exc: BaseException | None = None) -> MagicMock:
+        def _impl(*_a: object, **_k: object) -> None:
+            calls.append(name)
+            if raise_exc is not None:
+                raise raise_exc
+
+        return MagicMock(side_effect=_impl)
+
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresgid", _track("setresgid"), raising=False)
+    monkeypatch.setattr(
+        _sidecar_lifecycle.os,
+        "setgroups",
+        _track("setgroups", OSError(1, "no perm")),
+        raising=False,
+    )
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresuid", _track("setresuid"), raising=False)
+    monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", _track("no_new_privs"))
+    monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", _track("dumpable"))
+
+    uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+    with pytest.raises(OSError):
+        _sidecar_lifecycle._make_priv_drop_preexec(uids)()
+
+    assert calls == ["setresgid", "setgroups"], (
+        f"WOR-310 C2c: after setgroups EPERM, no_new_privs/setresuid must NOT run; got {calls}"
+    )
+
+
+def test_chaos_setresuid_eperm_halts_before_dumpable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``setresuid`` failure leaves us with no_new_privs but old uid.
+
+    Worst partial-drop: gid + groups cleared, no_new_privs locked,
+    BUT the uid is still root. The dumpable bit hasn't been set.
+    Halting here is correct — the parent process Popen() will see
+    the spawn fail, and the security model is preserved (we never
+    run as root with sidecar code).
+    """
+    calls: list[str] = []
+
+    def _track(name: str, raise_exc: BaseException | None = None) -> MagicMock:
+        def _impl(*_a: object, **_k: object) -> None:
+            calls.append(name)
+            if raise_exc is not None:
+                raise raise_exc
+
+        return MagicMock(side_effect=_impl)
+
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresgid", _track("setresgid"), raising=False)
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setgroups", _track("setgroups"), raising=False)
+    monkeypatch.setattr(
+        _sidecar_lifecycle.os,
+        "setresuid",
+        _track("setresuid", OSError(1, "no perm")),
+        raising=False,
+    )
+    monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", _track("no_new_privs"))
+    monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", _track("dumpable"))
+
+    uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+    with pytest.raises(OSError):
+        _sidecar_lifecycle._make_priv_drop_preexec(uids)()
+
+    assert calls == ["setresgid", "setgroups", "no_new_privs", "setresuid"], (
+        f"WOR-310 C2c: after setresuid EPERM, dumpable must NOT run; got {calls}"
+    )
+
+
+def test_chaos_no_new_privs_failure_does_not_halt_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``set_no_new_privs_or_log`` failure must NOT halt the drop.
+
+    The ``_or_log`` variant logs and returns; never raises. This is
+    DESIGN: a NO_NEW_PRIVS failure inside preexec_fn shouldn't crash
+    the spawn — the uid drop is more important. We log loudly and
+    proceed to setresuid + dumpable. Phase E's red-team smoke catches
+    if NoNewPrivs ever stays 0 in the running container.
+    """
+    calls: list[str] = []
+
+    def _track(name: str) -> MagicMock:
+        return MagicMock(side_effect=lambda *a, **k: calls.append(name))
+
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresgid", _track("setresgid"), raising=False)
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setgroups", _track("setgroups"), raising=False)
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresuid", _track("setresuid"), raising=False)
+    # Real ``set_no_new_privs_or_log`` swallows; simulate by appending then no-op.
+    monkeypatch.setattr(
+        _hardening,
+        "set_no_new_privs_or_log",
+        lambda: calls.append("no_new_privs (logged-failure)"),
+    )
+    monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", _track("dumpable"))
+
+    uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+    _sidecar_lifecycle._make_priv_drop_preexec(uids)()  # must not raise
+
+    assert calls == [
+        "setresgid",
+        "setgroups",
+        "no_new_privs (logged-failure)",
+        "setresuid",
+        "dumpable",
+    ], f"WOR-310 C2c: drop must complete despite NO_NEW_PRIVS log-failure; got {calls}"
+
+
+def test_chaos_dumpable_failure_does_not_break_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Final-step ``set_dumpable_zero_or_log`` failure must be a clean return.
+
+    DUMPABLE is the last syscall in the dance. A logged failure here
+    doesn't undo earlier success — the preexec_fn returns normally,
+    Popen continues to exec, and the resulting child has the gid+uid
+    drop in effect even if dumpable was unable to be set. (Unlikely
+    but possible: a custom LSM that allows setresuid but blocks
+    PR_SET_DUMPABLE.)
+    """
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresgid", lambda r, e, s: None, raising=False)
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setgroups", lambda g: None, raising=False)
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresuid", lambda r, e, s: None, raising=False)
+    monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", lambda: None)
+    # Real ``set_dumpable_zero_or_log`` would log here; we simulate by no-op.
+    monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", lambda: None)
+
+    uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+    # No exception, no return value.
+    result = _sidecar_lifecycle._make_priv_drop_preexec(uids)()
+    assert result is None, (
+        f"WOR-310 C2c: preexec_fn must return None for Popen contract; got {result!r}"
+    )
