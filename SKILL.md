@@ -20,7 +20,7 @@ Worthless scans for **LLM provider API key prefixes only** — currently `openai
 
 ### Package Info
 - **Package name**: `worthless`
-- **Version**: 0.3.3
+- **Version**: 0.3.4
 - **Entry point**: `worthless` (CLI command)
 - **Python**: 3.10+
 - **License**: AGPL-3.0
@@ -140,7 +140,7 @@ Proxy: http://127.0.0.1:8787 (running)
 #### `worthless wrap [OPTIONS] COMMAND [ARGS...]`
 **Ephemeral proxy + child process lifecycle.**
 
-Starts a temporary reverse proxy on a random port, spawns a child process with the parent environment unchanged, waits for the child to exit, and cleans up the proxy. Pre-8rqs, wrap synthesised `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` into the child env. Post-8rqs (Phase 8), `worthless lock` writes the per-enrollment `*_BASE_URL` directly into your `.env` (preserving your var names — `OPENROUTER_BASE_URL` stays `OPENROUTER_BASE_URL`), so your SDK picks them up via dotenv. Wrap is a passthrough.
+Starts a temporary reverse proxy on the same port `worthless lock` wrote into your `.env` (default `8787`, override with `WORTHLESS_PORT`), spawns a child process with the parent environment unchanged, waits for the child to exit, and cleans up the proxy. Pre-8rqs, wrap synthesised `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` into the child env. Post-8rqs (Phase 8), `worthless lock` writes the per-enrollment `*_BASE_URL` directly into your `.env` (preserving your var names — `OPENROUTER_BASE_URL` stays `OPENROUTER_BASE_URL`), so your SDK picks them up via dotenv. Wrap is a passthrough on the env side; on the network side, it binds the port your `.env` already points at so `wrap` and `up` are alternatives — running both at once produces a clean error, not a silent collision.
 
 The child's API SDK calls automatically route through the proxy. No code changes required.
 

@@ -21,7 +21,8 @@ import typer
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.commands.lock import _lock_keys
 from worthless.storage.repository import ShardRepository
-from worthless.cli.commands.up import start_daemon, _resolve_port
+from worthless.cli.commands.up import start_daemon
+from worthless.cli.process import resolve_port
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import build_enrolled_locations, scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError
@@ -74,7 +75,7 @@ def _proxy_is_running(home: WorthlessHome) -> tuple[bool, int | None, int]:
     actual uvicorn child stays alive).  As a fallback, probe the
     default port's /healthz endpoint.
     """
-    port = _resolve_port(None)
+    port = resolve_port(None)
 
     # Try PID file first
     pf = pid_path(home)
@@ -226,7 +227,7 @@ def run_default(
     if not running:
         disable_core_dumps()
         proxy_env = build_proxy_env(home)
-        actual_port = _resolve_port(None)
+        actual_port = resolve_port(None)
         pf = pid_path(home)
         log_file = home.base_dir / "proxy.log"
 

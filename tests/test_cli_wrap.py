@@ -877,7 +877,8 @@ class TestWrapPortConflict:
         monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _fail_bind)
         monkeypatch.setattr("worthless.cli.commands.wrap._port_in_use", lambda *_a, **_kw: True)
         monkeypatch.setattr(
-            "worthless.cli.commands.wrap._is_worthless_proxy_on", lambda *_a, **_kw: True
+            "worthless.cli.commands.wrap.check_proxy_health",
+            lambda *_a, **_kw: {"healthy": True, "port": 8787, "mode": "up", "requests_proxied": 0},
         )
 
         result = runner.invoke(
@@ -902,7 +903,13 @@ class TestWrapPortConflict:
         monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _fail_bind)
         monkeypatch.setattr("worthless.cli.commands.wrap._port_in_use", lambda *_a, **_kw: True)
         monkeypatch.setattr(
-            "worthless.cli.commands.wrap._is_worthless_proxy_on", lambda *_a, **_kw: False
+            "worthless.cli.commands.wrap.check_proxy_health",
+            lambda *_a, **_kw: {
+                "healthy": False,
+                "port": 8787,
+                "mode": None,
+                "requests_proxied": 0,
+            },
         )
 
         result = runner.invoke(

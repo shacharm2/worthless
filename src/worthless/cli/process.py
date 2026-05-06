@@ -35,6 +35,59 @@ _UVICORN_PORT_RE = re.compile(r"Uvicorn running on http://[\d.]+:(\d+)")
 
 
 # ---------------------------------------------------------------------------
+# Port resolution — canonical chain shared by ``lock``, ``up``, ``wrap``,
+# and the default-command flow. One source of truth so all four commands
+# write/bind/probe the same port for a given config.
+# ---------------------------------------------------------------------------
+
+
+def resolve_port(port_arg: int | None) -> int:
+    """Resolve the proxy port from argument, env var, or default.
+
+    Priority: explicit ``port_arg`` > ``WORTHLESS_PORT`` env > ``8787`` default.
+
+    All consumers (``lock`` for the .env BASE_URL, ``up`` for the daemon
+    bind, ``wrap`` for the ephemeral proxy bind) share this function so
+    they agree on which port a child loading .env will reach.
+    """
+    if port_arg is not None:
+        return port_arg
+    env_port = os.environ.get("WORTHLESS_PORT")
+    if env_port:
+        return int(env_port)
+    return 8787
+
+
+def check_proxy_health(port: int) -> dict[str, object]:
+    """Hit ``/healthz`` on *port* and return a status dict.
+
+    Shared probe used by ``status`` (display health to the user),
+    ``wrap`` (distinguish ``worthless up`` collision from a foreign
+    process), the MCP server, and the default-command flow. Single
+    canonical implementation so the heuristic doesn't drift across
+    consumers.
+
+    Returns: ``{"healthy": bool, "port": int, "mode": str | None,
+    "requests_proxied": int}``. ``healthy=False`` covers connection
+    refused, timeout, non-200, and non-JSON responses.
+    """
+    try:
+        resp = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=2.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "healthy": True,
+                "port": port,
+                "mode": data.get("mode", "up"),
+                "requests_proxied": data.get("requests_proxied", 0),
+            }
+    except Exception:  # noqa: S110 — proxy may not be running; absence is the expected default state  # nosec B110
+        pass
+
+    return {"healthy": False, "port": port, "mode": None, "requests_proxied": 0}
+
+
+# ---------------------------------------------------------------------------
 # Core dump suppression
 # ---------------------------------------------------------------------------
 

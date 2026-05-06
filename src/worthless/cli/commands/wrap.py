@@ -16,8 +16,6 @@ combinable. Run one or the other.
 from __future__ import annotations
 
 import asyncio
-import http.client
-import json
 import logging
 import os
 import socket
@@ -28,15 +26,16 @@ import threading
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, get_home
-from worthless.cli.commands.up import _resolve_port
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
 from worthless.cli.platform import fail_if_windows, popen_platform_kwargs
 from worthless.cli.process import (
     build_proxy_env,
+    check_proxy_health,
     create_liveness_pipe,
     disable_core_dumps,
     forward_signals,
     poll_health,
+    resolve_port,
     spawn_proxy,
 )
 from worthless.storage.repository import ShardRepository
@@ -62,31 +61,6 @@ def _port_in_use(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bo
         sock.close()
 
 
-def _is_worthless_proxy_on(port: int, timeout: float = 1.0) -> bool:
-    """True if the process on *port* responds to ``/healthz`` like worthless.
-
-    Distinguishes "``worthless up`` is running" from "some unrelated
-    service has the port" so the wrap error message can name the right
-    fix.
-    """
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
-    try:
-        conn.request("GET", "/healthz")
-        resp = conn.getresponse()
-        if resp.status != 200:
-            return False
-        body = resp.read().decode("utf-8", errors="ignore")
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            return False
-        return payload.get("status") == "ok" and "requests_proxied" in payload
-    except (OSError, http.client.HTTPException):
-        return False
-    finally:
-        conn.close()
-
-
 def _diagnose_proxy_failure(port: int, exc: Exception) -> str:
     """Return a precise user-facing message when ``spawn_proxy`` fails.
 
@@ -94,10 +68,14 @@ def _diagnose_proxy_failure(port: int, exc: Exception) -> str:
       1. Port serves a worthless proxy → ``up`` is already running, name it.
       2. Port serves something else → tell the user how to switch ports.
       3. Port is free → bubble up the original exception (some other bug).
+
+    Uses :func:`worthless.cli.process.check_proxy_health` for the daemon
+    probe — same canonical heuristic as ``status``, the MCP server, and
+    the default-command flow, so wrap doesn't drift.
     """
     if not _port_in_use(port):
         return sanitize_exception(exc, generic="failed to start proxy")
-    if _is_worthless_proxy_on(port):
+    if check_proxy_health(port).get("healthy"):
         return (
             f"port {port} is already serving a worthless proxy "
             f"(`worthless up` is running). Either run your command directly "
@@ -224,7 +202,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
         # which gave the proxy a random port the child couldn't discover —
         # post-8rqs wrap stopped injecting BASE_URLs into child env, so the
         # child only sees .env, which holds lock's port.)
-        target_port = _resolve_port(None)
+        target_port = resolve_port(None)
         try:
             proxy, port = spawn_proxy(
                 env=proxy_env,
@@ -286,11 +264,10 @@ def register_wrap_commands(app: typer.Typer) -> None:
         # Wait for child
         exit_code = _run_child_and_wait(child)
 
-        # Print post-run summary before cleanup
+        # Print post-run summary before cleanup. Uses the same canonical
+        # health probe as ``_diagnose_proxy_failure`` above and ``status``.
         try:
-            from worthless.cli.commands.status import _check_proxy_health
-
-            info = _check_proxy_health(port)
+            info = check_proxy_health(port)
             count = info.get("requests_proxied", 0)
             if count:
                 sys.stderr.write(f"worthless: proxied {count} requests\n")
