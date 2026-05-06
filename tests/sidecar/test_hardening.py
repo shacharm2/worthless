@@ -209,12 +209,13 @@ def test_check_yama_ptrace_scope_warn_not_fatal_when_garbled(
 
 
 def test_main_invokes_hardening_before_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Order: ``set_dumpable_zero`` → ``check_yama_ptrace_scope`` → ``_run``.
+    """Hardening calls (set_dumpable, check_yama, assert_hardening) precede ``_run``.
 
     Pinning the order so a future refactor cannot move share-loading
-    above the dumpable+YAMA checks. ``PR_SET_DUMPABLE=0`` must be in
-    effect before any secret material enters the process address space;
-    YAMA must be verified before we bind the IPC socket.
+    above the dumpable+YAMA+assertion checks. ``PR_SET_DUMPABLE=0``
+    must be in effect before any secret material enters the process
+    address space; YAMA must be verified before we bind the IPC
+    socket; the post-spawn assertion is the LAST check.
     """
     from worthless.sidecar import __main__ as sidecar_main
 
@@ -226,21 +227,28 @@ def test_main_invokes_hardening_before_run(monkeypatch: pytest.MonkeyPatch) -> N
     def record_yama() -> None:
         calls.append("check_yama_ptrace_scope")
 
+    def record_assert() -> None:
+        calls.append("assert_hardening_applied")
+
     async def fake_run() -> int:
         calls.append("_run")
         return 0
 
     monkeypatch.setattr(_hardening, "set_dumpable_zero", record_dumpable)
     monkeypatch.setattr(_hardening, "check_yama_ptrace_scope", record_yama)
+    monkeypatch.setattr(_hardening, "assert_hardening_applied", record_assert)
     monkeypatch.setattr(sidecar_main, "_run", fake_run)
     monkeypatch.delenv("WORTHLESS_LOG_LEVEL", raising=False)
 
     rc = sidecar_main.main()
 
     assert rc == 0, f"expected rc=0 with mocked _run; got {rc}"
-    assert calls == ["set_dumpable_zero", "check_yama_ptrace_scope", "_run"], (
-        f"hardening must run before _run; got order: {calls}"
-    )
+    assert calls == [
+        "set_dumpable_zero",
+        "check_yama_ptrace_scope",
+        "assert_hardening_applied",
+        "_run",
+    ], f"hardening must run before _run; got order: {calls}"
 
 
 def test_main_returns_rc_1_when_yama_check_raises(monkeypatch: pytest.MonkeyPatch) -> None:
