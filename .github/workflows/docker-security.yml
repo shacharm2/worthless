@@ -59,6 +59,17 @@ jobs:
           image: worthless-proxy:${{ github.sha }}
           exit-code: "1"
           failure-threshold: WARN
+          # WOR-310 Phase B intentionally drops the ``USER worthless``
+          # directive so deploy/start.py can run as root briefly,
+          # resolve the two service uids, chown the share files, and
+          # then drop privs to ``worthless-proxy`` (uid 10001) before
+          # exec'ing uvicorn.  Dockle's CIS-DI-0001 check ("last user
+          # should not be root") sees the image-default and fires —
+          # but the runtime never actually runs as root past the
+          # priv-drop dance.  Accept the warning here; the runtime
+          # security claim is verified by the two-uid integration
+          # tests in tests/test_install_docker.py.
+          accept-keys: CIS-DI-0001
 
   docker-e2e:
     runs-on: ubuntu-latest
