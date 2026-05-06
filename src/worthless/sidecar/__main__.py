@@ -302,9 +302,16 @@ def main() -> int:
     # Hardening must run before share bytes enter the address space
     # (PR_SET_DUMPABLE=0 covers crashes mid-decrypt) and before the
     # IPC socket binds (YAMA refusal short-circuits with WRTLS-116).
+    #
+    # assert_hardening_applied() validates AFTER the calls that the
+    # kernel actually honored them — if an LSM/seccomp filter silently
+    # no-op'd the prctl in the parent's preexec_fn, /proc/self/status
+    # will report NoNewPrivs=0 or Dumpable=1 and we refuse to bind.
+    # This is the post-spawn check security-engineer M2 required.
     try:
         _hardening.set_dumpable_zero()
         _hardening.check_yama_ptrace_scope()
+        _hardening.assert_hardening_applied()
     except WorthlessError as exc:
         print(f"sidecar: {exc}", file=sys.stderr, flush=True)
         return 1

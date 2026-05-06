@@ -252,6 +252,66 @@ def set_capbset_drop_or_log() -> None:
         _LOG.debug("PR_CAPBSET_DROP — full bounding set cleared on forked child")
 
 
+def assert_hardening_applied() -> None:
+    """Verify ``/proc/self/status`` shows NNP=1 and Dumpable=0 (WOR-310 C2f).
+
+    Mocks proved ``set_no_new_privs_or_log`` and ``set_dumpable_zero_or_log``
+    CALL the kernel. Real-fork tests proved the kernel honors the call in
+    isolation. This check runs at sidecar startup, AFTER ``exec()`` —
+    if any LSM filter, seccomp profile, or distroless quirk silently
+    no-op'd the prctl in the preexec, ``/proc/self/status`` will show
+    ``NoNewPrivs: 0`` or ``Dumpable: 1`` and we refuse to bind the
+    socket.
+
+    The dropped sidecar process should NEVER be running with NNP=0:
+    that means a future setuid binary on PATH could escalate the
+    crypto uid back to root. Refuse loudly is the only safe action.
+
+    Raises ``WorthlessError(SIDECAR_NOT_READY)`` if expectations fail.
+    Linux-only — silent no-op on Darwin/Windows.
+    """
+    if sys.platform != "linux":
+        return
+    status_path = Path("/proc/self/status")
+    try:
+        text = status_path.read_text()
+    except OSError as exc:
+        # /proc unavailable (rootless container with /proc bind-mounted out?)
+        # Don't fail open — this is a security check, not best-effort.
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"could not read {status_path} ({exc.__class__.__name__}); "
+            "refusing to bind without verifying hardening flags.",
+        ) from exc
+
+    fields = {}
+    for line in text.splitlines():
+        if line.startswith(("NoNewPrivs:", "Dumpable:")):
+            key, _, value = line.partition(":")
+            fields[key] = value.strip()
+
+    no_new_privs = fields.get("NoNewPrivs", "missing")
+    dumpable = fields.get("Dumpable", "missing")
+
+    if no_new_privs != "1":
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"/proc/self/status::NoNewPrivs={no_new_privs!r} (expected '1'); "
+            "preexec_fn's PR_SET_NO_NEW_PRIVS was no-op'd by an LSM/seccomp "
+            "filter or kernel bug. Refusing to bind without setuid-escalation "
+            "defense.",
+        )
+    if dumpable != "0":
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"/proc/self/status::Dumpable={dumpable!r} (expected '0'); "
+            "preexec_fn's PR_SET_DUMPABLE=0 was no-op'd. Refusing to bind "
+            "without core-dump / non-parent-ptrace defense.",
+        )
+
+    _LOG.debug("hardening assertion passed: NoNewPrivs=1, Dumpable=0")
+
+
 def check_yama_ptrace_scope() -> None:
     """Refuse to start if YAMA permits cross-uid memory reads.
 

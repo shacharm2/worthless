@@ -1378,3 +1378,107 @@ def test_set_capbset_drop_or_log_is_noop_on_non_linux(monkeypatch: pytest.Monkey
     sentinel = MagicMock(side_effect=AssertionError("CDLL must not run on non-Linux"))
     monkeypatch.setattr("worthless.sidecar._hardening._load_libc", sentinel)
     _hardening.set_capbset_drop_or_log()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# assert_hardening_applied — post-spawn /proc/self/status verification
+# ---------------------------------------------------------------------------
+
+
+def test_assert_hardening_applied_passes_when_proc_status_reports_correct_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``assert_hardening_applied`` returns silently when NoNewPrivs=1 and Dumpable=0."""
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    fake_status = tmp_path / "status"
+    fake_status.write_text("Name:\tworthless-sideca\nNoNewPrivs:\t1\nDumpable:\t0\n")
+    monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: fake_status)
+    _hardening.assert_hardening_applied()  # must not raise
+
+
+def test_assert_hardening_applied_raises_when_no_new_privs_is_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """LSM/seccomp filter silently no-op'd PR_SET_NO_NEW_PRIVS → refuse to bind."""
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    fake_status = tmp_path / "status"
+    fake_status.write_text("NoNewPrivs:\t0\nDumpable:\t0\n")
+    monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: fake_status)
+
+    with pytest.raises(WorthlessError) as exc_info:
+        _hardening.assert_hardening_applied()
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    assert "NoNewPrivs" in exc_info.value.message
+
+
+def test_assert_hardening_applied_raises_when_dumpable_is_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Dumpable=1 means core dumps + cross-process ptrace are possible."""
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    fake_status = tmp_path / "status"
+    fake_status.write_text("NoNewPrivs:\t1\nDumpable:\t1\n")
+    monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: fake_status)
+
+    with pytest.raises(WorthlessError) as exc_info:
+        _hardening.assert_hardening_applied()
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    assert "Dumpable" in exc_info.value.message
+
+
+def test_assert_hardening_applied_raises_when_proc_status_unreadable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Rootless container with /proc bind-mounted out → fail loud, not open.
+
+    This is a security check; if we can't verify hardening was applied,
+    we MUST NOT proceed. A best-effort skip would let a misconfigured
+    container ship with NNP=0 silently.
+    """
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    nonexistent = tmp_path / "does-not-exist"
+    monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: nonexistent)
+
+    with pytest.raises(WorthlessError) as exc_info:
+        _hardening.assert_hardening_applied()
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    assert "could not read" in exc_info.value.message
+
+
+def test_assert_hardening_applied_is_noop_on_non_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mac dev path: /proc doesn't exist; the check is a no-op."""
+    monkeypatch.setattr(_hardening.sys, "platform", "darwin")
+    sentinel = MagicMock(side_effect=AssertionError("Path must not run on non-Linux"))
+    monkeypatch.setattr("worthless.sidecar._hardening.Path", sentinel)
+    _hardening.assert_hardening_applied()  # must not raise
+
+
+def test_main_invokes_assert_hardening_applied_after_other_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``__main__.main()`` must call assert_hardening_applied AFTER the other two.
+
+    Order: set_dumpable_zero → check_yama → assert_hardening_applied.
+    The assertion is the LAST hardening step so it can verify everything
+    the prior steps requested actually took effect.
+    """
+    from worthless.sidecar import __main__ as sidecar_main
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(_hardening, "set_dumpable_zero", lambda: calls.append("dump"))
+    monkeypatch.setattr(_hardening, "check_yama_ptrace_scope", lambda: calls.append("yama"))
+    monkeypatch.setattr(_hardening, "assert_hardening_applied", lambda: calls.append("assert"))
+
+    async def fake_run() -> int:
+        calls.append("_run")
+        return 0
+
+    monkeypatch.setattr(sidecar_main, "_run", fake_run)
+    monkeypatch.delenv("WORTHLESS_LOG_LEVEL", raising=False)
+
+    rc = sidecar_main.main()
+    assert rc == 0
+    assert calls == ["dump", "yama", "assert", "_run"], (
+        f"WOR-310 C2f2: hardening order broken; got {calls}"
+    )
