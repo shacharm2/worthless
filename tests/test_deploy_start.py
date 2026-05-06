@@ -715,6 +715,101 @@ class TestShareFileOwnership:
 
         assert chown_calls == [], f"WOR-310 C4: bare-metal path must NOT chown; got {chown_calls}"
 
+    def test_main_full_dance_when_root_pins_complete_call_sequence(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End-to-end pinning of the full Docker-root path through main().
+
+        This is the C5 integration test — the four prior segments
+        (C1 type shape, C2 preexec, C3 resolve+drop, C4 chown+lstat)
+        each verified their slice in isolation. C5 walks through the
+        ENTIRE main() and asserts the call sequence:
+
+            resolve_uids → assert single-threaded → split_to_tmpfs
+            → chown × 3 (run_dir, share_a, share_b) → spawn_sidecar
+            → setresgid → setgroups → setresuid → getresuid → execvp
+
+        A future refactor that moves chown after spawn_sidecar (race
+        between sidecar startup and ownership), or skips the post-drop
+        getresuid verification, OR forgets to call execvp — would
+        be caught here and only here.
+        """
+        events: list[str] = []
+
+        fake_home = MagicMock()
+        fake_home.fernet_key = bytearray(b"k" * 44)
+        fake_home.base_dir = Path("/data")
+        fake_shares = _make_fake_shares(b"a" * 44, b"b" * 44)
+
+        def _record(name: str, *_a: object, **_kw: object) -> object:
+            events.append(name)
+            return MagicMock() if name == "spawn" else None
+
+        monkeypatch.setattr(deploy_start_module, "ensure_home", lambda _: fake_home)
+        monkeypatch.setattr(
+            deploy_start_module,
+            "split_to_tmpfs",
+            lambda _k, _h: (events.append("split_to_tmpfs"), fake_shares)[1],
+        )
+        monkeypatch.setattr(
+            deploy_start_module,
+            "_resolve_service_uids",
+            lambda: (events.append("resolve_uids"), ServiceUids(10001, 10002, 10001))[1],
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "chown",
+            lambda path, uid, gid: events.append(f"chown({Path(path).name},{uid},{gid})"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            deploy_start_module,
+            "spawn_sidecar",
+            lambda *_a, **_kw: events.append("spawn") or MagicMock(),
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "setresgid",
+            lambda r, e, s: events.append(f"setresgid({r},{e},{s})"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "setgroups",
+            lambda g: events.append(f"setgroups({list(g)})"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "setresuid",
+            lambda r, e, s: events.append(f"setresuid({r},{e},{s})"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "getresuid",
+            lambda: (events.append("getresuid"), (10001, 10001, 10001))[1],
+            raising=False,
+        )
+        monkeypatch.setattr(deploy_start_module.os, "execvp", lambda *_a: events.append("execvp"))
+
+        deploy_start_module.main()
+
+        # Pinned sequence — any reorder catches a regression.
+        assert events == [
+            "resolve_uids",
+            "split_to_tmpfs",
+            "chown(wor-test-deploy-start,10002,10001)",  # run_dir
+            "chown(share_a.bin,10002,10001)",
+            "chown(share_b.bin,10002,10001)",
+            "spawn",
+            "setresgid(10001,10001,10001)",
+            "setgroups([])",
+            "setresuid(10001,10001,10001)",
+            "getresuid",
+            "execvp",
+        ], f"WOR-310 C5: full main() sequence broken; got {events}"
+
     def test_main_chowns_before_spawn_sidecar(
         self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
     ) -> None:
