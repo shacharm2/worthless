@@ -1,18 +1,9 @@
 """Canonical openclaw.json config reader/writer.
 
-This module is the single source of truth for parsing and mutating the
-OpenClaw provider configuration file (``openclaw.json``). It is imported
-by both:
-
-* WOR-431 — the ``worthless openclaw enable/disable/status`` CLI verbs that
-  let humans flip OpenClaw between Worthless-proxied and direct mode.
-* WOR-321 — the sidecar's auto-configuration of the OpenClaw container,
-  which writes the same file at the container bind-mount path
-  ``/home/node/.openclaw/openclaw.json`` so OpenClaw routes through the
-  Worthless proxy on first boot.
-
-Both consumers MUST go through the public API in this module so that the
-on-disk schema stays consistent and writes stay atomic.
+The single entry point for reading and mutating the OpenClaw provider
+configuration file (``openclaw.json``) shared between the CLI and the
+sidecar. Both must go through this module so on-disk schema stays
+consistent and writes stay atomic across concurrent processes.
 
 Schema (subset we touch)::
 
@@ -29,9 +20,9 @@ Schema (subset we touch)::
       }
     }
 
-Writes are atomic: we serialize to a tempfile in the same directory as the
-target, then ``os.replace`` it into place. A failure mid-write leaves the
-existing file untouched.
+Writes are atomic (tempfile + ``os.replace``) and serialized via
+inter-process ``flock`` to prevent lost-update races between concurrent
+read-modify-write transactions.
 """
 
 from __future__ import annotations
@@ -113,11 +104,10 @@ def read_config(path: Path) -> dict[str, Any]:
     :class:`OpenclawConfigError` if the file exists but is not valid JSON
     (or is not a JSON object).
     """
-    if not path.exists():
-        return {}
-
     try:
         raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
     except OSError as exc:
         raise OpenclawConfigError(f"could not read {path}: {exc}") from exc
 
@@ -135,6 +125,29 @@ def read_config(path: Path) -> dict[str, Any]:
         )
 
     return data
+
+
+def _providers_view(data: dict[str, Any], *, strict: bool) -> dict[str, Any] | None:
+    """Return ``data['models']['providers']`` if present and well-typed, else ``None``.
+
+    ``strict=True``: raise :class:`OpenclawConfigError` on malformed shape.
+    ``strict=False``: return ``None`` (callers treat this as "no providers").
+    """
+    models = data.get("models")
+    if models is None:
+        return None
+    if not isinstance(models, dict):
+        if strict:
+            raise OpenclawConfigError("'models' must be a JSON object")
+        return None
+    providers = models.get("providers")
+    if providers is None:
+        return None
+    if not isinstance(providers, dict):
+        if strict:
+            raise OpenclawConfigError("'models.providers' must be a JSON object")
+        return None
+    return providers
 
 
 # ---------------------------------------------------------------------------
@@ -192,15 +205,14 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
         )
         tmp_path = Path(tmp_name)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fd = None  # fdopen took ownership
+            fd = None
             fh.write(payload)
             fh.flush()
             os.fsync(fh.fileno())
-        # Use ``os.replace`` (not ``Path.replace``) so tests can patch the
-        # module-level ``os`` symbol to simulate disk-full failures and prove
-        # the atomic-write contract (the existing file is left untouched).
+        # ``os.replace`` (not ``Path.replace``) is patchable at the module
+        # level so the atomic-write contract test can simulate disk-full.
         os.replace(tmp_path, path)  # noqa: PTH105
-        tmp_path = None  # replace consumed it
+        tmp_path = None
     finally:
         if fd is not None:
             try:
@@ -216,13 +228,11 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 
 def _ensure_providers(data: dict[str, Any]) -> dict[str, Any]:
     """Return ``data['models']['providers']``, creating the path if missing."""
+    existing = _providers_view(data, strict=True)
+    if existing is not None:
+        return existing
     models = data.setdefault("models", {})
-    if not isinstance(models, dict):
-        raise OpenclawConfigError("'models' must be a JSON object")
-    providers = models.setdefault("providers", {})
-    if not isinstance(providers, dict):
-        raise OpenclawConfigError("'models.providers' must be a JSON object")
-    return providers
+    return models.setdefault("providers", {})
 
 
 # ---------------------------------------------------------------------------
@@ -244,17 +254,13 @@ def set_provider(
 
     Creates the file (and any missing parent directories) when absent.
 
-    Returns a diff dict ``{"before": <old entry or None>, "after": <new entry>}``
-    describing the change.
-
-    The whole read-modify-write is serialized via an inter-process flock to
-    prevent lost updates between concurrent CLI and sidecar writers.
+    Returns the resulting provider entry. The whole read-modify-write is
+    serialized via an inter-process flock to prevent lost updates between
+    concurrent CLI and sidecar writers.
     """
     with _file_lock(path):
         data = read_config(path)
         providers = _ensure_providers(data)
-
-        before = copy.deepcopy(providers.get(provider))
 
         entry: dict[str, Any] = dict(providers.get(provider) or {})
         entry["baseUrl"] = base_url
@@ -262,10 +268,8 @@ def set_provider(
             entry["apiKey"] = api_key
 
         providers[provider] = entry
-
         _atomic_write_json(path, data)
-
-        return {"before": before, "after": copy.deepcopy(entry)}
+        return entry
 
 
 def unset_provider(path: Path, provider: str) -> dict[str, Any]:
@@ -277,17 +281,11 @@ def unset_provider(path: Path, provider: str) -> dict[str, Any]:
     """
     with _file_lock(path):
         data = read_config(path)
-        if not data:
+        providers = _providers_view(data, strict=False) if data else None
+        if providers is None or provider not in providers:
             return {}
 
-        models = data.get("models")
-        if not isinstance(models, dict):
-            return {}
-        providers = models.get("providers")
-        if not isinstance(providers, dict) or provider not in providers:
-            return {}
-
-        removed = copy.deepcopy(providers.pop(provider))
+        removed = providers.pop(provider)
         _atomic_write_json(path, data)
         return removed if isinstance(removed, dict) else {}
 
@@ -295,14 +293,8 @@ def unset_provider(path: Path, provider: str) -> dict[str, Any]:
 def get_provider(path: Path, provider: str) -> dict[str, Any] | None:
     """Return ``models.providers.<provider>`` or ``None`` if absent."""
     data = read_config(path)
-    if not data:
-        return None
-
-    models = data.get("models")
-    if not isinstance(models, dict):
-        return None
-    providers = models.get("providers")
-    if not isinstance(providers, dict):
+    providers = _providers_view(data, strict=False) if data else None
+    if providers is None:
         return None
 
     entry = providers.get(provider)
