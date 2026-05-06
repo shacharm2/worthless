@@ -186,3 +186,56 @@ rm -rf ~/.worthless
   [docker.md](./docker.md).
 - Multi-user systems. `~/.worthless/` is mode 0700 but other admins
   on the box can still read it. worthless is a per-user tool.
+
+## For AI agents
+
+> Human readers can stop here — the YAML below is for AI agents.
+
+Schema documented in [agent-schema.md](./agent-schema.md).
+
+```yaml
+schema_version: 1
+platform: linux
+commands:
+  install: "curl -sSL https://worthless.sh | sh"
+  verify: "worthless --version"
+  first_lock: "worthless"
+  proxy_restart: "worthless up"
+expectations:
+  install_succeeds_silently: true
+  # Servers (no DBus): 0. GNOME/KDE desktop with keyring: 1. Strict YAML
+  # readers should treat 0 as the headless-server default and add 1 if a
+  # session bus is detected at runtime.
+  first_lock_keychain_popups: 0
+  first_lock_requires_human_interaction: false   # true on GNOME/KDE if keyring is locked
+  subsequent_command_keychain_popups: 0
+  proxy_starts_automatically_on_lock: true
+  proxy_survives_reboot: false
+proxy:
+  url_template: "http://127.0.0.1:8787/<alias>/v1"
+  port: 8787
+service_install:
+  # Agents must run all three for "survives reboot" — the unit alone isn't enough.
+  unit_path: "~/.config/systemd/user/worthless-proxy.service"
+  unit_text: |
+    [Unit]
+    Description=Worthless local proxy
+    After=network.target
+
+    [Service]
+    ExecStart=%h/.local/bin/worthless up
+    Restart=on-failure
+    RestartSec=5s
+
+    [Install]
+    WantedBy=default.target
+  enable_commands:
+    - "systemctl --user daemon-reload"
+    - "systemctl --user enable --now worthless-proxy.service"
+    - "loginctl enable-linger \"$USER\""   # REQUIRED on headless boxes; without it the unit dies on logout
+limitations:
+  - "Manual `worthless up` after reboot UNLESS service_install applied — WOR-175 ships managed install/uninstall in v1.1"
+  - "service_install is per-user; if app runs as a different user, install worthless under that user too"
+  - "On servers with no DBus session, fernet key lives at ~/.worthless/.fernet-key (mode 0600)"
+  - "uv tool uninstall doesn't purge keystore — WOR-435"
+```

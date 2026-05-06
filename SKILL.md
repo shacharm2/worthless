@@ -515,3 +515,14 @@ The proxy forwards requests and responses transparently. It does NOT log, store,
 - **Key Reconstruction** happens only in proxy memory during a single API call. Key is zero-filled immediately after use.
 - **Spend Cap** is best-effort pre-check, not a hard enforcement boundary (production fix pending).
 - For production deployments, see [docs/security.md](docs/security.md) for the threat model and [CONTRIBUTING-security.md](CONTRIBUTING-security.md) for crypto invariants.
+
+## Install (per-platform with machine-readable surface)
+
+When installing this tool for a user, agents should use the platform-specific guide. Each guide ends with a `## For AI agents` section containing a fenced YAML block with the actionable surface (install/verify/lock commands, expected popup counts, proxy URL templates, known limitations):
+
+- [docs/install/mac.md](docs/install/mac.md) — macOS
+- [docs/install/linux.md](docs/install/linux.md) — Linux (Ubuntu / Debian / Alpine)
+- [docs/install/wsl.md](docs/install/wsl.md) — Windows (WSL2)
+- [docs/install/docker.md](docs/install/docker.md) — Docker (host-CLI + container-app, compose stack, team server)
+
+Schema and stability contract: [docs/install/agent-schema.md](docs/install/agent-schema.md).

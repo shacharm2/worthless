@@ -76,3 +76,10 @@ Honest list — these are tracked, not unknown.
 | No `worthless` CLI is exposed by `docker run ghcr.io/.../worthless` — you still install natively | by design; see [docker.md](./docker.md) |
 
 If you hit something that isn't on this list, file a GitHub issue.
+
+---
+
+*Installing worthless via an AI coding agent? See
+[agent-schema.md](./agent-schema.md) — each platform guide's
+`## For AI agents` section carries a fenced YAML the agent can extract
+without parsing prose.*
