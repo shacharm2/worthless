@@ -54,22 +54,25 @@ jobs:
           fail-build: false
 
       - name: Dockle best-practice lint
+        # WOR-310 Phase B intentionally drops the ``USER worthless``
+        # directive so deploy/start.py can run as root briefly,
+        # resolve the two service uids, chown the share files, and
+        # then drop privs to ``worthless-proxy`` (uid 10001) before
+        # exec'ing uvicorn.  Dockle's CIS-DI-0001 check ("last user
+        # should not be root") sees the image-default and fires —
+        # but the runtime never actually runs as root past the
+        # priv-drop dance.  ``DOCKLE_IGNORE`` is the upstream
+        # mechanism for skipping individual checks; the action wraps
+        # the ``dockle`` binary as a subprocess so the env var passes
+        # through.  The runtime security claim is verified by the
+        # two-uid integration tests in tests/test_install_docker.py.
+        env:
+          DOCKLE_IGNORE: CIS-DI-0001
         uses: erzz/dockle-action@69369bc745ee29813f730231a821bcd4f71cd290 # v1
         with:
           image: worthless-proxy:${{ github.sha }}
           exit-code: "1"
           failure-threshold: WARN
-          # WOR-310 Phase B intentionally drops the ``USER worthless``
-          # directive so deploy/start.py can run as root briefly,
-          # resolve the two service uids, chown the share files, and
-          # then drop privs to ``worthless-proxy`` (uid 10001) before
-          # exec'ing uvicorn.  Dockle's CIS-DI-0001 check ("last user
-          # should not be root") sees the image-default and fires —
-          # but the runtime never actually runs as root past the
-          # priv-drop dance.  Accept the warning here; the runtime
-          # security claim is verified by the two-uid integration
-          # tests in tests/test_install_docker.py.
-          accept-keys: CIS-DI-0001
 
   docker-e2e:
     runs-on: ubuntu-latest
