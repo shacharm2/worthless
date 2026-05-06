@@ -41,17 +41,20 @@ def test_locate_config_project_local(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert found.resolve() == local.resolve()
 
 
-def test_locate_config_global_linux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """On Linux, fall back to ``~/.config/openclaw/openclaw.json``."""
+def test_locate_config_global_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``~/.openclaw/openclaw.json`` is the canonical global path (verified live).
+
+    OpenClaw daemon container uses ``/home/node/.openclaw/openclaw.json``;
+    host platforms mirror this (~/.openclaw/) on both macOS and Linux.
+    """
     home = tmp_path / "home"
     home.mkdir()
-    global_path = home / ".config" / "openclaw" / "openclaw.json"
+    global_path = home / ".openclaw" / "openclaw.json"
     global_path.parent.mkdir(parents=True)
     global_path.write_text("{}")
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(tmp_path)  # cwd has no project-local openclaw.json
-    monkeypatch.setattr(ocfg.sys, "platform", "linux")
 
     found = locate_config_path()
 
@@ -59,22 +62,41 @@ def test_locate_config_global_linux(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert found.resolve() == global_path.resolve()
 
 
-def test_locate_config_global_macos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """On macOS, fall back to ``~/Library/Application Support/openclaw/openclaw.json``."""
+def test_locate_config_xdg_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``~/.config/openclaw/openclaw.json`` is the XDG fallback when ~/.openclaw is absent."""
     home = tmp_path / "home"
     home.mkdir()
-    global_path = home / "Library" / "Application Support" / "openclaw" / "openclaw.json"
-    global_path.parent.mkdir(parents=True)
-    global_path.write_text("{}")
+    xdg_path = home / ".config" / "openclaw" / "openclaw.json"
+    xdg_path.parent.mkdir(parents=True)
+    xdg_path.write_text("{}")
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(ocfg.sys, "platform", "darwin")
 
     found = locate_config_path()
 
     assert found is not None
-    assert found.resolve() == global_path.resolve()
+    assert found.resolve() == xdg_path.resolve()
+
+
+def test_locate_config_canonical_wins_over_xdg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``~/.openclaw/`` takes priority over ``~/.config/openclaw/`` when both exist."""
+    home = tmp_path / "home"
+    canonical = home / ".openclaw" / "openclaw.json"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("{}")
+    xdg = home / ".config" / "openclaw" / "openclaw.json"
+    xdg.parent.mkdir(parents=True)
+    xdg.write_text("{}")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+
+    found = locate_config_path()
+    assert found is not None
+    assert found.resolve() == canonical.resolve()
 
 
 def test_locate_config_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,7 +105,6 @@ def test_locate_config_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(ocfg.sys, "platform", "linux")
 
     assert locate_config_path() is None
 
@@ -207,9 +228,10 @@ def test_set_provider_atomic_write(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     # Original file content must be untouched.
     assert json.loads(target.read_text()) == original_payload
 
-    # No leftover temp files in the same dir.
-    leftovers = [p for p in tmp_path.iterdir() if p.name != "openclaw.json"]
-    assert leftovers == [], f"temp files leaked: {leftovers}"
+    # No leftover .tmp files in the same dir. The .openclaw.json.lock sentinel
+    # is expected and persists across writers — it's the inter-process lock.
+    tmp_leftovers = [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+    assert tmp_leftovers == [], f"temp files leaked: {tmp_leftovers}"
 
 
 def test_set_provider_with_api_key(tmp_path: Path) -> None:
@@ -294,8 +316,8 @@ def test_locate_config_project_wins_over_global(
 ) -> None:
     """Project-local config takes precedence over the global path."""
     home = tmp_path / "home"
-    (home / ".config" / "openclaw").mkdir(parents=True)
-    global_path = home / ".config" / "openclaw" / "openclaw.json"
+    (home / ".openclaw").mkdir(parents=True)
+    global_path = home / ".openclaw" / "openclaw.json"
     global_path.write_text("{}")
 
     project = tmp_path / "project"
@@ -305,7 +327,6 @@ def test_locate_config_project_wins_over_global(
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(project)
-    monkeypatch.setattr(ocfg.sys, "platform", "linux")
 
     found = locate_config_path()
     assert found is not None
@@ -381,3 +402,41 @@ def test_get_provider_non_dict_entry_raises(tmp_path: Path) -> None:
 
     with pytest.raises(OpenclawConfigError):
         get_provider(target, provider="x")
+
+
+# ---------------------------------------------------------------------------
+# Concurrency — flock prevents lost updates between concurrent writers.
+# Without this, atomic-replace prevents torn files but two read-modify-write
+# transactions could interleave and silently drop one of the providers.
+# Verified live by the WOR-431 dynamic-verify pass: 8 parallel writers without
+# the lock landed only 7 providers; with the lock all N must land.
+# ---------------------------------------------------------------------------
+
+
+def _set_provider_in_subprocess(args: tuple[str, str, str]) -> None:
+    """Module-level helper for multiprocessing; must be top-level picklable."""
+    target_str, provider, base_url = args
+    # Re-import inside the subprocess (sys.path inheritance suffices via uv run).
+    from worthless.openclaw.config import set_provider as _set
+
+    _set(Path(target_str), provider=provider, base_url=base_url)
+
+
+def test_set_provider_concurrent_writers_no_lost_updates(tmp_path: Path) -> None:
+    """N parallel processes each adding a unique provider — all N must land."""
+    import multiprocessing
+
+    target = tmp_path / "openclaw.json"
+    n_writers = 8
+    work = [(str(target), f"prov-{i:02d}", f"http://host-{i}/v1") for i in range(n_writers)]
+
+    # spawn (not fork) — safer cross-platform, matches CI behavior.
+    ctx = multiprocessing.get_context("spawn")
+    with ctx.Pool(processes=n_writers) as pool:
+        pool.map(_set_provider_in_subprocess, work)
+
+    data = read_config(target)
+    landed = set(data["models"]["providers"].keys())
+    expected = {f"prov-{i:02d}" for i in range(n_writers)}
+    missing = expected - landed
+    assert not missing, f"lost-update race: {missing} dropped from concurrent writes"

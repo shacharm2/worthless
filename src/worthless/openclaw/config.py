@@ -36,11 +36,13 @@ existing file untouched.
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import fcntl
 import json
 import os
-import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -54,13 +56,25 @@ class OpenclawConfigError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _global_config_path() -> Path:
-    """Return the platform-appropriate global openclaw.json path."""
+def _global_config_candidates() -> list[Path]:
+    """Return the canonical global openclaw.json search paths, in priority order.
+
+    Verified live (2026-05): the OpenClaw daemon container reads
+    ``/home/node/.openclaw/openclaw.json``. On host platforms OpenClaw
+    likewise stores config under ``~/.openclaw/`` — same on macOS and Linux,
+    contrary to platform-conventional ``Library/Application Support`` /
+    ``XDG_CONFIG_HOME`` paths.
+
+    We probe ``~/.openclaw/openclaw.json`` first, then fall back to
+    ``~/.config/openclaw/openclaw.json`` (XDG) for users who set OpenClaw up
+    via a non-default path. macOS ``Library/Application Support`` is **not**
+    probed: OpenClaw doesn't write there.
+    """
     home = Path("~").expanduser()
-    if sys.platform == "darwin":
-        return home / "Library" / "Application Support" / "openclaw" / "openclaw.json"
-    # Linux + everything else uses XDG-style ~/.config.
-    return home / ".config" / "openclaw" / "openclaw.json"
+    return [
+        home / ".openclaw" / "openclaw.json",
+        home / ".config" / "openclaw" / "openclaw.json",
+    ]
 
 
 def locate_config_path() -> Path | None:
@@ -69,19 +83,20 @@ def locate_config_path() -> Path | None:
     Resolution order:
 
     1. ``./openclaw.json`` in the current working directory (project-local).
-    2. The platform global path (``~/.config/openclaw/openclaw.json`` on
-       Linux, ``~/Library/Application Support/openclaw/openclaw.json`` on
-       macOS).
+    2. ``~/.openclaw/openclaw.json`` (canonical global path used by the
+       OpenClaw daemon).
+    3. ``~/.config/openclaw/openclaw.json`` (XDG fallback for non-default
+       installs).
 
-    Returns the first existing path, or ``None`` if neither exists.
+    Returns the first existing path, or ``None`` if none exist.
     """
     local = Path.cwd() / "openclaw.json"
     if local.exists():
         return local
 
-    global_path = _global_config_path()
-    if global_path.exists():
-        return global_path
+    for candidate in _global_config_candidates():
+        if candidate.exists():
+            return candidate
 
     return None
 
@@ -125,6 +140,35 @@ def read_config(path: Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Write helpers
 # ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _file_lock(target: Path) -> Iterator[None]:
+    """Acquire an exclusive ``flock`` for the duration of a read-modify-write.
+
+    ``os.replace`` guarantees no torn file but does NOT prevent lost updates
+    when multiple processes do concurrent read-modify-write on the same file.
+    Without this lock, the WOR-321 sidecar and the WOR-431 CLI could write
+    simultaneously and silently drop providers.
+
+    The lock file is a sibling sentinel ``.<name>.lock`` in the same
+    directory as the target. We hold an exclusive ``flock`` for the whole
+    R-M-W transaction (read → mutate → ``os.replace``).
+
+    Unix-only: ``worthless`` refuses native Windows (WRTLS-110); WSL works
+    because it's Linux to ``fcntl``.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.parent / f".{target.name}.lock"
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
@@ -202,44 +246,50 @@ def set_provider(
 
     Returns a diff dict ``{"before": <old entry or None>, "after": <new entry>}``
     describing the change.
+
+    The whole read-modify-write is serialized via an inter-process flock to
+    prevent lost updates between concurrent CLI and sidecar writers.
     """
-    data = read_config(path)
-    providers = _ensure_providers(data)
+    with _file_lock(path):
+        data = read_config(path)
+        providers = _ensure_providers(data)
 
-    before = copy.deepcopy(providers.get(provider))
+        before = copy.deepcopy(providers.get(provider))
 
-    entry: dict[str, Any] = dict(providers.get(provider) or {})
-    entry["baseUrl"] = base_url
-    if api_key is not None:
-        entry["apiKey"] = api_key
+        entry: dict[str, Any] = dict(providers.get(provider) or {})
+        entry["baseUrl"] = base_url
+        if api_key is not None:
+            entry["apiKey"] = api_key
 
-    providers[provider] = entry
+        providers[provider] = entry
 
-    _atomic_write_json(path, data)
+        _atomic_write_json(path, data)
 
-    return {"before": before, "after": copy.deepcopy(entry)}
+        return {"before": before, "after": copy.deepcopy(entry)}
 
 
 def unset_provider(path: Path, provider: str) -> dict[str, Any]:
     """Remove ``models.providers.<provider>`` entirely.
 
     Returns the removed entry as a dict, or ``{}`` if it was not present.
-    Other providers are left untouched. The file is rewritten atomically.
+    Other providers are left untouched. The file is rewritten atomically,
+    and the read-modify-write is serialized via an inter-process flock.
     """
-    data = read_config(path)
-    if not data:
-        return {}
+    with _file_lock(path):
+        data = read_config(path)
+        if not data:
+            return {}
 
-    models = data.get("models")
-    if not isinstance(models, dict):
-        return {}
-    providers = models.get("providers")
-    if not isinstance(providers, dict) or provider not in providers:
-        return {}
+        models = data.get("models")
+        if not isinstance(models, dict):
+            return {}
+        providers = models.get("providers")
+        if not isinstance(providers, dict) or provider not in providers:
+            return {}
 
-    removed = copy.deepcopy(providers.pop(provider))
-    _atomic_write_json(path, data)
-    return removed if isinstance(removed, dict) else {}
+        removed = copy.deepcopy(providers.pop(provider))
+        _atomic_write_json(path, data)
+        return removed if isinstance(removed, dict) else {}
 
 
 def get_provider(path: Path, provider: str) -> dict[str, Any] | None:
