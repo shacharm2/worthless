@@ -206,14 +206,23 @@ def register_wrap_commands(app: typer.Typer) -> None:
         target_port = resolve_port(None)
 
         # Pre-check the port BEFORE spawn_proxy. The realistic conflict
-        # (e.g. ``worthless up`` already running) doesn't fail Popen
-        # synchronously — uvicorn fails to bind in the child process and
-        # poll_health later times out with a generic 'failed to become
-        # healthy' message. Catching the conflict here surfaces the
-        # actionable diagnostic ("`worthless up` is running …") that the
-        # CHANGELOG promises. TOCTOU between this check and spawn_proxy
-        # is sub-millisecond in practice; the post-spawn diagnostic
-        # below catches whatever slips through.
+        # (e.g. ``worthless up`` already running on this port) is far
+        # nastier than a clean failure: ``Popen(port=8787)`` returns
+        # successfully because Popen doesn't wait on uvicorn's bind;
+        # the new uvicorn child fails to bind in the background; then
+        # ``poll_health(8787)`` polls the *foreign* daemon (which IS
+        # healthy) and returns True. Wrap thinks ITS proxy is up, the
+        # child runs against the foreign daemon, and the child never
+        # learns it's piggybacking. No exception ever raises — neither
+        # this function's exception path nor the ``poll_health``-timeout
+        # fallback below — so this pre-check is the ONLY guard against
+        # the silent-piggyback bug. Do not delete it on the assumption
+        # the timeout fallback covers it (empirically: it never fires
+        # in this case, because there's no timeout to fall back from).
+        # TOCTOU between this check and spawn_proxy is sub-millisecond
+        # in practice; the post-spawn ``poll_health``-timeout fallback
+        # below catches the rare race where a daemon starts AFTER our
+        # pre-check passed.
         if _port_in_use(target_port):
             os.close(read_fd)
             os.close(write_fd)
