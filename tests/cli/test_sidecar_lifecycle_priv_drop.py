@@ -920,3 +920,113 @@ def test_chaos_dumpable_failure_does_not_break_caller(
     assert result is None, (
         f"WOR-310 C2c: preexec_fn must return None for Popen contract; got {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Segment C2d — Order-dependence proof.
+#
+# C2a's mocked tests pin the order WE chose; C2d proves that order is
+# the only one the KERNEL allows. Required to refute "the order is
+# arbitrary" — without this, the security claim would just be tribal
+# knowledge rather than kernel-enforced.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="kernel order-enforcement is Linux-only")
+def test_kernel_rejects_setgroups_after_setresuid_when_root() -> None:
+    """ROOT + Linux only: prove the kernel rejects ``setgroups([])`` after ``setresuid``.
+
+    Our chosen order puts ``setgroups`` BEFORE ``setresuid``. The reason
+    is kernel-enforced: ``setgroups`` requires CAP_SETGID, and ``setresuid``
+    drops it. This test forks; in the child, runs the WRONG order
+    (setresuid → setgroups); expects setgroups to EPERM.
+
+    Skipped unless running as root (CI under uid 0). When not skipped,
+    this is the proof that our order is the ONLY working order — any
+    refactor swapping these two would fail at runtime in production.
+    """
+    if os.geteuid() != 0:
+        pytest.skip("test requires root euid to actually drop and observe kernel rejection")
+
+    pid = os.fork()
+    if pid == 0:
+        try:
+            # WRONG ORDER on purpose: drop uid first, then try to clear groups
+            os.setresgid(99, 99, 99)  # nogroup-ish
+            os.setresuid(99, 99, 99)  # nobody-ish — DROPS CAP_SETGID
+            os.setgroups([])  # SHOULD EPERM here
+            os._exit(99)  # SHOULD NOT reach here on a correct kernel
+        except PermissionError:
+            os._exit(42)  # expected: kernel rejected setgroups post-uid-drop
+        except OSError:
+            os._exit(43)  # other rejection — still proves order matters
+        except BaseException:
+            os._exit(1)
+    _, status = os.waitpid(pid, 0)
+    code = os.WEXITSTATUS(status)
+    assert code in (42, 43), (
+        f"WOR-310 C2d: kernel did NOT reject setgroups after setresuid drop "
+        f"(exit {code}). Either our order rationale is wrong, or the kernel "
+        f"silently no-ops setgroups for non-root — both break the security claim."
+    )
+
+
+def test_drop_in_child_source_lists_steps_in_documented_order() -> None:
+    """Meta test: the source of ``_make_priv_drop_preexec`` lists the 5 syscalls
+    in the documented order.
+
+    Cross-platform regression catch. C2a's mocked test pins runtime
+    order; this test pins the SOURCE order (a refactor that re-orders
+    the source but maintains runtime equivalence — say, by extracting
+    helpers — would still pass C2a's test but might surprise a human
+    auditor reading the function. Pinning the visible order keeps the
+    code honest.
+    """
+    import inspect
+
+    src = inspect.getsource(_sidecar_lifecycle._make_priv_drop_preexec)
+
+    # The 5 calls must appear in this exact order in the function body.
+    # Use fully-qualified names so the docstring's bare references (which
+    # also list the steps for human readers) don't fool the search.
+    documented_order = [
+        "os.setresgid(",
+        "os.setgroups(",
+        "_hardening.set_no_new_privs_or_log(",
+        "os.setresuid(",
+        "_hardening.set_dumpable_zero_or_log(",
+    ]
+    positions = [src.find(call) for call in documented_order]
+    assert all(p != -1 for p in positions), (
+        f"WOR-310 C2d: a documented step is missing from "
+        f"_make_priv_drop_preexec source: positions={dict(zip(documented_order, positions))}"
+    )
+    assert positions == sorted(positions), (
+        f"WOR-310 C2d: source order does not match documented order. "
+        f"Found {dict(zip(documented_order, positions))}. The 5 syscalls must "
+        f"appear in source in the order: setresgid → setgroups → "
+        f"set_no_new_privs_or_log → setresuid → set_dumpable_zero_or_log."
+    )
+
+
+def test_drop_in_child_does_not_call_setgid_or_setuid() -> None:
+    """The non-``setres*`` variants must never appear in production code.
+
+    ``os.setgid()`` / ``os.setuid()`` leave the saved id unlocked (Linux
+    glibc semantics). Even if a future refactor adds a "convenience"
+    call to setgid before the setres calls, the saved-gid leak is back.
+    Pinning that the source NEVER mentions these names — the regression
+    is impossible to slip in without touching this assertion.
+    """
+    import inspect
+
+    src = inspect.getsource(_sidecar_lifecycle._make_priv_drop_preexec)
+    # Bare-word lookup avoids matching the inner ``setres*`` strings.
+    assert " os.setgid(" not in src and "os.setgid(" not in src.lstrip(), (
+        "WOR-310 C2d: os.setgid() found in production code — saved-gid leak guard violated. "
+        "Use os.setresgid(gid, gid, gid) which locks all three atomically."
+    )
+    assert " os.setuid(" not in src and "os.setuid(" not in src.lstrip(), (
+        "WOR-310 C2d: os.setuid() found in production code — saved-uid leak guard violated. "
+        "Use os.setresuid(uid, uid, uid) which locks all three atomically."
+    )
