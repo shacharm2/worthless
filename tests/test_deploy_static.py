@@ -340,6 +340,50 @@ class TestEntrypoint:
             "Fernet migration should not use bare 'cp' before 'install -m 0400'."
         )
 
+    def test_ulimit_core_disabled_at_top_of_entrypoint(self, entrypoint_text: str):
+        """WOR-310 D: ``ulimit -c 0`` must run before any python invocation.
+
+        Belt-and-suspenders for Phase A's PR_SET_DUMPABLE=0. The Phase A
+        guard runs INSIDE the sidecar python process; ulimit -c 0 here
+        applies to EVERY process in the container, including the brief
+        root-running entrypoint and any python bootstrap errors. If the
+        kernel ever writes a core file, it'd contain the Fernet key in
+        plaintext — this is one more line of defense.
+
+        Pinned to be ``set -e``-adjacent so the early-exit semantics
+        are clear; the trailing ``|| true`` is intentional for kernels
+        that reject the call (containerd-shim sometimes does on lock).
+        """
+        # Find the line index of `set -e` and `ulimit -c 0`.
+        lines = entrypoint_text.splitlines()
+        set_e_idx = next((i for i, line in enumerate(lines) if line.strip() == "set -e"), -1)
+        ulimit_idx = next(
+            (i for i, line in enumerate(lines) if line.strip().startswith("ulimit -c 0")), -1
+        )
+        assert set_e_idx >= 0, "WOR-310 D: entrypoint must use 'set -e'"
+        assert ulimit_idx >= 0, (
+            "WOR-310 D: entrypoint MUST run 'ulimit -c 0' as defense in depth "
+            "alongside Phase A's PR_SET_DUMPABLE=0."
+        )
+        assert ulimit_idx > set_e_idx, (
+            "WOR-310 D: 'ulimit -c 0' must come AFTER 'set -e' so a failure to "
+            "set the limit doesn't silently proceed (belt-and-suspenders only "
+            "if the belt actually exists)."
+        )
+        # The ulimit line must precede every python invocation.
+        first_python_idx = next(
+            (
+                i
+                for i, line in enumerate(lines)
+                if "python" in line and not line.strip().startswith("#")
+            ),
+            len(lines),
+        )
+        assert ulimit_idx < first_python_idx, (
+            "WOR-310 D: 'ulimit -c 0' must precede every python invocation. "
+            "If python crashes during bootstrap, the kernel must NOT write a core."
+        )
+
     def test_privdrop_required_env_exported(self, entrypoint_text: str):
         """WOR-310 C3: entrypoint MUST export WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1.
 

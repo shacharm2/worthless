@@ -6,6 +6,16 @@
 # so a plain ``exec uvicorn`` would never bind.
 set -e
 
+# WOR-310 Phase D: belt-and-suspenders core-dump disable. Phase A's
+# PR_SET_DUMPABLE=0 (in the sidecar process via ctypes prctl) is the
+# primary defense — the kernel won't write a core dump for the sidecar
+# even if uvicorn or some other process in the container faults
+# spectacularly. ulimit -c 0 here protects EVERY process in the
+# container (including the briefly-root entrypoint itself) from being
+# core-dumped if it crashes before set_dumpable_zero runs.  Set BEFORE
+# any python executes so even bootstrap errors can't dump.
+ulimit -c 0 || true
+
 HOME_DIR="${WORTHLESS_HOME:-/data}"
 FERNET_PATH="${WORTHLESS_FERNET_KEY_PATH:-$HOME_DIR/fernet.key}"
 MODE="${WORTHLESS_DEPLOY_MODE:-loopback}"
