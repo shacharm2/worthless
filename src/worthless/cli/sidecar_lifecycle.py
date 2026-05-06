@@ -19,10 +19,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
+from collections.abc import Callable
 
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.crypto.splitter import split_key
 from worthless.crypto.types import zero_buf
+from worthless.sidecar import _hardening
 
 _logger = logging.getLogger("worthless.cli.sidecar_lifecycle")
 
@@ -253,6 +255,43 @@ def _wait_for_ready(
     return False
 
 
+def _make_priv_drop_preexec(uids: ServiceUids) -> Callable[[], None]:
+    """Build the ``preexec_fn`` that drops privs in the forked sidecar child.
+
+    The returned callable runs in the forked child between ``fork()`` and
+    ``exec()``. Order is kernel-enforced and pinned by tests in
+    ``test_sidecar_lifecycle_priv_drop.py``:
+
+      1. ``setresgid(gid, gid, gid)``     — first, still has CAP_SETGID
+      2. ``setgroups([])``                — clear inherited supplementary groups
+      3. ``set_no_new_privs_or_log()``    — lock NO_NEW_PRIVS pre-uid-drop
+      4. ``setresuid(uid, uid, uid)``     — last, drops cap_set*
+      5. ``set_dumpable_zero_or_log()``   — applies to dropped process
+
+    Why ``setresgid``/``setresuid`` and not ``setgid``/``setuid``: only
+    the ``setres*`` family locks all three (real / effective / saved)
+    atomically. ``setgid`` leaves saved-gid as 0, allowing post-RCE
+    re-escalation if the attacker recovers CAP_SETGID.
+
+    Why ``set_*_or_log`` not the strict ``set_dumpable_zero``: the
+    forked child cannot propagate Python exceptions back to the parent.
+    A raise in preexec_fn yields ``OSError`` in ``Popen.__init__`` —
+    workable but the partial-drop state is opaque. Logging keeps the
+    spawn deterministic.
+    """
+
+    def _drop_in_child() -> None:
+        gid = uids.worthless_gid
+        crypto_uid = uids.crypto_uid
+        os.setresgid(gid, gid, gid)
+        os.setgroups([])
+        _hardening.set_no_new_privs_or_log()
+        os.setresuid(crypto_uid, crypto_uid, crypto_uid)
+        _hardening.set_dumpable_zero_or_log()
+
+    return _drop_in_child
+
+
 def spawn_sidecar(
     socket_path: Path,
     shares: ShareFiles,
@@ -336,6 +375,12 @@ def spawn_sidecar(
         "WORTHLESS_SIDECAR_DRAIN_TIMEOUT": str(drain_timeout),
         "WORTHLESS_LOG_LEVEL": "WARNING",
     }
+    # When service_uids is set (Docker root-entry path), the forked child
+    # runs the priv-drop dance via preexec_fn before exec'ing the sidecar
+    # python. Bare-metal (None) omits preexec_fn entirely — no callback
+    # to deadlock on, no syscalls to mis-order.
+    preexec_fn = _make_priv_drop_preexec(service_uids) if service_uids is not None else None
+
     # close_fds=True + pass_fds=() ensures NO inherited descriptors land in the
     # sidecar — SQLite handles, log fds, prometheus sockets in the parent process
     # would otherwise be readable from the sidecar's address space, defeating the
@@ -348,6 +393,7 @@ def spawn_sidecar(
         stderr=subprocess.PIPE,
         close_fds=True,
         pass_fds=(),
+        preexec_fn=preexec_fn,
     )
 
     # Reap the child on ANY BaseException — WRTLS-114 timeout, KeyboardInterrupt

@@ -37,6 +37,12 @@ from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.sidecar_lifecycle import ServiceUids, ShareFiles, spawn_sidecar
 from worthless.sidecar import _hardening
 
+# Linux prctl constant — pinned at module scope so a future refactor
+# that quietly changes the value (e.g. shadows ``PR_SET_NO_NEW_PRIVS``
+# with a different code) is caught by the test that compares to this
+# literal. man prctl(2): PR_SET_NO_NEW_PRIVS = 38.
+PR_SET_NO_NEW_PRIVS = 38
+
 
 # ---------------------------------------------------------------------------
 # ServiceUids — pinned NamedTuple shape
@@ -266,3 +272,308 @@ def test_set_dumpable_zero_or_log_is_noop_on_non_linux(monkeypatch: pytest.Monke
     monkeypatch.setattr(_hardening.ctypes, "CDLL", sentinel)
     monkeypatch.setattr(_hardening.ctypes.util, "find_library", sentinel)
     _hardening.set_dumpable_zero_or_log()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# _make_priv_drop_preexec — syscall ORDER + correctness (Segment C2)
+# ---------------------------------------------------------------------------
+
+
+def test_make_priv_drop_preexec_calls_in_correct_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The preexec_fn must call syscalls in exactly this order:
+
+      1. ``os.setresgid(gid, gid, gid)``       — first, still has CAP_SETGID
+      2. ``os.setgroups([])``                  — clear inherited groups
+      3. ``_hardening.set_no_new_privs_or_log()`` — locks before uid drop
+      4. ``os.setresuid(uid, uid, uid)``       — last, drops cap_set*
+      5. ``_hardening.set_dumpable_zero_or_log()`` — applies to dropped process
+
+    A swap (e.g. setresuid before setgroups) breaks the kernel-enforced
+    capability model: setgroups() requires CAP_SETGID, which setresuid()
+    drops. Pinning the exact order here so a future refactor can't
+    silently rearrange and turn the security claim into theater.
+    """
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        _sidecar_lifecycle.os,
+        "setresgid",
+        lambda r, e, s: calls.append(f"setresgid({r},{e},{s})"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _sidecar_lifecycle.os,
+        "setgroups",
+        lambda groups: calls.append(f"setgroups({list(groups)})"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _sidecar_lifecycle.os,
+        "setresuid",
+        lambda r, e, s: calls.append(f"setresuid({r},{e},{s})"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _hardening,
+        "set_no_new_privs_or_log",
+        lambda: calls.append("set_no_new_privs_or_log"),
+    )
+    monkeypatch.setattr(
+        _hardening,
+        "set_dumpable_zero_or_log",
+        lambda: calls.append("set_dumpable_zero_or_log"),
+    )
+
+    uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+    preexec = _sidecar_lifecycle._make_priv_drop_preexec(uids)
+    preexec()  # invoke as if inside the forked child
+
+    assert calls == [
+        "setresgid(10001,10001,10001)",
+        "setgroups([])",
+        "set_no_new_privs_or_log",
+        "setresuid(10002,10002,10002)",
+        "set_dumpable_zero_or_log",
+    ], f"WOR-310 C2: priv-drop syscall order is wrong: {calls}"
+
+
+def test_make_priv_drop_preexec_uses_setresgid_not_setgid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``setresgid`` is required, NOT ``setgid`` — saved-gid leak guard.
+
+    ``os.setgid(gid)`` only sets effective gid (when euid=0 it sets all
+    three on Linux, but that's glibc behavior, not kernel ABI). The
+    saved gid being left as 0 means a post-RCE attacker that gains
+    CAP_SETGID can swap back. ``setresgid(gid, gid, gid)`` locks all
+    three atomically.
+    """
+    sentinel_setgid = MagicMock(
+        side_effect=AssertionError("WOR-310 C2: must use setresgid, not setgid")
+    )
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setgid", sentinel_setgid, raising=False)
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresgid", lambda r, e, s: None, raising=False)
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setgroups", lambda g: None, raising=False)
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresuid", lambda r, e, s: None, raising=False)
+    monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", lambda: None)
+    monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", lambda: None)
+
+    uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+    _sidecar_lifecycle._make_priv_drop_preexec(uids)()  # must not raise
+
+
+def test_setgroups_passed_empty_list_not_tuple(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``os.setgroups([])`` — empty *list*, not tuple.
+
+    glibc accepts either, but musl (Alpine, in the install matrix)
+    historically had quirks with non-list iterables. Pin the type so a
+    future refactor to ``setgroups(())`` doesn't bite us at runtime on
+    a customer's Alpine deployment.
+    """
+    captured: list[object] = []
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresgid", lambda r, e, s: None, raising=False)
+    monkeypatch.setattr(
+        _sidecar_lifecycle.os, "setgroups", lambda g: captured.append(g), raising=False
+    )
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresuid", lambda r, e, s: None, raising=False)
+    monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", lambda: None)
+    monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", lambda: None)
+
+    uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+    _sidecar_lifecycle._make_priv_drop_preexec(uids)()
+
+    assert captured == [[]], f"WOR-310 C2: setgroups must be called with [], got {captured}"
+    assert isinstance(captured[0], list), (
+        f"WOR-310 C2: setgroups arg must be a list, got {type(captured[0]).__name__}"
+    )
+
+
+def test_no_new_privs_called_before_setresuid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``PR_SET_NO_NEW_PRIVS`` must be set BEFORE ``setresuid`` drops privs.
+
+    If we drop uid first, then try to set NO_NEW_PRIVS, the syscall
+    still works but the order pin protects the rationale: setting it
+    pre-drop means the bit is locked under root's CAP_SYS_ADMIN
+    (cleaner audit), and protects against a future bug where a
+    seccomp filter or LSM might restrict prctl post-drop on some
+    kernels.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setresgid", lambda r, e, s: None, raising=False)
+    monkeypatch.setattr(_sidecar_lifecycle.os, "setgroups", lambda g: None, raising=False)
+    monkeypatch.setattr(
+        _sidecar_lifecycle.os,
+        "setresuid",
+        lambda r, e, s: calls.append("setresuid"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        _hardening,
+        "set_no_new_privs_or_log",
+        lambda: calls.append("no_new_privs"),
+    )
+    monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", lambda: None)
+
+    uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+    _sidecar_lifecycle._make_priv_drop_preexec(uids)()
+
+    assert calls.index("no_new_privs") < calls.index("setresuid"), (
+        f"WOR-310 C2: no_new_privs must precede setresuid; got {calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# spawn_sidecar wiring: preexec_fn only when service_uids set
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_sidecar_passes_preexec_fn_when_service_uids_set(
+    _share_files: ShareFiles,
+) -> None:
+    """When ``service_uids`` is set, ``Popen`` must receive a callable ``preexec_fn``.
+
+    The forked child runs the callable to drop privs before exec.
+    Without ``preexec_fn``, the sidecar inherits the parent's uid
+    (root in Docker) and the security claim collapses.
+    """
+    import uuid
+
+    socket_path = Path(f"/tmp/wor310-c2-{uuid.uuid4().hex[:8]}.sock")  # noqa: S108
+    captured_kwargs: dict[str, object] = {}
+
+    fake_proc = MagicMock()
+    fake_proc.pid = 12345
+    fake_proc.poll.return_value = None
+
+    def fake_popen(*_args: object, **kwargs: object) -> MagicMock:
+        captured_kwargs.update(kwargs)
+        return fake_proc
+
+    uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+    with (
+        patch.object(_sidecar_lifecycle.subprocess, "Popen", fake_popen),
+        patch.object(_sidecar_lifecycle, "_wait_for_ready", return_value=True),
+    ):
+        spawn_sidecar(
+            socket_path=socket_path,
+            shares=_share_files,
+            allowed_uid=10001,
+            service_uids=uids,
+        )
+
+    preexec_fn = captured_kwargs.get("preexec_fn")
+    assert callable(preexec_fn), (
+        f"WOR-310 C2: Popen must receive preexec_fn callable when service_uids "
+        f"is set; got {preexec_fn!r}"
+    )
+
+
+def test_spawn_sidecar_omits_preexec_fn_when_service_uids_is_none(
+    _share_files: ShareFiles,
+) -> None:
+    """Bare-metal path: ``service_uids=None`` → no ``preexec_fn`` at all.
+
+    The bare-metal install never modifies the host. ``preexec_fn``
+    setting it to anything would force a non-trivial fork-child
+    callback that does nothing useful and risks the threading
+    deadlock from BPO-34394. Cleaner to omit entirely.
+    """
+    import uuid
+
+    socket_path = Path(f"/tmp/wor310-c2-{uuid.uuid4().hex[:8]}.sock")  # noqa: S108
+    captured_kwargs: dict[str, object] = {}
+
+    fake_proc = MagicMock()
+    fake_proc.pid = 12345
+    fake_proc.poll.return_value = None
+
+    def fake_popen(*_args: object, **kwargs: object) -> MagicMock:
+        captured_kwargs.update(kwargs)
+        return fake_proc
+
+    with (
+        patch.object(_sidecar_lifecycle.subprocess, "Popen", fake_popen),
+        patch.object(_sidecar_lifecycle, "_wait_for_ready", return_value=True),
+    ):
+        spawn_sidecar(
+            socket_path=socket_path,
+            shares=_share_files,
+            allowed_uid=1000,
+            service_uids=None,
+        )
+
+    # Either absent, or explicitly None — both are equivalent semantically.
+    preexec = captured_kwargs.get("preexec_fn")
+    assert preexec is None, (
+        f"WOR-310 C2: bare-metal path (service_uids=None) must not set preexec_fn; got {preexec!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# set_no_new_privs_or_log — fork-child-safe variant of NO_NEW_PRIVS
+# ---------------------------------------------------------------------------
+
+
+def test_set_no_new_privs_or_log_exists_as_callable() -> None:
+    """The C2 NO_NEW_PRIVS helper must exist as a fork-child-safe callable.
+
+    Same shape as ``set_dumpable_zero_or_log``: log on failure, never
+    raise inside the forked child. PR_SET_NO_NEW_PRIVS = 38 (Linux
+    kernel uapi).
+    """
+    assert callable(_hardening.set_no_new_privs_or_log), (
+        "WOR-310 C2: _hardening.set_no_new_privs_or_log must exist"
+    )
+
+
+def test_set_no_new_privs_or_log_invokes_prctl_with_38(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``prctl(PR_SET_NO_NEW_PRIVS=38, 1, 0, 0, 0)`` is the kernel call shape.
+
+    Pinned literal 38 here so a future refactor that replaces with
+    ``ctypes.c_int(some_const)`` doesn't silently change the call.
+    """
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    fake_libc = MagicMock()
+    fake_libc.prctl.return_value = 0
+    with (
+        patch("worthless.sidecar._hardening.ctypes.util.find_library", return_value="libc.so.6"),
+        patch("worthless.sidecar._hardening.ctypes.CDLL", return_value=fake_libc),
+    ):
+        _hardening.set_no_new_privs_or_log()
+    fake_libc.prctl.assert_called_once_with(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+
+
+def test_set_no_new_privs_or_log_logs_on_failure(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``prctl != 0`` must log at ERROR and return — never raise from preexec_fn."""
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    fake_libc = MagicMock()
+    fake_libc.prctl.return_value = -1
+    with (
+        patch("worthless.sidecar._hardening.ctypes.util.find_library", return_value="libc.so.6"),
+        patch("worthless.sidecar._hardening.ctypes.CDLL", return_value=fake_libc),
+        caplog.at_level(logging.ERROR, logger="worthless.sidecar.hardening"),
+    ):
+        _hardening.set_no_new_privs_or_log()  # must not raise
+
+    assert any(
+        "NO_NEW_PRIVS" in rec.message or "no_new_privs" in rec.message for rec in caplog.records
+    ), "WOR-310 C2: failure must log at ERROR"
+
+
+def test_set_no_new_privs_or_log_is_noop_on_non_linux(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-Linux short-circuits before any libc interaction (parity with set_dumpable)."""
+    monkeypatch.setattr(_hardening.sys, "platform", "darwin")
+    sentinel = MagicMock(side_effect=AssertionError("CDLL must not run on non-Linux"))
+    monkeypatch.setattr(_hardening.ctypes, "CDLL", sentinel)
+    monkeypatch.setattr(_hardening.ctypes.util, "find_library", sentinel)
+    _hardening.set_no_new_privs_or_log()  # must not raise

@@ -33,6 +33,13 @@ _LOG = logging.getLogger("worthless.sidecar.hardening")
 # https://man7.org/linux/man-pages/man2/prctl.2.html — PR_SET_DUMPABLE = 4
 PR_SET_DUMPABLE = 4
 
+# https://man7.org/linux/man-pages/man2/prctl.2.html — PR_SET_NO_NEW_PRIVS = 38
+# Locks the no_new_privs bit. Once set, the process and its children can
+# never gain privs via setuid/setgid binaries or file capabilities. Phase
+# C2 sets this in the forked child BEFORE the uid drop so the bit is
+# locked under root's CAP_SYS_ADMIN and applies to the dropped uid.
+PR_SET_NO_NEW_PRIVS = 38
+
 # Distro-portable YAMA control file.  Each major distro keeps the same path;
 # kernels without YAMA simply don't expose the file.
 YAMA_FILE = Path("/proc/sys/kernel/yama/ptrace_scope")
@@ -116,6 +123,44 @@ def set_dumpable_zero_or_log() -> None:
         )
         return
     _LOG.debug("PR_SET_DUMPABLE=0 (preexec) — applied to forked child")
+
+
+def set_no_new_privs_or_log() -> None:
+    """Fork-child-safe ``prctl(PR_SET_NO_NEW_PRIVS, 1)`` (WOR-310 Phase C2).
+
+    Locks the no_new_privs bit so the process (and any children) cannot
+    gain privs via setuid/setgid binaries or file capabilities — even if
+    a future setuid binary somehow ends up on PATH inside the container,
+    invoking it produces ENOENT-flavored failure instead of escalation.
+
+    Sibling of :func:`set_dumpable_zero_or_log`: same fork-child-safe
+    contract — never raises, logs at ERROR on any failure path. C2's
+    ``preexec_fn`` calls this BEFORE ``setresuid`` so the bit is locked
+    while we still have CAP_SYS_ADMIN (cleaner audit) and applies to
+    the dropped uid.
+
+    Linux-only — silent no-op on Darwin/Windows.
+    """
+    if sys.platform != "linux":
+        return
+    libc_path = ctypes.util.find_library("c")
+    if libc_path is None:
+        _LOG.error(
+            "ctypes.util.find_library('c') returned None on Linux; "
+            "skipping PR_SET_NO_NEW_PRIVS=1 (libc unreachable)"
+        )
+        return
+    libc = ctypes.CDLL(libc_path, use_errno=True)
+    rc = libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+    if rc != 0:
+        errno = ctypes.get_errno()
+        _LOG.error(
+            "prctl(PR_SET_NO_NEW_PRIVS, 1) failed inside preexec_fn with errno=%d; "
+            "no_new_privs NOT applied to forked child",
+            errno,
+        )
+        return
+    _LOG.debug("PR_SET_NO_NEW_PRIVS=1 (preexec) — applied to forked child")
 
 
 def check_yama_ptrace_scope() -> None:
