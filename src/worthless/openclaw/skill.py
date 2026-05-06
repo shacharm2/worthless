@@ -20,7 +20,9 @@ import os
 import re
 import shutil
 import tempfile
-from importlib import resources
+from importlib import (
+    resources,
+)  # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2  # noqa: E501 -- worthless requires Python 3.10+; importlib.resources is stdlib
 from pathlib import Path
 
 from worthless.openclaw.errors import (
