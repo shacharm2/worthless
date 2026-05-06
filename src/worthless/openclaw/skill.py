@@ -16,6 +16,7 @@ F30, F31, F33, F34, F35.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import shutil
@@ -32,6 +33,7 @@ from worthless.openclaw.errors import (
 
 _SKILL_PACKAGE = "worthless.openclaw.skill_assets"
 _SKILL_FILE = "SKILL.md"
+_SKILL_DIR_NAME = "worthless"
 _VERSION_LINE = re.compile(r"^Version:\s*(\S+)\s*$", re.MULTILINE)
 
 
@@ -40,11 +42,14 @@ _VERSION_LINE = re.compile(r"^Version:\s*(\S+)\s*$", re.MULTILINE)
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=1)
 def _read_skill_asset() -> str:
     """Return the embedded ``SKILL.md`` body as a UTF-8 string.
 
     ``importlib.resources.files()`` is Python 3.9+ and avoids the legacy
-    pkg_resources caching issues called out in risk register R5.
+    pkg_resources caching issues called out in risk register R5. The
+    cache is process-lifetime (the asset is embedded and immutable).
+    Tests that monkeypatch this function should call ``_read_skill_asset.cache_clear()``.
     """
     return resources.files(_SKILL_PACKAGE).joinpath(_SKILL_FILE).read_text(encoding="utf-8")
 
@@ -97,21 +102,20 @@ def install(target_dir: Path) -> Path:
     """
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    final = target_dir / "worthless"
+    final = target_dir / _SKILL_DIR_NAME
     _refuse_if_symlink(final)
 
-    body = _read_skill_asset()
-
-    # Stage into a sibling tempdir so the rename is same-filesystem and
-    # atomic. mkdtemp guarantees a fresh unique dir; we own it for the
-    # life of this call.
-    staging = Path(
-        tempfile.mkdtemp(
-            prefix=f".worthless.tmp.{os.getpid()}.",
-            dir=str(target_dir),
-        )
-    )
+    # ``staging`` is bound INSIDE the try so a mkdtemp failure
+    # (target_dir not writable, ENOSPC) wraps cleanly as
+    # SKILL_INSTALL_FAILED instead of leaking a raw OSError to callers.
+    staging: Path | None = None
     try:
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix=f".worthless.tmp.{os.getpid()}.",
+                dir=str(target_dir),
+            )
+        )
         # Copy every embedded asset file into the staging dir. Using the
         # importlib.resources contents traversal keeps this content-agnostic
         # (R10) — Phase 3 can add files without us touching this code.
@@ -124,35 +128,24 @@ def install(target_dir: Path) -> Path:
                 continue
             (staging / name).write_text(entry.read_text(encoding="utf-8"), encoding="utf-8")
 
-        # Belt-and-braces: ensure SKILL.md actually landed (covers a future
-        # asset reorg that drops the file from the package).
-        if not (staging / _SKILL_FILE).is_file():
-            (staging / _SKILL_FILE).write_text(body, encoding="utf-8")
-
-        # If a previous install exists at ``final``, remove it first so the
-        # rename can succeed. We've already refused symlinks above; a real
-        # directory is owned by us per L3 and is overwritable.
-        if final.exists():
-            shutil.rmtree(final)
+        # ``rmtree(ignore_errors=True)`` skips the prior ``exists()`` stat:
+        # we own ``final`` per L3 and we're about to overwrite it anyway.
+        shutil.rmtree(final, ignore_errors=True)
 
         # ``os.replace`` (not ``Path.replace``) is patchable at the module
         # level so failure-injection tests can simulate disk-full / EACCES.
         os.replace(staging, final)  # noqa: PTH105
-    except OpenclawIntegrationError:
-        # Wrapped errors (e.g. SYMLINK_REFUSED) keep their code; just
-        # ensure no staging tempdir leaks (F33).
-        if staging.exists():
-            shutil.rmtree(staging, ignore_errors=True)
-        raise
+        staging = None  # replace consumed it
     except Exception as exc:
-        # Any other failure (EACCES, ENOSPC, simulated rename failures
-        # in tests) is wrapped as SKILL_INSTALL_FAILED so callers in
+        # Any failure (mkdtemp failure, EACCES, ENOSPC, simulated rename
+        # failures) is wrapped as SKILL_INSTALL_FAILED so callers in
         # apply_lock() can surface it as a structured event without
         # leaking raw OSError types into --json output. Always clean up
-        # the staging dir so we never leave ``.worthless.tmp.<pid>/``
-        # artifacts behind (F33).
-        if staging.exists():
+        # the staging dir (F33) — guarded since mkdtemp may not have run.
+        if staging is not None and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
+        if isinstance(exc, OpenclawIntegrationError):
+            raise
         raise OpenclawIntegrationError(
             OpenclawErrorCode.SKILL_INSTALL_FAILED,
             f"failed to install skill into {final}: {exc}",
@@ -170,17 +163,21 @@ def uninstall(target_dir: Path) -> bool:
 
     Refuses to follow a symlink at the destination (F34).
     """
-    if not target_dir.exists():
+    final = target_dir / _SKILL_DIR_NAME
+    # One ``lstat`` decides the whole branch: symlink → refuse;
+    # missing → no-op; real dir → remove. Saves three pre-stats.
+    try:
+        st_mode = final.lstat().st_mode
+    except FileNotFoundError:
         return False
 
-    final = target_dir / "worthless"
-    if final.is_symlink():
+    import stat as _stat
+
+    if _stat.S_ISLNK(st_mode):
         raise OpenclawIntegrationError(
             OpenclawErrorCode.SYMLINK_REFUSED,
             f"refusing to follow symlink at {final}",
         )
-    if not final.exists():
-        return False
 
     shutil.rmtree(final)
     return True

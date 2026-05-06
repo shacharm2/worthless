@@ -239,13 +239,13 @@ def test_detect_returns_frozen_dataclass(fake_home: Path) -> None:
         state.present = True  # type: ignore[misc]
 
 
-def test_detect_with_home_resolve_oserror_returns_absent(
+def test_detect_with_home_isdir_oserror_returns_absent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """F01 cousin: Path.home() succeeds but ``.resolve()`` raises OSError.
+    """F01 cousin: ``Path.home().is_dir()`` raises OSError.
 
-    Some FUSE mounts and broken loop devices can do this. We must
-    treat as absent rather than crash.
+    Some FUSE mounts and broken loop devices can stat-fail unexpectedly.
+    We must treat as absent rather than crash.
     """
     from worthless.openclaw import integration
 
@@ -253,14 +253,14 @@ def test_detect_with_home_resolve_oserror_returns_absent(
     home.mkdir()
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
 
-    real_resolve = Path.resolve
+    real_is_dir = Path.is_dir
 
-    def boom_resolve(self: Path, *a: object, **kw: object) -> Path:
+    def boom_is_dir(self: Path, *a: object, **kw: object) -> bool:
         if self == home:
-            raise OSError("simulated resolve failure")
-        return real_resolve(self, *a, **kw)  # type: ignore[arg-type]
+            raise OSError("simulated stat failure")
+        return real_is_dir(self, *a, **kw)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(Path, "resolve", boom_resolve)
+    monkeypatch.setattr(Path, "is_dir", boom_is_dir)
 
     state = integration.detect()
     assert state.present is False

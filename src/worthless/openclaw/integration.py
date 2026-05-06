@@ -29,6 +29,8 @@ from pathlib import Path
 
 from worthless.openclaw.config import locate_config_path
 
+_SKILL_SUBPATH = ("skills", "worthless")
+
 
 @dataclass(frozen=True)
 class IntegrationState:
@@ -63,21 +65,62 @@ def _resolve_home() -> tuple[Path | None, list[str]]:
         notes.append(f"home unresolvable: {exc}")
         return None, notes
 
+    # Path.home() is already absolute on POSIX; resolve() would walk every
+    # path component (slow on /mnt/c WSL targets). One stat is enough.
     try:
-        home_resolved = home.resolve()
+        if not home.is_dir():
+            notes.append(f"home is not a directory: {home}")
+            return None, notes
     except OSError as exc:
         notes.append(f"home unresolvable: {exc}")
         return None, notes
 
-    if not home_resolved.exists() or not home_resolved.is_dir():
-        notes.append(f"home is not a directory: {home_resolved}")
+    if not os.access(home, os.W_OK):
+        notes.append(f"home is not writable (read-only): {home}")
         return None, notes
 
-    if not os.access(home_resolved, os.W_OK):
-        notes.append(f"home is not writable (read-only): {home_resolved}")
-        return None, notes
+    return home, notes
 
-    return home_resolved, notes
+
+def _classify(path: Path) -> tuple[str, str | None]:
+    """Classify a path with one ``lstat`` syscall (+1 follow if symlink).
+
+    Returns ``(kind, detail)`` where ``kind`` is one of:
+    ``missing`` / ``dangling`` (broken symlink) / ``file`` / ``dir`` /
+    ``symlink-to-file`` / ``symlink-to-dir``. ``detail`` carries an
+    OS-level error string when the probe was inconclusive (treated as
+    ``missing`` for safety).
+
+    Collapses 3-4 separate ``is_symlink``/``exists``/``is_dir`` stat
+    syscalls per path into one — material on slow filesystems
+    (``/mnt/c`` WSL targets per project_target_users.md).
+    """
+    import stat as _stat
+
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return "missing", None
+    except OSError as exc:
+        return "missing", str(exc)
+
+    if _stat.S_ISLNK(st.st_mode):
+        try:
+            target = path.stat()
+        except FileNotFoundError:
+            return "dangling", None
+        except OSError as exc:
+            return "missing", str(exc)
+        return (
+            ("symlink-to-dir", None)
+            if _stat.S_ISDIR(target.st_mode)
+            else (
+                "symlink-to-file",
+                None,
+            )
+        )
+
+    return ("dir", None) if _stat.S_ISDIR(st.st_mode) else ("file", None)
 
 
 def _probe_workspace(home: Path) -> tuple[Path | None, list[str]]:
@@ -89,26 +132,29 @@ def _probe_workspace(home: Path) -> tuple[Path | None, list[str]]:
     """
     notes: list[str] = []
     openclaw_dir = home / ".openclaw"
-
-    # is_symlink check first so a dangling link doesn't trip exists().
-    if openclaw_dir.is_symlink() and not openclaw_dir.exists():
+    kind, detail = _classify(openclaw_dir)
+    if kind == "dangling":
         notes.append(f"~/.openclaw is a dangling symlink: {openclaw_dir}")
         return None, notes
-
-    if openclaw_dir.exists() and not openclaw_dir.is_dir():
+    if kind == "file" or kind == "symlink-to-file":
         notes.append(f"~/.openclaw is a file, not a dir: {openclaw_dir}")
+        return None, notes
+    if kind == "missing":
+        if detail:
+            notes.append(f"~/.openclaw probe error: {detail}")
         return None, notes
 
     workspace = openclaw_dir / "workspace"
-    if workspace.is_symlink() and not workspace.exists():
+    kind, detail = _classify(workspace)
+    if kind == "dangling":
         notes.append(f"workspace is a dangling symlink: {workspace}")
         return None, notes
-
-    if not workspace.exists():
-        return None, notes
-
-    if not workspace.is_dir():
+    if kind == "file" or kind == "symlink-to-file":
         notes.append(f"workspace is not a directory: {workspace}")
+        return None, notes
+    if kind == "missing":
+        if detail:
+            notes.append(f"workspace probe error: {detail}")
         return None, notes
 
     if not os.access(workspace, os.R_OK):
@@ -122,27 +168,28 @@ def _probe_workspace(home: Path) -> tuple[Path | None, list[str]]:
         return None, notes
 
 
-def _probe_config(notes: list[str]) -> Path | None:
-    """Return the active openclaw.json path or None.
+def _probe_config() -> tuple[Path | None, list[str]]:
+    """Return ``(openclaw.json path or None, notes)`` — symmetric with siblings.
 
-    Delegates to Phase 1's ``locate_config_path`` which handles the
-    project-local + global + XDG fallback chain. Resolves the result so
-    case-insensitive FS paths (F35) compare equal downstream.
+    Delegates to Phase 1's ``locate_config_path`` (project-local + global +
+    XDG fallback). Resolves the result so case-insensitive FS paths (F35)
+    compare equal downstream.
     """
+    notes: list[str] = []
     try:
         candidate = locate_config_path()
     except OSError as exc:
         notes.append(f"config probe failed: {exc}")
-        return None
+        return None, notes
 
     if candidate is None:
-        return None
+        return None, notes
 
     try:
-        return candidate.resolve()
+        return candidate.resolve(), notes
     except OSError as exc:
         notes.append(f"config unresolvable: {exc}")
-        return None
+        return None, notes
 
 
 def detect() -> IntegrationState:
@@ -166,11 +213,13 @@ def detect() -> IntegrationState:
     workspace, ws_notes = _probe_workspace(home)
     notes.extend(ws_notes)
 
-    config = _probe_config(notes)
+    config, cfg_notes = _probe_config()
+    notes.extend(cfg_notes)
 
-    skill_path = (workspace / "skills" / "worthless").resolve() if workspace is not None else None
+    skill_path = workspace.joinpath(*_SKILL_SUBPATH).resolve() if workspace is not None else None
 
-    present = workspace is not None or config is not None
+    # Spec: openclaw_present = config_present OR workspace_dir_present.
+    present = config is not None or workspace is not None
 
     return IntegrationState(
         present=present,

@@ -195,7 +195,7 @@ def test_install_cleans_tempdir_on_failure(tmp_path: Path, monkeypatch: pytest.M
         # Allow the inner shutil.copytree -> mkdir cascade but blow up the
         # final atomic rename. Match against the expected ``worthless``
         # destination so nested helpers (mkstemp etc.) don't trip the trap.
-        if str(dst).endswith("/worthless"):
+        if Path(str(dst)).name == "worthless":
             raise OSError("simulated rename failure")
         real_replace(src, dst)
 
