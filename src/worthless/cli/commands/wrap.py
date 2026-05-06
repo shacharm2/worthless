@@ -77,14 +77,15 @@ def _diagnose_proxy_failure(port: int, exc: Exception) -> str:
         return sanitize_exception(exc, generic="failed to start proxy")
     if check_proxy_health(port).get("healthy"):
         return (
-            f"port {port} is already serving a worthless proxy "
-            f"(`worthless up` is running). Either run your command directly "
-            f"(the daemon proxies it already), or stop the daemon and re-run wrap."
+            f"wrap couldn't bind port {port}: a worthless daemon is already "
+            f"serving it (`worthless up` is running). Either run your command "
+            f"directly (the daemon proxies it already), or stop the daemon "
+            f"and re-run wrap."
         )
     return (
-        f"port {port} is in use by another process. Stop it, or set "
-        f"`WORTHLESS_PORT` to a free port and re-run `worthless lock` "
-        f"so .env points at the same port."
+        f"wrap couldn't bind port {port}: another process holds it. "
+        f"Stop that process, or set `WORTHLESS_PORT` to a free port "
+        f"and re-run `worthless lock` so .env points at the same port."
     )
 
 
