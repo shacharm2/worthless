@@ -169,6 +169,16 @@ def main() -> None:
 
     socket_path = _socket_path(shares.run_dir)
 
+    # WOR-310 C4: hand share files to the crypto uid BEFORE spawn so the
+    # forked sidecar (uid 10002) can read them. split_to_tmpfs creates the
+    # files at 0o600 owned by the running uid (root in Docker); without
+    # chown the sidecar gets EPERM at startup. We chown the per-PID run_dir
+    # too so cleanup-by-anyone-in-the-worthless-group works post-shutdown.
+    if service_uids is not None:
+        os.chown(shares.run_dir, service_uids.crypto_uid, service_uids.worthless_gid)
+        os.chown(shares.share_a_path, service_uids.crypto_uid, service_uids.worthless_gid)
+        os.chown(shares.share_b_path, service_uids.crypto_uid, service_uids.worthless_gid)
+
     # BPO-34394: forking from a multi-threaded process is undefined. The
     # preexec_fn calls glibc-allocator-using helpers (ctypes, logger) that
     # can deadlock if any thread held the dynamic-linker mutex at fork.

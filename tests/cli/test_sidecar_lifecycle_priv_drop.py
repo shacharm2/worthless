@@ -177,6 +177,7 @@ def test_spawn_sidecar_passes_close_fds_and_empty_pass_fds(
     with (
         patch.object(_sidecar_lifecycle.subprocess, "Popen", fake_popen),
         patch.object(_sidecar_lifecycle, "_wait_for_ready", return_value=True),
+        patch.object(_sidecar_lifecycle, "_verify_socket_inode", lambda _p: None),
     ):
         spawn_sidecar(
             socket_path=socket_path,
@@ -468,6 +469,7 @@ def test_spawn_sidecar_passes_preexec_fn_when_service_uids_set(
     with (
         patch.object(_sidecar_lifecycle.subprocess, "Popen", fake_popen),
         patch.object(_sidecar_lifecycle, "_wait_for_ready", return_value=True),
+        patch.object(_sidecar_lifecycle, "_verify_socket_inode", lambda _p: None),
     ):
         spawn_sidecar(
             socket_path=socket_path,
@@ -509,6 +511,7 @@ def test_spawn_sidecar_omits_preexec_fn_when_service_uids_is_none(
     with (
         patch.object(_sidecar_lifecycle.subprocess, "Popen", fake_popen),
         patch.object(_sidecar_lifecycle, "_wait_for_ready", return_value=True),
+        patch.object(_sidecar_lifecycle, "_verify_socket_inode", lambda _p: None),
     ):
         spawn_sidecar(
             socket_path=socket_path,
@@ -1188,6 +1191,7 @@ def test_property_spawn_sidecar_accepts_any_valid_uid_triple(
     with (
         patch.object(_sidecar_lifecycle.subprocess, "Popen", return_value=fake_proc),
         patch.object(_sidecar_lifecycle, "_wait_for_ready", return_value=True),
+        patch.object(_sidecar_lifecycle, "_verify_socket_inode", lambda _p: None),
     ):
         # Should NOT raise — any positive distinct uid pair is valid.
         spawn_sidecar(
@@ -1583,6 +1587,94 @@ def test_spawn_sidecar_rejects_when_proxy_uid_equals_crypto_uid(
     assert "distinct uids" in exc_info.value.message
 
 
+def test_spawn_sidecar_lstats_socket_after_ready_and_rejects_symlink(
+    _share_files: ShareFiles, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Post-ready ``lstat`` rejects a non-socket inode at the rendezvous path.
+
+    Brutus C2f Q8: defense-in-depth against a future symlink-redirect
+    where a same-group attacker swaps the socket between bind and the
+    proxy's first connect. The TOCTOU window is simulated by having
+    ``_wait_for_ready`` (mocked) plant a symlink at ``socket_path`` as
+    a side effect — same shape as a real attacker who races between
+    sidecar bind and parent lstat.
+    """
+    import uuid
+
+    socket_path = Path(f"/tmp/wor310-c4-{uuid.uuid4().hex[:8]}.sock")  # noqa: S108
+    decoy = tmp_path / "decoy.txt"
+    decoy.write_text("not a socket")
+
+    def _fake_ready_with_symlink_swap(*_a: object) -> bool:
+        # Simulates an attacker swapping the inode between bind and lstat.
+        socket_path.unlink(missing_ok=True)
+        socket_path.symlink_to(decoy)
+        return True
+
+    monkeypatch.setattr(_sidecar_lifecycle, "_wait_for_ready", _fake_ready_with_symlink_swap)
+    monkeypatch.setattr(
+        _sidecar_lifecycle.subprocess,
+        "Popen",
+        lambda *_a, **_kw: MagicMock(pid=12345, poll=lambda: None),
+    )
+
+    try:
+        with pytest.raises(WorthlessError) as exc_info:
+            spawn_sidecar(
+                socket_path=socket_path,
+                shares=_share_files,
+                allowed_uid=1000,
+            )
+        assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+        assert "socket" in exc_info.value.message.lower()
+    finally:
+        try:
+            socket_path.unlink()
+        except OSError:
+            pass
+
+
+def test_spawn_sidecar_lstat_passes_when_socket_is_real_socket(
+    _share_files: ShareFiles, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Happy path: a real AF_UNIX socket at the rendezvous passes lstat.
+
+    Counterpoint to the symlink-rejection test — proves the lstat check
+    isn't accidentally raising on legitimate sockets.
+    """
+    import socket as socket_mod
+    import uuid
+
+    socket_path = Path(f"/tmp/wor310-c4-{uuid.uuid4().hex[:8]}.sock")  # noqa: S108
+
+    def _fake_ready_with_real_socket(*_a: object) -> bool:
+        # Real AF_UNIX socket bind so lstat sees S_ISSOCK.
+        socket_path.unlink(missing_ok=True)
+        sock = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+        sock.bind(str(socket_path))
+        sock.close()
+        return True
+
+    monkeypatch.setattr(_sidecar_lifecycle, "_wait_for_ready", _fake_ready_with_real_socket)
+    monkeypatch.setattr(
+        _sidecar_lifecycle.subprocess,
+        "Popen",
+        lambda *_a, **_kw: MagicMock(pid=12345, poll=lambda: None),
+    )
+
+    try:
+        spawn_sidecar(
+            socket_path=socket_path,
+            shares=_share_files,
+            allowed_uid=1000,
+        )  # must not raise
+    finally:
+        try:
+            socket_path.unlink()
+        except OSError:
+            pass
+
+
 def test_spawn_sidecar_accepts_when_proxy_and_crypto_share_gid(
     _share_files: ShareFiles,
 ) -> None:
@@ -1604,6 +1696,7 @@ def test_spawn_sidecar_accepts_when_proxy_and_crypto_share_gid(
     with (
         patch.object(_sidecar_lifecycle.subprocess, "Popen", return_value=fake_proc),
         patch.object(_sidecar_lifecycle, "_wait_for_ready", return_value=True),
+        patch.object(_sidecar_lifecycle, "_verify_socket_inode", lambda _p: None),
     ):
         # MUST NOT raise — gid sharing is intentional.
         spawn_sidecar(

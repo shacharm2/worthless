@@ -255,6 +255,37 @@ def _wait_for_ready(
     return False
 
 
+def _verify_socket_inode(socket_path: Path) -> None:
+    """Raise if ``socket_path`` is not a real AF_UNIX socket inode (WOR-310 C4).
+
+    Brutus Q8 defense-in-depth. ``lstat`` (not ``stat`` — we want to see
+    symlinks themselves, not their targets) confirms the rendezvous
+    inode is the actual sidecar socket, not a symlink planted by a
+    same-group attacker between sidecar bind and parent connect. Today
+    the worthless group has only proxy + crypto so this is preventative
+    against future drift. Extracted as a top-level helper so tests can
+    monkeypatch it where mocking real sockets is impractical.
+    """
+    import stat as _stat
+
+    try:
+        st = os.lstat(socket_path)
+    except OSError as exc:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"socket integrity check failed: lstat({socket_path}) "
+            f"raised {exc.__class__.__name__}: {exc}",
+        ) from exc
+    if not _stat.S_ISSOCK(st.st_mode):
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"socket integrity check failed: lstat({socket_path}) returned "
+            f"mode={st.st_mode:#o} (not S_ISSOCK). The inode at the "
+            "rendezvous path is not a Unix socket — possible symlink "
+            "redirect by a same-group attacker. Refusing.",
+        )
+
+
 def _make_priv_drop_preexec(uids: ServiceUids) -> Callable[[], None]:
     """Build the ``preexec_fn`` that drops privs in the forked sidecar child.
 
@@ -427,6 +458,7 @@ def spawn_sidecar(
                 ErrorCode.SIDECAR_NOT_READY,
                 f"sidecar did not become ready within {ready_timeout}s",
             )
+        _verify_socket_inode(socket_path)
     except BaseException:
         # Kill the child, drain stdout+stderr with a deadline (one call,
         # no SIGPIPE risk), unlink any half-formed socket inode.

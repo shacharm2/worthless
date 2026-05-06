@@ -379,6 +379,12 @@ class TestMainPrivilegeDrop:
         monkeypatch.setattr(mod, "ensure_home", lambda _: fake_home)
         monkeypatch.setattr(mod, "split_to_tmpfs", lambda _k, _h: fake_shares)
         monkeypatch.setattr(mod.os, "execvp", lambda *_a: None)
+        # C4: main() chown's share files in the Docker path. Without
+        # mocking, chown would hit the fake /tmp/wor-test-deploy-start path
+        # and FileNotFoundError. Tests that need to OBSERVE chown override
+        # this in-place; the default no-op preserves backward compatibility
+        # for C3-era tests.
+        monkeypatch.setattr(mod.os, "chown", lambda *_a, **_kw: None, raising=False)
 
     def test_main_passes_service_uids_to_spawn_sidecar_when_docker(
         self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
@@ -626,3 +632,123 @@ class TestMainPrivilegeDrop:
 
         with pytest.raises(AssertionError, match="single-threaded"):
             deploy_start_module.main()
+
+
+# ---------------------------------------------------------------------------
+# WOR-310 C4 — share file ownership chown + socket lstat integrity
+# ---------------------------------------------------------------------------
+
+
+class TestShareFileOwnership:
+    """Pin that share files become readable by the crypto uid (Docker only)."""
+
+    def _wire_minimal_main(self, mod, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_home = MagicMock()
+        fake_home.fernet_key = bytearray(b"k" * 44)
+        fake_home.base_dir = Path("/data")
+        fake_shares = _make_fake_shares(b"a" * 44, b"b" * 44)
+        monkeypatch.setattr(mod, "ensure_home", lambda _: fake_home)
+        monkeypatch.setattr(mod, "split_to_tmpfs", lambda _k, _h: fake_shares)
+        monkeypatch.setattr(mod, "spawn_sidecar", lambda *_a, **_kw: MagicMock())
+        monkeypatch.setattr(mod.os, "execvp", lambda *_a: None)
+        monkeypatch.setattr(mod.os, "setresgid", lambda r, e, s: None, raising=False)
+        monkeypatch.setattr(mod.os, "setgroups", lambda g: None, raising=False)
+        monkeypatch.setattr(mod.os, "setresuid", lambda r, e, s: None, raising=False)
+        monkeypatch.setattr(mod.os, "getresuid", lambda: (10001, 10001, 10001), raising=False)
+
+    def test_main_chowns_share_files_to_crypto_when_docker(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Share files MUST be chown'd to crypto_uid:worthless_gid post-split.
+
+        ``split_to_tmpfs`` creates files at 0o600 owned by root. The sidecar
+        runs as crypto_uid (10002). Without chown, the sidecar gets EPERM
+        opening its share. The chown happens BEFORE spawn_sidecar so the
+        forked sidecar sees readable files at startup.
+        """
+        self._wire_minimal_main(deploy_start_module, monkeypatch)
+        chown_calls: list[tuple[Path, int, int]] = []
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "chown",
+            lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            deploy_start_module,
+            "_resolve_service_uids",
+            lambda: ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001),
+        )
+
+        deploy_start_module.main()
+
+        # share_a, share_b, AND run_dir must be chown'd to crypto:worthless.
+        chowned_paths = {(p, uid, gid) for p, uid, gid in chown_calls}
+        share_a = Path("/tmp/wor-test-deploy-start/share_a.bin")  # noqa: S108
+        share_b = Path("/tmp/wor-test-deploy-start/share_b.bin")  # noqa: S108
+        run_dir = Path("/tmp/wor-test-deploy-start")  # noqa: S108
+        assert (share_a, 10002, 10001) in chowned_paths, (
+            f"WOR-310 C4: share_a must be chown'd to crypto:worthless; got {chown_calls}"
+        )
+        assert (share_b, 10002, 10001) in chowned_paths, (
+            f"WOR-310 C4: share_b must be chown'd to crypto:worthless; got {chown_calls}"
+        )
+        assert (run_dir, 10002, 10001) in chowned_paths, (
+            f"WOR-310 C4: run_dir must be chown'd to crypto:worthless; got {chown_calls}"
+        )
+
+    def test_main_skips_chown_on_bare_metal(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bare metal: NO chown attempted (would EPERM as non-root anyway)."""
+        self._wire_minimal_main(deploy_start_module, monkeypatch)
+        chown_calls: list[tuple[Path, int, int]] = []
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "chown",
+            lambda path, uid, gid: chown_calls.append((Path(path), uid, gid)),
+            raising=False,
+        )
+        monkeypatch.setattr(deploy_start_module, "_resolve_service_uids", lambda: None)
+
+        deploy_start_module.main()
+
+        assert chown_calls == [], f"WOR-310 C4: bare-metal path must NOT chown; got {chown_calls}"
+
+    def test_main_chowns_before_spawn_sidecar(
+        self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Order: chown(shares) → spawn_sidecar → parent drop.
+
+        chown MUST happen before spawn so the forked sidecar sees readable
+        files at exec time. If we chowned AFTER spawn, the sidecar would
+        race the parent's chown and the open() would EPERM.
+        """
+        self._wire_minimal_main(deploy_start_module, monkeypatch)
+        events: list[str] = []
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "chown",
+            lambda path, uid, gid: events.append(f"chown({Path(path).name})"),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            deploy_start_module,
+            "spawn_sidecar",
+            lambda *_a, **_kw: events.append("spawn") or MagicMock(),
+        )
+        monkeypatch.setattr(
+            deploy_start_module,
+            "_resolve_service_uids",
+            lambda: ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001),
+        )
+
+        deploy_start_module.main()
+
+        # All chowns must precede spawn.
+        spawn_idx = events.index("spawn")
+        chown_indices = [i for i, e in enumerate(events) if e.startswith("chown")]
+        assert chown_indices, "no chown calls observed"
+        assert max(chown_indices) < spawn_idx, (
+            f"WOR-310 C4: every chown must precede spawn_sidecar; got {events}"
+        )
