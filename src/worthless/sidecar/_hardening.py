@@ -82,6 +82,42 @@ def set_dumpable_zero() -> None:
     _LOG.debug("PR_SET_DUMPABLE=0 — core dumps and non-parent ptrace blocked")
 
 
+def set_dumpable_zero_or_log() -> None:
+    """Fork-child-safe variant of :func:`set_dumpable_zero` (WOR-310 Phase C2).
+
+    Identical syscall (``prctl(PR_SET_DUMPABLE, 0)``) but logs at ``ERROR``
+    on any failure path instead of raising. Required because Phase C2's
+    ``preexec_fn`` runs in the forked child between ``fork()`` and
+    ``exec()`` — Python exception propagation back to the parent is
+    undefined there. A raise in that window leaves the parent with a
+    child that has *partially* dropped privs; logging + return keeps the
+    spawn deterministic (succeeds with dumpable, or fails at exec).
+
+    Linux-only — silent no-op on Darwin/Windows, identical to the strict
+    variant.
+    """
+    if sys.platform != "linux":
+        return
+    libc_path = ctypes.util.find_library("c")
+    if libc_path is None:
+        _LOG.error(
+            "ctypes.util.find_library('c') returned None on Linux; "
+            "skipping PR_SET_DUMPABLE=0 inside preexec_fn (libc unreachable)"
+        )
+        return
+    libc = ctypes.CDLL(libc_path, use_errno=True)
+    rc = libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
+    if rc != 0:
+        errno = ctypes.get_errno()
+        _LOG.error(
+            "prctl(PR_SET_DUMPABLE, 0) failed inside preexec_fn with errno=%d; "
+            "core-dump protection NOT applied to forked child",
+            errno,
+        )
+        return
+    _LOG.debug("PR_SET_DUMPABLE=0 (preexec) — applied to forked child")
+
+
 def check_yama_ptrace_scope() -> None:
     """Refuse to start if YAMA permits cross-uid memory reads.
 

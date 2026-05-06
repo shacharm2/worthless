@@ -18,6 +18,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.crypto.splitter import split_key
@@ -44,6 +45,25 @@ class ShareFiles:
     shard_a: bytearray
     shard_b: bytearray
     run_dir: Path
+
+
+class ServiceUids(NamedTuple):
+    """Resolved uid/gid triple for the two-uid Docker topology (WOR-310 Phase C).
+
+    Single Optional through ``spawn_sidecar`` — replaces the original
+    ``target_uid + target_gid`` two-kwarg shape that allowed an invalid
+    ``(set, None)`` combination. ``deploy/start.py::_resolve_service_uids``
+    constructs this from ``pwd.getpwnam`` when running as root, or returns
+    ``None`` to preserve the bare-metal single-uid path.
+
+    Field order is positional-callable (``ServiceUids(10001, 10002, 10001)``);
+    the order of fields IS the contract. Reordering would silently flip
+    proxy/crypto uids in any caller that used positional construction.
+    """
+
+    proxy_uid: int
+    crypto_uid: int
+    worthless_gid: int
 
 
 def _write_share(path: Path, data: bytearray) -> None:
@@ -240,6 +260,7 @@ def spawn_sidecar(
     *,
     ready_timeout: float = 5.0,
     drain_timeout: float = 5.0,
+    service_uids: ServiceUids | None = None,
 ) -> SidecarHandle:
     """Spawn ``python -m worthless.sidecar`` and wait for it to be ready.
 
@@ -254,6 +275,11 @@ def spawn_sidecar(
         ready_timeout: Seconds to wait for the socket / ready line.
         drain_timeout: Forwarded to the sidecar via
             ``WORTHLESS_SIDECAR_DRAIN_TIMEOUT``.
+        service_uids: When set (Docker root-entry path), the sidecar is
+            spawned via a ``preexec_fn`` that drops privs to
+            ``service_uids.crypto_uid``. ``None`` (bare metal, dev) preserves
+            the current single-uid behavior. Phase C2 wires the actual
+            preexec_fn; Phase C1 only plumbs the kwarg through.
 
     Raises:
         WorthlessError: WRTLS-114 if the path is too long for AF_UNIX or
@@ -293,11 +319,18 @@ def spawn_sidecar(
         "WORTHLESS_SIDECAR_DRAIN_TIMEOUT": str(drain_timeout),
         "WORTHLESS_LOG_LEVEL": "WARNING",
     }
+    # close_fds=True + pass_fds=() ensures NO inherited descriptors land in the
+    # sidecar — SQLite handles, log fds, prometheus sockets in the parent process
+    # would otherwise be readable from the sidecar's address space, defeating the
+    # uid-wall security claim before it starts. Defense in depth on bare metal too,
+    # where the sidecar shares the parent uid.
     proc = subprocess.Popen(  # noqa: S603  # nosec B603 — args are static, no shell
         [sys.executable, "-m", "worthless.sidecar"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        close_fds=True,
+        pass_fds=(),
     )
 
     # Reap the child on ANY BaseException — WRTLS-114 timeout, KeyboardInterrupt
