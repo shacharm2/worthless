@@ -609,18 +609,24 @@ def test_set_no_new_privs_or_log_is_noop_on_non_linux(
 def _read_proc_status_field(pid: int, field_prefix: str) -> str | None:
     """Return the first line of ``/proc/<pid>/status`` starting with *field_prefix*.
 
-    Returns ``None`` if the field is absent. Used by C2b real-fork
-    tests to observe kernel state (NoNewPrivs, Dumpable) after a syscall.
+    Returns the literal string ``"<no-match: ...>"`` if the prefix is
+    absent (so CI failures show what fields ARE present, not just
+    ``MISSING``). Returns ``"<read-error: ...>"`` on filesystem error.
+    Used by C2b real-fork tests to observe kernel state.
     """
     status_path = Path(f"/proc/{pid}/status")
     try:
-        text = status_path.read_text()
-    except OSError:
-        return None
+        text = status_path.read_text(errors="replace")
+    except OSError as exc:
+        return f"<read-error: {exc.__class__.__name__}: {exc}>"
     for line in text.splitlines():
         if line.startswith(field_prefix):
             return line
-    return None
+    # Diagnostic: surface the field names that ARE present so a CI
+    # failure tells us whether the field was renamed, removed, or just
+    # mis-cased rather than dumping ``MISSING`` blindly.
+    field_names = sorted({line.split(":", 1)[0] for line in text.splitlines() if ":" in line})
+    return f"<no-match for {field_prefix!r}; fields present: {field_names}>"
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="real-fork test requires Linux /proc + setres*")
