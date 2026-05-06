@@ -25,6 +25,7 @@ from pathlib import Path
 
 import httpx
 
+from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.keystore import keyring_available
 from worthless.cli.platform import IS_WINDOWS, check_pid_alive, popen_platform_kwargs
 
@@ -49,12 +50,26 @@ def resolve_port(port_arg: int | None) -> int:
     All consumers (``lock`` for the .env BASE_URL, ``up`` for the daemon
     bind, ``wrap`` for the ephemeral proxy bind) share this function so
     they agree on which port a child loading .env will reach.
+
+    Raises:
+        WorthlessError: when ``WORTHLESS_PORT`` is set to a non-integer
+            value. Without this guard the underlying ``int()`` call would
+            surface a raw ``ValueError`` traceback to every command —
+            ``lock``, ``up``, ``wrap``, and the default flow. Caught
+            here so the user sees a single-line CLI error.
     """
     if port_arg is not None:
         return port_arg
     env_port = os.environ.get("WORTHLESS_PORT")
     if env_port:
-        return int(env_port)
+        try:
+            return int(env_port)
+        except ValueError as exc:
+            raise WorthlessError(
+                ErrorCode.BOOTSTRAP_FAILED,
+                f"WORTHLESS_PORT must be an integer, got {env_port!r}. "
+                f"Unset it (`unset WORTHLESS_PORT`) or set it to a port number.",
+            ) from exc
     return 8787
 
 

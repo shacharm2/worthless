@@ -204,6 +204,27 @@ def register_wrap_commands(app: typer.Typer) -> None:
         # post-8rqs wrap stopped injecting BASE_URLs into child env, so the
         # child only sees .env, which holds lock's port.)
         target_port = resolve_port(None)
+
+        # Pre-check the port BEFORE spawn_proxy. The realistic conflict
+        # (e.g. ``worthless up`` already running) doesn't fail Popen
+        # synchronously — uvicorn fails to bind in the child process and
+        # poll_health later times out with a generic 'failed to become
+        # healthy' message. Catching the conflict here surfaces the
+        # actionable diagnostic ("`worthless up` is running …") that the
+        # CHANGELOG promises. TOCTOU between this check and spawn_proxy
+        # is sub-millisecond in practice; the post-spawn diagnostic
+        # below catches whatever slips through.
+        if _port_in_use(target_port):
+            os.close(read_fd)
+            os.close(write_fd)
+            raise WorthlessError(
+                ErrorCode.PROXY_UNREACHABLE,
+                _diagnose_proxy_failure(
+                    target_port,
+                    OSError(f"port {target_port} already in use"),
+                ),
+            )
+
         try:
             proxy, port = spawn_proxy(
                 env=proxy_env,
@@ -221,11 +242,21 @@ def register_wrap_commands(app: typer.Typer) -> None:
         # Close read_fd in parent (proxy has it)
         os.close(read_fd)
 
-        # Poll health
+        # Poll health. If we time out it usually means uvicorn child
+        # failed to bind asynchronously (race that slipped past the
+        # pre-check above) or a slower startup issue. Run the same
+        # diagnostic so the user gets the actionable message instead of
+        # a generic timeout.
         healthy = poll_health(port, timeout=15.0)
         if not healthy:
             _cleanup_proxy(proxy, write_fd)
-            raise WorthlessError(ErrorCode.PROXY_UNREACHABLE, "Proxy failed to become healthy")
+            raise WorthlessError(
+                ErrorCode.PROXY_UNREACHABLE,
+                _diagnose_proxy_failure(
+                    target_port,
+                    TimeoutError("proxy failed to become healthy within 15s"),
+                ),
+            )
 
         # Build child env with BASE_URL injection
         full_command = list(command) + ctx.args

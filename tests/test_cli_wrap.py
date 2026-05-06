@@ -28,6 +28,24 @@ from worthless.cli.process import create_liveness_pipe
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _default_port_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default ``_port_in_use=False`` for every wrap test in this file.
+
+    v0.3.4 added a pre-spawn port-conflict check; without this fixture
+    every existing wrap test that doesn't explicitly mock ``_port_in_use``
+    would short-circuit on a busy port (real or simulated) instead of
+    exercising the path the test was written for. Tests that need the
+    conflict path (``TestWrapPortConflict``) override this via their own
+    ``monkeypatch.setattr`` calls — pytest's monkeypatch stacks LIFO,
+    so the override wins.
+    """
+    monkeypatch.setattr(
+        "worthless.cli.commands.wrap._port_in_use",
+        lambda *_a, **_kw: False,
+    )
+
+
 class TestWrapEnvInjection:
     """wrap injects BASE_URL env vars for enrolled providers."""
 
@@ -181,7 +199,16 @@ class TestWrapHealthTimeout:
     def test_health_timeout_cleans_proxy(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When poll_health returns False, proxy is terminated and exit 1."""
+        """When poll_health returns False, proxy is terminated and exit 1.
+
+        v0.3.4 changed the timeout error message from a fixed
+        "Proxy failed to become healthy" string to whatever
+        ``_diagnose_proxy_failure`` returns (so the actionable
+        ``worthless up`` hint fires when applicable). The semantic
+        contract under test is still cleanup + non-zero exit; the
+        specific wording is verified in
+        ``test_poll_health_timeout_runs_diagnostic`` below.
+        """
         mock_proxy = MagicMock()
         mock_proxy.poll.return_value = None
         mock_proxy.wait.return_value = 0
@@ -201,7 +228,8 @@ class TestWrapHealthTimeout:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
         assert result.exit_code == 1
-        assert "healthy" in result.output.lower() or "health" in result.output.lower()
+        # Cleanup invariant: terminate is called regardless of which
+        # diagnostic message branch fires.
         mock_proxy.terminate.assert_called()
 
 
@@ -840,14 +868,17 @@ class TestWrapPortConflict:
     def test_conflict_with_worthless_daemon_names_up(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When spawn_proxy fails because `worthless up` is on the port,
-        the error message names `worthless up` so the user knows which
-        process to stop (or that they don't need wrap at all)."""
+        """When the target port is already serving a worthless daemon,
+        the pre-spawn check short-circuits with a message naming
+        `worthless up` so the user knows which process to stop (or that
+        they don't need wrap at all). spawn_proxy is never reached."""
+        # Isolate from any host WORTHLESS_PORT so we can hard-assert 8787.
+        monkeypatch.delenv("WORTHLESS_PORT", raising=False)
 
-        def _fail_bind(**_kw):
-            raise OSError("Address already in use")
+        def _spawn_should_not_be_called(**_kw):
+            raise AssertionError("pre-check should short-circuit; spawn_proxy must not run")
 
-        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _fail_bind)
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _spawn_should_not_be_called)
         monkeypatch.setattr("worthless.cli.commands.wrap._port_in_use", lambda *_a, **_kw: True)
         monkeypatch.setattr(
             "worthless.cli.commands.wrap.check_proxy_health",
@@ -867,13 +898,16 @@ class TestWrapPortConflict:
     def test_conflict_with_random_process_names_port(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When the port is busy with a non-worthless process, the error
-        names the port and tells the user to free it or use WORTHLESS_PORT."""
+        """When the port is busy with a non-worthless process, the
+        pre-spawn check short-circuits with a message naming the port
+        and pointing at WORTHLESS_PORT as the escape hatch."""
+        # Isolate from any host WORTHLESS_PORT so we can hard-assert 8787.
+        monkeypatch.delenv("WORTHLESS_PORT", raising=False)
 
-        def _fail_bind(**_kw):
-            raise OSError("Address already in use")
+        def _spawn_should_not_be_called(**_kw):
+            raise AssertionError("pre-check should short-circuit; spawn_proxy must not run")
 
-        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _fail_bind)
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _spawn_should_not_be_called)
         monkeypatch.setattr("worthless.cli.commands.wrap._port_in_use", lambda *_a, **_kw: True)
         monkeypatch.setattr(
             "worthless.cli.commands.wrap.check_proxy_health",
@@ -894,6 +928,73 @@ class TestWrapPortConflict:
         assert "8787" in result.output and "WORTHLESS_PORT" in result.output, (
             f"error should name port + escape hatch:\n{result.output}"
         )
+
+    def test_poll_health_timeout_runs_diagnostic(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The realistic conflict path (CodeRabbit MAJOR): subprocess.Popen
+        succeeds even when uvicorn child can't bind, so spawn_proxy returns
+        normally and the failure surfaces only when poll_health times out.
+        Pre-fix this raised a generic 'Proxy failed to become healthy';
+        post-fix the same diagnostic that names `worthless up` runs again
+        on the timeout path."""
+        monkeypatch.delenv("WORTHLESS_PORT", raising=False)
+
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 88880
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+
+        # _port_in_use changes between pre-check (False, port free) and
+        # post-timeout diagnostic (True, conflict now visible). Models a
+        # real TOCTOU race or a daemon that started during wrap startup.
+        port_in_use_calls = {"n": 0}
+
+        def _port_in_use_toggling(*_a, **_kw):
+            port_in_use_calls["n"] += 1
+            # First call = pre-check (must be False so we proceed);
+            # subsequent calls = diagnostic (return True so the daemon
+            # branch fires).
+            return port_in_use_calls["n"] > 1
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap._port_in_use",
+            _port_in_use_toggling,
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.spawn_proxy",
+            lambda **kw: (mock_proxy, kw["port"]),
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.poll_health",
+            lambda *_a, **_kw: False,
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.check_proxy_health",
+            lambda *_a, **_kw: {
+                "healthy": True,
+                "port": 8787,
+                "mode": "up",
+                "requests_proxied": 0,
+            },
+        )
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+
+        assert result.exit_code != 0
+        # The whole point of the MAJOR fix: we get the actionable
+        # `worthless up`-naming diagnostic, not a generic timeout
+        # message that left the user staring at "failed to become
+        # healthy" with no fix hint.
+        assert "worthless up" in result.output, (
+            f"poll_health-timeout path must run the same diagnostic that "
+            f"names `worthless up`. Got:\n{result.output}"
+        )
+        mock_proxy.terminate.assert_called()
 
     def test_spawn_failure_with_free_port_falls_through(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch

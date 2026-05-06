@@ -40,6 +40,23 @@ class TestUpDefaultPort:
         with patch.dict(os.environ, {"WORTHLESS_PORT": "5555"}):
             assert _resolve_port(port_arg=9999) == 9999
 
+    def test_non_integer_env_raises_clean_error(self):
+        """``WORTHLESS_PORT=abc`` previously crashed every command that
+        called resolve_port (``lock``, ``up``, ``wrap``, default flow)
+        with a raw ``ValueError`` traceback. Post-fix: clean
+        ``WorthlessError`` with a single-line CLI message."""
+        from worthless.cli.errors import ErrorCode, WorthlessError
+
+        with patch.dict(os.environ, {"WORTHLESS_PORT": "not-a-port"}):
+            try:
+                _resolve_port(port_arg=None)
+            except WorthlessError as exc:
+                assert exc.code == ErrorCode.BOOTSTRAP_FAILED
+                assert "WORTHLESS_PORT" in str(exc)
+                assert "not-a-port" in str(exc)
+            else:
+                raise AssertionError("expected WorthlessError, got no exception")
+
 
 class TestUpPidFile:
     """up writes PID file at expected location."""
