@@ -228,6 +228,8 @@ describe("5 sequential requests are byte-identical replays (X-03 / chaos §1.G i
     for (let i = 1; i < responses.length; i++) {
       expect(responses[i].headers.get("content-length")).toBe(referenceLen);
     }
+    // Drain bodies to avoid leaving streams open (CR nitpick on PR #142).
+    await Promise.all(responses.map((r) => r.arrayBuffer()));
   });
 
   it("5 sequential install-script Content-Type headers are identical", async () => {
@@ -247,6 +249,8 @@ describe("5 sequential requests are byte-identical replays (X-03 / chaos §1.G i
     for (let i = 1; i < responses.length; i++) {
       expect(responses[i].headers.get("content-type")).toBe(referenceCT);
     }
+    // Drain bodies to avoid leaving streams open (CR nitpick on PR #142).
+    await Promise.all(responses.map((r) => r.arrayBuffer()));
   });
 
   it("HEAD followed by GET on warm isolate — GET body is unaffected (chaos §2)", async () => {
