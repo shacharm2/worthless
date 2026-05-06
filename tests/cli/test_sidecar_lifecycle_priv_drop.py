@@ -325,6 +325,11 @@ def test_make_priv_drop_preexec_calls_in_correct_order(
     )
     monkeypatch.setattr(
         _hardening,
+        "set_capbset_drop_or_log",
+        lambda: calls.append("set_capbset_drop_or_log"),
+    )
+    monkeypatch.setattr(
+        _hardening,
         "set_dumpable_zero_or_log",
         lambda: calls.append("set_dumpable_zero_or_log"),
     )
@@ -337,6 +342,7 @@ def test_make_priv_drop_preexec_calls_in_correct_order(
         "setresgid(10001,10001,10001)",
         "setgroups([])",
         "set_no_new_privs_or_log",
+        "set_capbset_drop_or_log",
         "setresuid(10002,10002,10002)",
         "set_dumpable_zero_or_log",
     ], f"WOR-310 C2: priv-drop syscall order is wrong: {calls}"
@@ -361,6 +367,7 @@ def test_make_priv_drop_preexec_uses_setresgid_not_setgid(
     monkeypatch.setattr(_sidecar_lifecycle.os, "setgroups", lambda g: None, raising=False)
     monkeypatch.setattr(_sidecar_lifecycle.os, "setresuid", lambda r, e, s: None, raising=False)
     monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", lambda: None)
+    monkeypatch.setattr(_hardening, "set_capbset_drop_or_log", lambda: None)
     monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", lambda: None)
 
     uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
@@ -384,6 +391,7 @@ def test_setgroups_passed_empty_list_not_tuple(
     )
     monkeypatch.setattr(_sidecar_lifecycle.os, "setresuid", lambda r, e, s: None, raising=False)
     monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", lambda: None)
+    monkeypatch.setattr(_hardening, "set_capbset_drop_or_log", lambda: None)
     monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", lambda: None)
 
     uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
@@ -993,6 +1001,7 @@ def test_drop_in_child_source_lists_steps_in_documented_order() -> None:
         "os.setresgid(",
         "os.setgroups(",
         "_hardening.set_no_new_privs_or_log(",
+        "_hardening.set_capbset_drop_or_log(",
         "os.setresuid(",
         "_hardening.set_dumpable_zero_or_log(",
     ]
@@ -1210,11 +1219,162 @@ def test_property_preexec_calls_in_pinned_order_for_any_valid_uids(
         raising=False,
     )
     monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", lambda: calls.append("nnp"))
+    monkeypatch.setattr(_hardening, "set_capbset_drop_or_log", lambda: calls.append("capbset"))
     monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", lambda: calls.append("dump"))
 
     uids = ServiceUids(proxy_uid=proxy_uid, crypto_uid=crypto_uid, worthless_gid=worthless_gid)
     _sidecar_lifecycle._make_priv_drop_preexec(uids)()
 
-    assert calls == ["setresgid", "setgroups", "nnp", "setresuid", "dump"], (
+    assert calls == ["setresgid", "setgroups", "nnp", "capbset", "setresuid", "dump"], (
         f"WOR-310 C2e: order broken for uids={uids}; got {calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Segment C2f — Post-review additions: libc fallback, CAPBSET_DROP,
+# distinctness validation, source-meta robustness.
+# ---------------------------------------------------------------------------
+
+
+def test_load_libc_tries_libc_so_6_first_for_distroless(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_load_libc`` must try ``libc.so.6`` BEFORE ``find_library('c')``.
+
+    Distroless final stages (Google distroless, scratch + glibc bundles)
+    have no ``gcc``/``ld``/``ldconfig`` — ``ctypes.util.find_library``
+    returns None there. Direct-by-name CDLL lookup works because the
+    dynamic linker doesn't need ldconfig. Tries libc.so.6 (glibc) then
+    libc.musl-x86_64.so.1 (Alpine) then falls back to find_library.
+    """
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+
+    cdll_attempts: list[str] = []
+    fake_libc = MagicMock()
+
+    def fake_cdll(soname: str, **_kwargs: object) -> MagicMock:
+        cdll_attempts.append(soname)
+        if soname == "libc.so.6":
+            return fake_libc
+        raise OSError(f"unexpected CDLL call: {soname}")
+
+    monkeypatch.setattr(_hardening.ctypes, "CDLL", fake_cdll)
+    sentinel = MagicMock(
+        side_effect=AssertionError("find_library MUST NOT be called when libc.so.6 loads")
+    )
+    monkeypatch.setattr(_hardening.ctypes.util, "find_library", sentinel)
+
+    result = _hardening._load_libc()
+    assert result is fake_libc
+    assert cdll_attempts == ["libc.so.6"], (
+        f"WOR-310 C2f: libc.so.6 must be tried first; got {cdll_attempts}"
+    )
+
+
+def test_load_libc_falls_back_to_musl_when_glibc_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When ``libc.so.6`` fails (Alpine/musl), ``_load_libc`` tries the musl soname."""
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+
+    cdll_attempts: list[str] = []
+    fake_musl = MagicMock()
+
+    def fake_cdll(soname: str, **_kwargs: object) -> MagicMock:
+        cdll_attempts.append(soname)
+        if soname == "libc.musl-x86_64.so.1":
+            return fake_musl
+        raise OSError("not glibc")
+
+    monkeypatch.setattr(_hardening.ctypes, "CDLL", fake_cdll)
+    monkeypatch.setattr(_hardening.ctypes.util, "find_library", lambda _name: None)
+
+    result = _hardening._load_libc()
+    assert result is fake_musl
+    assert cdll_attempts == ["libc.so.6", "libc.musl-x86_64.so.1"], (
+        f"WOR-310 C2f: musl fallback must come after libc.so.6; got {cdll_attempts}"
+    )
+
+
+def test_load_libc_returns_none_when_all_paths_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If both direct lookups AND find_library fail, ``_load_libc`` returns None.
+
+    Operator-visible event: the calling helper logs at ERROR. Caller
+    contract: ``_load_libc() is None`` triggers the log-and-skip path.
+    """
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    monkeypatch.setattr(_hardening.ctypes, "CDLL", MagicMock(side_effect=OSError("no libc")))
+    monkeypatch.setattr(_hardening.ctypes.util, "find_library", lambda _name: None)
+
+    assert _hardening._load_libc() is None
+
+
+def test_set_capbset_drop_or_log_exists_as_callable() -> None:
+    """``set_capbset_drop_or_log`` must exist (security-engineer M3 / brutus #15)."""
+    assert callable(_hardening.set_capbset_drop_or_log), (
+        "WOR-310 C2f: _hardening.set_capbset_drop_or_log must exist"
+    )
+
+
+def test_set_capbset_drop_or_log_calls_prctl_for_each_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``set_capbset_drop_or_log`` iterates ``prctl(PR_CAPBSET_DROP, cap)`` for cap 0..63."""
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    fake_libc = MagicMock()
+    fake_libc.prctl.return_value = 0
+    monkeypatch.setattr("worthless.sidecar._hardening._load_libc", lambda: fake_libc)
+
+    _hardening.set_capbset_drop_or_log()
+
+    # Should have called prctl 64 times, each with PR_CAPBSET_DROP=24 and a cap in 0..63
+    assert fake_libc.prctl.call_count == 64, (
+        f"WOR-310 C2f: expected 64 prctl calls (caps 0..63); got {fake_libc.prctl.call_count}"
+    )
+    cap_args = [call.args[1] for call in fake_libc.prctl.call_args_list]
+    assert cap_args == list(range(64)), (
+        f"WOR-310 C2f: must iterate caps 0..63 in order; got {cap_args}"
+    )
+
+
+def test_set_capbset_drop_or_log_logs_only_non_einval_failures(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EINVAL on unknown cap numbers is expected (kernel < 5.15 doesn't know cap 41+).
+
+    Real failures (EPERM, EACCES) on KNOWN caps are logged loudly. EINVAL
+    on cap numbers the running kernel doesn't recognize is normal — we
+    don't log those (would spam every startup).
+    """
+    import ctypes as _ctypes
+
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+
+    # Track which cap was last passed to prctl, then make get_errno()
+    # report EINVAL for caps >= 40 and 0 (no error) for caps < 40.
+    last_cap: list[int] = [0]
+
+    def fake_prctl(option: int, cap: int, *_: int) -> int:
+        last_cap[0] = cap
+        return -1 if cap >= 40 else 0
+
+    def fake_get_errno() -> int:
+        return 22 if last_cap[0] >= 40 else 0  # 22 = EINVAL
+
+    fake_libc = MagicMock()
+    fake_libc.prctl.side_effect = fake_prctl
+    monkeypatch.setattr("worthless.sidecar._hardening._load_libc", lambda: fake_libc)
+    monkeypatch.setattr(_ctypes, "get_errno", fake_get_errno)
+
+    with caplog.at_level(logging.ERROR, logger="worthless.sidecar.hardening"):
+        _hardening.set_capbset_drop_or_log()
+
+    # Should NOT log — all failures were EINVAL on unknown caps.
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert error_records == [], (
+        f"WOR-310 C2f: EINVAL on unknown caps must NOT log at ERROR; got {error_records}"
+    )
+
+
+def test_set_capbset_drop_or_log_is_noop_on_non_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-Linux short-circuits before any libc work."""
+    monkeypatch.setattr(_hardening.sys, "platform", "darwin")
+    sentinel = MagicMock(side_effect=AssertionError("CDLL must not run on non-Linux"))
+    monkeypatch.setattr("worthless.sidecar._hardening._load_libc", sentinel)
+    _hardening.set_capbset_drop_or_log()  # must not raise

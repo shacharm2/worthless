@@ -286,6 +286,12 @@ def _make_priv_drop_preexec(uids: ServiceUids) -> Callable[[], None]:
         os.setresgid(gid, gid, gid)
         os.setgroups([])
         _hardening.set_no_new_privs_or_log()
+        # CAPBSET_DROP after NNP and before setresuid: NNP locks "no new
+        # privs" but doesn't clear the existing bounding set. Iterating
+        # PR_CAPBSET_DROP closes the residual escalation surface — dropped
+        # uid cannot regain capabilities even via legacy file caps. Defense
+        # in depth on top of NNP.
+        _hardening.set_capbset_drop_or_log()
         os.setresuid(crypto_uid, crypto_uid, crypto_uid)
         _hardening.set_dumpable_zero_or_log()
 

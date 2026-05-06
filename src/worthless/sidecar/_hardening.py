@@ -30,6 +30,36 @@ from worthless.cli.errors import ErrorCode, WorthlessError
 
 _LOG = logging.getLogger("worthless.sidecar.hardening")
 
+
+def _load_libc() -> ctypes.CDLL | None:
+    """Load libc with a deterministic fallback chain (WOR-310 C2f).
+
+    ``ctypes.util.find_library('c')`` shells out to ``gcc``/``ld``/
+    ``ldconfig`` — these are absent from distroless final stages. The
+    primary ``libc.so.6`` and ``libc.musl-x86_64.so.1`` covers both
+    glibc and musl distributions, so we try those by name FIRST and
+    fall back to ``find_library`` only if both fail.
+
+    Returns ``None`` when no libc can be located; caller logs and
+    returns (preserving the fork-child-safe contract of the ``_or_log``
+    variants).
+    """
+    if sys.platform != "linux":
+        return None
+    for soname in ("libc.so.6", "libc.musl-x86_64.so.1"):
+        try:
+            return ctypes.CDLL(soname, use_errno=True)
+        except OSError:
+            continue
+    libc_path = ctypes.util.find_library("c")
+    if libc_path is None:
+        return None
+    try:
+        return ctypes.CDLL(libc_path, use_errno=True)
+    except OSError:
+        return None
+
+
 # https://man7.org/linux/man-pages/man2/prctl.2.html — PR_SET_DUMPABLE = 4
 PR_SET_DUMPABLE = 4
 
@@ -39,6 +69,19 @@ PR_SET_DUMPABLE = 4
 # C2 sets this in the forked child BEFORE the uid drop so the bit is
 # locked under root's CAP_SYS_ADMIN and applies to the dropped uid.
 PR_SET_NO_NEW_PRIVS = 38
+
+# https://man7.org/linux/man-pages/man2/prctl.2.html — PR_CAPBSET_DROP = 24
+# Removes a capability from the bounding set. Even with NO_NEW_PRIVS set,
+# a process that retains its bounding set could regain capabilities via
+# (rare) setuid file capabilities or LSM-mediated transitions. Dropping
+# every cap from the bounding set means the dropped uid CANNOT regain
+# any capability, ever — defense in depth alongside NNP.
+PR_CAPBSET_DROP = 24
+
+# Linux capabilities are 0..CAP_LAST_CAP (currently 40 on kernel 5.15+,
+# but kernels add new caps over time). We iterate to a safe upper bound;
+# unknown caps simply EINVAL — caught by the rc != 0 + errno check.
+_CAPBSET_RANGE = range(64)
 
 # Distro-portable YAMA control file.  Each major distro keeps the same path;
 # kernels without YAMA simply don't expose the file.
@@ -67,17 +110,14 @@ def set_dumpable_zero() -> None:
     # in the codebase (peercred.py, fs_check.py).
     if sys.platform != "linux":
         return
-    # ``find_library`` returns the soname for both glibc (``libc.so.6``)
-    # and musl (``libc.musl-x86_64.so.1``); hardcoding ``libc.so.6`` would
-    # break Alpine, which is in the install matrix.
-    libc_path = ctypes.util.find_library("c")
-    if libc_path is None:
+    libc = _load_libc()
+    if libc is None:
         raise WorthlessError(
             ErrorCode.SIDECAR_NOT_READY,
-            "ctypes.util.find_library('c') returned None on Linux; "
+            "could not load libc on Linux (tried libc.so.6, "
+            "libc.musl-x86_64.so.1, ctypes.util.find_library('c')); "
             "refusing to start without PR_SET_DUMPABLE=0.",
         )
-    libc = ctypes.CDLL(libc_path, use_errno=True)
     rc = libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
     if rc != 0:
         errno = ctypes.get_errno()
@@ -105,14 +145,13 @@ def set_dumpable_zero_or_log() -> None:
     """
     if sys.platform != "linux":
         return
-    libc_path = ctypes.util.find_library("c")
-    if libc_path is None:
+    libc = _load_libc()
+    if libc is None:
         _LOG.error(
-            "ctypes.util.find_library('c') returned None on Linux; "
-            "skipping PR_SET_DUMPABLE=0 inside preexec_fn (libc unreachable)"
+            "could not load libc on Linux; skipping PR_SET_DUMPABLE=0 inside "
+            "preexec_fn (libc unreachable). Core-dump protection NOT applied."
         )
         return
-    libc = ctypes.CDLL(libc_path, use_errno=True)
     rc = libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
     if rc != 0:
         errno = ctypes.get_errno()
@@ -143,14 +182,13 @@ def set_no_new_privs_or_log() -> None:
     """
     if sys.platform != "linux":
         return
-    libc_path = ctypes.util.find_library("c")
-    if libc_path is None:
+    libc = _load_libc()
+    if libc is None:
         _LOG.error(
-            "ctypes.util.find_library('c') returned None on Linux; "
-            "skipping PR_SET_NO_NEW_PRIVS=1 (libc unreachable)"
+            "could not load libc on Linux; skipping PR_SET_NO_NEW_PRIVS=1 "
+            "inside preexec_fn. Setuid escalation defense NOT applied."
         )
         return
-    libc = ctypes.CDLL(libc_path, use_errno=True)
     rc = libc.prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
     if rc != 0:
         errno = ctypes.get_errno()
@@ -161,6 +199,57 @@ def set_no_new_privs_or_log() -> None:
         )
         return
     _LOG.debug("PR_SET_NO_NEW_PRIVS=1 (preexec) — applied to forked child")
+
+
+def set_capbset_drop_or_log() -> None:
+    """Drop ALL capabilities from the bounding set (WOR-310 C2f).
+
+    Defense in depth on top of NO_NEW_PRIVS. NNP locks "no NEW privs",
+    but a process with a populated bounding set could still — in
+    pathological scenarios (legacy file capabilities, LSM transitions) —
+    retain authority. Iterating ``prctl(PR_CAPBSET_DROP, cap)`` for cap
+    0..63 removes EVERY capability from the bounding set. After this,
+    the dropped uid CANNOT regain any capability under any kernel-
+    supported escalation path.
+
+    Errors are logged + swallowed (fork-child-safe contract). EINVAL
+    on out-of-range cap numbers is expected (kernels < 5.15 reject the
+    higher cap numbers); we ignore EINVAL specifically and only log
+    other errnos.
+
+    Linux-only — silent no-op on Darwin/Windows.
+    """
+    if sys.platform != "linux":
+        return
+    libc = _load_libc()
+    if libc is None:
+        _LOG.error(
+            "could not load libc on Linux; skipping PR_CAPBSET_DROP. "
+            "Capability bounding set NOT dropped."
+        )
+        return
+
+    # EINVAL is the kernel saying "no such capability number" — expected
+    # for caps the running kernel doesn't know about. Only non-EINVAL
+    # errors are real failures worth flagging.
+    EINVAL = 22
+    failed_caps: list[tuple[int, int]] = []
+    for cap in _CAPBSET_RANGE:
+        rc = libc.prctl(PR_CAPBSET_DROP, cap, 0, 0, 0)
+        if rc != 0:
+            errno = ctypes.get_errno()
+            if errno != EINVAL:
+                failed_caps.append((cap, errno))
+
+    if failed_caps:
+        _LOG.error(
+            "PR_CAPBSET_DROP failed for %d capability/capabilities (cap, errno): %s; "
+            "capability bounding set may still be populated",
+            len(failed_caps),
+            failed_caps,
+        )
+    else:
+        _LOG.debug("PR_CAPBSET_DROP — full bounding set cleared on forked child")
 
 
 def check_yama_ptrace_scope() -> None:
