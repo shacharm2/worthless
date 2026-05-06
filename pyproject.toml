@@ -30,6 +30,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "psutil>=5.9",
     "keyring>=25.0",
+    "msgpack>=1.0",
     # TOML reader for the provider registry (worthless-8rqs). Stdlib `tomllib`
     # is 3.11+; for 3.10 we fall back to the `tomli` backport at runtime.
     "tomli>=2.0; python_version < '3.11'",
@@ -148,6 +149,7 @@ markers = [
     "docker: Docker container end-to-end tests (requires running Docker daemon)",
     "e2e: end-to-end smoke tests — full lifecycle (lock, proxy, healthz)",
     "openclaw: OpenClaw integration tests (requires Docker + network pull)",
+    "real_ipc: opt out of the autouse FakeIPCSupervisor injection — these tests bring their own real or subprocess sidecar (WOR-309 Phase 5)",
     "user_flow: end-to-end user-flow tests — real keyring, real CLI, real fs. Run with `pytest -m user_flow`. See worthless-bwu6 for the full suite scope.",
 ]
 

@@ -1,5 +1,9 @@
 #!/bin/sh
 # Composes uvicorn bind + proxy-header trust list from WORTHLESS_DEPLOY_MODE.
+# Single-container lifecycle: deploy/start.py runs split_to_tmpfs +
+# spawn_sidecar and then execs uvicorn so tini supervises both processes as
+# siblings. The proxy requires an IPC peer and refuses to start without one,
+# so a plain ``exec uvicorn`` would never bind.
 set -e
 
 HOME_DIR="${WORTHLESS_HOME:-/data}"
@@ -8,6 +12,15 @@ MODE="${WORTHLESS_DEPLOY_MODE:-loopback}"
 PORT="${PORT:-8787}"
 
 # Refuse unsafe combinations before Python startup. Exit 78 = sysexits EX_CONFIG.
+case "$MODE" in
+  loopback|lan|public)
+    ;;
+  *)
+    echo "FATAL: unknown WORTHLESS_DEPLOY_MODE=$MODE (expected loopback|lan|public)" >&2
+    exit 78
+    ;;
+esac
+
 if [ "$MODE" = "public" ]; then
   if [ "${WORTHLESS_ALLOW_INSECURE:-}" = "true" ] || [ "${WORTHLESS_ALLOW_INSECURE:-}" = "1" ]; then
     echo "FATAL: WORTHLESS_ALLOW_INSECURE is forbidden when WORTHLESS_DEPLOY_MODE=public." >&2
@@ -38,37 +51,15 @@ if [ ! -f "$FERNET_PATH" ]; then
   chmod 0400 "$FERNET_PATH"
 fi
 
-# Pass Fernet key via file descriptor (not env var — env is visible in /proc)
+# Pass Fernet key via file descriptor (not env var — env is visible in /proc).
+# deploy/start.py reads it back to drive the lifecycle setup.
 exec 3< "$FERNET_PATH"
 export WORTHLESS_FERNET_FD=3
 
-case "$MODE" in
-  public)
-    HOST="0.0.0.0"
-    set -- uvicorn worthless.proxy.app:create_app --factory \
-      --host "$HOST" --port "$PORT" \
-      --proxy-headers --forwarded-allow-ips="$WORTHLESS_TRUSTED_PROXIES"
-    ;;
-  lan)
-    HOST="${WORTHLESS_HOST:-0.0.0.0}"
-    if [ -n "${WORTHLESS_TRUSTED_PROXIES:-}" ]; then
-      set -- uvicorn worthless.proxy.app:create_app --factory \
-        --host "$HOST" --port "$PORT" \
-        --proxy-headers --forwarded-allow-ips="$WORTHLESS_TRUSTED_PROXIES"
-    else
-      set -- uvicorn worthless.proxy.app:create_app --factory \
-        --host "$HOST" --port "$PORT"
-    fi
-    ;;
-  loopback)
-    HOST="${WORTHLESS_HOST:-127.0.0.1}"
-    set -- uvicorn worthless.proxy.app:create_app --factory \
-      --host "$HOST" --port "$PORT"
-    ;;
-  *)
-    echo "FATAL: unknown WORTHLESS_DEPLOY_MODE=$MODE (expected loopback|lan|public)" >&2
-    exit 78
-    ;;
-esac
+# WORTHLESS_DEPLOY_MODE / WORTHLESS_TRUSTED_PROXIES / WORTHLESS_HOST flow
+# through the environment into deploy/start.py, which composes the uvicorn
+# argv (host + --proxy-headers + --forwarded-allow-ips) before exec.
+export WORTHLESS_DEPLOY_MODE="$MODE"
+export PORT="$PORT"
 
-exec "$@"
+exec python /deploy/start.py

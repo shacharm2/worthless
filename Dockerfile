@@ -20,6 +20,7 @@ COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin/worthless /usr/local/bin/worthless
 COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/uvicorn
 COPY deploy/entrypoint.sh /entrypoint.sh
+COPY deploy/start.py /deploy/start.py
 
 # HOME=/data so Path.home() resolves to the writable /data volume, not
 # /home/worthless on the read-only root. The user-provider registry
@@ -43,3 +44,6 @@ USER worthless
 
 # Bind/host live in entrypoint.sh — don't re-add `--host` here, it bypasses deploy_mode.
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]
+# No CMD: deploy/start.py runs the full lifecycle (split + spawn sidecar +
+# exec uvicorn) — overriding the command would skip sidecar spawn and break
+# the proxy's IPC contract.

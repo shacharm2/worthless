@@ -31,8 +31,10 @@ from worthless.cli.errors import (
 )
 from worthless.cli.key_patterns import CANONICAL_KEY_VAR_RE, detect_prefix
 from worthless.cli.providers import lookup_by_name, lookup_by_url
-from worthless.crypto.splitter import (
+from worthless.crypto.reconstruction import (
     _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
+)
+from worthless.crypto.splitter import (
     derive_shard_a_fp,
     reconstruct_key_fp,
     split_key_fp,
