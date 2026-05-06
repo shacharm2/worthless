@@ -1026,18 +1026,80 @@ def test_drop_in_child_does_not_call_setgid_or_setuid() -> None:
     call to setgid before the setres calls, the saved-gid leak is back.
     Pinning that the source NEVER mentions these names — the regression
     is impossible to slip in without touching this assertion.
+
+    Architect A2: walks the AST of the inner ``_drop_in_child`` so a
+    tab-indented or newline-leading ``os.setgid(`` doesn't slip through
+    the prior substring check. AST-grounded means the test catches
+    semantically-real ``Call(Attribute(Name('os'), 'setgid'))`` regardless
+    of whitespace.
     """
+    import ast
     import inspect
 
     src = inspect.getsource(_sidecar_lifecycle._make_priv_drop_preexec)
-    # Bare-word lookup avoids matching the inner ``setres*`` strings.
-    assert " os.setgid(" not in src and "os.setgid(" not in src.lstrip(), (
-        "WOR-310 C2d: os.setgid() found in production code — saved-gid leak guard violated. "
-        "Use os.setresgid(gid, gid, gid) which locks all three atomically."
+    tree = ast.parse(src)
+    forbidden = {"setgid", "setuid"}
+    found: list[str] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "os"
+            and func.attr in forbidden
+        ):
+            found.append(f"os.{func.attr}")
+
+    assert found == [], (
+        f"WOR-310 C2d/A2: forbidden saved-id-leak calls found in "
+        f"_make_priv_drop_preexec: {found}. Use os.setresgid/setresuid which "
+        f"lock all three (real/effective/saved) atomically."
     )
-    assert " os.setuid(" not in src and "os.setuid(" not in src.lstrip(), (
-        "WOR-310 C2d: os.setuid() found in production code — saved-uid leak guard violated. "
-        "Use os.setresuid(uid, uid, uid) which locks all three atomically."
+
+
+def test_pr_set_no_new_privs_constant_matches_kernel_abi() -> None:
+    """``_hardening.PR_SET_NO_NEW_PRIVS`` MUST equal 38 (Linux kernel ABI).
+
+    Architect A1: the test file's local ``PR_SET_NO_NEW_PRIVS = 38``
+    pin only catches a refactor that drops the test's literal — it does
+    NOT catch a refactor that drifts the production constant. This
+    cross-module assertion pins the linkage: prod constant == kernel
+    ABI value (38) AND the test's view matches.
+    """
+    assert _hardening.PR_SET_NO_NEW_PRIVS == 38, (
+        f"WOR-310 A1: production PR_SET_NO_NEW_PRIVS={_hardening.PR_SET_NO_NEW_PRIVS} "
+        f"!= kernel ABI value 38. Drift here means the prctl call does the wrong thing "
+        f"silently — a different prctl OPTION instead of NO_NEW_PRIVS."
+    )
+    assert PR_SET_NO_NEW_PRIVS == _hardening.PR_SET_NO_NEW_PRIVS, (
+        f"WOR-310 A1: test-local PR_SET_NO_NEW_PRIVS={PR_SET_NO_NEW_PRIVS} "
+        f"!= prod constant {_hardening.PR_SET_NO_NEW_PRIVS}. Update the test "
+        f"constant if the kernel ever introduces a new code (it won't, but "
+        f"this test forces a deliberate ack)."
+    )
+
+
+def test_pr_set_dumpable_constant_matches_kernel_abi() -> None:
+    """``_hardening.PR_SET_DUMPABLE`` MUST equal 4 (Linux kernel ABI).
+
+    Same rationale as PR_SET_NO_NEW_PRIVS: the prctl OPTION integer is
+    a kernel ABI literal. Drift means we'd be calling a different
+    prctl operation entirely.
+    """
+    assert _hardening.PR_SET_DUMPABLE == 4, (
+        f"WOR-310 A1: production PR_SET_DUMPABLE={_hardening.PR_SET_DUMPABLE} "
+        f"!= kernel ABI value 4."
+    )
+
+
+def test_pr_capbset_drop_constant_matches_kernel_abi() -> None:
+    """``_hardening.PR_CAPBSET_DROP`` MUST equal 24 (Linux kernel ABI)."""
+    assert _hardening.PR_CAPBSET_DROP == 24, (
+        f"WOR-310 A1: production PR_CAPBSET_DROP={_hardening.PR_CAPBSET_DROP} "
+        f"!= kernel ABI value 24."
     )
 
 
