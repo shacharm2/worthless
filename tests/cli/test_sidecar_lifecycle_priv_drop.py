@@ -27,6 +27,9 @@ This file pins the **foundation** (Segment C1):
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -577,3 +580,145 @@ def test_set_no_new_privs_or_log_is_noop_on_non_linux(
     monkeypatch.setattr(_hardening.ctypes, "CDLL", sentinel)
     monkeypatch.setattr(_hardening.ctypes.util, "find_library", sentinel)
     _hardening.set_no_new_privs_or_log()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Segment C2b — Real-fork integration tests (Linux-only).
+#
+# Mocks prove our code calls the right syscalls. They cannot prove the
+# kernel ENFORCES what we claim. These tests fork real children and
+# observe ``/proc/self/status`` after the syscall, proving the bit was
+# actually set by the kernel — not just that Python emitted the call.
+#
+# Linux-only: ``/proc/self/status`` is Linux, ``setres*`` is glibc-
+# specific, ``prctl`` is a Linux syscall.
+# ---------------------------------------------------------------------------
+
+
+def _read_proc_status_field(pid: int, field_prefix: str) -> str | None:
+    """Return the first line of ``/proc/<pid>/status`` starting with *field_prefix*.
+
+    Returns ``None`` if the field is absent. Used by C2b real-fork
+    tests to observe kernel state (NoNewPrivs, Dumpable) after a syscall.
+    """
+    status_path = Path(f"/proc/{pid}/status")
+    try:
+        text = status_path.read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith(field_prefix):
+            return line
+    return None
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="real-fork test requires Linux /proc + setres*")
+def test_set_dumpable_zero_or_log_actually_sets_dumpable_in_forked_child() -> None:
+    """In a forked child, ``set_dumpable_zero_or_log()`` makes ``Dumpable: 0``.
+
+    Mocks proved we CALL prctl(PR_SET_DUMPABLE, 0); this test proves the
+    kernel HONORS the call. If a future LSM/seccomp filter silently
+    no-ops the syscall, Dumpable stays 1 and the test fails loud.
+    """
+    r_fd, w_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(r_fd)
+        try:
+            _hardening.set_dumpable_zero_or_log()
+            line = _read_proc_status_field(os.getpid(), "Dumpable:")
+            os.write(w_fd, (line or "MISSING").encode())
+        finally:
+            os.close(w_fd)
+            os._exit(0)
+    os.close(w_fd)
+    output = os.read(r_fd, 4096).decode()
+    os.close(r_fd)
+    os.waitpid(pid, 0)
+    assert "Dumpable:\t0" in output, f"WOR-310 C2b: kernel did not set Dumpable=0; got {output!r}"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="real-fork test requires Linux /proc + prctl")
+def test_set_no_new_privs_or_log_actually_sets_no_new_privs_in_forked_child() -> None:
+    """In a forked child, ``set_no_new_privs_or_log()`` makes ``NoNewPrivs: 1``."""
+    r_fd, w_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(r_fd)
+        try:
+            _hardening.set_no_new_privs_or_log()
+            line = _read_proc_status_field(os.getpid(), "NoNewPrivs:")
+            os.write(w_fd, (line or "MISSING").encode())
+        finally:
+            os.close(w_fd)
+            os._exit(0)
+    os.close(w_fd)
+    output = os.read(r_fd, 4096).decode()
+    os.close(r_fd)
+    os.waitpid(pid, 0)
+    assert "NoNewPrivs:\t1" in output, (
+        f"WOR-310 C2b: kernel did not set NoNewPrivs=1; got {output!r}"
+    )
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="real-fork test requires Linux setresuid")
+def test_preexec_fn_eperms_in_forked_child_when_non_root() -> None:
+    """In a forked NON-ROOT child, ``preexec_fn`` raises EPERM from setresuid.
+
+    Sanity check the kernel enforces what we claim. ``setresuid`` requires
+    CAP_SETUID; non-root gets EPERM. If the kernel ever silently allowed
+    the syscall, the security model would be quietly broken — this catches
+    that.
+
+    Skipped if running AS root (CI container under uid 0). Phase E Docker
+    integration handles the root-success path.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("test requires non-root euid to observe EPERM")
+
+    pid = os.fork()
+    if pid == 0:
+        try:
+            uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
+            preexec = _sidecar_lifecycle._make_priv_drop_preexec(uids)
+            preexec()
+            os._exit(99)  # SHOULD NOT reach here as non-root
+        except PermissionError:
+            os._exit(42)  # expected EPERM
+        except OSError:
+            os._exit(43)  # other OSError variant — kernel still rejected
+        except BaseException:
+            os._exit(1)
+    _, status = os.waitpid(pid, 0)
+    code = os.WEXITSTATUS(status)
+    assert code in (42, 43), (
+        f"WOR-310 C2b: expected PermissionError/OSError exit (42/43) "
+        f"from setresuid as non-root; got {code}"
+    )
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="real-fork test requires Linux fork semantics")
+def test_preexec_fn_runs_in_forked_child_via_subprocess(tmp_path: Path) -> None:
+    """``Popen(preexec_fn=cb)`` actually executes the callable in the child.
+
+    Side-effect proof: the callback writes a marker file that the parent
+    can observe. Guards against future Python/libc changes (e.g.,
+    posix_spawn migration) silently dropping the preexec_fn contract.
+    """
+    marker = tmp_path / "preexec-ran.marker"
+
+    def _marker_preexec() -> None:
+        marker.write_text("preexec ran\n")
+
+    proc = subprocess.Popen(  # noqa: S603 — args are our own, no shell
+        [sys.executable, "-c", "import sys; sys.exit(0)"],
+        preexec_fn=_marker_preexec,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    proc.wait(timeout=5)
+    assert marker.is_file(), (
+        f"WOR-310 C2b: preexec_fn did not execute in forked child; "
+        f"marker {marker} not created — Popen preexec contract broken."
+    )
