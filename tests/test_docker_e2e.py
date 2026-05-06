@@ -636,18 +636,24 @@ class TestLockWrapE2E:
         count = int(db_check.stdout.strip())
         assert count > 0, "No enrollment records in DB after lock"
 
-    def test_wrap_injects_base_url(self, container: tuple[str, int]) -> None:
-        """After lock, the child reads OPENAI_BASE_URL from .env via dotenv.
+    def test_lock_writes_base_url_to_env(self, container: tuple[str, int]) -> None:
+        """After lock, .env has the per-enrollment ``*_BASE_URL`` written by
+        ``worthless lock``, and a child sourcing .env sees the alias-qualified
+        URL pointing at the daemon's port.
 
-        Post-8rqs Phase 8 (commit 20be134), ``worthless wrap`` is a
-        passthrough that inherits the parent env unchanged. ``worthless
-        lock`` writes ``*_BASE_URL`` directly into ``.env``; the child
-        loads it via dotenv (or shell sourcing) the same way real apps
-        do. Pre-8rqs the test could read ``os.environ['OPENAI_BASE_URL']``
-        directly because wrap synthesised it into the child env.
+        v0.3.4 contract (worthless-djoe): ``worthless wrap`` and ``worthless
+        up`` are alternatives, not combinable on the same port. The Docker
+        container's primary process IS ``worthless up`` (the daemon),
+        so we test the daemon path directly: lock writes BASE_URL to .env,
+        child sources .env, child sees the right URL pointing at the
+        running daemon. ``worthless wrap`` inside an ``up`` container is
+        nonsensical post-v0.3.4 — the pre-spawn check correctly rejects
+        it. Pre-v0.3.4 wrap silently bound a random port and the test
+        only passed because traffic went through the daemon anyway.
 
-        Test technique: shell-source ``/tmp/.env`` before ``exec python`` so
-        the child's environ reflects the file lock just rewrote.
+        Pre-8rqs (v0.3.2) the test read ``os.environ['OPENAI_BASE_URL']``
+        directly because wrap synthesised it into the child env. Post-8rqs
+        the contract moved to .env; this test follows.
 
         Failure looks like: BASE_URL not pointing at 127.0.0.1, or the
         var is missing from the sourced environment.
@@ -663,22 +669,20 @@ class TestLockWrapE2E:
         lock = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
-        # Wrap a child that sources .env and prints OPENAI_BASE_URL.
-        # Shell-sourcing is POSIX, no extra deps needed in the image.
-        wrap_result = docker_exec(
+        # Source .env directly (no `worthless wrap` wrapper — the container's
+        # daemon already owns port 8787; wrap correctly refuses to start
+        # a second proxy on the same port post-v0.3.4).
+        result = docker_exec(
             name,
             [
-                "worthless",
-                "wrap",
-                "--",
                 "sh",
                 "-c",
                 "set -a; . /tmp/.env; set +a; "
                 "python -c \"import os; print(os.environ.get('OPENAI_BASE_URL', 'MISSING'))\"",
             ],
         )
-        assert wrap_result.returncode == 0, f"wrap failed: {wrap_result.stderr}"
-        base_url = wrap_result.stdout.strip()
+        assert result.returncode == 0, f"sourcing .env failed: {result.stderr}"
+        base_url = result.stdout.strip()
         assert base_url != "MISSING", (
             "OPENAI_BASE_URL not in .env after lock — the lock-side rewrite "
             "didn't fire (or wrote a different var name)"
@@ -693,14 +697,20 @@ class TestLockWrapE2E:
             f"OPENAI_BASE_URL mismatch. expected={expected_base_url!r} actual={base_url!r}"
         )
 
-    def test_proxy_reachable_during_wrap(self, container: tuple[str, int]) -> None:
-        """During wrap, the ephemeral proxy responds on /healthz.
+    def test_proxy_reachable_after_lock(self, container: tuple[str, int]) -> None:
+        """After lock, the daemon's proxy responds on /healthz.
 
-        What it tests: While a wrapped child is running, the proxy is
-        reachable and serving health checks.
+        What it tests: The container's daemon (``worthless up`` running
+        as PID 1) responds to /healthz on port 8787 — the same port lock
+        wrote into .env.
 
-        Why it matters: If the proxy is unreachable during wrap, no API
-        requests can be proxied -- the child would get connection refused.
+        Why it matters: If the proxy is unreachable, the child can't
+        proxy any LLM calls. This is the daemon-deployment smoke check.
+
+        Renamed from ``test_proxy_reachable_during_wrap`` (v0.3.4): the
+        old name implied wrap was the test subject, but in Docker the
+        daemon owns the port. Wrap inside the daemon container hits the
+        v0.3.4 pre-spawn check and refuses (correctly).
 
         Failure looks like: /healthz returns non-200 or connection refused.
         """
@@ -712,24 +722,19 @@ class TestLockWrapE2E:
         lock = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
-        # Wrap a long-running child. Use sh -c to: extract port, curl healthz,
-        # print result, then exit. The child itself acts as the health checker.
-        wrap_result = docker_exec(
+        # Source .env, extract port, hit /healthz on the daemon directly.
+        result = docker_exec(
             name,
             [
-                "worthless",
-                "wrap",
-                "--",
                 "sh",
                 "-c",
                 (
-                    # Extract port from OPENAI_BASE_URL (http://host:PORT/alias/v1)
+                    "set -a; . /tmp/.env; set +a; "
                     'PORT=$(python -c "'
                     "from urllib.parse import urlparse; import os; "
                     "url = os.environ.get('OPENAI_BASE_URL', ''); "
                     "print(urlparse(url).port or 8787)"
                     '"); '
-                    # Retry healthz a few times (proxy may still be settling)
                     "for i in 1 2 3 4 5; do "
                     '  RESP=$(python -c "'
                     "import urllib.request; "
@@ -741,23 +746,29 @@ class TestLockWrapE2E:
                 ),
             ],
         )
-        assert wrap_result.returncode == 0, f"wrap failed: {wrap_result.stderr}"
-        assert "HEALTH_STATUS=200" in wrap_result.stdout, (
-            f"Proxy /healthz not reachable during wrap. Output: {wrap_result.stdout}"
+        assert result.returncode == 0, f"healthz probe failed: {result.stderr}"
+        assert "HEALTH_STATUS=200" in result.stdout, (
+            f"Proxy /healthz not reachable on daemon port. Output: {result.stdout}"
         )
 
-    def test_lock_wrap_full_flow(self, container: tuple[str, int]) -> None:
-        """Combined flow: lock -> wrap -> child request routes through proxy.
+    def test_lock_then_request_full_flow(self, container: tuple[str, int]) -> None:
+        """Combined flow: lock -> child request routes through the daemon proxy.
 
-        What it tests: After locking, a wrapped child can make an HTTP
-        request that reaches the proxy. The proxy will return an error
-        (no real upstream API key) but the REQUEST PATH must work.
+        What it tests: After locking, a child sourcing .env can make an
+        HTTP request whose path reaches the daemon proxy. The proxy will
+        return an error (fake key, no real upstream call) but the
+        REQUEST PATH must work end-to-end.
 
-        Why it matters: This is the complete user journey. Even without
-        a real API key, the proxy receiving the request proves the
-        plumbing works end-to-end.
+        Why it matters: This is the daemon-deployment user journey. Even
+        without a real API key, the proxy receiving the request proves
+        the plumbing works.
 
-        Failure looks like: Connection refused (proxy not running) or
+        Renamed from ``test_lock_wrap_full_flow`` (v0.3.4): the old name
+        implied wrap was the carrier, but in Docker the daemon owns the
+        port and wrap inside the daemon container is rejected by the
+        pre-spawn check (correctly — they're alternatives).
+
+        Failure looks like: Connection refused (daemon not running) or
         the request never reaches the proxy.
         """
         name, _port = container
@@ -768,17 +779,11 @@ class TestLockWrapE2E:
         lock = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
-        # Wrap a child that sources .env (post-8rqs contract: lock writes
-        # *_BASE_URL into .env, child reads via dotenv/shell), then makes
-        # a request to the proxy's /v1/chat/completions. Closes
-        # worthless-1td5 (Phase-8 docker-e2e drift).
-        #
         # Pass the Python source via heredoc on stdin (`python3 -`) instead
         # of `python -c "..."`. `python -c` requires the source as a
         # shell-quoted string, and `repr()`-ing a multi-line script puts
         # literal `\n` characters into the shell argument that Python
-        # interprets as line-continuation followed by garbage — fails with
-        # "unexpected character after line continuation character".
+        # interprets as line-continuation followed by garbage.
         py_snippet = (
             "import os, urllib.request, urllib.error, json\n"
             "base = os.environ['OPENAI_BASE_URL']\n"
@@ -798,13 +803,47 @@ class TestLockWrapE2E:
             "    print(f'ERROR={e.reason}')\n"
         )
         shell_cmd = f"set -a; . /tmp/.env; set +a; python3 - <<'PYEOF'\n{py_snippet}PYEOF\n"
-        wrap_result = docker_exec(name, ["worthless", "wrap", "--", "sh", "-c", shell_cmd])
-        assert wrap_result.returncode == 0, f"wrap failed: {wrap_result.stderr}"
-        output = wrap_result.stdout.strip()
+        result = docker_exec(name, ["sh", "-c", shell_cmd])
+        assert result.returncode == 0, f"daemon request failed: {result.stderr}"
+        output = result.stdout.strip()
         # The proxy MUST receive the request (not connection refused).
-        # Any HTTP status code (even 4xx/5xx) means the proxy handled it.
+        # Any HTTP status code (even 4xx/5xx) means the daemon handled it.
         assert output.startswith("STATUS="), (
             f"Request did not reach proxy. Expected STATUS=<code>, got: {output}"
+        )
+
+    def test_wrap_inside_daemon_container_is_rejected(self, container: tuple[str, int]) -> None:
+        """v0.3.4 contract: ``worthless wrap`` inside a ``worthless up`` container
+        fails fast with the actionable diagnostic.
+
+        Why this test exists: pre-v0.3.4 wrap silently bound a random port
+        the child couldn't reach; the existing tests passed by accident
+        because traffic went through the daemon. v0.3.4 makes wrap
+        correctly refuse a second proxy on the same machine. This test
+        pins the correct behavior so a regression that re-introduces
+        the silent-double-spawn bug fails loudly.
+        """
+        name, _port = container
+        fake_key = fake_openai_key()
+        env_content = f"OPENAI_API_KEY={fake_key}\n"
+
+        _write_env_to_container(name, env_content)
+        lock = docker_exec(name, ["worthless", "lock", "--env", "/tmp/.env"])
+        assert lock.returncode == 0, f"lock failed: {lock.stderr}"
+
+        # Try to start wrap on top of the running daemon. Should fail.
+        wrap_result = docker_exec(name, ["worthless", "wrap", "--", "echo", "should-not-run"])
+        assert wrap_result.returncode != 0, (
+            "wrap should refuse to start when the daemon already owns the port; "
+            f"got returncode=0 with output: {wrap_result.stdout}"
+        )
+        # Diagnostic should name `worthless up` so the user knows the cause.
+        combined_out = (wrap_result.stdout or "") + (wrap_result.stderr or "")
+        assert "worthless up" in combined_out, (
+            f"wrap's pre-spawn check should name `worthless up`. Got: {combined_out}"
+        )
+        assert "8787" in combined_out, (
+            f"diagnostic should name the contested port. Got: {combined_out}"
         )
 
 
