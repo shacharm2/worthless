@@ -290,16 +290,54 @@ def set_capbset_drop_or_log() -> None:
         _LOG.debug("PR_CAPBSET_DROP — full bounding set cleared on forked child")
 
 
+def _read_no_new_privs_from_proc() -> str:
+    """Return the ``NoNewPrivs:`` value from ``/proc/self/status`` or ``"missing"``.
+
+    Linux exposes NNP via procfs across every supported kernel — there
+    is no ``prctl(PR_GET_NO_NEW_PRIVS)`` query equivalent to
+    PR_GET_DUMPABLE that is universally available, so we still parse
+    procfs for this one bit. Raises ``WorthlessError`` if procfs
+    itself is unreadable (rootless container with /proc bind-mounted
+    out) — fail-loud is required because this is a security check.
+    """
+    status_path = Path("/proc/self/status")
+    try:
+        text = status_path.read_text()
+    except OSError as exc:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"could not read {status_path} ({exc.__class__.__name__}); "
+            "refusing to bind without verifying hardening flags.",
+        ) from exc
+    for line in text.splitlines():
+        if line.startswith("NoNewPrivs:"):
+            _, _, value = line.partition(":")
+            return value.strip()
+    return "missing"
+
+
 def assert_hardening_applied() -> None:
-    """Verify ``/proc/self/status`` shows NNP=1 and Dumpable=0 (WOR-310 C2f).
+    """Verify NNP=1 (when in Docker mode) and Dumpable=0 (WOR-310 C2f).
 
     Mocks proved ``set_no_new_privs_or_log`` and ``set_dumpable_zero_or_log``
     CALL the kernel. Real-fork tests proved the kernel honors the call in
     isolation. This check runs at sidecar startup, AFTER ``exec()`` —
     if any LSM filter, seccomp profile, or distroless quirk silently
-    no-op'd the prctl in the preexec, ``/proc/self/status`` will show
-    ``NoNewPrivs: 0`` or ``Dumpable: 1`` and we refuse to bind the
-    socket.
+    no-op'd a prctl, the kernel state will not match what we asked
+    for and we refuse to bind the socket.
+
+    Read-back strategy:
+
+    * **Dumpable**: ``prctl(PR_GET_DUMPABLE)`` via :func:`get_dumpable`.
+      The ``Dumpable:`` field in ``/proc/<pid>/status`` is not exposed
+      on every kernel (verified absent on Linux 6.9.12 — observed in
+      CodeRabbit review and again on GitHub Actions Ubuntu runners
+      where the field surfaced as ``"missing"``). ``prctl`` is the
+      portable kernel API.
+    * **NoNewPrivs**: parsed from ``/proc/self/status``. Linux has
+      no portable ``prctl(PR_GET_NO_NEW_PRIVS)`` query, so procfs is
+      the only option for this bit; it has been exposed on every
+      supported kernel back to 3.5.
 
     Mode gating (``WORTHLESS_DOCKER_PRIVDROP_REQUIRED``):
 
@@ -308,10 +346,10 @@ def assert_hardening_applied() -> None:
       both before exec, and either being absent means the kernel
       silently dropped a security primitive.
     * **Bare-metal / dev mode** (env unset): only ``Dumpable=0`` is
-      required.  ``set_no_new_privs`` is never called in this path
+      required. ``set_no_new_privs`` is never called in this path
       (NNP is a preexec_fn-only primitive — once we ``exec()`` python
       it would be too late and would also break test infrastructure
-      that relies on subprocess.Popen).  Asserting NNP=1 here would
+      that relies on subprocess.Popen). Asserting NNP=1 here would
       refuse every legitimate bare-metal sidecar boot.
 
     Raises ``WorthlessError(SIDECAR_NOT_READY)`` if expectations fail.
@@ -319,48 +357,39 @@ def assert_hardening_applied() -> None:
     """
     if sys.platform != "linux":
         return
-    status_path = Path("/proc/self/status")
-    try:
-        text = status_path.read_text()
-    except OSError as exc:
-        # /proc unavailable (rootless container with /proc bind-mounted out?)
-        # Don't fail open — this is a security check, not best-effort.
-        raise WorthlessError(
-            ErrorCode.SIDECAR_NOT_READY,
-            f"could not read {status_path} ({exc.__class__.__name__}); "
-            "refusing to bind without verifying hardening flags.",
-        ) from exc
-
-    fields = {}
-    for line in text.splitlines():
-        if line.startswith(("NoNewPrivs:", "Dumpable:")):
-            key, _, value = line.partition(":")
-            fields[key] = value.strip()
-
-    no_new_privs = fields.get("NoNewPrivs", "missing")
-    dumpable = fields.get("Dumpable", "missing")
 
     docker_mode = os.environ.get("WORTHLESS_DOCKER_PRIVDROP_REQUIRED") == "1"
-    if docker_mode and no_new_privs != "1":
+
+    if docker_mode:
+        no_new_privs = _read_no_new_privs_from_proc()
+        if no_new_privs != "1":
+            raise WorthlessError(
+                ErrorCode.SIDECAR_NOT_READY,
+                f"/proc/self/status::NoNewPrivs={no_new_privs!r} (expected '1'); "
+                "preexec_fn's PR_SET_NO_NEW_PRIVS was no-op'd by an LSM/seccomp "
+                "filter or kernel bug. Refusing to bind without setuid-escalation "
+                "defense.",
+            )
+
+    dumpable = get_dumpable()
+    if dumpable is None:
         raise WorthlessError(
             ErrorCode.SIDECAR_NOT_READY,
-            f"/proc/self/status::NoNewPrivs={no_new_privs!r} (expected '1'); "
-            "preexec_fn's PR_SET_NO_NEW_PRIVS was no-op'd by an LSM/seccomp "
-            "filter or kernel bug. Refusing to bind without setuid-escalation "
-            "defense.",
+            "prctl(PR_GET_DUMPABLE) returned None (libc unreachable or "
+            "syscall failed); refusing to bind without verifying the "
+            "core-dump defense.",
         )
-    if dumpable != "0":
+    if dumpable != 0:
         raise WorthlessError(
             ErrorCode.SIDECAR_NOT_READY,
-            f"/proc/self/status::Dumpable={dumpable!r} (expected '0'); "
+            f"prctl(PR_GET_DUMPABLE)={dumpable} (expected 0); "
             "set_dumpable_zero() was no-op'd. Refusing to bind "
             "without core-dump / non-parent-ptrace defense.",
         )
 
     _LOG.debug(
-        "hardening assertion passed: docker_mode=%s, NoNewPrivs=%s, Dumpable=%s",
+        "hardening assertion passed: docker_mode=%s, Dumpable=%d",
         docker_mode,
-        no_new_privs,
         dumpable,
     )
 

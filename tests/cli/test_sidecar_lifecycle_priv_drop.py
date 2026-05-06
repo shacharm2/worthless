@@ -1517,14 +1517,29 @@ def test_set_capbset_drop_or_log_is_noop_on_non_linux(monkeypatch: pytest.Monkey
 # ---------------------------------------------------------------------------
 
 
-def test_assert_hardening_applied_passes_when_proc_status_reports_correct_values(
+def test_assert_hardening_applied_passes_in_bare_metal_when_dumpable_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``assert_hardening_applied`` returns silently when prctl(PR_GET_DUMPABLE)=0.
+
+    Bare-metal mode: only Dumpable is required (NoNewPrivs is preexec-only).
+    """
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    monkeypatch.delenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", raising=False)
+    monkeypatch.setattr(_hardening, "get_dumpable", lambda: 0)
+    _hardening.assert_hardening_applied()  # must not raise
+
+
+def test_assert_hardening_applied_passes_in_docker_mode_when_both_set(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``assert_hardening_applied`` returns silently when NoNewPrivs=1 and Dumpable=0."""
+    """Docker mode: NNP=1 (procfs) AND Dumpable=0 (prctl) → return silently."""
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
     fake_status = tmp_path / "status"
-    fake_status.write_text("Name:\tworthless-sideca\nNoNewPrivs:\t1\nDumpable:\t0\n")
+    fake_status.write_text("NoNewPrivs:\t1\n")
     monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: fake_status)
+    monkeypatch.setattr(_hardening, "get_dumpable", lambda: 0)
     _hardening.assert_hardening_applied()  # must not raise
 
 
@@ -1540,8 +1555,9 @@ def test_assert_hardening_applied_raises_when_no_new_privs_is_zero_in_docker_mod
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
     monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
     fake_status = tmp_path / "status"
-    fake_status.write_text("NoNewPrivs:\t0\nDumpable:\t0\n")
+    fake_status.write_text("NoNewPrivs:\t0\n")
     monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: fake_status)
+    monkeypatch.setattr(_hardening, "get_dumpable", lambda: 0)
 
     with pytest.raises(WorthlessError) as exc_info:
         _hardening.assert_hardening_applied()
@@ -1550,7 +1566,7 @@ def test_assert_hardening_applied_raises_when_no_new_privs_is_zero_in_docker_mod
 
 
 def test_assert_hardening_applied_allows_no_new_privs_zero_in_bare_metal_mode(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """In bare-metal/dev mode, NoNewPrivs=0 is expected — no preexec_fn ran.
 
@@ -1564,40 +1580,62 @@ def test_assert_hardening_applied_allows_no_new_privs_zero_in_bare_metal_mode(
     """
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
     monkeypatch.delenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", raising=False)
-    fake_status = tmp_path / "status"
-    fake_status.write_text("NoNewPrivs:\t0\nDumpable:\t0\n")
-    monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: fake_status)
+    monkeypatch.setattr(_hardening, "get_dumpable", lambda: 0)
 
     _hardening.assert_hardening_applied()  # must not raise
 
 
 def test_assert_hardening_applied_raises_when_dumpable_is_one(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dumpable=1 means core dumps + cross-process ptrace are possible."""
+    """Dumpable=1 means core dumps + cross-process ptrace are possible.
+
+    Read via ``prctl(PR_GET_DUMPABLE)`` (portable across kernels — the
+    procfs ``Dumpable:`` field is missing on Linux 6.9.12+).
+    """
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
-    fake_status = tmp_path / "status"
-    fake_status.write_text("NoNewPrivs:\t1\nDumpable:\t1\n")
-    monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: fake_status)
+    monkeypatch.delenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", raising=False)
+    monkeypatch.setattr(_hardening, "get_dumpable", lambda: 1)
 
     with pytest.raises(WorthlessError) as exc_info:
         _hardening.assert_hardening_applied()
     assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
-    assert "Dumpable" in exc_info.value.message
+    assert "PR_GET_DUMPABLE" in exc_info.value.message
 
 
-def test_assert_hardening_applied_raises_when_proc_status_unreadable(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_assert_hardening_applied_raises_when_get_dumpable_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Rootless container with /proc bind-mounted out → fail loud, not open.
+    """libc unreachable / prctl failed → fail loud, not open.
 
-    This is a security check; if we can't verify hardening was applied,
-    we MUST NOT proceed. A best-effort skip would let a misconfigured
-    container ship with NNP=0 silently.
+    A None from get_dumpable means we cannot verify the kernel's view
+    of the dumpable bit. This is a security check; best-effort skip
+    would let a misconfigured sidecar ship with Dumpable=1 silently.
     """
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    monkeypatch.delenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", raising=False)
+    monkeypatch.setattr(_hardening, "get_dumpable", lambda: None)
+
+    with pytest.raises(WorthlessError) as exc_info:
+        _hardening.assert_hardening_applied()
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    assert "PR_GET_DUMPABLE" in exc_info.value.message
+
+
+def test_assert_hardening_applied_raises_when_proc_status_unreadable_in_docker_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Docker mode + rootless container with /proc bind-mounted out → fail loud.
+
+    Procfs is the only way we can read NoNewPrivs (no portable prctl
+    equivalent). In Docker mode NNP is mandatory, so an unreadable
+    procfs blocks the security check entirely.
+    """
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+    monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
     nonexistent = tmp_path / "does-not-exist"
     monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: nonexistent)
+    monkeypatch.setattr(_hardening, "get_dumpable", lambda: 0)
 
     with pytest.raises(WorthlessError) as exc_info:
         _hardening.assert_hardening_applied()
@@ -1608,8 +1646,8 @@ def test_assert_hardening_applied_raises_when_proc_status_unreadable(
 def test_assert_hardening_applied_is_noop_on_non_linux(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mac dev path: /proc doesn't exist; the check is a no-op."""
     monkeypatch.setattr(_hardening.sys, "platform", "darwin")
-    sentinel = MagicMock(side_effect=AssertionError("Path must not run on non-Linux"))
-    monkeypatch.setattr("worthless.sidecar._hardening.Path", sentinel)
+    sentinel = MagicMock(side_effect=AssertionError("get_dumpable must not run on non-Linux"))
+    monkeypatch.setattr(_hardening, "get_dumpable", sentinel)
     _hardening.assert_hardening_applied()  # must not raise
 
 
