@@ -361,7 +361,26 @@ def spawn_sidecar(
         WorthlessError: WRTLS-114 if the path is too long for AF_UNIX,
             the sidecar does not become ready, or *service_uids* contains
             a root id (uid/gid 0) that would silently no-op the drop.
+
+    Environment:
+        ``WORTHLESS_SIDECAR_READY_TIMEOUT_SECS``: when set to a positive
+            float, overrides *ready_timeout*. Required for slow CI
+            runners (GitHub Actions Ubuntu can exceed 5s for cold-start
+            Python + asyncio + bind under xdist load); unused in prod
+            where startup is reliably <2s.
     """
+    # CI override: a slow runner can blow past 5s on cold-start before
+    # asyncio is even up. Env var lets the workflow extend the deadline
+    # without touching the prod default.
+    ready_env = os.environ.get("WORTHLESS_SIDECAR_READY_TIMEOUT_SECS")
+    if ready_env:
+        try:
+            override = float(ready_env)
+        except ValueError:
+            override = 0.0
+        if override > 0:
+            ready_timeout = override
+
     # If the caller asked for a privilege drop, the ids must be non-root.
     # ``pw_uid == 0`` means "drop to root" — a no-op that silently breaks
     # the v1.1 security claim. Validating here so a future Dockerfile
