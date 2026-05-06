@@ -329,6 +329,28 @@ def _make_priv_drop_preexec(uids: ServiceUids) -> Callable[[], None]:
     return _drop_in_child
 
 
+def _format_ready_timeout_message(proc: subprocess.Popen[bytes], ready_timeout: float) -> str:
+    """Build the WRTLS-114 message with sidecar exit code + stderr tail.
+
+    A bare "did not become ready within Ns" hides the actual cause.
+    If the sidecar already exited (e.g. raised WRTLS-NNN at startup),
+    drain its captured stderr (already piped via ``stderr=PIPE``) and
+    fold it in. If it's still running, say so explicitly so the
+    operator knows the bind itself was slow rather than a crash.
+    """
+    exit_code = proc.poll()
+    if exit_code is None:
+        tail = " (sidecar still running; suspect slow bind)"
+    else:
+        try:
+            _, stderr_bytes = proc.communicate(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            stderr_bytes = b""
+        captured = stderr_bytes.decode("utf-8", errors="replace").strip() if stderr_bytes else ""
+        tail = f" (sidecar exited rc={exit_code}; stderr={captured!r})"
+    return f"sidecar did not become ready within {ready_timeout}s{tail}"
+
+
 def spawn_sidecar(
     socket_path: Path,
     shares: ShareFiles,
@@ -475,7 +497,7 @@ def spawn_sidecar(
         if not ready:
             raise WorthlessError(
                 ErrorCode.SIDECAR_NOT_READY,
-                f"sidecar did not become ready within {ready_timeout}s",
+                _format_ready_timeout_message(proc, ready_timeout),
             )
         _verify_socket_inode(socket_path)
     except BaseException:
