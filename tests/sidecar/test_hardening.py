@@ -261,3 +261,77 @@ def test_main_returns_rc_1_when_yama_check_raises(monkeypatch: pytest.MonkeyPatc
 
     rc = sidecar_main.main()
     assert rc == 1, f"expected rc=1 on YAMA refusal; got {rc}"
+
+
+def test_main_downgrades_yama_refusal_to_warning_in_docker_two_uid_mode(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """In Docker two-uid mode, YAMA ptrace_scope=0 is warning-only.
+
+    CodeRabbit fix (line 317): when ``WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1``
+    is set, the kernel uid wall (proxy_uid != crypto_uid) blocks ptrace
+    and ``/proc/<pid>/mem`` regardless of YAMA scope. A host with
+    ``ptrace_scope=0`` still gives us the security claim — refusing
+    startup there would block legitimate boots on Render/Fly/managed
+    Kubernetes hosts we cannot tune. YAMA stays mandatory in bare-metal
+    same-uid mode (covered by the prior test).
+    """
+    import logging
+
+    from worthless.sidecar import __main__ as sidecar_main
+
+    def raise_yama() -> None:
+        raise WorthlessError(
+            ErrorCode.YAMA_PTRACE_SCOPE_TOO_LOW,
+            "ptrace_scope=0",
+        )
+
+    async def fake_run() -> int:
+        return 0
+
+    monkeypatch.setattr(_hardening, "set_dumpable_zero", lambda: None)
+    monkeypatch.setattr(_hardening, "check_yama_ptrace_scope", raise_yama)
+    monkeypatch.setattr(_hardening, "assert_hardening_applied", lambda: None)
+    monkeypatch.setattr(sidecar_main, "_run", fake_run)
+    monkeypatch.delenv("WORTHLESS_LOG_LEVEL", raising=False)
+    monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
+
+    with caplog.at_level(logging.WARNING, logger="worthless.sidecar"):
+        rc = sidecar_main.main()
+
+    assert rc == 0, f"expected rc=0 in Docker mode (uid wall protects ptrace); got {rc}"
+    assert any(
+        "YAMA" in rec.message and "defense-in-depth" in rec.message for rec in caplog.records
+    ), "Docker mode must emit a defense-in-depth WARNING when YAMA scope is permissive"
+
+
+def test_main_keeps_yama_refusal_fatal_when_docker_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bare-metal mode: YAMA scope=0 stays a hard refusal.
+
+    The complement of the prior test. When ``WORTHLESS_DOCKER_PRIVDROP_REQUIRED``
+    is unset/empty (install.sh path or someone running the sidecar
+    directly), there is no uid wall — YAMA *is* the primary defense.
+    Refusal must stay loud.
+    """
+    from worthless.sidecar import __main__ as sidecar_main
+
+    def raise_yama() -> None:
+        raise WorthlessError(
+            ErrorCode.YAMA_PTRACE_SCOPE_TOO_LOW,
+            "ptrace_scope=0",
+        )
+
+    async def fake_run() -> int:
+        raise AssertionError("_run must NOT be called when YAMA refusal stands")
+
+    monkeypatch.setattr(_hardening, "set_dumpable_zero", lambda: None)
+    monkeypatch.setattr(_hardening, "check_yama_ptrace_scope", raise_yama)
+    monkeypatch.setattr(_hardening, "assert_hardening_applied", lambda: None)
+    monkeypatch.setattr(sidecar_main, "_run", fake_run)
+    monkeypatch.delenv("WORTHLESS_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", raising=False)
+
+    rc = sidecar_main.main()
+    assert rc == 1, f"expected rc=1 in bare-metal mode on YAMA refusal; got {rc}"

@@ -35,10 +35,13 @@ def _load_libc() -> ctypes.CDLL | None:
     """Load libc with a deterministic fallback chain (WOR-310 C2f).
 
     ``ctypes.util.find_library('c')`` shells out to ``gcc``/``ld``/
-    ``ldconfig`` — these are absent from distroless final stages. The
-    primary ``libc.so.6`` and ``libc.musl-x86_64.so.1`` covers both
-    glibc and musl distributions, so we try those by name FIRST and
-    fall back to ``find_library`` only if both fail.
+    ``ldconfig`` — these are absent from distroless final stages. We
+    try architecture-specific sonames by name FIRST and fall back to
+    ``find_library`` only if all direct loads fail:
+
+    * ``libc.so.6`` — glibc on every supported architecture
+    * ``libc.musl-x86_64.so.1`` — musl on x86_64 (Alpine on amd64)
+    * ``libc.musl-aarch64.so.1`` — musl on aarch64 (Alpine on arm64)
 
     Returns ``None`` when no libc can be located; caller logs and
     returns (preserving the fork-child-safe contract of the ``_or_log``
@@ -46,7 +49,7 @@ def _load_libc() -> ctypes.CDLL | None:
     """
     if sys.platform != "linux":
         return None
-    for soname in ("libc.so.6", "libc.musl-x86_64.so.1"):
+    for soname in ("libc.so.6", "libc.musl-x86_64.so.1", "libc.musl-aarch64.so.1"):
         try:
             return ctypes.CDLL(soname, use_errno=True)
         except OSError:
@@ -62,6 +65,13 @@ def _load_libc() -> ctypes.CDLL | None:
 
 # https://man7.org/linux/man-pages/man2/prctl.2.html — PR_SET_DUMPABLE = 4
 PR_SET_DUMPABLE = 4
+
+# https://man7.org/linux/man-pages/man2/prctl.2.html — PR_GET_DUMPABLE = 3
+# Read-back of the dumpable bit. Used by the C2b real-fork test to verify
+# the kernel honored ``PR_SET_DUMPABLE=0``: ``/proc/<pid>/status::Dumpable``
+# is not exposed on every kernel (verified absent on Linux 6.9.12), so we
+# query the kernel directly via prctl, which is portable across kernels.
+PR_GET_DUMPABLE = 3
 
 # https://man7.org/linux/man-pages/man2/prctl.2.html — PR_SET_NO_NEW_PRIVS = 38
 # Locks the no_new_privs bit. Once set, the process and its children can
@@ -115,7 +125,8 @@ def set_dumpable_zero() -> None:
         raise WorthlessError(
             ErrorCode.SIDECAR_NOT_READY,
             "could not load libc on Linux (tried libc.so.6, "
-            "libc.musl-x86_64.so.1, ctypes.util.find_library('c')); "
+            "libc.musl-x86_64.so.1, libc.musl-aarch64.so.1, "
+            "ctypes.util.find_library('c')); "
             "refusing to start without PR_SET_DUMPABLE=0.",
         )
     rc = libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)
@@ -162,6 +173,32 @@ def set_dumpable_zero_or_log() -> None:
         )
         return
     _LOG.debug("PR_SET_DUMPABLE=0 (preexec) — applied to forked child")
+
+
+def get_dumpable() -> int | None:
+    """Return ``prctl(PR_GET_DUMPABLE)`` — the kernel's view of the dumpable bit.
+
+    Used by the C2b real-fork test to verify the kernel honored
+    :func:`set_dumpable_zero_or_log`. Returns ``0`` (not dumpable) or
+    ``1`` (dumpable). Returns ``None`` if libc cannot be loaded or the
+    syscall fails — the caller treats ``None`` as "indeterminate, skip".
+
+    Reading via ``prctl`` instead of ``/proc/<pid>/status::Dumpable``
+    because that procfs field is not exposed on every kernel (verified
+    absent on Linux 6.9.12 in CodeRabbit review). ``prctl`` is the
+    portable kernel API, available wherever ``set_dumpable_zero`` is.
+
+    Linux-only — silent ``None`` on Darwin/Windows.
+    """
+    if sys.platform != "linux":
+        return None
+    libc = _load_libc()
+    if libc is None:
+        return None
+    rc = libc.prctl(PR_GET_DUMPABLE, 0, 0, 0, 0)
+    if rc < 0:
+        return None
+    return rc
 
 
 def set_no_new_privs_or_log() -> None:

@@ -248,14 +248,22 @@ def test_set_dumpable_zero_or_log_logs_and_returns_on_prctl_failure(
 def test_set_dumpable_zero_or_log_logs_when_libc_unreachable(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``_or_log`` swallows ``find_library`` returning None too.
+    """``_or_log`` swallows ``_load_libc`` returning None.
 
     Same rationale as the prctl-failure case: any Linux failure path
     inside preexec_fn must log + return, never raise.
+
+    CodeRabbit fix: patch ``_load_libc`` directly. The original test
+    patched only ``find_library``, but ``_load_libc`` probes
+    ``libc.so.6``/``libc.musl-*.so.1`` directly via ``CDLL`` BEFORE
+    consulting ``find_library`` (so distroless without ``ldconfig``
+    still works). On glibc CI runners ``CDLL("libc.so.6")`` succeeds
+    and the ``find_library`` patch is never reached — the test passed
+    locally on macOS only because the platform-gate short-circuited.
     """
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
     with (
-        patch("worthless.sidecar._hardening.ctypes.util.find_library", return_value=None),
+        patch("worthless.sidecar._hardening._load_libc", return_value=None),
         caplog.at_level(logging.ERROR, logger="worthless.sidecar.hardening"),
     ):
         _hardening.set_dumpable_zero_or_log()  # must not raise
@@ -629,13 +637,19 @@ def _read_proc_status_field(pid: int, field_prefix: str) -> str | None:
     return f"<no-match for {field_prefix!r}; fields present: {field_names}>"
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="real-fork test requires Linux /proc + setres*")
+@pytest.mark.skipif(sys.platform != "linux", reason="real-fork test requires Linux prctl + setres*")
 def test_set_dumpable_zero_or_log_actually_sets_dumpable_in_forked_child() -> None:
-    """In a forked child, ``set_dumpable_zero_or_log()`` makes ``Dumpable: 0``.
+    """In a forked child, ``set_dumpable_zero_or_log()`` makes ``prctl(PR_GET_DUMPABLE) == 0``.
 
     Mocks proved we CALL prctl(PR_SET_DUMPABLE, 0); this test proves the
     kernel HONORS the call. If a future LSM/seccomp filter silently
-    no-ops the syscall, Dumpable stays 1 and the test fails loud.
+    no-ops the syscall, ``PR_GET_DUMPABLE`` returns 1 and the test fails loud.
+
+    CodeRabbit fix: read back via ``prctl(PR_GET_DUMPABLE)`` rather than
+    parsing ``/proc/<pid>/status::Dumpable``. The procfs field is not
+    exposed on every kernel (verified absent on Linux 6.9.12 — this is
+    why CI was failing under Ubuntu py3.13). ``prctl`` is the portable
+    kernel API.
     """
     r_fd, w_fd = os.pipe()
     pid = os.fork()
@@ -643,8 +657,8 @@ def test_set_dumpable_zero_or_log_actually_sets_dumpable_in_forked_child() -> No
         os.close(r_fd)
         try:
             _hardening.set_dumpable_zero_or_log()
-            line = _read_proc_status_field(os.getpid(), "Dumpable:")
-            os.write(w_fd, (line or "MISSING").encode())
+            value = _hardening.get_dumpable()
+            os.write(w_fd, str(value).encode())
         finally:
             os.close(w_fd)
             os._exit(0)
@@ -652,7 +666,9 @@ def test_set_dumpable_zero_or_log_actually_sets_dumpable_in_forked_child() -> No
     output = os.read(r_fd, 4096).decode()
     os.close(r_fd)
     os.waitpid(pid, 0)
-    assert "Dumpable:\t0" in output, f"WOR-310 C2b: kernel did not set Dumpable=0; got {output!r}"
+    assert output == "0", (
+        f"WOR-310 C2b: prctl(PR_GET_DUMPABLE) != 0 after set_dumpable_zero; got {output!r}"
+    )
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="real-fork test requires Linux /proc + prctl")
@@ -1348,7 +1364,7 @@ def test_load_libc_tries_libc_so_6_first_for_distroless(monkeypatch: pytest.Monk
 
 
 def test_load_libc_falls_back_to_musl_when_glibc_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When ``libc.so.6`` fails (Alpine/musl), ``_load_libc`` tries the musl soname."""
+    """When ``libc.so.6`` fails on Alpine x86_64, ``_load_libc`` tries the musl x86_64 soname."""
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
 
     cdll_attempts: list[str] = []
@@ -1368,6 +1384,44 @@ def test_load_libc_falls_back_to_musl_when_glibc_fails(monkeypatch: pytest.Monke
     assert cdll_attempts == ["libc.so.6", "libc.musl-x86_64.so.1"], (
         f"WOR-310 C2f: musl fallback must come after libc.so.6; got {cdll_attempts}"
     )
+
+
+def test_load_libc_falls_back_to_musl_aarch64_on_arm64_alpine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On aarch64 Alpine, ``_load_libc`` falls through to ``libc.musl-aarch64.so.1``.
+
+    CodeRabbit caught: musl uses architecture-specific sonames, so the
+    x86_64-only fallback would silently degrade Alpine ARM64 (now common
+    on Apple Silicon CI runners and AWS Graviton) to the
+    ``find_library`` shell-out path — which fails on distroless. With
+    the aarch64 soname in the chain, the dynamic loader finds it
+    directly without ldconfig.
+    """
+    monkeypatch.setattr(_hardening.sys, "platform", "linux")
+
+    cdll_attempts: list[str] = []
+    fake_musl = MagicMock()
+
+    def fake_cdll(soname: str, **_kwargs: object) -> MagicMock:
+        cdll_attempts.append(soname)
+        if soname == "libc.musl-aarch64.so.1":
+            return fake_musl
+        raise OSError("not glibc, not musl-x86_64")
+
+    monkeypatch.setattr(_hardening.ctypes, "CDLL", fake_cdll)
+    sentinel = MagicMock(
+        side_effect=AssertionError("find_library MUST NOT be called when musl-aarch64 loads")
+    )
+    monkeypatch.setattr(_hardening.ctypes.util, "find_library", sentinel)
+
+    result = _hardening._load_libc()
+    assert result is fake_musl
+    assert cdll_attempts == [
+        "libc.so.6",
+        "libc.musl-x86_64.so.1",
+        "libc.musl-aarch64.so.1",
+    ], f"WOR-310 C2f: musl-aarch64 must be tried after musl-x86_64; got {cdll_attempts}"
 
 
 def test_load_libc_returns_none_when_all_paths_fail(monkeypatch: pytest.MonkeyPatch) -> None:
