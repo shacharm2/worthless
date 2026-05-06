@@ -28,7 +28,7 @@ from worthless.openclaw.errors import (
     OpenclawIntegrationError,
 )
 
-_SKILL_ASSETS_DIR = Path(__file__).parent / "skill_assets"
+_SKILL_ASSETS_DIR = (Path(__file__).resolve().parent / "skill_assets").resolve()
 _SKILL_FILE = "SKILL.md"
 _SKILL_DIR_NAME = "worthless"
 _VERSION_LINE = re.compile(r"^Version:\s*(\S+)\s*$", re.MULTILINE)
@@ -121,7 +121,14 @@ def install(target_dir: Path) -> Path:
         # (R10) — Phase 3 can add files without us touching this code.
         for entry in _SKILL_ASSETS_DIR.iterdir():
             name = entry.name
-            if name == "__init__.py" or name.startswith("__pycache__"):
+            # Skip Python package noise (__init__.py, __pycache__/),
+            # dotfiles (.DS_Store, .gitkeep), and bytecode. The asset
+            # dir is now a real on-disk directory (not a Traversable),
+            # so this filter is load-bearing — without it we'd ship
+            # whatever is sitting next to SKILL.md.
+            if name == "__init__.py" or name.startswith((".", "__")):
+                continue
+            if entry.suffix in {".py", ".pyc"}:
                 continue
             if not entry.is_file():
                 continue

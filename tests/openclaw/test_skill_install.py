@@ -21,6 +21,35 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+def test_skill_md_has_minimum_yaml_frontmatter_for_openclaw_discovery() -> None:
+    """worthless-rxi2 regression: OpenClaw silently ignores SKILL.md
+    files without YAML frontmatter. Without ``name`` + ``description`` +
+    ``metadata.openclaw.requires.bins``, ``openclaw skills check`` does
+    not register the skill — install() succeeds but Pi can never find it.
+
+    This regression caught the Phase 2.a placeholder shipped without
+    frontmatter; verified live against ghcr.io/openclaw/openclaw:latest.
+    Future edits to SKILL.md must keep the minimum keys.
+    """
+    from worthless.openclaw.skill import _SKILL_ASSETS_DIR, _SKILL_FILE
+
+    body = (_SKILL_ASSETS_DIR / _SKILL_FILE).read_text(encoding="utf-8")
+    assert body.startswith("---\n"), "SKILL.md must open with YAML frontmatter delimiter"
+    fm_end = body.index("\n---\n", 4)
+    frontmatter = body[4:fm_end]
+    assert re.search(r"^name:\s*\S", frontmatter, re.MULTILINE), (
+        "SKILL.md frontmatter missing 'name:'"
+    )
+    assert re.search(r"^description:\s*\S", frontmatter, re.MULTILINE), (
+        "SKILL.md frontmatter missing 'description:' — OpenClaw won't display the skill"
+    )
+    assert re.search(r"^\s*bins:\s*$", frontmatter, re.MULTILINE), (
+        "SKILL.md frontmatter missing 'metadata.openclaw.requires.bins:' — "
+        "OpenClaw won't gate availability on the worthless binary"
+    )
+    assert "- worthless" in frontmatter, "bins must include 'worthless'"
+
+
 def test_current_version_returns_nonempty_string() -> None:
     """current_version() reads the embedded SKILL.md placeholder and
     returns its declared version. Phase 3 will replace the body; the
@@ -36,8 +65,8 @@ def test_current_version_returns_nonempty_string() -> None:
 def test_current_version_is_stable_across_calls() -> None:
     """Two consecutive calls return the exact same string.
 
-    Guards against accidental cache invalidation across importlib.resources
-    reloads (R5 risk register).
+    Guards against accidental cache invalidation in the lru_cache wrapper
+    backing _read_skill_asset (R5 risk register).
     """
     from worthless.openclaw import skill
 
