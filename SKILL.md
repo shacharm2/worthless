@@ -518,7 +518,7 @@ The proxy forwards requests and responses transparently. It does NOT log, store,
 
 ## Install (per-platform with machine-readable surface)
 
-When installing worthless on a user's behalf, use the platform-specific guide. Each guide ends with a `## For AI agents` section containing a fenced YAML block with the actionable surface (install/verify/lock commands, expected popup counts, proxy URL templates, known limitations):
+When installing this tool for a user, agents should use the platform-specific guide. Each guide ends with a `## For AI agents` section containing a fenced YAML block with the actionable surface (install/verify/lock commands, expected popup counts, proxy URL templates, known limitations):
 
 - [docs/install/mac.md](docs/install/mac.md) — macOS
 - [docs/install/linux.md](docs/install/linux.md) — Linux (Ubuntu / Debian / Alpine)
