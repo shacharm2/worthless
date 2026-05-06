@@ -1103,12 +1103,18 @@ def test_property_service_uids_accepts_any_positive_id_triple(
 def test_property_spawn_sidecar_accepts_any_valid_uid_triple(
     _share_files: ShareFiles, proxy_uid: int, crypto_uid: int, worthless_gid: int
 ) -> None:
-    """Any valid (>=1) uid triple lets ``spawn_sidecar`` proceed past validation.
+    """Any valid (>=1) uid triple WITH proxy != crypto lets ``spawn_sidecar`` proceed.
 
     Hypothesis explores the boundary at 1 and the upper end at
     4_294_967_295. Validation must accept ALL positive ids, not silently
-    cap at e.g. 65535.
+    cap at e.g. 65535. C2f3's distinctness check requires proxy != crypto;
+    the test filters via ``assume`` so the property is "any DISTINCT pair
+    is accepted" rather than "any pair".
     """
+    from hypothesis import assume
+
+    assume(proxy_uid != crypto_uid)  # C2f3 distinctness — handled separately
+
     import uuid
 
     socket_path = Path(f"/tmp/wor310-c2e-{uuid.uuid4().hex[:8]}.sock")  # noqa: S108
@@ -1121,7 +1127,7 @@ def test_property_spawn_sidecar_accepts_any_valid_uid_triple(
         patch.object(_sidecar_lifecycle.subprocess, "Popen", return_value=fake_proc),
         patch.object(_sidecar_lifecycle, "_wait_for_ready", return_value=True),
     ):
-        # Should NOT raise — any positive id is valid.
+        # Should NOT raise — any positive distinct uid pair is valid.
         spawn_sidecar(
             socket_path=socket_path,
             shares=_share_files,
