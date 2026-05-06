@@ -172,7 +172,9 @@ So if you're on Windows: install WSL2 first, then follow this guide.
 
 ## For AI agents
 
-Schema documented in [README §For AI agents](./README.md#for-ai-agents-installing-on-a-users-behalf).
+> Human readers can stop here — the YAML below is for AI agents.
+
+Schema documented in [agent-schema.md](./agent-schema.md).
 
 ```yaml
 schema_version: 1
@@ -185,6 +187,7 @@ commands:
 expectations:
   install_succeeds_silently: true
   first_lock_keychain_popups: 0   # WSL has no session bus by default — file-backed
+  first_lock_requires_human_interaction: false
   subsequent_command_keychain_popups: 0
   proxy_starts_automatically_on_lock: true
   proxy_survives_reboot: false   # also dies on `wsl --shutdown` from PowerShell

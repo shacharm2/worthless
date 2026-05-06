@@ -223,7 +223,10 @@ understand which scenario you're in.
 
 ## For AI agents
 
-Schema documented in [README §For AI agents](./README.md#for-ai-agents-installing-on-a-users-behalf).
+> Human readers can stop here — the YAML below is for AI agents
+> installing worthless on a user's behalf.
+
+Schema documented in [agent-schema.md](./agent-schema.md).
 Docker has multiple scenarios — the YAML below covers the most common
 ("app in container, worthless on host"). Inspect the scenario sections
 above for compose-stack and team-server flows.
@@ -243,7 +246,8 @@ post_lock_required_step:
   linux_extra: "Add `--add-host=host.docker.internal:host-gateway` if no Docker Desktop"
 expectations:
   install_succeeds_silently: true
-  first_lock_keychain_popups: 0   # depends on host platform; this assumes host is mac/linux/wsl
+  first_lock_keychain_popups: 0   # if host is Mac, this is 1 (see mac.md) — Docker per se adds no popup
+  first_lock_requires_human_interaction: false   # but inherit from host platform's flag
   subsequent_command_keychain_popups: 0
   proxy_starts_automatically_on_lock: true
   proxy_survives_reboot: false

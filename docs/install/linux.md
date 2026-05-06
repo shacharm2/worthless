@@ -189,7 +189,9 @@ rm -rf ~/.worthless
 
 ## For AI agents
 
-Schema documented in [README §For AI agents](./README.md#for-ai-agents-installing-on-a-users-behalf).
+> Human readers can stop here — the YAML below is for AI agents.
+
+Schema documented in [agent-schema.md](./agent-schema.md).
 
 ```yaml
 schema_version: 1
@@ -202,14 +204,35 @@ commands:
 expectations:
   install_succeeds_silently: true
   first_lock_keychain_popups: 0   # zero on servers (file-backed); may be 1 on GNOME/KDE desktop
+  first_lock_requires_human_interaction: false   # on server; true if GNOME/KDE prompts for keyring unlock
   subsequent_command_keychain_popups: 0
   proxy_starts_automatically_on_lock: true
   proxy_survives_reboot: false
 proxy:
   url_template: "http://127.0.0.1:8787/<alias>/v1"
   port: 8787
+service_install:
+  # Agents must run all three for "survives reboot" — the unit alone isn't enough.
+  unit_path: "~/.config/systemd/user/worthless-proxy.service"
+  unit_text: |
+    [Unit]
+    Description=Worthless local proxy
+    After=network.target
+
+    [Service]
+    ExecStart=%h/.local/bin/worthless up
+    Restart=on-failure
+    RestartSec=5s
+
+    [Install]
+    WantedBy=default.target
+  enable_commands:
+    - "systemctl --user daemon-reload"
+    - "systemctl --user enable --now worthless-proxy.service"
+    - "loginctl enable-linger \"$USER\""   # REQUIRED on headless boxes; without it the unit dies on logout
 limitations:
-  - "Manual `worthless up` after every reboot — WOR-175 systemd unit ships in v1.1"
+  - "Manual `worthless up` after reboot UNLESS service_install applied — WOR-175 ships managed install/uninstall in v1.1"
+  - "service_install is per-user; if app runs as a different user, install worthless under that user too"
   - "On servers with no DBus session, fernet key lives at ~/.worthless/.fernet-key (mode 0600)"
   - "uv tool uninstall doesn't purge keystore — WOR-435"
 ```

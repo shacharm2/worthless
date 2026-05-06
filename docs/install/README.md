@@ -77,38 +77,9 @@ Honest list — these are tracked, not unknown.
 
 If you hit something that isn't on this list, file a GitHub issue.
 
-## For AI agents installing on a user's behalf
+---
 
-The bottom of each platform guide carries a `## For AI agents` section
-with a fenced YAML block. The schema is intentionally small — only what
-an agent needs to install + verify + recognize known failure modes
-without parsing prose. Schema:
-
-```yaml
-schema_version: 1
-platform: macos | linux | wsl | docker
-commands:
-  install: <shell command, runs once>
-  verify: <shell command, runs after install>
-  first_lock: <shell command, runs in a project dir with .env>
-  proxy_restart: <shell command, runs after reboot or manual stop>
-expectations:
-  install_succeeds_silently: <bool — does install produce no popups>
-  first_lock_keychain_popups: <int — how many popups on first lock>
-  subsequent_command_keychain_popups: <int — should be 0>
-  proxy_starts_automatically_on_lock: <bool>
-  proxy_survives_reboot: <bool — currently false on every platform>
-proxy:
-  url_template: <string with <alias> placeholder>
-  port: <int>
-limitations:
-  - <one-line text reference to a tracked ticket>
-```
-
-Agents should treat the human prose above each `## For AI agents` block
-as background context, and the YAML as the actionable surface. SKILL.md
-points agents at this entry path.
-
-Schema versioning: bump `schema_version` on any breaking change to the
-keys; additive changes (new optional keys) keep the version. Agents are
-expected to tolerate unknown keys.
+*Installing worthless via an AI coding agent? See
+[agent-schema.md](./agent-schema.md) — each platform guide's
+`## For AI agents` section carries a fenced YAML the agent can extract
+without parsing prose.*

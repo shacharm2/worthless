@@ -160,7 +160,9 @@ After WOR-435 ships, this becomes one command: `worthless uninstall`.
 
 ## For AI agents
 
-Schema documented in [README §For AI agents](./README.md#for-ai-agents-installing-on-a-users-behalf).
+> Human readers can stop here — the YAML below is for AI agents.
+
+Schema documented in [agent-schema.md](./agent-schema.md).
 
 ```yaml
 schema_version: 1
@@ -173,6 +175,7 @@ commands:
 expectations:
   install_succeeds_silently: true
   first_lock_keychain_popups: 1
+  first_lock_requires_human_interaction: true   # popup needs "Always Allow" click — agent must hand back to human
   subsequent_command_keychain_popups: 0
   proxy_starts_automatically_on_lock: true
   proxy_survives_reboot: false

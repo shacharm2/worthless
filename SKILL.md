@@ -525,4 +525,4 @@ When installing worthless on a user's behalf, use the platform-specific guide. E
 - [docs/install/wsl.md](docs/install/wsl.md) — Windows (WSL2)
 - [docs/install/docker.md](docs/install/docker.md) — Docker (host-CLI + container-app, compose stack, team server)
 
-Schema documented at [docs/install/README.md](docs/install/README.md#for-ai-agents-installing-on-a-users-behalf). YAML keys are stable; agents should tolerate unknown keys (additive evolution); breaking changes bump `schema_version`.
+Schema documented at [docs/install/agent-schema.md](docs/install/agent-schema.md). YAML keys are stable; agents should tolerate unknown keys (additive evolution); breaking changes bump `schema_version`.
