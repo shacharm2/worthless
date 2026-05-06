@@ -105,15 +105,22 @@ def test_set_dumpable_zero_raises_on_prctl_failure() -> None:
 
 @pytest.mark.skipif(sys.platform != "linux", reason="prctl is Linux-only")
 def test_set_dumpable_zero_raises_when_libc_unreachable() -> None:
-    """``find_library('c')`` returning ``None`` is a hard error.
+    """``_load_libc`` returning ``None`` is a hard error.
 
     On Linux this is exotic (statically-linked Python? broken
     ldconfig?), but if it happens the sidecar cannot set
     ``PR_SET_DUMPABLE=0`` and the security claim is silently broken.
     Refuse to start with a structured WRTLS-114 instead.
+
+    Patch ``_load_libc`` directly: it probes ``libc.so.6`` /
+    ``libc.musl-*.so.1`` via ``CDLL`` BEFORE consulting
+    ``find_library`` (so distroless without ``ldconfig`` works), so on
+    glibc CI runners patching only ``find_library`` never reaches the
+    None branch — same trap CodeRabbit caught in the C1 fork-child-safe
+    test.
     """
     with (
-        patch("worthless.sidecar._hardening.ctypes.util.find_library", return_value=None),
+        patch("worthless.sidecar._hardening._load_libc", return_value=None),
         pytest.raises(WorthlessError) as exc_info,
     ):
         _hardening.set_dumpable_zero()
