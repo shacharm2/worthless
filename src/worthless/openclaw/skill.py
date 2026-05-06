@@ -21,7 +21,6 @@ import os
 import re
 import shutil
 import tempfile
-from importlib import resources  # nosemgrep
 from pathlib import Path
 
 from worthless.openclaw.errors import (
@@ -29,7 +28,7 @@ from worthless.openclaw.errors import (
     OpenclawIntegrationError,
 )
 
-_SKILL_PACKAGE = "worthless.openclaw.skill_assets"
+_SKILL_ASSETS_DIR = Path(__file__).parent / "skill_assets"
 _SKILL_FILE = "SKILL.md"
 _SKILL_DIR_NAME = "worthless"
 _VERSION_LINE = re.compile(r"^Version:\s*(\S+)\s*$", re.MULTILINE)
@@ -44,12 +43,15 @@ _VERSION_LINE = re.compile(r"^Version:\s*(\S+)\s*$", re.MULTILINE)
 def _read_skill_asset() -> str:
     """Return the embedded ``SKILL.md`` body as a UTF-8 string.
 
-    ``importlib.resources.files()`` is Python 3.9+ and avoids the legacy
-    pkg_resources caching issues called out in risk register R5. The
-    cache is process-lifetime (the asset is embedded and immutable).
-    Tests that monkeypatch this function should call ``_read_skill_asset.cache_clear()``.
+    Reads from ``skill_assets/`` next to this module via ``Path(__file__)``
+    rather than ``importlib.resources``. Both work for source + wheel
+    installs; ``Path(__file__)`` is simpler, has zero false-positive
+    Python-3.7-compatibility lint hits, and works for our setuptools
+    package-data layout. The cache is process-lifetime (the asset is
+    embedded and immutable). Tests that monkeypatch this function should
+    call ``_read_skill_asset.cache_clear()``.
     """
-    return resources.files(_SKILL_PACKAGE).joinpath(_SKILL_FILE).read_text(encoding="utf-8")
+    return (_SKILL_ASSETS_DIR / _SKILL_FILE).read_text(encoding="utf-8")
 
 
 def current_version() -> str:
@@ -114,11 +116,10 @@ def install(target_dir: Path) -> Path:
                 dir=str(target_dir),
             )
         )
-        # Copy every embedded asset file into the staging dir. Using the
-        # importlib.resources contents traversal keeps this content-agnostic
+        # Copy every embedded asset file into the staging dir. Reading
+        # the directory next to the module keeps this content-agnostic
         # (R10) — Phase 3 can add files without us touching this code.
-        package_root = resources.files(_SKILL_PACKAGE)
-        for entry in package_root.iterdir():
+        for entry in _SKILL_ASSETS_DIR.iterdir():
             name = entry.name
             if name == "__init__.py" or name.startswith("__pycache__"):
                 continue
