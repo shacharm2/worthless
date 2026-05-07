@@ -111,7 +111,7 @@ Each AC is a single verifiable assertion. Implementation is "done" when **all** 
 | F12 | `models.providers` is list | Same as F10. | U-CFG-12 |
 | F13 | `worthless-<p>` exists with non-worthless `baseUrl` | **Conflict.** Skip that provider, emit `openclaw.provider_conflict`. Lock core succeeds. | F-CFG-13 |
 | F14 | Non-`worthless-*` provider present (e.g. `openai`, `anthropic`) | Touch nothing. Phase 1 `set_provider()` already preserves siblings. | U-CFG-14 |
-| F15 | `openclaw.json` is a symlink | Refuse to follow. `openclaw.symlink_refused`. | F-CFG-15 |
+| F15 | `openclaw.json` is a symlink | Refuse to follow. `openclaw.symlink_refused`. Three-layer defense: (1) `_probe_config` does NOT `.resolve()` symlinks; (2) `apply_lock`/`apply_unlock` short-circuit on `is_symlink()` before any read/write; (3) `_refuse_if_symlink` runs inside `_file_lock` flock in `set_provider`/`unset_provider`. **Residual:** flock synchronizes worthless-vs-worthless only — a non-worthless attacker `rename(2)`-ing a symlink into place AFTER our `is_symlink()` check but BEFORE `os.replace` is theoretically possible, but requires winning a sub-millisecond race against an already-locked write. Acknowledged out-of-scope. | F-CFG-15 |
 | F16 | Mode world-writable | Warn, proceed. Don't chmod. | F-CFG-16 |
 
 ### Write-stage (F20–F24)
@@ -152,6 +152,7 @@ Each AC is a single verifiable assertion. Implementation is "done" when **all** 
 | F51 | WSL with Windows-side OpenClaw | Out of scope; do NOT probe `/mnt/c`. | F-PLAT-51 |
 | F52 | macOS Apple Silicon vs Intel | No path difference. | F-PLAT-52 |
 | F53 | Linux with `XDG_CONFIG_HOME` | Phase 1 already probes `~/.config/openclaw/` fallback. | F-PLAT-53 |
+| F54 | `~/.openclaw` itself is a symlink-to-dir (e.g. dotfiles tooling: `~/.openclaw -> ~/dotfiles/.openclaw/`). | **Allowed by design.** `_classify` resolves through `symlink-to-dir` for legitimate dotfile users. Same-uid attacker who could plant a parent-dir symlink already has full $HOME write access — could edit `.bashrc` directly, no need to bait us. Refusing here would break stow/chezmoi/yadm users for zero net security gain. Documented residual; not refused. | n/a |
 
 ---
 

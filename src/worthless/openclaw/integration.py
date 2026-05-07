@@ -300,24 +300,53 @@ def _resolve_active_config_path(state: IntegrationState, home: Path | None) -> P
 
 
 def _check_world_writable(config_path: Path, events: list[OpenclawIntegrationEvent]) -> None:
-    """Append a WRITE_FAILED warning event when ``config_path`` is mode 0o**6.
+    """Surface filesystem-integrity risks on ``config_path`` as warnings.
 
-    F-CFG-16: don't chmod, but surface the risk so doctor can flag it.
-    Reuses the WRITE_FAILED code at level=warn — adding a dedicated code
-    is over-engineering for a single warning channel.
+    Two checks, both append WRITE_FAILED level=warn so doctor can flag
+    them. We don't refuse the lock — these are advisories, not policy
+    failures, and the user may have a legitimate reason for the state
+    (dotfiles tooling, multi-user dev box).
+
+    1. F-CFG-16: world/group-writable mode (``0o**6``). Don't chmod —
+       respect the user's umask choice.
+    2. Hardlink defense-in-depth: ``st_nlink > 1`` means
+       ``openclaw.json`` shares an inode with another path. ``os.replace``
+       creates a NEW inode + rebinds the name, so the OTHER hardlink
+       (e.g., a copy of ``~/.bashrc``) survives the swap unmodified —
+       no destruction. But the configuration just opaquely diverged
+       from "wherever the user thinks the other hardlink points," which
+       is a state the user almost certainly didn't intend. Surface it.
+
+    Reuses one WRITE_FAILED code for both — adding a dedicated
+    ``HARDLINK_DETECTED`` code is over-engineering when both flow into
+    the same advisory channel.
     """
     try:
-        mode = config_path.stat().st_mode
+        st = config_path.stat()
     except OSError:
         return
-    if mode & (stat.S_IWGRP | stat.S_IWOTH):
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         events.append(
             OpenclawIntegrationEvent(
                 code=OpenclawErrorCode.WRITE_FAILED,
                 level="warn",
                 detail=(
-                    f"openclaw.json is world/group-writable: {config_path} (mode {mode & 0o777:o})"
+                    f"openclaw.json is world/group-writable: "
+                    f"{config_path} (mode {st.st_mode & 0o777:o})"
                 ),
+            )
+        )
+    if st.st_nlink > 1:
+        events.append(
+            OpenclawIntegrationEvent(
+                code=OpenclawErrorCode.WRITE_FAILED,
+                level="warn",
+                detail=(
+                    f"openclaw.json has {st.st_nlink} hardlinks at {config_path} — "
+                    "atomic-write will rebind only this name; the other hardlink "
+                    "(e.g. ~/.bashrc) is preserved but config now diverges from it"
+                ),
+                extra={"path": str(config_path), "nlink": str(st.st_nlink)},
             )
         )
 
