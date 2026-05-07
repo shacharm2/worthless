@@ -111,26 +111,6 @@ def _list_enrolled_aliases(home: WorthlessHome) -> list[tuple[str, str]]:
         return []
 
 
-def _build_child_env(
-    port: int,
-    aliases: list[tuple[str, str]],
-) -> dict[str, str]:
-    """Inherit the parent env unchanged.
-
-    Pre-8rqs, this used to inject ``OPENAI_BASE_URL`` (or
-    ``ANTHROPIC_BASE_URL``) per provider so the child SDK pointed at the
-    local proxy. Post-8rqs, ``worthless lock`` already wrote the right
-    values into the user's ``.env`` (preserving their var names — e.g.
-    ``OPENROUTER_BASE_URL`` stays ``OPENROUTER_BASE_URL``). Wrap shouldn't
-    overwrite that work.
-
-    ``port`` and ``aliases`` are kept in the signature for backwards
-    compatibility with existing tests; both are now ignored.
-    """
-    del port, aliases  # parameters retained for signature stability
-    return dict(os.environ)
-
-
 def _run_child_and_wait(child: subprocess.Popen) -> int:
     """Wait for child to exit, return its exit code."""
     child.wait()
@@ -267,9 +247,11 @@ def register_wrap_commands(app: typer.Typer) -> None:
                 ),
             )
 
-        # Build child env with BASE_URL injection
         full_command = list(command) + ctx.args
-        child_env = _build_child_env(port, aliases)
+        # Inherit parent env unchanged. Post-8rqs, `worthless lock` writes
+        # *_BASE_URL into the user's .env (preserving their var names);
+        # wrap doesn't synthesise or overwrite anything.
+        child_env = dict(os.environ)
 
         # Spawn child
         try:

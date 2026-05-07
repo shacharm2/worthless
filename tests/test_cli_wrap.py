@@ -18,7 +18,6 @@ from typer.testing import CliRunner
 from worthless.cli.app import app
 from tests.conftest import make_repo as _repo
 from worthless.cli.commands.wrap import (
-    _build_child_env,
     _cleanup_proxy,
     _list_enrolled_aliases,
     _run_child_and_wait,
@@ -46,63 +45,78 @@ def _default_port_free(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-class TestWrapEnvInjection:
-    """wrap injects BASE_URL env vars for enrolled providers."""
+class TestWrapChildEnvContract:
+    """``wrap`` inherits parent env into the child unchanged.
 
-    def test_child_env_has_base_url(self):
-        """8rqs Phase 8: wrap NO LONGER injects OPENAI_BASE_URL — lock writes
-        the right value into the user's .env at lock time and wrap respects it.
+    Pre-8rqs, wrap synthesised ``OPENAI_BASE_URL`` / ``ANTHROPIC_BASE_URL``
+    into the child env. PR #127 (8rqs Phase 8) moved the contract to
+    ``lock``: lock writes ``*_BASE_URL`` into the user's .env preserving
+    their var names, and wrap stops touching env entirely. v0.3.5 removes
+    the dead ``_build_child_env`` helper that wrapped that empty contract;
+    these tests now assert the contract end-to-end against the real
+    ``subprocess.Popen`` ``env=`` kwarg captured during a wrap run, not
+    against the deleted helper's return value.
+    """
 
-        We don't assert the var is absent (parent env may still have it
-        from .env loading); the strict ``no synthesis`` contract is verified
-        in :meth:`test_child_env_no_injection` below.
-        """
-        # Smoke: function callable, no exception with a real-shape input.
-        _ = _build_child_env(port=9999, aliases=[("my-alias", "openai")])
+    @staticmethod
+    def _capture_child_env(home_with_key, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+        """Run wrap with everything mocked except the child-env construction
+        path. Capture the env= kwarg passed to subprocess.Popen for the child."""
+        captured: dict = {}
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 33330
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+        mock_child = MagicMock()
+        mock_child.pid = 33331
+        mock_child.wait.return_value = 0
+        mock_child.returncode = 0
 
-    def test_child_env_no_injection(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The headline 8rqs Phase 8 contract: wrap does not synthesise *_BASE_URL
-        from the alias list. If the parent env is clean, the child env is too."""
+        def _capture_popen(*args, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            return mock_child
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.spawn_proxy", lambda **kw: (mock_proxy, kw["port"])
+        )
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
+        monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
+        monkeypatch.setattr("subprocess.Popen", _capture_popen)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir), "WORTHLESS_PORT": "8787"},
+        )
+        assert result.exit_code == 0, result.output
+        return captured["env"]
+
+    def test_no_base_url_synthesis(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Headline 8rqs Phase 8 contract: wrap does NOT synthesise *_BASE_URL.
+        With a parent env that's clean of BASE_URL vars, the child env is too."""
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
         monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
-        child_env = _build_child_env(
-            port=9999,
-            aliases=[("oai", "openai"), ("ant", "anthropic"), ("or", "openai")],
-        )
-        # No URL synthesis from aliases.
+        child_env = self._capture_child_env(home_with_key, monkeypatch)
         assert "OPENAI_BASE_URL" not in child_env
         assert "ANTHROPIC_BASE_URL" not in child_env
         assert "OPENROUTER_BASE_URL" not in child_env
 
-    def test_child_env_no_session_token(self):
-        """Session token should not be in child env (dead code removed)."""
-        child_env = _build_child_env(port=9999, aliases=[("my-alias", "openai")])
-        assert "WORTHLESS_SESSION_TOKEN" not in child_env
-
-
-class TestBuildChildEnvEdgeCases:
-    """Edge cases for _build_child_env (post-8rqs Phase 8 — wrap is a passthrough)."""
-
-    def test_empty_aliases(self, monkeypatch: pytest.MonkeyPatch):
-        """Empty aliases list — env still inherits from parent."""
-        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
-        child_env = _build_child_env(port=9999, aliases=[])
-        assert "OPENAI_BASE_URL" not in child_env
-        assert "ANTHROPIC_BASE_URL" not in child_env
-
-    def test_inherits_current_env(self):
-        """Child env should include current process env vars."""
-        child_env = _build_child_env(port=9999, aliases=[("a", "openai")])
-        assert "PATH" in child_env
-
-    def test_parent_baseurl_passes_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """If parent has OPENROUTER_BASE_URL set (from user's .env), wrap
-        does not overwrite it — the user's value reaches the child."""
+    def test_parent_baseurl_passes_through(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the parent has ``OPENROUTER_BASE_URL`` set (because the user's
+        .env was sourced or exported), wrap MUST NOT overwrite it — the user's
+        value reaches the child unchanged."""
         monkeypatch.setenv("OPENROUTER_BASE_URL", "http://127.0.0.1:8787/openrouter-x/v1")
-        child_env = _build_child_env(port=9999, aliases=[("openrouter-x", "openai")])
-        assert child_env["OPENROUTER_BASE_URL"] == "http://127.0.0.1:8787/openrouter-x/v1"
+        child_env = self._capture_child_env(home_with_key, monkeypatch)
+        assert child_env.get("OPENROUTER_BASE_URL") == "http://127.0.0.1:8787/openrouter-x/v1"
+
+    def test_no_session_token(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``WORTHLESS_SESSION_TOKEN`` is dead — wrap must never add it back."""
+        monkeypatch.delenv("WORTHLESS_SESSION_TOKEN", raising=False)
+        child_env = self._capture_child_env(home_with_key, monkeypatch)
+        assert "WORTHLESS_SESSION_TOKEN" not in child_env
 
 
 class TestListEnrolledAliasesWithDB:
