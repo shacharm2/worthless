@@ -77,6 +77,13 @@ if [ "$(id -u)" = "0" ]; then
   if [ -n "$WORTHLESS_FERNET_KEY_PATH" ] && [ -f "$FERNET_PATH" ]; then
     chown worthless-proxy:worthless "$FERNET_PATH" 2>/dev/null || true
   fi
+  # bootstrap.ensure_home pinned $HOME_DIR to mode 0o700 — that's
+  # owner-only.  After we chowned to worthless-proxy:worthless, the
+  # sidecar (worthless-crypto, in group worthless) can't traverse
+  # into $HOME_DIR to reach the share files at all.  Bump to 0o710:
+  # owner rwx, worthless group --x (traverse only — no list of
+  # sibling files in /data).
+  chmod 0710 "$HOME_DIR" 2>/dev/null || true
 fi
 
 # Pass Fernet key via file descriptor (not env var — env is visible in /proc).
