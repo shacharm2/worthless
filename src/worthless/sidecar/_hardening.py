@@ -32,21 +32,33 @@ from worthless.cli.errors import ErrorCode, WorthlessError
 _LOG = logging.getLogger("worthless.sidecar.hardening")
 
 
-def _load_libc() -> ctypes.CDLL | None:
+def _load_libc(*, allow_find_library: bool = True) -> ctypes.CDLL | None:
     """Load libc with a deterministic fallback chain (WOR-310 C2f).
 
-    ``ctypes.util.find_library('c')`` shells out to ``gcc``/``ld``/
-    ``ldconfig`` — these are absent from distroless final stages. We
-    try architecture-specific sonames by name FIRST and fall back to
-    ``find_library`` only if all direct loads fail:
+    Tries architecture-specific sonames by name FIRST:
 
     * ``libc.so.6`` — glibc on every supported architecture
     * ``libc.musl-x86_64.so.1`` — musl on x86_64 (Alpine on amd64)
     * ``libc.musl-aarch64.so.1`` — musl on aarch64 (Alpine on arm64)
 
+    With ``allow_find_library=True`` (default), falls back to
+    ``ctypes.util.find_library("c")`` if all direct loads fail.  Used
+    by parent-process / post-exec helpers (``set_dumpable_zero``,
+    ``get_dumpable``, ``get_no_new_privs``, ``assert_hardening_applied``).
+
+    With ``allow_find_library=False``, the find_library fallback is
+    skipped — REQUIRED for preexec_fn helpers running between
+    ``fork()`` and ``exec()``.  CR-3204010808 (MAJOR): on Linux,
+    ``ctypes.util.find_library("c")`` may shell out to ``gcc``/``ld``/
+    ``ldconfig`` (per the ctypes docs).  CPython's ``subprocess``
+    documentation explicitly warns that preexec_fn must avoid
+    non-trivial work between fork and exec — running external
+    helper programs there is exactly the BPO-34394-class hazard the
+    rest of the priv-drop dance carefully avoids.
+
     Returns ``None`` when no libc can be located; caller logs and
-    returns (preserving the fork-child-safe contract of the ``_or_log``
-    variants).
+    returns (preserving the fork-child-safe contract of the
+    ``_or_log`` variants).
     """
     if sys.platform != "linux":
         return None
@@ -55,6 +67,14 @@ def _load_libc() -> ctypes.CDLL | None:
             return ctypes.CDLL(soname, use_errno=True)
         except OSError:
             continue
+    if not allow_find_library:
+        # Preexec context — find_library may shell out, which is unsafe
+        # between fork and exec.  Direct sonames cover every supported
+        # distro (glibc, Alpine x86_64, Alpine aarch64); the only path
+        # this misses is a hand-rolled distroless without /lib/x86_64-
+        # linux-gnu/libc.so.6 — exotic enough to fail-loud-on-log
+        # rather than risk a fork-child gcc invocation.
+        return None
     libc_path = ctypes.util.find_library("c")
     if libc_path is None:
         return None
@@ -164,7 +184,7 @@ def set_dumpable_zero_or_log() -> None:
     """
     if sys.platform != "linux":
         return
-    libc = _load_libc()
+    libc = _load_libc(allow_find_library=False)
     if libc is None:
         _LOG.error(
             "could not load libc on Linux; skipping PR_SET_DUMPABLE=0 inside "
@@ -254,7 +274,7 @@ def set_no_new_privs_or_log() -> None:
     """
     if sys.platform != "linux":
         return
-    libc = _load_libc()
+    libc = _load_libc(allow_find_library=False)
     if libc is None:
         _LOG.error(
             "could not load libc on Linux; skipping PR_SET_NO_NEW_PRIVS=1 "
@@ -293,7 +313,7 @@ def set_capbset_drop_or_log() -> None:
     """
     if sys.platform != "linux":
         return
-    libc = _load_libc()
+    libc = _load_libc(allow_find_library=False)
     if libc is None:
         _LOG.error(
             "could not load libc on Linux; skipping PR_CAPBSET_DROP. "

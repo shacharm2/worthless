@@ -358,10 +358,18 @@ class TestEntrypoint:
             "Fernet migration should use 'install -m 0440' for atomic permissions. "
             "cp + chmod leaves a race window where the key is world-readable."
         )
-        # Ensure no bare 'cp' of the fernet key — only 'install -m' is safe
+        # CR-3204010820: narrow the cp ban to FERNET-KEY paths only.
+        # An unrelated `cp` earlier in entrypoint bootstrap (e.g.
+        # copying a CA bundle, a config file, anything) shouldn't trip
+        # this assertion — it's specifically the fernet key migration
+        # that must use install -m for atomic permissions.
         migration_block = entrypoint_text.split("install -m 0440")[0]
-        assert "cp " not in migration_block, (
-            "Fernet migration should not use bare 'cp' before 'install -m 0440'."
+        assert not re.search(
+            r"\bcp\b[^\n]*(fernet\.key|\$FERNET_PATH|\$LEGACY_FERNET_PATH)",
+            migration_block,
+        ), (
+            "Fernet-key migration should not use bare 'cp' for key material "
+            "before 'install -m 0440'."
         )
 
     def test_ulimit_core_disabled_at_top_of_entrypoint(self, entrypoint_text: str):

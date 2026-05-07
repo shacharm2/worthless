@@ -1451,7 +1451,7 @@ def test_set_capbset_drop_or_log_calls_prctl_for_each_cap(
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
     fake_libc = MagicMock()
     fake_libc.prctl.return_value = 0
-    monkeypatch.setattr("worthless.sidecar._hardening._load_libc", lambda: fake_libc)
+    monkeypatch.setattr("worthless.sidecar._hardening._load_libc", lambda **_kw: fake_libc)
 
     _hardening.set_capbset_drop_or_log()
 
@@ -1491,7 +1491,7 @@ def test_set_capbset_drop_or_log_logs_only_non_einval_failures(
 
     fake_libc = MagicMock()
     fake_libc.prctl.side_effect = fake_prctl
-    monkeypatch.setattr("worthless.sidecar._hardening._load_libc", lambda: fake_libc)
+    monkeypatch.setattr("worthless.sidecar._hardening._load_libc", lambda **_kw: fake_libc)
     monkeypatch.setattr(_ctypes, "get_errno", fake_get_errno)
 
     with caplog.at_level(logging.ERROR, logger="worthless.sidecar.hardening"):
