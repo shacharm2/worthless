@@ -476,25 +476,30 @@ class TestPersistence:
 class TestLifecycle:
     """Enroll + proxy health."""
 
-    def test_enroll_and_healthz(self, container: tuple[str, int]) -> None:
-        """Enrolling a key while the proxy is live + hitting /healthz works.
+    def test_lock_and_healthz(self, container: tuple[str, int]) -> None:
+        """Locking a key while the proxy is live + hitting /healthz works.
 
-        WOR-310 nuance: ``docker exec`` runs as the IMAGE's default
-        user.  Since we removed ``USER worthless`` so the entrypoint
-        can priv-drop, ``docker exec ... worthless enroll`` would run
-        as root and write ``/data/worthless.db`` as root — a uid
-        mismatch with the live ``worthless-proxy`` (uid 10001) that
-        already has the DB open.  Real users enroll via
-        ``docker exec --user worthless-proxy``; mirror that here so
-        the test exercises the supported flow instead of a
-        misconfigured one.
+        Renamed from ``test_enroll_and_healthz`` because the underlying
+        CLI command was renamed in 8rqs: ``worthless enroll`` was
+        replaced with ``worthless lock --env``.  The old test asserted
+        ``enroll.returncode == 0`` against a non-existent subcommand,
+        which Typer printed as "No such command" but still returned
+        rc=0 in some old releases — so the assertion never fired and
+        the test silently exercised nothing before hitting /healthz.
+
+        WOR-310 nuance: ``docker exec`` defaults to the IMAGE's user.
+        Since we dropped ``USER worthless`` for the priv-drop entry,
+        we explicitly run as ``worthless-proxy`` (uid 10001) so the
+        ``worthless.db`` write owner matches the live proxy uid.
         """
         name, port = container
 
-        # Enroll a fake key — explicitly as worthless-proxy to match
-        # the supported user flow under WOR-310's no-USER image.
+        # Write a fake .env, then lock it as worthless-proxy.  Mirrors
+        # the openclaw_stack pattern in test_openclaw_e2e.py — the
+        # supported 8rqs lock-time flow.
         key = fake_openai_key()
-        enroll = subprocess.run(  # noqa: S603, S607
+        env_content = f"OPENAI_API_KEY={key}"
+        write = subprocess.run(  # noqa: S603, S607
             [
                 "docker",
                 "exec",
@@ -502,19 +507,32 @@ class TestLifecycle:
                 "--user",
                 "worthless-proxy",
                 name,
-                "worthless",
-                "enroll",
-                "--alias",
-                "healthz-test",
-                "--key-stdin",
-                "--provider",
-                "openai",
+                "sh",
+                "-c",
+                "cat > /tmp/.env",
             ],
-            input=key,
+            input=env_content,
             capture_output=True,
             text=True,
         )
-        assert enroll.returncode == 0, f"enroll failed: {enroll.stderr}"
+        assert write.returncode == 0, f"failed to write .env: {write.stderr}"
+
+        lock = subprocess.run(  # noqa: S603, S607
+            [
+                "docker",
+                "exec",
+                "--user",
+                "worthless-proxy",
+                name,
+                "worthless",
+                "lock",
+                "--env",
+                "/tmp/.env",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
         # Hit healthz
         resp = httpx.get(
