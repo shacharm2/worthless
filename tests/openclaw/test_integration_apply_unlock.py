@@ -390,6 +390,92 @@ def test_apply_lock_then_apply_unlock_round_trip_byte_identical(
 
 
 # ---------------------------------------------------------------------------
+# RT-02: multi-alias isolation — unlock A leaves B's worthless-* entries intact
+# ---------------------------------------------------------------------------
+
+
+def test_apply_unlock_leaves_other_worthless_entries_intact(
+    openclaw_present: dict[str, Path],
+) -> None:
+    """RT-02 (Phase 2.c spec): lock A → lock B → unlock A; B's worthless-*
+    entry must survive. Each ``apply_unlock`` call removes ONLY the providers
+    named in ``aliases`` — never sweeps other ``worthless-*`` entries that
+    represent still-locked aliases under a different provider.
+
+    This is the multi-tenant isolation guarantee: a user with both an
+    OpenAI key and an Anthropic key can ``unlock`` one without losing the
+    other's OpenClaw routing.
+    """
+    from worthless.openclaw import integration
+
+    config_path = openclaw_present["config_path"]
+    # Simulate state after lock A (openai) + lock B (anthropic).
+    _seed_provider(
+        config_path,
+        "worthless-openai",
+        "http://127.0.0.1:8787/openai-aaaa1111/v1",
+    )
+    _seed_provider(
+        config_path,
+        "worthless-anthropic",
+        "http://127.0.0.1:8787/anthropic-bbbb2222/v1",
+    )
+
+    # Unlock ONLY the openai alias.
+    result = integration.apply_unlock(
+        aliases=[("openai", "openai-aaaa1111")],
+        # Don't sweep the skill folder — anthropic alias still needs it.
+        remove_skill=False,
+    )
+
+    providers = json.loads(config_path.read_text(encoding="utf-8"))["models"]["providers"]
+    assert "worthless-openai" not in providers
+    assert "worthless-anthropic" in providers, (
+        f"RT-02 violated: anthropic entry got swept during openai unlock: {providers}"
+    )
+    assert providers["worthless-anthropic"]["baseUrl"] == (
+        "http://127.0.0.1:8787/anthropic-bbbb2222/v1"
+    ), "RT-02 violated: anthropic baseUrl mutated"
+    assert "worthless-openai" in result.providers_set
+    # Anthropic is NOT mentioned in providers_set OR providers_skipped — it
+    # wasn't in the unlock request.
+    assert all("anthropic" not in name for name in result.providers_set)
+    assert all("anthropic" not in name for name, _reason in result.providers_skipped)
+
+
+def test_apply_unlock_leaves_non_worthless_providers_intact(
+    openclaw_present: dict[str, Path],
+) -> None:
+    """RT-02 sibling: a user-managed provider (e.g. raw ``openai`` without
+    the ``worthless-`` prefix) must NEVER be touched. Phase 1
+    ``unset_provider`` is keyed by exact name — this test pins the
+    contract end-to-end through ``apply_unlock``.
+    """
+    from worthless.openclaw import integration
+
+    config_path = openclaw_present["config_path"]
+    _seed_provider(
+        config_path,
+        "worthless-openai",
+        "http://127.0.0.1:8787/openai-aaaa1111/v1",
+    )
+    # User's manual provider — different name, different baseUrl.
+    _seed_provider(
+        config_path,
+        "openai",
+        "https://api.openai.com/v1",
+        api_key="sk-user-managed",
+    )
+
+    integration.apply_unlock(aliases=[("openai", "openai-aaaa1111")])
+
+    providers = json.loads(config_path.read_text(encoding="utf-8"))["models"]["providers"]
+    assert "worthless-openai" not in providers
+    assert "openai" in providers, "user-managed 'openai' provider got swept"
+    assert providers["openai"]["baseUrl"] == "https://api.openai.com/v1"
+
+
+# ---------------------------------------------------------------------------
 # RT-03 / CONFIG_MISSING: openclaw.json deleted between lock and unlock
 # ---------------------------------------------------------------------------
 
