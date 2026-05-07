@@ -1,6 +1,6 @@
 # WOR-431 Phase 2 — `lock`/`unlock`/`doctor` OpenClaw Magic Integration
 
-> **Status:** Approved spec. Phase 2.a shipped; Phase 2.b–2.f pending.
+> **Status:** Approved spec. Phase 2.a/b/c shipped (config plumbing + symlink hardening). Phase 2.d (doctor), 2.e (concurrency/injection harness), 2.f (docs/close WOR-321) pending. Killer flow (real LLM call traversing OpenClaw → proxy → reconstruction → upstream → back) **NOT YET MEASURED** — deferred to WOR-432 e2e harness which is now a hard merge gate per 2026-05-08 verification gauntlet (5-agent aggregate: karen, T-C-V (task completion validator), brutus, qa-expert, test-automator).
 > **Linear:** [WOR-431](https://linear.app/plumbusai/issue/WOR-431) (epic [WOR-421](https://linear.app/plumbusai/issue/WOR-421); WOR-321 merged here as Duplicate)
 > **Branch:** `feature/wor-421-openclaw-research-doc`
 > **Worktree:** `/Users/shachar/Projects/worthless/worthless-wor421-openclaw`
@@ -367,24 +367,80 @@ deferred to Phases 2.b/2.c/2.e per spec §"Sub-phases".
 Linear desc updated with epic comment but not bulk-rewritten yet — addressed
 by this very commit). All other ACs correctly deferred.
 
-### Phase 2.b — `lock` integration (NEXT)
+### Phase 2.b — `lock` integration
 
-**Status:** ⏳ Not started. TDD pattern from Phase 2.a will continue:
-write failing tests for the new `apply_lock()` integration first, then
-extend `cli/commands/lock.py` to call it.
+**Status:** ✅ Shipped (commits `872ff44`, `5c86441`).
+
+`apply_lock()` lives in `src/worthless/openclaw/integration.py`; called from
+`cli/commands/lock.py::_apply_openclaw` after `_batch_rewrite` succeeds. Per
+L1/L2: failures here never roll back lock-core. Three HIGH gaps surfaced by
+Cycle A dynamic-verify (daemon needed `models: []` + `api: <protocol>`,
+hardcoded port 8787, missing upfront symlink short-circuit) closed in
+`5c86441`. **What ships:** correct provider-entry writes when OpenClaw is
+detected. **What is NOT proven:** that an OpenClaw daemon given those
+entries actually routes a real LLM call through our proxy — that's
+WOR-432 territory.
 
 ### Phase 2.c — `unlock` integration
 
-⏳ Pending Phase 2.b.
+**Status:** ✅ Shipped (commits `f3cd5bf`, `5bd33da`, `a212828`).
+
+`apply_unlock()` is the symmetric undo of `apply_lock()`. Two
+post-shipment fixes:
+
+- `5bd33da` added `OpenclawErrorCode.CONFIG_MISSING` (RT-03 was
+  unobservable without it) + upfront symlink short-circuit (was
+  asymmetric with `apply_lock` — got the missing layer in `5bd33da`).
+- `a212828` landed RT-02 (multi-alias survival; lock A → lock B →
+  unlock A leaves B intact).
+
+Independent security audit on the symlink three-layer defense returned
+**SHIP**: F-CFG-15 hardlink defense added (`2cecc55`), parent-dir
+symlink-to-dir documented as out-of-scope (F54), sub-ms TOCTOU residual
+acknowledged in F-CFG-15.
+
+**What is NOT shipped here despite being in 2.c spec scope:**
+- F-XS-46 (`unlock` racing `lock`) — folds into 2.e CONC-46.
+- `--json` event surfacing on `unlock` CLI (and on `lock` — pre-existing).
 
 ### Phase 2.d — `doctor` extension
 
-⏳ Pending Phase 2.b.
+⏳ **Not started.** Branch is 77 commits behind main; `doctor.py` exists
+on main (HF5/HF7/HF9: `8e2c51d`, `57280a2`, `6e8a9fb`). Branch sync
+required before 2.d can layer the OpenClaw row group on top.
 
 ### Phase 2.e — concurrency + injection harness
 
-⏳ Pending Phases 2.b/2.c.
+⏳ **Not started — but contains AC8 (`CONC-45`)** which the spec lists as
+a "CI smoke gate" acceptance criterion. Until 2.e ships, AC8 is not met.
+Plus GAP-INJ20/21/33 + GAP-CONC22/46.
 
 ### Phase 2.f — docs + Linear close-out
 
-⏳ Pending. Spec lives in this file (durably in git as of this commit).
+⏳ Pending. Includes closing WOR-321 as duplicate.
+
+### 2026-05-08 verification-gauntlet aggregate (5 agents)
+
+Triggered by user pushback ("where's the extensive dynamic testing?
+where's the e2e on docker dynamic live?"). PR #143 demoted from
+ready-for-review back to draft.
+
+**Agents:** `karen`, `T-C-V (task completion validator)`, `brutus`, `qa-expert`,
+`test-automator`. **Convergent verdict (all 5):** the killer flow — a
+real LLM call traversing OpenClaw → proxy → reconstruction → upstream
+→ back — is **not measured** by anything shipped in 2.a/b/c.
+
+**P0 backlog before merge** (in order):
+1. Phase 2.e: GAP-CONC45 (AC8 fulfillment) + GAP-INJ20/21/33 + GAP-CONC22/46.
+2. Branch sync with main (77 commits; `doctor.py` conflict on 2.d guaranteed otherwise).
+3. Phase 2.d: doctor row group + `--fix` mode + 5 U-DOC tests.
+4. WOR-432: e2e harness per `test-automator` blueprint (closes E2E-01..06, NF-01, NF-02 — Shard A memory-zeroing across the OpenClaw lifecycle).
+5. Phase 2.f: docs + close WOR-321 duplicate.
+
+**P1 design decisions surfaced (require human input):**
+- Brutus B1: keep magic UX (L6) or introduce `worthless openclaw enroll` opt-in?
+- Brutus B2: keep L1 (best-effort + surfaced events) or change to non-zero exit on partial detection failure?
+- Brutus B3: `_PROVIDER_API` schema discovery vs hardcoded — fail-loud-on-unknown-api as cheap mitigation now?
+
+Live aggregate: see Linear comment on WOR-431 dated 2026-05-07T21:45 UTC
+(comment id `1c4fc0a9-23d6-4f3d-b78f-9d0d41391df9`).
