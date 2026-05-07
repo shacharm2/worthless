@@ -61,6 +61,24 @@ if [ ! -f "$FERNET_PATH" ]; then
   chmod 0400 "$FERNET_PATH"
 fi
 
+# WOR-310: bootstrap ran as root (entrypoint started as uid 0 so
+# deploy/start.py can do the priv-drop dance) — every file/dir it
+# touched is now root:root.  After the dance the proxy runs as
+# worthless-proxy (uid 10001) and the sidecar reads shares as
+# worthless-crypto (uid 10002); without this chown they hit
+# PermissionError on /data/shard_a, /data/worthless.db, fernet.key.
+# Idempotent: chown is no-op if already correct, safe on every boot.
+# We narrow to the dirs/files we own at the image level (created by
+# the Dockerfile or by bootstrap) — never blanket-chown /data because
+# user-mounted volumes might have prior content with different
+# semantics.
+if [ "$(id -u)" = "0" ]; then
+  chown -R worthless-proxy:worthless "$HOME_DIR" 2>/dev/null || true
+  if [ -n "$WORTHLESS_FERNET_KEY_PATH" ] && [ -f "$FERNET_PATH" ]; then
+    chown worthless-proxy:worthless "$FERNET_PATH" 2>/dev/null || true
+  fi
+fi
+
 # Pass Fernet key via file descriptor (not env var — env is visible in /proc).
 # deploy/start.py reads it back to drive the lifecycle setup.
 exec 3< "$FERNET_PATH"
