@@ -82,6 +82,36 @@ def main() -> int:
     with env_path.open("w") as f:
         f.write(f"OPENAI_API_KEY={real_key}\nOPENAI_BASE_URL={mock_base}\n")
     print(f"[1] wrote .env (real key + OPENAI_BASE_URL) ({real_key[:10]}...)")
+
+    # Register the mock as a known provider so `worthless lock` accepts the
+    # OPENAI_BASE_URL in .env. WRTLS-112 requires this on post-8rqs Worthless.
+    # PyPI v0.3.4 quirks vs main-branch source:
+    # - Flag is `--url` here; main source has `--upstream-base-url`.
+    # - Name `openai` conflicts with the bundled provider; use `openai-mock`.
+    # `worthless lock` resolves OPENAI_BASE_URL by matching URL, not name,
+    # so the mock-named registration is enough for the WRTLS-112 check.
+    register = subprocess.run(  # noqa: S603, S607
+        [  # noqa: S607
+            "worthless",
+            "providers",
+            "register",
+            "--name",
+            "openai-mock",
+            "--url",
+            mock_base,
+            "--protocol",
+            "openai",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if register.returncode != 0:
+        sys.stdout.write(register.stdout)
+        sys.stderr.write(register.stderr)
+        return fail(f"`worthless providers register` exited {register.returncode}")
+    print("[1b] registered mock as openai provider")
+
     lock = subprocess.run(  # noqa: S603, S607
         ["worthless", "lock", "--env", str(env_path)],  # noqa: S607
         capture_output=True,
