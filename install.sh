@@ -250,10 +250,16 @@ install_or_upgrade_worthless() {
     # Capture stderr to tempfiles so we can SHOW it on failure. Pre-fix this
     # block did `2>&1 >/dev/null` and the user only ever saw a generic "Failed
     # to install" + proxy hint banner — masking the actual uv error (bad
-    # version, dep conflict, deleted cwd, disk full, etc.). Two separate
-    # files so when BOTH attempts fail the user sees both diagnostics; the
-    # install error is usually the actionable one (upgrade is a retry).
-    # worthless-nrl1.
+    # version, dep conflict, deleted cwd, disk full, etc.). worthless-nrl1.
+    #
+    # When BOTH install AND upgrade fail (the common real-error path: any
+    # cause that breaks install also breaks upgrade — same resolver, same
+    # network, same disk), only the INSTALL stderr is inlined; upgrade is
+    # surfaced as a one-liner. uv's resolver tracebacks are easily 30+ lines
+    # each — printing both back-to-back pushes the actionable proxy hint
+    # below the fold and buries the real signal. Install error is the
+    # actionable diagnostic ~95% of the time. (brutus catch on PR #148.)
+    #
     # `mktemp -t TEMPLATE` portability: BSD treats the arg as a prefix and appends
     # random chars; modern GNU coreutils tolerate a bare prefix but emit a stderr
     # warning. Pass an explicit `.XXXXXX` template so both backends behave
@@ -273,9 +279,11 @@ install_or_upgrade_worthless() {
             printf "\n       uv tool install reported:\n" >&2
             sed 's/^/         /' "$uv_install_err" >&2
         fi
+        # Don't inline upgrade_err: same root cause as install_err in the
+        # vast majority of cases, and a 30-line repeat just buries the
+        # proxy hint. One-liner is enough to confirm we tried.
         if [ -s "$uv_upgrade_err" ]; then
-            printf "\n       uv tool upgrade reported:\n" >&2
-            sed 's/^/         /' "$uv_upgrade_err" >&2
+            printf "\n       uv tool upgrade also failed (same root cause likely).\n" >&2
         fi
         printf "\n       If this looks like a network issue:\n" >&2
         proxy_hints

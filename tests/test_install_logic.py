@@ -220,10 +220,57 @@ def test_install_failure_surfaces_uv_stderr(tmp_path: Path) -> None:
         f"uv's actual install error must surface to stderr, "
         f"not be hidden behind the generic banner.\nstderr: {result.stderr}"
     )
+    assert "uv tool install reported:" in result.stderr, (
+        "install stderr must be fenced under a clear header so injected "
+        f"text in uv output looks like uv, not install.sh.\nstderr: {result.stderr}"
+    )
     # Banner is still there (not removed, just demoted).
     assert "Failed to install" in result.stderr
     # Proxy hint is still there.
     assert "HTTPS_PROXY" in result.stderr
+
+
+def test_install_failure_dual_skips_upgrade_block(tmp_path: Path) -> None:
+    """When BOTH install AND upgrade fail with non-empty stderrs, only the
+    install stderr is inlined. Upgrade is summarized as a one-liner — uv's
+    resolver tracebacks are easily 30+ lines each, and printing both
+    back-to-back buries the actionable proxy hint below the fold. The install
+    error is the actionable diagnostic ~95% of the time; upgrade is just a
+    retry that fails for the same root cause. (worthless-nrl1, brutus catch.)
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_stub(bin_dir, "uname", "echo Darwin")
+    write_stub(bin_dir, "sw_vers", 'echo "14.5"')
+    write_stub(
+        bin_dir,
+        "uv",
+        _failing_uv_stub(
+            install_stderr="× No solution found when resolving dependencies\n",
+            upgrade_stderr="× package not installed sentinel-do-not-print\n",
+        ),
+    )
+
+    result = run_install(bin_dir)
+    stderr = result.stderr
+
+    assert result.returncode == EXIT_NETWORK
+    # Install stderr is inlined.
+    assert "No solution found" in stderr
+    assert "uv tool install reported:" in stderr
+    # Upgrade stderr is NOT inlined — only a one-liner acknowledging it failed.
+    assert "sentinel-do-not-print" not in stderr, (
+        f"upgrade stderr must NOT be inlined when install stderr is — "
+        f"30 lines of redundant resolver output buries the proxy hint.\nstderr: {stderr}"
+    )
+    assert "uv tool upgrade reported:" not in stderr, (
+        f"`uv tool upgrade reported:` block must be suppressed when install "
+        f"stderr already covers the same root cause.\nstderr: {stderr}"
+    )
+    assert "uv tool upgrade also failed" in stderr, (
+        f"user must still know upgrade was attempted — show a one-liner "
+        f"so the absence of the upgrade block isn't mysterious.\nstderr: {stderr}"
+    )
 
 
 def test_install_failure_proxy_hint_is_secondary(tmp_path: Path) -> None:
@@ -292,4 +339,11 @@ def test_install_failure_empty_stderr_still_shows_banner(tmp_path: Path) -> None
     assert "uv tool upgrade reported:" not in result.stderr, (
         f"empty-stderr path must not show an empty 'uv tool upgrade reported:' "
         f"block.\nstderr: {result.stderr}"
+    )
+    # Empty upgrade stderr → no "upgrade also failed" one-liner either.
+    # No file content means we can't be sure upgrade was even attempted in
+    # a way that produced output; better to stay silent than confuse.
+    assert "uv tool upgrade also failed" not in result.stderr, (
+        f"empty-stderr path must not show the upgrade one-liner; reserve "
+        f"it for the case where there IS suppressed content.\nstderr: {result.stderr}"
     )
