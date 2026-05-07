@@ -72,18 +72,16 @@ def main() -> int:
     env_path = env_dir / ".env"
 
     real_key = fake_openai_key()
+    # Post-8rqs: write OPENAI_BASE_URL alongside OPENAI_API_KEY so `worthless
+    # lock` stores it per-enrollment and the proxy forwards to mock-upstream.
+    # Same pattern as tests/test_openclaw_e2e.py::openclaw_stack. Pre-8rqs
+    # used WORTHLESS_UPSTREAM_OPENAI_URL via docker-compose env; that var was
+    # ripped in PR #127 (Phase 5+6) and became a silent no-op once v0.3.3
+    # shipped to PyPI.
+    mock_base = "http://mock-upstream:9999/v1"
     with env_path.open("w") as f:
-        f.write(f"OPENAI_API_KEY={real_key}\n")
-    print(f"[1] wrote real key to {env_path} ({real_key[:10]}...)")
-
-    # NOTE: this fixture installs Worthless from PyPI via install.sh
-    # (see Dockerfile.ubuntu-bare-lock-e2e). PyPI's Worthless is older
-    # than 8rqs and still honors WORTHLESS_UPSTREAM_OPENAI_URL (set in
-    # docker-compose.lock-e2e.yml's environment section) for upstream
-    # redirection to the mock. Once 8rqs ships to PyPI, swap this for
-    # `worthless providers register --name openai-mock ...` followed
-    # by writing OPENAI_BASE_URL into .env — same pattern used in
-    # tests/test_openclaw_e2e.py::openclaw_stack post-8rqs.
+        f.write(f"OPENAI_API_KEY={real_key}\nOPENAI_BASE_URL={mock_base}\n")
+    print(f"[1] wrote .env (real key + OPENAI_BASE_URL) ({real_key[:10]}...)")
     lock = subprocess.run(  # noqa: S603, S607
         ["worthless", "lock", "--env", str(env_path)],  # noqa: S607
         capture_output=True,
