@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -16,12 +17,16 @@ from worthless.cli.dotenv_rewriter import remove_env_key, rewrite_env_key
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp
 from worthless.crypto.types import zero_buf
+from worthless.openclaw import integration as _openclaw_integration
+from worthless.openclaw.errors import OpenclawIntegrationError
 from worthless.storage.repository import (
     EnrollmentRecord,
     EncryptedShard,
     ShardRepository,
     StoredShard,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def _resolve_enrollment(
@@ -101,8 +106,14 @@ async def _unlock_alias(
     home: WorthlessHome,
     repo: ShardRepository,
     env_path: Path | None,
-) -> str | None:
-    """Unlock a single alias. Returns the reconstructed key string, or None on error."""
+) -> tuple[str, str] | None:
+    """Unlock a single alias.
+
+    Returns ``(provider, alias)`` for the just-unlocked enrollment so the
+    caller can feed Phase 2.c's :func:`integration.apply_unlock` for
+    symmetric OpenClaw cleanup. Returns ``None`` on errors that are
+    propagated as :class:`WorthlessError` from the helpers below.
+    """
     console = get_console()
 
     encrypted = await repo.fetch_encrypted(alias)
@@ -126,7 +137,7 @@ async def _unlock_alias(
             key_str = key_buf.decode()
             _restore_env(env_path, var_name, key_str, encrypted.provider, alias, console)
             await _cleanup_enrollment(alias, enrollment, repo, home)
-            return key_str
+            return (encrypted.provider, alias)
         finally:
             zero_buf(key_buf)
     finally:
@@ -178,6 +189,48 @@ async def _cleanup_enrollment(
         await repo.delete_enrolled(alias)
 
 
+def _apply_openclaw_unlock(
+    unlocked: list[tuple[str, str]],
+    console,  # noqa: ANN001 — Console type is opaque from this layer
+) -> None:
+    """Best-effort OpenClaw symmetric undo. Never raises into unlock-core.
+
+    Per L1/L2 in
+    ``engineering/research/openclaw-WOR-431-phase-2-spec.md``: failures
+    here surface as structured events on the returned
+    :class:`worthless.openclaw.integration.OpenclawApplyResult` or are
+    logged + swallowed if the integration layer raises unexpectedly.
+    The user's ``.env`` is already restored — losing the OpenClaw cleanup
+    must never block the unlock outcome.
+    """
+    if not unlocked:
+        return
+    try:
+        result = _openclaw_integration.apply_unlock(aliases=unlocked)
+    except OpenclawIntegrationError as exc:
+        logger.warning("openclaw apply_unlock raised unexpectedly: %s", exc)
+        return
+    except Exception as exc:  # noqa: BLE001 — last-resort guard for L1
+        logger.warning("openclaw apply_unlock raised unexpectedly: %s", exc)
+        return
+
+    if not result.detected:
+        return
+
+    if result.providers_set:
+        console.print_hint(
+            f"  OpenClaw: removed {len(result.providers_set)} provider(s) "
+            f"({', '.join(result.providers_set)})"
+        )
+    if result.skill_installed:
+        console.print_hint("  OpenClaw: skill removed")
+    for name, reason in result.providers_skipped:
+        console.print_warning(f"  OpenClaw: skipped {name} ({reason})")
+    for event in result.events:
+        if event.level == "error":
+            console.print_warning(f"  OpenClaw: {event.code.value} — {event.detail}")
+
+
 def register_unlock_commands(app: typer.Typer) -> None:
     """Register the unlock command on the Typer app."""
 
@@ -196,8 +249,11 @@ def register_unlock_commands(app: typer.Typer) -> None:
 
         async def _unlock_async():
             await repo.initialize()
+            unlocked: list[tuple[str, str]] = []
             if alias:
-                await _unlock_alias(alias, home, repo, env)
+                outcome = await _unlock_alias(alias, home, repo, env)
+                if outcome is not None:
+                    unlocked.append(outcome)
                 console.print_success(f"Unlocked {alias}.")
             else:
                 # Scope to aliases enrolled in this specific .env
@@ -208,8 +264,16 @@ def register_unlock_commands(app: typer.Typer) -> None:
                     console.print_warning("No enrolled keys found.")
                     return
                 for a in aliases:
-                    await _unlock_alias(a, home, repo, env)
+                    outcome = await _unlock_alias(a, home, repo, env)
+                    if outcome is not None:
+                        unlocked.append(outcome)
                 console.print_success(f"{len(aliases)} key(s) restored.")
+
+            # Phase 2.c: OpenClaw symmetric undo. Per L1/L2 in
+            # engineering/research/openclaw-WOR-431-phase-2-spec.md, this
+            # NEVER aborts unlock-core success. Failures surface as
+            # structured events, not exceptions.
+            _apply_openclaw_unlock(unlocked, console)
 
         with acquire_lock(home):
             asyncio.run(_unlock_async())

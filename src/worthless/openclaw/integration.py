@@ -471,3 +471,137 @@ def apply_lock(
         skill_installed=skill_installed,
         events=tuple(events),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.c — apply_unlock()
+# ---------------------------------------------------------------------------
+
+
+def apply_unlock(
+    aliases: list[tuple[str, str]],
+    *,
+    remove_skill: bool = True,
+) -> OpenclawApplyResult:
+    """Reverse Phase 2.b's :func:`apply_lock`. Idempotent. Best-effort.
+
+    Stage 3 of ``worthless unlock``. Per L1/L2 in
+    ``engineering/research/openclaw-WOR-431-phase-2-spec.md``: failures
+    here NEVER cause unlock-core to fail. If the user runs ``unlock`` and
+    we can't clean up OpenClaw's config, they still get their ``.env``
+    restored — surfaced as structured events instead of exceptions.
+
+    Args:
+        aliases: list of ``(provider, alias)`` pairs whose ``worthless-*``
+            entries should be removed from ``openclaw.json``. Same shape as
+            :func:`apply_lock` minus ``shard_a`` (we don't need it for undo).
+        remove_skill: when True (default) sweep
+            ``~/.openclaw/workspace/skills/worthless/`` too. Pass False to
+            tear down only provider entries — useful for ``doctor --fix``
+            paths that want to refresh providers without reinstalling.
+
+    Returns:
+        :class:`OpenclawApplyResult`. ``providers_set`` lists the
+        ``worthless-*`` entries we actually removed (we reuse the field
+        with "providers we changed" semantics — symmetric with
+        ``apply_lock``); ``providers_skipped`` lists ones we couldn't
+        remove and the reason.
+
+    Spec: ``engineering/research/openclaw-WOR-431-phase-2-spec.md``
+    §"Phase 2.c — ``unlock`` integration", failure-mode rows RT-01/02/03,
+    F-XS-40 / F-XS-41, locked decisions L1, L2, L3.
+    """
+    state = detect()
+    if not state.present:
+        return OpenclawApplyResult(
+            detected=False,
+            config_path=None,
+            workspace_path=None,
+            skill_path=None,
+        )
+
+    events: list[OpenclawIntegrationEvent] = []
+    providers_removed: list[str] = []
+    providers_skipped: list[tuple[str, str]] = []
+
+    config_path = _resolve_active_config_path(state, state.home_dir)
+
+    # ---- Stage A: remove worthless-* provider entries --------------------
+    for provider, _alias in aliases:
+        provider_name = f"worthless-{provider}"
+        try:
+            removed = _config_mod.unset_provider(config_path, provider_name)
+        except OpenclawConfigError as exc:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=OpenclawErrorCode.CONFIG_UNREADABLE,
+                    level="error",
+                    detail=f"could not read {config_path}: {exc}",
+                    extra={"provider": provider_name},
+                )
+            )
+            providers_skipped.append((provider_name, "config_unreadable"))
+            continue
+        except OSError as exc:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=OpenclawErrorCode.WRITE_FAILED,
+                    level="error",
+                    detail=f"failed to write {config_path}: {exc}",
+                    extra={"provider": provider_name},
+                )
+            )
+            providers_skipped.append((provider_name, "write_failed"))
+            continue
+
+        # ``unset_provider`` returns ``{}`` when the entry was already
+        # absent — that's the idempotent case (IDEM). We still emit a
+        # CONFIG_UPDATED event so doctor / --json can confirm the no-op.
+        providers_removed.append(provider_name)
+        events.append(
+            OpenclawIntegrationEvent(
+                code=OpenclawErrorCode.CONFIG_UPDATED,
+                level="info",
+                detail=(
+                    f"removed {provider_name} from {config_path}"
+                    if removed
+                    else f"{provider_name} already absent in {config_path}"
+                ),
+                extra={"provider": provider_name},
+            )
+        )
+
+    # ---- Stage B: uninstall skill folder ---------------------------------
+    skill_uninstalled = False
+    workspace = state.workspace_path
+    skill_path = state.skill_path
+    if remove_skill and workspace is not None:
+        try:
+            skill_uninstalled = _skill_mod.uninstall(workspace / "skills")
+        except OpenclawIntegrationError as exc:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=getattr(exc, "code", OpenclawErrorCode.SKILL_INSTALL_FAILED),
+                    level="error",
+                    detail=str(exc),
+                )
+            )
+        except OSError as exc:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=OpenclawErrorCode.SKILL_INSTALL_FAILED,
+                    level="error",
+                    detail=f"skill uninstall failed: {exc}",
+                )
+            )
+
+    return OpenclawApplyResult(
+        detected=True,
+        config_path=config_path,
+        workspace_path=workspace,
+        skill_path=skill_path,
+        providers_set=tuple(providers_removed),
+        providers_skipped=tuple(providers_skipped),
+        skill_installed=skill_uninstalled,
+        events=tuple(events),
+    )
