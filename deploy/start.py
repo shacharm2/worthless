@@ -160,6 +160,17 @@ def main() -> None:
     # raises here so we never proceed to load the fernet key.
     service_uids = _resolve_service_uids()
 
+    # ``ensure_home`` pinned ``home.base_dir`` to mode 0o700 — owner-only.
+    # In Docker that breaks the sidecar (worthless-crypto, group worthless)
+    # which needs to traverse ``/data`` to reach ``/data/run/<pid>/``.
+    # Bump to 0o710: owner rwx for worthless-proxy (full data access for
+    # SQLite WAL/SHM, fernet.key, shard_a/), worthless group --x for
+    # traverse only — sidecar can cd through but cannot list sibling
+    # files in /data.  Bare-metal path (service_uids=None) keeps the
+    # tighter 0o700 since proxy and sidecar share the same uid there.
+    if service_uids is not None:
+        os.chmod(home.base_dir, 0o710)  # noqa: PTH101, S103
+
     fernet_key = home.fernet_key
     try:
         shares = split_to_tmpfs(fernet_key, home.base_dir)

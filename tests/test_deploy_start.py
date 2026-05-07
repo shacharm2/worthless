@@ -816,8 +816,10 @@ class TestShareFileOwnership:
         # Pinned sequence — any reorder catches a regression.
         # The fake shares put run_dir at /tmp/wor-test-deploy-start so its
         # parent is /tmp; that's why parent_run_dir.name renders as "tmp".
+        # The fake home base_dir is /data so its name renders as "data".
         assert events == [
             "resolve_uids",
+            "chmod(data,0o710)",  # home.base_dir traversable by worthless gid
             "split_to_tmpfs",
             "chown(tmp,0,10001)",  # parent run_dir → root:worthless
             "chmod(tmp,0o710)",  # parent run_dir traversable by worthless gid
