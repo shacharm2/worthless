@@ -343,19 +343,25 @@ class TestEntrypoint:
         assert "WORTHLESS_FERNET_FD=3" in entrypoint_text
 
     def test_fernet_migration_uses_install_not_cp(self, entrypoint_text: str):
-        """Migration must use 'install -m 0400' instead of cp+chmod.
+        """Migration must use 'install -m' instead of cp+chmod.
 
         cp creates the file with default perms, leaving a brief window
-        where the key is world-readable. install -m sets perms atomically.
+        where the key is world-readable. install -m sets perms
+        atomically.
+
+        Mode 0440 (not 0400) so the worthless group can read fernet.key
+        post-chown — both proxy uid (bootstrap-validation) and crypto
+        uid (sidecar reconstruct) need group-read access.  Final
+        ownership root:worthless is fixed up in the priv-drop block.
         """
-        assert "install -m 0400" in entrypoint_text, (
-            "Fernet migration should use 'install -m 0400' for atomic permissions. "
+        assert "install -m 0440" in entrypoint_text, (
+            "Fernet migration should use 'install -m 0440' for atomic permissions. "
             "cp + chmod leaves a race window where the key is world-readable."
         )
         # Ensure no bare 'cp' of the fernet key — only 'install -m' is safe
-        migration_block = entrypoint_text.split("install -m 0400")[0]
+        migration_block = entrypoint_text.split("install -m 0440")[0]
         assert "cp " not in migration_block, (
-            "Fernet migration should not use bare 'cp' before 'install -m 0400'."
+            "Fernet migration should not use bare 'cp' before 'install -m 0440'."
         )
 
     def test_ulimit_core_disabled_at_top_of_entrypoint(self, entrypoint_text: str):
@@ -438,13 +444,22 @@ class TestEntrypoint:
         )
 
     def test_bootstrap_locks_fernet_key(self, entrypoint_text: str):
-        """Bootstrap must chmod fernet.key to 0400 after creation.
+        """Bootstrap must chmod fernet.key to 0440 root:worthless after creation.
 
-        Cannot use umask 0377 during bootstrap because SQLite WAL/SHM
-        files are also created and must remain writable.
+        Mode 0440 (not 0400): the worthless group needs READ access so
+        bootstrap-validation in the proxy uid + sidecar reconstruct in
+        the crypto uid both work.  Owner is root so neither service uid
+        can unlink/replace the key.  Cannot use umask 0337 during the
+        bootstrap python invocation because SQLite WAL/SHM files are
+        also created and must remain writable; the chmod is applied
+        explicitly post-bootstrap inside the priv-drop block.
         """
-        assert "chmod 0400" in entrypoint_text, (
-            "Bootstrap should chmod fernet.key to 0400 after creation."
+        assert "chmod 0440" in entrypoint_text, (
+            "Bootstrap should chmod fernet.key to 0440 (root:worthless) after creation."
+        )
+        assert 'chown root:worthless "$FERNET_PATH"' in entrypoint_text, (
+            "fernet.key must be chowned to root:worthless so the proxy uid cannot "
+            "unlink it but the worthless group can read."
         )
 
     def test_no_hardcoded_secrets(self, entrypoint_text: str):

@@ -48,17 +48,17 @@ fi
 # explicitly set (e.g., docker-compose with a secrets volume).  Without the
 # env var the key stays on the data volume — safe for single-volume PaaS.
 if [ -n "$WORTHLESS_FERNET_KEY_PATH" ] && [ ! -f "$FERNET_PATH" ] && [ -f "$HOME_DIR/fernet.key" ]; then
-  install -m 0400 "$HOME_DIR/fernet.key" "$FERNET_PATH"
+  # Mode 0440 (not 0400) so the worthless group can read post-chown
+  # below.  Final ownership/mode is fixed up in the priv-drop block:
+  # root:worthless 0440 — root owns (proxy can't unlink), worthless
+  # group reads (bootstrap-validation + sidecar reconstruct work).
+  install -m 0440 "$HOME_DIR/fernet.key" "$FERNET_PATH"
   rm "$HOME_DIR/fernet.key"
 fi
 
 # Bootstrap on first boot only (idempotent but skips Python startup on restarts)
 if [ ! -f "$FERNET_PATH" ]; then
   python -c "from worthless.cli.bootstrap import get_home; get_home()"
-  # Lock down fernet.key after bootstrap — can't use umask 0377 during
-  # bootstrap because SQLite WAL/SHM files also get created and need
-  # to be writable.
-  chmod 0400 "$FERNET_PATH"
 fi
 
 # WOR-310: bootstrap ran as root (entrypoint started as uid 0 so
@@ -74,13 +74,22 @@ fi
 # semantics.
 if [ "$(id -u)" = "0" ]; then
   # CR-3204010079 (CRITICAL): a recursive chown on $HOME_DIR would
-  # re-own fernet.key to worthless-proxy too, defeating the two-uid
-  # isolation (the proxy uid must NOT own the fernet key).  Use find
-  # to skip $FERNET_PATH explicitly.  fernet.key keeps the ownership
-  # the bootstrap or operator put on it (typically root or
-  # worthless-crypto on the secrets volume).
+  # re-own fernet.key to worthless-proxy, letting a proxy-RCE
+  # `chmod 0600` and re-create the file.  Skip fernet.key in the
+  # recursive chown.
   find "$HOME_DIR" -mindepth 1 -not -path "$FERNET_PATH" \
     -exec chown worthless-proxy:worthless {} + 2>/dev/null || true
+  # Then explicitly set fernet.key to root:worthless 0440: root owns
+  # so the proxy uid cannot unlink/replace it; worthless-group (which
+  # both service uids belong to) gets read-only so bootstrap-validation
+  # in the proxy + the sidecar's reconstruct-time read both work.
+  # The proxy can READ but cannot WRITE — preserves the two-uid
+  # isolation goal CR-3204010079 raised while still letting bootstrap
+  # work.
+  if [ -f "$FERNET_PATH" ]; then
+    chown root:worthless "$FERNET_PATH" 2>/dev/null || true
+    chmod 0440 "$FERNET_PATH" 2>/dev/null || true
+  fi
   # bootstrap.ensure_home pinned $HOME_DIR to mode 0o700 — that's
   # owner-only.  After we chowned to worthless-proxy:worthless, the
   # sidecar (worthless-crypto, in group worthless) can't traverse
