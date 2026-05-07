@@ -273,6 +273,12 @@ def test_main_returns_rc_1_when_yama_check_raises(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(_hardening, "check_yama_ptrace_scope", raise_yama)
     monkeypatch.setattr(sidecar_main, "_run", fake_run)
     monkeypatch.delenv("WORTHLESS_LOG_LEVEL", raising=False)
+    # CR-3198976791: explicitly clear the Docker priv-drop env so a
+    # leaky CI matrix entry (Docker matrix) cannot accidentally
+    # downgrade the YAMA refusal to a warning, then have main() return
+    # rc=1 for an unrelated reason — the test would pass for the wrong
+    # reason and silently break the "rc=1 implies YAMA-was-fatal" contract.
+    monkeypatch.delenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", raising=False)
 
     rc = sidecar_main.main()
     assert rc == 1, f"expected rc=1 on YAMA refusal; got {rc}"

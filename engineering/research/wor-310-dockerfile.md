@@ -42,7 +42,7 @@ docker inspect worthless --format '{{ .Config.Labels }}'
 
 ## Architecture summary
 
-```
+```text
 PID 1 (tini)
 ├── deploy/start.py (root, briefly)
 │     ├── _resolve_service_uids() → ServiceUids(10001, 10002, 10001)

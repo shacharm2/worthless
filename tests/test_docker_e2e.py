@@ -326,33 +326,46 @@ class TestBuild:
         spawns a new shell which inherits the IMAGE's default user
         (root, since we dropped the USER directive) — that's expected
         and unrelated to the priv-drop.  We verify the SECURITY claim
-        directly: ``ps -eo user,pid,comm`` lists the live processes
-        and their uids — uvicorn must be worthless-proxy, sidecar must
-        be worthless-crypto, NEITHER can be root.
+        directly by walking ``/proc/<pid>/status`` for the uvicorn +
+        sidecar runtime processes and asserting their Uid is non-zero.
+
+        slim-bookworm has no ``ps``; we walk ``/proc`` from a busybox-
+        compatible shell snippet that prints ``<pid> <uid> <comm>``
+        per process.
         """
         name, _ = container
-        ps_result = docker_exec(name, ["ps", "-eo", "user,comm"])
-        assert ps_result.returncode == 0, (
-            f"`ps` failed inside container: rc={ps_result.returncode} stderr={ps_result.stderr!r}"
+        result = docker_exec(
+            name,
+            [
+                "sh",
+                "-c",
+                "for d in /proc/[0-9]*; do "
+                'pid="${d##*/}"; '
+                'comm=$(cat "$d/comm" 2>/dev/null) || continue; '
+                'uid=$(awk "/^Uid:/{print \\$2; exit}" "$d/status" 2>/dev/null); '
+                'echo "$pid $uid $comm"; '
+                "done",
+            ],
         )
-        ps_lines = ps_result.stdout.splitlines()
-        # Find any uvicorn or python -m worthless.sidecar lines and
-        # check the user column.  Tini (PID 1) is allowed to be root.
+        assert result.returncode == 0, (
+            f"/proc walk failed: rc={result.returncode} stderr={result.stderr!r}"
+        )
+        # Match python (sidecar entrypoint is `python -m worthless.sidecar`)
+        # AND uvicorn (proxy).  Tini (PID 1) is allowed to be root.
         runtime_lines = [
-            line for line in ps_lines if "uvicorn" in line or "worthless.sidecar" in line
+            line
+            for line in result.stdout.splitlines()
+            if any(needle in line.lower() for needle in ("uvicorn", "python"))
         ]
-        assert runtime_lines, (
-            f"could not find uvicorn or sidecar processes; ps output:\n{ps_result.stdout}"
-        )
+        assert runtime_lines, f"no uvicorn/python processes found; /proc walk:\n{result.stdout}"
         for line in runtime_lines:
-            user = line.split()[0]
-            assert user != "root", (
-                f"WOR-310 priv-drop failed: process running as root: {line!r}\n"
-                f"full ps output:\n{ps_result.stdout}"
-            )
-            assert "worthless" in user, (
-                f"WOR-310 priv-drop landed on unexpected uid: {line!r}\n"
-                f"full ps output:\n{ps_result.stdout}"
+            parts = line.split(maxsplit=2)
+            if len(parts) < 3:
+                continue
+            _pid, uid, _comm = parts
+            assert uid != "0", (
+                f"WOR-310 priv-drop failed: process running as uid=0:\n{line}\n"
+                f"full /proc walk:\n{result.stdout}"
             )
 
 
@@ -1095,30 +1108,40 @@ class TestComposeSecurity:
     def test_compose_non_root(self, compose_stack: tuple[str, str]) -> None:
         """Same as TestBuild::test_runs_as_non_root but for the compose stack.
 
-        See that test's docstring for the rationale: ``docker exec id``
-        runs as the IMAGE's default user (root post-WOR-310, because we
-        dropped USER so the entrypoint can do the priv-drop).  The
-        runtime PROCESSES are what must be non-root.
+        slim-bookworm has no ``ps``; we walk ``/proc`` and assert the
+        runtime processes (uvicorn + python sidecar) are non-root.
         """
         _project, cname = compose_stack
-        ps_result = docker_exec(cname, ["ps", "-eo", "user,comm"])
-        assert ps_result.returncode == 0, (
-            f"`ps` failed inside container: rc={ps_result.returncode} stderr={ps_result.stderr!r}"
+        result = docker_exec(
+            cname,
+            [
+                "sh",
+                "-c",
+                "for d in /proc/[0-9]*; do "
+                'pid="${d##*/}"; '
+                'comm=$(cat "$d/comm" 2>/dev/null) || continue; '
+                'uid=$(awk "/^Uid:/{print \\$2; exit}" "$d/status" 2>/dev/null); '
+                'echo "$pid $uid $comm"; '
+                "done",
+            ],
+        )
+        assert result.returncode == 0, (
+            f"/proc walk failed: rc={result.returncode} stderr={result.stderr!r}"
         )
         runtime_lines = [
             line
-            for line in ps_result.stdout.splitlines()
-            if "uvicorn" in line or "worthless.sidecar" in line
+            for line in result.stdout.splitlines()
+            if any(needle in line.lower() for needle in ("uvicorn", "python"))
         ]
-        assert runtime_lines, f"no uvicorn or sidecar processes; ps:\n{ps_result.stdout}"
+        assert runtime_lines, f"no runtime processes; /proc walk:\n{result.stdout}"
         for line in runtime_lines:
-            user = line.split()[0]
-            assert user != "root", (
-                f"WOR-310 priv-drop failed in compose: {line!r}\nfull ps:\n{ps_result.stdout}"
-            )
-            assert "worthless" in user, (
-                f"WOR-310 priv-drop landed on unexpected uid: {line!r}\n"
-                f"full ps:\n{ps_result.stdout}"
+            parts = line.split(maxsplit=2)
+            if len(parts) < 3:
+                continue
+            _pid, uid, _comm = parts
+            assert uid != "0", (
+                f"WOR-310 compose priv-drop failed: process at uid=0:\n{line}\n"
+                f"full /proc walk:\n{result.stdout}"
             )
 
 

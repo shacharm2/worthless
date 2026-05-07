@@ -420,6 +420,10 @@ class TestMainPrivilegeDrop:
         monkeypatch.setattr(
             deploy_start_module.os, "getresuid", lambda: (10001, 10001, 10001), raising=False
         )
+        monkeypatch.setattr(
+            deploy_start_module.os, "getresgid", lambda: (10001, 10001, 10001), raising=False
+        )
+        monkeypatch.setattr(deploy_start_module.os, "getgroups", lambda: [], raising=False)
 
         deploy_start_module.main()
 
@@ -487,6 +491,10 @@ class TestMainPrivilegeDrop:
         monkeypatch.setattr(
             deploy_start_module.os, "getresuid", lambda: (10001, 10001, 10001), raising=False
         )
+        monkeypatch.setattr(
+            deploy_start_module.os, "getresgid", lambda: (10001, 10001, 10001), raising=False
+        )
+        monkeypatch.setattr(deploy_start_module.os, "getgroups", lambda: [], raising=False)
 
         deploy_start_module.main()
 
@@ -554,6 +562,10 @@ class TestMainPrivilegeDrop:
             deploy_start_module.os, "setresuid", lambda r, e, s: None, raising=False
         )
         monkeypatch.setattr(deploy_start_module.os, "getresuid", fake_getresuid, raising=False)
+        monkeypatch.setattr(
+            deploy_start_module.os, "getresgid", lambda: (10001, 10001, 10001), raising=False
+        )
+        monkeypatch.setattr(deploy_start_module.os, "getgroups", lambda: [], raising=False)
 
         deploy_start_module.main()
         assert getresuid_calls == [(10001, 10001, 10001)], (
@@ -620,14 +632,18 @@ class TestMainPrivilegeDrop:
             deploy_start_module.main()
         assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
 
-    def test_main_asserts_single_threaded_before_spawn(
+    def test_main_refuses_multi_threaded_before_spawn(
         self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """BPO-34394: forking from a multi-threaded process is undefined behavior.
 
         ``preexec_fn`` calls glibc-allocator-using helpers (ctypes, logger)
         that can deadlock if any thread held the dynamic-linker mutex
-        at fork. main() must hard-assert single-threaded before spawn.
+        at fork. main() must hard-fail multi-threaded entry before spawn.
+
+        CR-3197215771: previously this used ``assert``, which is stripped
+        under ``python -O``.  Now raises ``WorthlessError(SIDECAR_NOT_READY)``
+        so the invariant survives optimization.
         """
         self._wire_minimal_main(deploy_start_module, monkeypatch)
 
@@ -636,8 +652,9 @@ class TestMainPrivilegeDrop:
         # Pretend pytest started a side thread before main().
         monkeypatch.setattr(deploy_start_module.threading, "active_count", lambda: 4)
 
-        with pytest.raises(AssertionError, match="single-threaded"):
+        with pytest.raises(WorthlessError, match="single-threaded") as exc_info:
             deploy_start_module.main()
+        assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +678,11 @@ class TestShareFileOwnership:
         monkeypatch.setattr(mod.os, "setgroups", lambda g: None, raising=False)
         monkeypatch.setattr(mod.os, "setresuid", lambda r, e, s: None, raising=False)
         monkeypatch.setattr(mod.os, "getresuid", lambda: (10001, 10001, 10001), raising=False)
+        # CR-3197215782: post-drop verification now also reads getresgid
+        # and getgroups; mock both. macOS lacks os.getresgid (Linux-only),
+        # hence raising=False.
+        monkeypatch.setattr(mod.os, "getresgid", lambda: (10001, 10001, 10001), raising=False)
+        monkeypatch.setattr(mod.os, "getgroups", lambda: [], raising=False)
         # main() chmods the parent run_dir so the forked sidecar (worthless
         # gid) can traverse it.  The fake shares put run_dir at /tmp/...,
         # so parent_run_dir resolves to /tmp where chmod EPERMs on macOS.
@@ -805,6 +827,18 @@ class TestShareFileOwnership:
         )
         monkeypatch.setattr(
             deploy_start_module.os,
+            "getresgid",
+            lambda: (events.append("getresgid"), (10001, 10001, 10001))[1],
+            raising=False,
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "getgroups",
+            lambda: (events.append("getgroups"), [])[1],
+            raising=False,
+        )
+        monkeypatch.setattr(
+            deploy_start_module.os,
             "chmod",
             lambda path, mode: events.append(f"chmod({Path(path).name},{oct(mode)})"),
             raising=False,
@@ -832,6 +866,8 @@ class TestShareFileOwnership:
             "setgroups([])",
             "setresuid(10001,10001,10001)",
             "getresuid",
+            "getresgid",  # CR-3197215782 — verify saved-gid locked
+            "getgroups",  # CR-3197215782 — verify supplementary groups cleared
             "execvp",
         ], f"WOR-310 C5: full main() sequence broken; got {events}"
 

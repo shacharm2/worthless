@@ -218,13 +218,22 @@ def main() -> None:
     # BPO-34394: forking from a multi-threaded process is undefined. The
     # preexec_fn calls glibc-allocator-using helpers (ctypes, logger) that
     # can deadlock if any thread held the dynamic-linker mutex at fork.
-    # main() is the entrypoint; nothing should have started threads. Hard-
-    # assert before Popen so a future regression that imports a thread-
-    # starting library at module scope fails loud.
-    assert threading.active_count() == 1, (  # noqa: S101
-        f"deploy/start.py expects single-threaded entry; got {threading.active_count()} "
-        "threads. Forking with threads alive is undefined per BPO-34394."
-    )
+    # main() is the entrypoint; nothing should have started threads.
+    # Hard-fail before Popen so a future regression that imports a
+    # thread-starting library at module scope fails loud.
+    #
+    # NOT ``assert`` — Python with ``-O`` / ``PYTHONOPTIMIZE=1`` strips
+    # asserts silently. This is a security-relevant invariant (BPO-34394
+    # is undefined behavior, no log line on failure), so it must survive
+    # optimization. Raise WorthlessError(SIDECAR_NOT_READY) instead.
+    active = threading.active_count()
+    if active != 1:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"deploy/start.py expects single-threaded entry; got {active} "
+            "threads. Forking with threads alive is undefined per BPO-34394 — "
+            "refusing to spawn sidecar.",
+        )
 
     # When dropping privs, the proxy uid is the only one that may connect
     # to the sidecar's socket. On bare metal (service_uids is None), the
@@ -290,6 +299,32 @@ def main() -> None:
                 ErrorCode.SIDECAR_NOT_READY,
                 f"post-drop verification failed: getresuid()={actual}, expected {expected}. "
                 f"setresuid silently no-op'd or kernel didn't lock saved-uid. Refusing exec.",
+            )
+
+        # CR-3197215782: getresgid + getgroups verification.  Same
+        # rationale as the getresuid 3-tuple check above — a saved-gid
+        # of 0 would let a future bug call setgid(0) and re-acquire
+        # group privs, and stray supplementary groups widen the blast
+        # radius beyond the threat model (the worthless gid is the
+        # ONLY group letting the proxy reach the AF_UNIX socket; any
+        # extra groups carry their own access rights).
+        actual_gid = os.getresgid()
+        expected_gid = (gid, gid, gid)
+        if actual_gid != expected_gid:
+            raise WorthlessError(
+                ErrorCode.SIDECAR_NOT_READY,
+                f"post-drop verification failed: getresgid()={actual_gid}, "
+                f"expected {expected_gid}. setresgid silently no-op'd or "
+                "kernel didn't lock saved-gid. Refusing exec.",
+            )
+
+        actual_groups = os.getgroups()
+        if actual_groups:
+            raise WorthlessError(
+                ErrorCode.SIDECAR_NOT_READY,
+                f"post-drop verification failed: getgroups()={actual_groups}, "
+                "expected []. Stray supplementary groups widen the blast "
+                "radius beyond the WOR-310 threat model. Refusing exec.",
             )
 
     uvicorn_argv = _build_uvicorn_argv(port)
