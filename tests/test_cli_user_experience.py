@@ -122,7 +122,12 @@ class TestHelpText:
             assert cmd in output, f"Command {cmd!r} missing from --help output"
 
     def test_no_args_runs_default_command(self) -> None:
-        """worthless with no args runs the default pipeline (not help)."""
+        """worthless with no args runs the default pipeline (not help).
+
+        No xdist_group marker: the autouse `_isolate_default_command_proxy`
+        fixture in conftest.py stubs the daemon path for every test, so two
+        workers can run this in parallel without racing port 8787.
+        """
         result = runner.invoke(app, [])
         assert result.exit_code == 0
         output = result.stdout + result.stderr
