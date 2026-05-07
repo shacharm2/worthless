@@ -266,8 +266,14 @@ install_or_upgrade_worthless() {
     # quietly. (CodeRabbit catch on PR #148.)
     uv_install_err="$(mktemp 2>/dev/null || mktemp -t worthless-uv-install-err.XXXXXX)"
     uv_upgrade_err="$(mktemp 2>/dev/null || mktemp -t worthless-uv-upgrade-err.XXXXXX)"
-    # shellcheck disable=SC2064  # expand the paths NOW so the trap uses the captured values
-    trap "rm -f \"$uv_install_err\" \"$uv_upgrade_err\"" EXIT INT TERM
+    # POSIX trap REPLACES rather than chains, so re-include ensure_uv's
+    # tmpdir cleanup here. Without this, ensure_uv's downloaded installer
+    # tmpdir leaks every time install_or_upgrade_worthless runs (the common
+    # path for any non-fresh box). `${tmpdir:-}` guards the case where
+    # ensure_uv short-circuited (uv already at pinned version → never set
+    # tmpdir → `set -u` would barf without the default). (CodeRabbit catch.)
+    # shellcheck disable=SC2064  # expand uv_install_err/uv_upgrade_err NOW; tmpdir resolves at trap-fire time
+    trap "rm -rf \"\${tmpdir:-}\"; rm -f \"$uv_install_err\" \"$uv_upgrade_err\"" EXIT INT TERM
 
     if uv tool install "$spec" >/dev/null 2>"$uv_install_err"; then
         :

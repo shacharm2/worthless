@@ -14,6 +14,7 @@ from tests._install_helpers import (
     EXIT_NETWORK,
     EXIT_PIPX_CONFLICT,
     EXIT_PLATFORM,
+    INSTALL_SH,
     run_install,
     write_happy_path_stubs,
     write_stub,
@@ -346,4 +347,54 @@ def test_install_failure_empty_stderr_still_shows_banner(tmp_path: Path) -> None
     assert "uv tool upgrade also failed" not in result.stderr, (
         f"empty-stderr path must not show the upgrade one-liner; reserve "
         f"it for the case where there IS suppressed content.\nstderr: {result.stderr}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Trap chaining — guards against silently dropping prior cleanups
+# ---------------------------------------------------------------------------
+
+
+def test_install_trap_preserves_ensure_uv_tmpdir_cleanup() -> None:
+    """install_or_upgrade_worthless's trap must keep ensure_uv's tmpdir cleanup.
+
+    POSIX `trap CMD SIGNAL` REPLACES (not chains) the previously registered
+    trap for that signal. ensure_uv() registers an EXIT trap that cleans up
+    the downloaded-installer tmpdir; if install_or_upgrade_worthless()
+    registers a fresh EXIT trap without re-including that cleanup, the
+    tmpdir leaks every time install_or_upgrade_worthless runs (i.e. always,
+    on the common path of any non-fresh box).
+
+    Static check (per feedback_extract_and_test): grep the actual on-disk
+    install.sh and assert the install_or_upgrade_worthless trap line
+    references BOTH tmpdir AND uv_*_err. The functional repro would need
+    to force ensure_uv through the full mktemp-d path (no uv on PATH at
+    all) — heavy stub setup for a 1-line invariant. Static check catches
+    every regression mode that matters: someone re-overwriting the trap
+    without chaining. (CodeRabbit catch on PR #148.)
+    """
+    install_sh = INSTALL_SH.read_text()
+
+    # Find the trap line inside install_or_upgrade_worthless. The function
+    # contains a single trap directive; locate it by searching for the
+    # uv_install_err reference (unique to install_or_upgrade_worthless).
+    trap_lines = [
+        line
+        for line in install_sh.splitlines()
+        if line.lstrip().startswith("trap ") and "uv_install_err" in line
+    ]
+    assert len(trap_lines) == 1, (
+        f"expected exactly one trap directive referencing uv_install_err in "
+        f"install.sh; found {len(trap_lines)}: {trap_lines!r}"
+    )
+    trap_line = trap_lines[0]
+
+    # Both cleanups must be present in the same directive.
+    assert "tmpdir" in trap_line, (
+        f"install_or_upgrade_worthless's EXIT trap dropped ensure_uv's "
+        f"tmpdir cleanup — POSIX trap REPLACES, must chain explicitly. "
+        f"got: {trap_line!r}"
+    )
+    assert "uv_install_err" in trap_line and "uv_upgrade_err" in trap_line, (
+        f"trap must clean BOTH uv stderr tempfiles. got: {trap_line!r}"
     )
