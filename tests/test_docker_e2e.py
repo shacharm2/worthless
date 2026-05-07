@@ -316,12 +316,44 @@ class TestBuild:
         assert result.returncode == 0
 
     def test_runs_as_non_root(self, container: tuple[str, int]) -> None:
+        """The runtime PROCESSES (uvicorn + sidecar) must run as non-root.
+
+        WOR-310 removed the static ``USER worthless`` directive so the
+        entrypoint can start as root briefly to do the priv-drop dance
+        (resolve uids, chown shares, setresuid).  After the dance,
+        uvicorn runs as ``worthless-proxy`` (uid 10001) and the sidecar
+        runs as ``worthless-crypto`` (uid 10002).  ``docker exec id``
+        spawns a new shell which inherits the IMAGE's default user
+        (root, since we dropped the USER directive) — that's expected
+        and unrelated to the priv-drop.  We verify the SECURITY claim
+        directly: ``ps -eo user,pid,comm`` lists the live processes
+        and their uids — uvicorn must be worthless-proxy, sidecar must
+        be worthless-crypto, NEITHER can be root.
+        """
         name, _ = container
-        result = docker_exec(name, ["id"])
-        assert result.returncode == 0
-        assert "worthless" in result.stdout
-        # uid should be non-zero
-        assert "uid=0" not in result.stdout
+        ps_result = docker_exec(name, ["ps", "-eo", "user,comm"])
+        assert ps_result.returncode == 0, (
+            f"`ps` failed inside container: rc={ps_result.returncode} stderr={ps_result.stderr!r}"
+        )
+        ps_lines = ps_result.stdout.splitlines()
+        # Find any uvicorn or python -m worthless.sidecar lines and
+        # check the user column.  Tini (PID 1) is allowed to be root.
+        runtime_lines = [
+            line for line in ps_lines if "uvicorn" in line or "worthless.sidecar" in line
+        ]
+        assert runtime_lines, (
+            f"could not find uvicorn or sidecar processes; ps output:\n{ps_result.stdout}"
+        )
+        for line in runtime_lines:
+            user = line.split()[0]
+            assert user != "root", (
+                f"WOR-310 priv-drop failed: process running as root: {line!r}\n"
+                f"full ps output:\n{ps_result.stdout}"
+            )
+            assert "worthless" in user, (
+                f"WOR-310 priv-drop landed on unexpected uid: {line!r}\n"
+                f"full ps output:\n{ps_result.stdout}"
+            )
 
 
 # ===================================================================
@@ -1061,11 +1093,33 @@ class TestComposeSecurity:
         assert "read-only" in result.stderr.lower() or "read only" in result.stderr.lower()
 
     def test_compose_non_root(self, compose_stack: tuple[str, str]) -> None:
+        """Same as TestBuild::test_runs_as_non_root but for the compose stack.
+
+        See that test's docstring for the rationale: ``docker exec id``
+        runs as the IMAGE's default user (root post-WOR-310, because we
+        dropped USER so the entrypoint can do the priv-drop).  The
+        runtime PROCESSES are what must be non-root.
+        """
         _project, cname = compose_stack
-        result = docker_exec(cname, ["id"])
-        assert result.returncode == 0
-        assert "worthless" in result.stdout
-        assert "uid=0" not in result.stdout
+        ps_result = docker_exec(cname, ["ps", "-eo", "user,comm"])
+        assert ps_result.returncode == 0, (
+            f"`ps` failed inside container: rc={ps_result.returncode} stderr={ps_result.stderr!r}"
+        )
+        runtime_lines = [
+            line
+            for line in ps_result.stdout.splitlines()
+            if "uvicorn" in line or "worthless.sidecar" in line
+        ]
+        assert runtime_lines, f"no uvicorn or sidecar processes; ps:\n{ps_result.stdout}"
+        for line in runtime_lines:
+            user = line.split()[0]
+            assert user != "root", (
+                f"WOR-310 priv-drop failed in compose: {line!r}\nfull ps:\n{ps_result.stdout}"
+            )
+            assert "worthless" in user, (
+                f"WOR-310 priv-drop landed on unexpected uid: {line!r}\n"
+                f"full ps:\n{ps_result.stdout}"
+            )
 
 
 class TestSDKSmokeDocker:
