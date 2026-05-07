@@ -242,3 +242,47 @@ async def repo(tmp_db_path: str, fernet_key: bytes) -> ShardRepository:
     r = ShardRepository(tmp_db_path, fernet_key)
     await r.initialize()
     return r
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_command_proxy(request, monkeypatch):
+    """Stop ``run_default()`` from spawning a real proxy daemon mid-test.
+
+    Tests that hit the bare ``worthless`` no-args entry point flow through
+    ``default_command.run_default()`` → ``_proxy_is_running`` → ``poll_health(8787)``
+    → ``start_daemon(..., port=8787, ...)``. Under pytest-xdist, four workers
+    racing for the same port produces non-deterministic state: one wins the
+    bind, the others see a "running" daemon belonging to a different test's
+    home, and assertions diverge. The same race also leaves orphan uvicorn
+    children if a worker fails between spawn and cleanup.
+
+    This autouse fixture neutralises the daemon path for every test by
+    default. Tests that genuinely need a real proxy daemon must opt out
+    with ``@pytest.mark.integration`` and own their own teardown.
+
+    Tests that monkeypatch ``start_daemon`` / ``poll_health`` themselves
+    still work — pytest's ``monkeypatch`` stacks LIFO within a single test,
+    so the per-test override wins over this fixture's default.
+
+    Closes worthless-ba1c.
+    """
+    if request.node.get_closest_marker("integration"):
+        return
+
+    from worthless.cli import default_command
+
+    monkeypatch.setattr(
+        default_command,
+        "_proxy_is_running",
+        lambda home: (False, None, 0),
+    )
+    monkeypatch.setattr(
+        default_command,
+        "start_daemon",
+        lambda *_a, **_kw: 0,  # PID 0 is fine for the no-spawn path
+    )
+    monkeypatch.setattr(
+        default_command,
+        "poll_health",
+        lambda port, timeout=10.0: True,
+    )

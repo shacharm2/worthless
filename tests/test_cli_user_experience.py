@@ -121,6 +121,7 @@ class TestHelpText:
         for cmd in ("lock", "unlock", "enroll", "scan", "status", "wrap", "up"):
             assert cmd in output, f"Command {cmd!r} missing from --help output"
 
+    @pytest.mark.xdist_group("default_command_pipeline")
     def test_no_args_runs_default_command(self) -> None:
         """worthless with no args runs the default pipeline (not help)."""
         result = runner.invoke(app, [])

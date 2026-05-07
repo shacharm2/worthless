@@ -211,6 +211,7 @@ class TestAppEntryPoint:
         assert result.exit_code == 0
         assert "worthless" in result.output.lower() or "api" in result.output.lower()
 
+    @pytest.mark.xdist_group("default_command_pipeline")
     def test_no_args_runs_default_command(self):
         from typer.testing import CliRunner
 
