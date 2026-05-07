@@ -32,8 +32,8 @@ UV_VERSION="0.11.7"
 ASTRAL_INSTALLER_SHA256="efed99618cb5c31e4e36a700ab7c3698e83c0ae0f3c336714043d0f932c8d32c"
 
 ASTRAL_INSTALLER_URL="https://astral.sh/uv/${UV_VERSION}/install.sh"
-DOCS_URL="https://docs.worthless.sh"
-WINDOWS_DOCS_URL="https://docs.worthless.sh/install/windows"
+DOCS_URL="https://docs.wless.io"
+WINDOWS_DOCS_URL="https://docs.wless.io/install/wsl"
 
 # Force uv to use its own managed Python for fresh-box reproducibility.
 export UV_PYTHON_PREFERENCE="${UV_PYTHON_PREFERENCE:-only-managed}"
