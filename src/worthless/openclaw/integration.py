@@ -1,8 +1,9 @@
 """OpenClaw integration entry points.
 
-Phase 2.a ships only the ``detect()`` predicate and the
-:class:`IntegrationState` snapshot it returns. ``apply_lock``,
-``apply_unlock``, and ``health_check`` arrive in Phases 2.b–2.d.
+Phase 2.a ships ``detect()`` + ``IntegrationState`` (pure detection).
+Phase 2.b adds ``apply_lock()`` + ``OpenclawApplyResult`` (Stage-3 hook
+called from ``worthless lock`` after .env + DB are committed).
+``apply_unlock()`` and ``health_check()`` arrive in Phases 2.c–2.d.
 
 ``detect()`` is **pure**: no file writes, no network, no daemon probes.
 It runs unconditionally on every CLI invocation, so any I/O cost here
@@ -24,12 +25,21 @@ Predicate" and §"Failure modes" rows F01–F04, F36.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import stat
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from worthless.openclaw.config import locate_config_path
+from worthless.openclaw import config as _config_mod
+from worthless.openclaw import skill as _skill_mod
+from worthless.openclaw.config import OpenclawConfigError, locate_config_path
+from worthless.openclaw.errors import (
+    OpenclawErrorCode,
+    OpenclawIntegrationError,
+    OpenclawIntegrationEvent,
+)
 
 _SKILL_SUBPATH = ("skills", "worthless")
+_DEFAULT_PROXY_BASE_URL = "http://127.0.0.1:8787"
 
 
 @dataclass(frozen=True)
@@ -228,4 +238,236 @@ def detect() -> IntegrationState:
         skill_path=skill_path,
         home_dir=home,
         notes=tuple(notes),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.b — apply_lock()
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OpenclawApplyResult:
+    """Result of an :func:`apply_lock` invocation.
+
+    Surfaces in ``worthless lock --json`` so downstream agents (Pi) can
+    confirm what we did and what we skipped without parsing logs.
+
+    Per locked decisions L1/L2: a partial-success state with non-empty
+    ``providers_skipped`` or non-empty failure ``events`` is still a
+    "lock succeeded" outcome from the CLI's perspective — the .env and
+    DB are already committed by the time this struct is built.
+    """
+
+    detected: bool
+    config_path: Path | None
+    workspace_path: Path | None
+    skill_path: Path | None
+    providers_set: tuple[str, ...] = ()
+    providers_skipped: tuple[tuple[str, str], ...] = ()
+    skill_installed: bool = False
+    events: tuple[OpenclawIntegrationEvent, ...] = field(default_factory=tuple)
+
+
+def _resolve_active_config_path(state: IntegrationState, home: Path | None) -> Path:
+    """Pick the config file path to write to.
+
+    If ``detect()`` already located one we use it; otherwise default to
+    ``~/.openclaw/openclaw.json`` so set_provider can recreate it
+    (covers F-CFG-23: the file vanished between detect and write).
+    """
+    if state.config_path is not None:
+        return state.config_path
+    base = home if home is not None else Path.home()
+    return base / ".openclaw" / "openclaw.json"
+
+
+def _check_world_writable(config_path: Path, events: list[OpenclawIntegrationEvent]) -> None:
+    """Append a WRITE_FAILED warning event when ``config_path`` is mode 0o**6.
+
+    F-CFG-16: don't chmod, but surface the risk so doctor can flag it.
+    Reuses the WRITE_FAILED code at level=warn — adding a dedicated code
+    is over-engineering for a single warning channel.
+    """
+    try:
+        mode = config_path.stat().st_mode
+    except OSError:
+        return
+    if mode & (stat.S_IWGRP | stat.S_IWOTH):
+        events.append(
+            OpenclawIntegrationEvent(
+                code=OpenclawErrorCode.WRITE_FAILED,
+                level="warn",
+                detail=(
+                    f"openclaw.json is world/group-writable: {config_path} (mode {mode & 0o777:o})"
+                ),
+            )
+        )
+
+
+def _is_proxy_url(url: str, proxy_base_url: str) -> bool:
+    """Return True if ``url`` is rooted at our proxy.
+
+    Used by F-CFG-13 to distinguish a previous worthless-managed entry
+    (safe to overwrite) from a user's manual override (must not stomp).
+    """
+    return isinstance(url, str) and url.startswith(proxy_base_url.rstrip("/") + "/")
+
+
+def apply_lock(
+    planned_updates: list[tuple[str, str, str]],
+    *,
+    proxy_base_url: str = _DEFAULT_PROXY_BASE_URL,
+) -> OpenclawApplyResult:
+    """Wire OpenClaw to route through worthless. Idempotent. Best-effort.
+
+    Stage 3 of ``worthless lock``. Runs AFTER .env + DB are committed.
+    Per L1/L2: failures here NEVER roll back lock-core. They surface as
+    structured events in the returned :class:`OpenclawApplyResult`.
+
+    Args:
+        planned_updates: list of ``(provider, alias, shard_a)`` triples
+            for keys that were just locked. ``shard_a`` is a UTF-8 string
+            (lock.py decodes the bytearray before calling us).
+        proxy_base_url: override for the proxy host. Defaults to
+            ``http://127.0.0.1:8787`` (the canonical worthless port).
+
+    Returns:
+        :class:`OpenclawApplyResult` describing what we did.
+
+    Spec: ``engineering/research/openclaw-WOR-431-phase-2-spec.md``
+    §"Phase 2.b" / §"`apply_lock()` contract".
+    """
+    state = detect()
+    if not state.present:
+        return OpenclawApplyResult(
+            detected=False,
+            config_path=None,
+            workspace_path=None,
+            skill_path=None,
+        )
+
+    events: list[OpenclawIntegrationEvent] = []
+    providers_set: list[str] = []
+    providers_skipped: list[tuple[str, str]] = []
+
+    config_path = _resolve_active_config_path(state, state.home_dir)
+    _check_world_writable(config_path, events)
+
+    # ---- Stage A: write providers ----------------------------------------
+    for provider, alias, shard_a in planned_updates:
+        provider_name = f"worthless-{provider}"
+        base_url = f"{proxy_base_url.rstrip('/')}/{alias}/v1"
+
+        # F-CFG-13: pre-existing entry pointing somewhere that isn't our
+        # proxy is a manual override. Skip + emit conflict event.
+        try:
+            existing = _config_mod.get_provider(config_path, provider_name)
+        except OpenclawConfigError as exc:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=OpenclawErrorCode.CONFIG_UNREADABLE,
+                    level="error",
+                    detail=f"could not read {config_path}: {exc}",
+                )
+            )
+            providers_skipped.append((provider_name, "config_unreadable"))
+            continue
+        except OSError as exc:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=OpenclawErrorCode.CONFIG_UNREADABLE,
+                    level="error",
+                    detail=f"could not read {config_path}: {exc}",
+                )
+            )
+            providers_skipped.append((provider_name, "config_unreadable"))
+            continue
+
+        if existing is not None:
+            existing_url = existing.get("baseUrl", "")
+            if existing_url and not _is_proxy_url(existing_url, proxy_base_url):
+                events.append(
+                    OpenclawIntegrationEvent(
+                        code=OpenclawErrorCode.PROVIDER_CONFLICT,
+                        level="warn",
+                        detail=(
+                            f"refusing to overwrite {provider_name}: "
+                            f"existing baseUrl {existing_url!r} is not a worthless proxy"
+                        ),
+                        extra={"provider": provider_name, "baseUrl": existing_url},
+                    )
+                )
+                providers_skipped.append((provider_name, "provider_conflict"))
+                continue
+
+        try:
+            _config_mod.set_provider(config_path, provider_name, base_url, api_key=shard_a)
+        except OpenclawConfigError as exc:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=OpenclawErrorCode.CONFIG_UNREADABLE,
+                    level="error",
+                    detail=f"set_provider refused: {exc}",
+                    extra={"provider": provider_name},
+                )
+            )
+            providers_skipped.append((provider_name, "config_unreadable"))
+            continue
+        except OSError as exc:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=OpenclawErrorCode.WRITE_FAILED,
+                    level="error",
+                    detail=f"failed to write {config_path}: {exc}",
+                    extra={"provider": provider_name},
+                )
+            )
+            providers_skipped.append((provider_name, "write_failed"))
+            continue
+
+        providers_set.append(provider_name)
+        events.append(
+            OpenclawIntegrationEvent(
+                code=OpenclawErrorCode.CONFIG_UPDATED,
+                level="info",
+                detail=f"wrote {provider_name} to {config_path}",
+                extra={"provider": provider_name, "baseUrl": base_url},
+            )
+        )
+
+    # ---- Stage B: install skill ------------------------------------------
+    skill_installed = False
+    skill_path: Path | None = None
+    workspace = state.workspace_path
+    if workspace is not None:
+        try:
+            skill_path = _skill_mod.install(workspace / "skills")
+            skill_installed = True
+        except OpenclawIntegrationError as exc:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=getattr(exc, "code", OpenclawErrorCode.SKILL_INSTALL_FAILED),
+                    level="error",
+                    detail=str(exc),
+                )
+            )
+        except OSError as exc:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=OpenclawErrorCode.SKILL_INSTALL_FAILED,
+                    level="error",
+                    detail=f"skill install failed: {exc}",
+                )
+            )
+
+    return OpenclawApplyResult(
+        detected=True,
+        config_path=config_path,
+        workspace_path=workspace,
+        skill_path=skill_path,
+        providers_set=tuple(providers_set),
+        providers_skipped=tuple(providers_skipped),
+        skill_installed=skill_installed,
+        events=tuple(events),
     )

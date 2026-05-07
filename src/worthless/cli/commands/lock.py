@@ -39,6 +39,8 @@ from worthless.crypto.splitter import (
 )
 from worthless.crypto.types import zero_buf
 from worthless.exceptions import ShardTamperedError
+from worthless.openclaw import integration as _openclaw_integration
+from worthless.openclaw.errors import OpenclawIntegrationError
 from worthless.storage.repository import ShardRepository, StoredShard
 
 logger = logging.getLogger(__name__)
@@ -275,6 +277,49 @@ async def _compensating_unwind(
     return errors
 
 
+def _apply_openclaw(
+    planned: list[_PlannedUpdate],
+    console,  # noqa: ANN001 — Console type is opaque from this layer
+    quiet: bool,
+) -> None:
+    """Best-effort OpenClaw integration call. Never raises into lock-core.
+
+    Per L1/L2 in
+    ``engineering/research/openclaw-WOR-431-phase-2-spec.md``: failures
+    here surface as structured events on the returned ``OpenclawApplyResult``
+    or are logged + swallowed if the integration layer raises unexpectedly.
+    """
+    triples: list[tuple[str, str, str]] = [
+        (p.provider, p.alias, p.shard_a.decode("utf-8")) for p in planned
+    ]
+    try:
+        result = _openclaw_integration.apply_lock(planned_updates=triples)
+    except OpenclawIntegrationError as exc:
+        # Defensive: apply_lock's contract is "never raise". If it does,
+        # log and continue — lock-core success must stand.
+        logger.warning("openclaw apply_lock raised unexpectedly: %s", exc)
+        return
+    except Exception as exc:  # noqa: BLE001 — last-resort guard for L1
+        logger.warning("openclaw apply_lock raised unexpectedly: %s", exc)
+        return
+
+    if quiet or not result.detected:
+        return
+
+    if result.providers_set:
+        console.print_hint(
+            f"  OpenClaw: wired {len(result.providers_set)} provider(s) "
+            f"({', '.join(result.providers_set)})"
+        )
+    if result.skill_installed:
+        console.print_hint("  OpenClaw: skill installed")
+    for name, reason in result.providers_skipped:
+        console.print_warning(f"  OpenClaw: skipped {name} ({reason})")
+    for event in result.events:
+        if event.level == "error":
+            console.print_warning(f"  OpenClaw: {event.code.value} — {event.detail}")
+
+
 def _lock_keys(
     env_path: Path,
     home: WorthlessHome,
@@ -327,6 +372,11 @@ def _lock_keys(
             if not planned:
                 return 0
             _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
+            # Phase 2.b: OpenClaw magic. Per L1/L2 in
+            # engineering/research/openclaw-WOR-431-phase-2-spec.md, this
+            # NEVER rolls back lock-core success. Failures surface as
+            # structured events, not exceptions.
+            _apply_openclaw(planned, console, quiet)
             return len(planned)
         except Exception:
             if planned:
