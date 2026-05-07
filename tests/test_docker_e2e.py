@@ -444,11 +444,25 @@ class TestBootstrap:
         assert "shards" in result.stdout
 
     def test_fernet_key_permissions(self, container: tuple[str, int]) -> None:
+        """fernet.key is root:worthless 0440 inside the Docker image.
+
+        Mode 0440 (not 0400) so the worthless group can read: both
+        proxy uid (bootstrap-validation) and crypto uid (sidecar
+        reconstruct) need read access.  Owner is root so neither
+        service uid can unlink/replace the key — addresses CR-3204010079.
+
+        Bare-metal install.sh still uses 0400 single-uid (no group
+        wall there); that's tested in tests/test_bootstrap.py and
+        tests/test_cli_security_hardening.py.
+        """
         name, _ = container
         # GNU coreutils stat inside Debian slim
-        result = docker_exec(name, ["stat", "-c", "%a", "/data/fernet.key"])
+        result = docker_exec(name, ["stat", "-c", "%a %U:%G", "/data/fernet.key"])
         assert result.returncode == 0
-        assert result.stdout.strip() == "400"
+        assert result.stdout.strip() == "440 root:worthless", (
+            f"WOR-310: fernet.key should be root:worthless 0440 in Docker, "
+            f"got {result.stdout.strip()!r}"
+        )
 
 
 # ===================================================================
