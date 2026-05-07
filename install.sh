@@ -246,12 +246,52 @@ install_or_upgrade_worthless() {
 
     # First run: `uv tool install`. Re-run: that fails with "already installed",
     # so we fall through to `uv tool upgrade` for an idempotent upgrade path.
-    if uv tool install "$spec" >/dev/null 2>&1; then
+    #
+    # Capture stderr to tempfiles so we can SHOW it on failure. Pre-fix this
+    # block did `2>&1 >/dev/null` and the user only ever saw a generic "Failed
+    # to install" + proxy hint banner — masking the actual uv error (bad
+    # version, dep conflict, deleted cwd, disk full, etc.). worthless-nrl1.
+    #
+    # When BOTH install AND upgrade fail (the common real-error path: any
+    # cause that breaks install also breaks upgrade — same resolver, same
+    # network, same disk), only the INSTALL stderr is inlined; upgrade is
+    # surfaced as a one-liner. uv's resolver tracebacks are easily 30+ lines
+    # each — printing both back-to-back pushes the actionable proxy hint
+    # below the fold and buries the real signal. Install error is the
+    # actionable diagnostic ~95% of the time. (brutus catch on PR #148.)
+    #
+    # `mktemp -t TEMPLATE` portability: BSD treats the arg as a prefix and appends
+    # random chars; modern GNU coreutils tolerate a bare prefix but emit a stderr
+    # warning. Pass an explicit `.XXXXXX` template so both backends behave
+    # quietly. (CodeRabbit catch on PR #148.)
+    uv_install_err="$(mktemp 2>/dev/null || mktemp -t worthless-uv-install-err.XXXXXX)"
+    uv_upgrade_err="$(mktemp 2>/dev/null || mktemp -t worthless-uv-upgrade-err.XXXXXX)"
+    # POSIX trap REPLACES rather than chains, so re-include ensure_uv's
+    # tmpdir cleanup here. Without this, ensure_uv's downloaded installer
+    # tmpdir leaks every time install_or_upgrade_worthless runs (the common
+    # path for any non-fresh box). `${tmpdir:-}` guards the case where
+    # ensure_uv short-circuited (uv already at pinned version → never set
+    # tmpdir → `set -u` would barf without the default). (CodeRabbit catch.)
+    # shellcheck disable=SC2064  # expand uv_install_err/uv_upgrade_err NOW; tmpdir resolves at trap-fire time
+    trap "rm -rf \"\${tmpdir:-}\"; rm -f \"$uv_install_err\" \"$uv_upgrade_err\"" EXIT INT TERM
+
+    if uv tool install "$spec" >/dev/null 2>"$uv_install_err"; then
         :
-    elif uv tool upgrade worthless >/dev/null 2>&1; then
+    elif uv tool upgrade worthless >/dev/null 2>"$uv_upgrade_err"; then
         :
     else
         err "Failed to install ${spec}."
+        if [ -s "$uv_install_err" ]; then
+            printf "\n       uv tool install reported:\n" >&2
+            sed 's/^/         /' "$uv_install_err" >&2
+        fi
+        # Don't inline upgrade_err: same root cause as install_err in the
+        # vast majority of cases, and a 30-line repeat just buries the
+        # proxy hint. One-liner is enough to confirm we tried.
+        if [ -s "$uv_upgrade_err" ]; then
+            printf "\n       uv tool upgrade also failed (same root cause likely).\n" >&2
+        fi
+        printf "\n       If this looks like a network issue:\n" >&2
         proxy_hints
         exit "$EXIT_NETWORK"
     fi

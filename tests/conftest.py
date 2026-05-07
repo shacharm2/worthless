@@ -12,6 +12,7 @@ import pytest
 from cryptography.fernet import Fernet
 from hypothesis import HealthCheck, settings
 
+from worthless.cli import default_command  # used by _isolate_default_command_proxy autouse fixture
 from worthless.cli.bootstrap import WorthlessHome, ensure_home
 from worthless.crypto import SplitResult, split_key
 from worthless.storage.repository import ShardRepository, StoredShard
@@ -242,3 +243,74 @@ async def repo(tmp_db_path: str, fernet_key: bytes) -> ShardRepository:
     r = ShardRepository(tmp_db_path, fernet_key)
     await r.initialize()
     return r
+
+
+# Synthetic PID returned by the start_daemon mock below. Must be non-zero —
+# POSIX reserves PID 0 for "the calling process's process group", and
+# ``os.kill(0, ...)`` signals every process in the group. Liveness probes
+# (``os.kill(pid, 0)``) treat PID 0 as a positive ack regardless of whether
+# any worthless daemon was actually started, masking bugs. 12345 is a
+# synthetic, well-out-of-the-way value that no real long-lived process
+# is going to land on. Keep this as a constant so audit greps stay easy.
+_FAKE_DAEMON_PID = 12345
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_command_proxy(request, monkeypatch):
+    """Stop ``run_default()`` from spawning a real proxy daemon mid-test.
+
+    Tests that hit the bare ``worthless`` no-args entry point flow through
+    ``default_command.run_default()`` → ``_proxy_is_running`` → ``poll_health(8787)``
+    → ``start_daemon(..., port=8787, ...)``. Under pytest-xdist, four workers
+    racing for the same port produces non-deterministic state: one wins the
+    bind, the others see a "running" daemon belonging to a different test's
+    home, and assertions diverge. The same race also leaves orphan uvicorn
+    children if a worker fails between spawn and cleanup.
+
+    This autouse fixture neutralises the daemon path for every test by
+    default. The autouse-everywhere scope is deliberate (not a missed
+    narrowing): tests that accidentally invoke ``run_default()`` from any
+    code path are auto-protected from spawning a real daemon. The
+    measured cost is ~0.8s / 2.9% across the full suite (microseconds
+    per test); the safety net is broad and prevents the "future test
+    forgets the marker" failure mode entirely.
+
+    Tests that genuinely need a real proxy daemon must opt out with
+    ``@pytest.mark.integration`` (already a registered marker in
+    pyproject.toml) and own their own daemon teardown.
+
+    Tests that monkeypatch ``start_daemon`` / ``poll_health`` themselves
+    still work — pytest's ``monkeypatch`` stacks LIFO within a single test,
+    so the per-test override wins over this fixture's default. Verified
+    against ``tests/test_cli_default.py`` which already does this for
+    ~10 of its tests.
+
+    Mock return values are chosen to match the real shapes:
+    - ``_proxy_is_running`` returns ``(running=False, pid=None, port=0)``
+      — same tuple production code returns when the daemon is absent.
+    - ``start_daemon`` returns ``_FAKE_DAEMON_PID`` (12345). PID 0 would
+      hijack ``os.kill`` liveness probes (POSIX-reserved); a non-zero
+      synthetic PID lets such probes fail honestly.
+    - ``poll_health`` returns ``True`` so callers that only check
+      "responsive?" don't loop.
+
+    Closes worthless-ba1c.
+    """
+    if request.node.get_closest_marker("integration"):
+        return
+
+    monkeypatch.setattr(
+        default_command,
+        "_proxy_is_running",
+        lambda home: (False, None, 0),
+    )
+    monkeypatch.setattr(
+        default_command,
+        "start_daemon",
+        lambda *_a, **_kw: _FAKE_DAEMON_PID,
+    )
+    monkeypatch.setattr(
+        default_command,
+        "poll_health",
+        lambda port, timeout=10.0: True,
+    )
