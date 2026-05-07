@@ -1,3 +1,8 @@
+---
+title: "WOR-307 Handoff — Prototype to v2.0"
+description: "Gate-closing handoff document for the WOR-306 Fernet sidecar epic. What the WOR-307 prototype proves, what v2.0 inherits."
+---
+
 # WOR-307 Handoff: What the Prototype Proves, What v2.0 Inherits
 
 **Status:** Gate-closing handoff for WOR-306 (Fernet sidecar epic).

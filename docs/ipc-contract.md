@@ -1,3 +1,8 @@
+---
+title: "IPC Contract — Proxy ↔ Sidecar"
+description: "Length-prefixed msgpack wire protocol between the Worthless proxy and the Fernet sidecar over a Unix domain socket."
+---
+
 # IPC Contract: Proxy ↔ Sidecar
 
 **Status:** Draft (WOR-307 prototype — v1.1)
