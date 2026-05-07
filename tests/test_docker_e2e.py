@@ -477,15 +477,30 @@ class TestLifecycle:
     """Enroll + proxy health."""
 
     def test_enroll_and_healthz(self, container: tuple[str, int]) -> None:
+        """Enrolling a key while the proxy is live + hitting /healthz works.
+
+        WOR-310 nuance: ``docker exec`` runs as the IMAGE's default
+        user.  Since we removed ``USER worthless`` so the entrypoint
+        can priv-drop, ``docker exec ... worthless enroll`` would run
+        as root and write ``/data/worthless.db`` as root — a uid
+        mismatch with the live ``worthless-proxy`` (uid 10001) that
+        already has the DB open.  Real users enroll via
+        ``docker exec --user worthless-proxy``; mirror that here so
+        the test exercises the supported flow instead of a
+        misconfigured one.
+        """
         name, port = container
 
-        # Enroll a fake key
+        # Enroll a fake key — explicitly as worthless-proxy to match
+        # the supported user flow under WOR-310's no-USER image.
         key = fake_openai_key()
-        enroll = subprocess.run(
+        enroll = subprocess.run(  # noqa: S603, S607
             [
                 "docker",
                 "exec",
                 "-i",
+                "--user",
+                "worthless-proxy",
                 name,
                 "worthless",
                 "enroll",
