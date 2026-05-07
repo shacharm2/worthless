@@ -247,10 +247,10 @@ def register_wrap_commands(app: typer.Typer) -> None:
                 ),
             )
 
+        full_command = list(command) + ctx.args
         # Inherit parent env unchanged. Post-8rqs, `worthless lock` writes
         # *_BASE_URL into the user's .env (preserving their var names);
         # wrap doesn't synthesise or overwrite anything.
-        full_command = list(command) + ctx.args
         child_env = dict(os.environ)
 
         # Spawn child
