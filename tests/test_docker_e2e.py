@@ -379,6 +379,7 @@ class TestBuild:
             if any(needle in line.lower() for needle in ("uvicorn", "python"))
         ]
         assert runtime_lines, f"no uvicorn/python processes found; /proc walk:\n{result.stdout}"
+        uids_seen: set[str] = set()
         for line in runtime_lines:
             parts = line.split(maxsplit=2)
             if len(parts) < 3:
@@ -388,6 +389,18 @@ class TestBuild:
                 f"WOR-310 priv-drop failed: process running as uid=0:\n{line}\n"
                 f"full /proc walk:\n{result.stdout}"
             )
+            uids_seen.add(uid)
+        # Two-uid topology: proxy (10001) and crypto sidecar (10002) MUST be
+        # distinct.  A regression in spawn_sidecar / deploy/start.py that
+        # silently drops both processes to the SAME non-root uid would pass
+        # the bare uid != 0 check above while completely defeating the
+        # ptrace / /proc/<pid>/mem wall this PR exists to enforce.  Pin the
+        # exact uid pair here so the test fails loud on that regression.
+        assert {"10001", "10002"}.issubset(uids_seen), (
+            f"WOR-310 two-uid wall missing: expected both 10001 (proxy) and "
+            f"10002 (crypto), saw uids {sorted(uids_seen)}.\n"
+            f"full /proc walk:\n{result.stdout}"
+        )
 
 
 # ===================================================================
@@ -1239,6 +1252,7 @@ class TestComposeSecurity:
             if any(needle in line.lower() for needle in ("uvicorn", "python"))
         ]
         assert runtime_lines, f"no runtime processes; /proc walk:\n{result.stdout}"
+        uids_seen: set[str] = set()
         for line in runtime_lines:
             parts = line.split(maxsplit=2)
             if len(parts) < 3:
@@ -1248,6 +1262,15 @@ class TestComposeSecurity:
                 f"WOR-310 compose priv-drop failed: process at uid=0:\n{line}\n"
                 f"full /proc walk:\n{result.stdout}"
             )
+            uids_seen.add(uid)
+        # Two-uid topology check (mirrors test_runs_as_non_root): both
+        # 10001 (proxy) and 10002 (crypto) must appear as distinct uids.
+        # A same-uid drop would pass the uid != 0 check but defeat the
+        # kernel uid wall — fail loud here instead.
+        assert {"10001", "10002"}.issubset(uids_seen), (
+            f"WOR-310 compose two-uid wall missing: expected both 10001 and "
+            f"10002, saw {sorted(uids_seen)}.\nfull /proc walk:\n{result.stdout}"
+        )
 
 
 class TestSDKSmokeDocker:
