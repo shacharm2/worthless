@@ -457,3 +457,109 @@ def test_apply_lock_uses_custom_proxy_base_url(
     data = json.loads(openclaw_present["config_path"].read_text(encoding="utf-8"))
     providers = data["models"]["providers"]
     assert providers["worthless-openai"]["baseUrl"] == "http://custom.host:9999/openai-cccc3333/v1"
+
+
+# ---------------------------------------------------------------------------
+# Regressions surfaced by live verification (WOR-431 evidence + simplify pass)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_lock_writes_models_array_and_api_field(openclaw_present: dict[str, Path]) -> None:
+    """Regression — daemon REJECTED config without ``models: []`` array.
+
+    Live test against ghcr.io/openclaw/openclaw:latest reported:
+    ``models.providers.worthless-openai.models: Invalid input: expected
+    array, received undefined``. Without this the skill never registered
+    in the real flow despite unit tests passing. Both ``models`` and
+    ``api`` must be on every provider entry we write.
+    """
+    from worthless.openclaw import integration
+
+    result = integration.apply_lock(
+        planned_updates=[
+            ("openai", "openai-aaaa1111", "sk-shard-a"),
+            ("anthropic", "anthropic-bbbb2222", "sk-shard-b"),
+        ],
+    )
+    assert result.detected is True
+
+    data = json.loads(openclaw_present["config_path"].read_text(encoding="utf-8"))
+    providers = data["models"]["providers"]
+
+    # AC: every entry has `models` array (empty is fine) so daemon accepts.
+    assert providers["worthless-openai"]["models"] == []
+    assert providers["worthless-anthropic"]["models"] == []
+    # AC: `api` identifies the wire protocol per provider type.
+    assert providers["worthless-openai"]["api"] == "openai-completions"
+    assert providers["worthless-anthropic"]["api"] == "anthropic-messages"
+
+
+def test_apply_lock_preserves_existing_models_array(openclaw_present: dict[str, Path]) -> None:
+    """If the user (or a prior install) put real models in the entry, keep them.
+
+    We only fill ``models: []`` as a default for NEW entries. An existing
+    array (e.g., a curated list of GPT-4 / Claude variants the user
+    chose) survives a re-run of ``worthless lock``.
+    """
+    from worthless.openclaw import integration
+
+    config_path = openclaw_present["config_path"]
+    config_path.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "providers": {
+                        "worthless-openai": {
+                            "baseUrl": "http://127.0.0.1:8787/openai-aaaa1111/v1",
+                            "apiKey": "sk-shard-old",
+                            "api": "openai-completions",
+                            "models": [{"id": "gpt-4o", "name": "GPT-4o"}],
+                        }
+                    }
+                }
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    integration.apply_lock(
+        planned_updates=[("openai", "openai-aaaa1111", "sk-shard-new")],
+    )
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    entry = data["models"]["providers"]["worthless-openai"]
+    assert entry["models"] == [{"id": "gpt-4o", "name": "GPT-4o"}], "existing models clobbered"
+    assert entry["apiKey"] == "sk-shard-new", "apiKey not refreshed"
+
+
+def test_apply_lock_refuses_symlinked_openclaw_json(openclaw_present: dict[str, Path]) -> None:
+    """F-CFG-15 production gap — set_provider must refuse symlinks.
+
+    Security: an attacker plants ~/.openclaw/openclaw.json as a symlink
+    to ~/.bashrc. Without the symlink check, ``os.replace`` clobbers
+    the link target, destroying the user's shell config. The test
+    monkeypatched set_provider before; this test exercises the REAL
+    production path (Phase 1 ``_refuse_if_symlink`` inside the flock).
+    """
+    from worthless.openclaw import integration
+
+    # Replace openclaw.json with a symlink to a sibling file we don't want clobbered.
+    config_path = openclaw_present["config_path"]
+    target = openclaw_present["home"] / "innocent-bystander.txt"
+    target.write_text("DO NOT TOUCH ME\n", encoding="utf-8")
+    config_path.unlink()
+    config_path.symlink_to(target)
+
+    result = integration.apply_lock(
+        planned_updates=[("openai", "openai-aaaa1111", "sk-shard")],
+    )
+
+    # Lock-core never raises (L1). The integration result records the refusal.
+    assert any(
+        "F-CFG-15" in event.detail or "symlink" in event.detail.lower() for event in result.events
+    ), f"expected a symlink-refusal event, got: {[e.detail for e in result.events]}"
+    # The link target MUST be untouched (the actual security property).
+    assert target.read_text(encoding="utf-8") == "DO NOT TOUCH ME\n", "symlink target was clobbered"

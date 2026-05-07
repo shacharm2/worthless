@@ -240,17 +240,52 @@ def _ensure_providers(data: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _refuse_if_symlink(path: Path) -> None:
+    """Raise OpenclawConfigError if ``path`` is a symbolic link.
+
+    Security: an attacker can plant ``~/.openclaw/openclaw.json`` as a
+    symlink to ``~/.bashrc`` or any user-writable file. ``os.replace``
+    in :func:`_atomic_write_json` would replace the *link target*,
+    silently destroying it. F-CFG-15 protection per spec § "Failure
+    modes" — must run inside the flock so the check + write are atomic
+    relative to other writers.
+    """
+    try:
+        if path.is_symlink():
+            raise OpenclawConfigError(f"refusing to follow symlink at {path} (F-CFG-15)")
+    except OSError:
+        # ``is_symlink`` raises OSError on broken-permission paths; a path
+        # we can't even stat is not safe to write to either.
+        raise OpenclawConfigError(f"could not stat {path} for symlink check") from None
+
+
 def set_provider(
     path: Path,
     provider: str,
     base_url: str,
     api_key: str | None = None,
+    *,
+    api: str | None = None,
+    models: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Idempotently set ``models.providers.<provider>.baseUrl``.
 
     If ``api_key`` is supplied it is also written. Other fields on the
-    provider entry (e.g. ``api``, ``models``) are preserved. Other
-    providers are left untouched.
+    provider entry are preserved if not overridden.
+
+    The OpenClaw daemon REQUIRES ``models`` to be an array on every
+    provider entry — otherwise the config is rejected with
+    ``Invalid input: expected array, received undefined`` and the user's
+    skill never registers (verified live, see WOR-431 evidence). When
+    creating a NEW entry (no existing record), we write ``models: []``
+    by default so the daemon accepts the file. Existing ``models`` arrays
+    are preserved unless the caller passes ``models`` explicitly.
+
+    The optional ``api`` field tells OpenClaw which wire protocol the
+    provider speaks (``"openai-completions"`` / ``"anthropic-messages"``).
+
+    Symlink refusal (F-CFG-15) runs inside the flock so a swap between
+    detect and write cannot bypass it.
 
     Creates the file (and any missing parent directories) when absent.
 
@@ -259,13 +294,22 @@ def set_provider(
     concurrent CLI and sidecar writers.
     """
     with _file_lock(path):
+        _refuse_if_symlink(path)
         data = read_config(path)
         providers = _ensure_providers(data)
 
-        entry: dict[str, Any] = dict(providers.get(provider) or {})
+        existing = providers.get(provider) or {}
+        entry: dict[str, Any] = dict(existing)
         entry["baseUrl"] = base_url
         if api_key is not None:
             entry["apiKey"] = api_key
+        if api is not None:
+            entry["api"] = api
+        if models is not None:
+            entry["models"] = models
+        elif "models" not in entry:
+            # New entry default: empty array so OpenClaw daemon accepts it.
+            entry["models"] = []
 
         providers[provider] = entry
         _atomic_write_json(path, data)
@@ -278,8 +322,12 @@ def unset_provider(path: Path, provider: str) -> dict[str, Any]:
     Returns the removed entry as a dict, or ``{}`` if it was not present.
     Other providers are left untouched. The file is rewritten atomically,
     and the read-modify-write is serialized via an inter-process flock.
+
+    Symlink refusal (F-CFG-15) inside the flock — same protection as
+    :func:`set_provider`.
     """
     with _file_lock(path):
+        _refuse_if_symlink(path)
         data = read_config(path)
         providers = _providers_view(data, strict=False) if data else None
         if providers is None or provider not in providers:

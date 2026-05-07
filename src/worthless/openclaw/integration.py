@@ -41,6 +41,16 @@ from worthless.openclaw.errors import (
 _SKILL_SUBPATH = ("skills", "worthless")
 _DEFAULT_PROXY_BASE_URL = "http://127.0.0.1:8787"
 
+# OpenClaw daemon requires the `api` field to identify the wire protocol
+# of each provider. Without it, skills may be visible but tool calls go
+# nowhere. Maps worthless provider IDs (the keys in the splitter's
+# provider registry) to the OpenClaw `api` schema string. Live-verified
+# against ghcr.io/openclaw/openclaw:latest.
+_PROVIDER_API: dict[str, str] = {
+    "openai": "openai-completions",
+    "anthropic": "anthropic-messages",
+}
+
 
 @dataclass(frozen=True)
 class IntegrationState:
@@ -195,7 +205,14 @@ def _probe_config() -> tuple[Path | None, list[str]]:
     if candidate is None:
         return None, notes
 
+    # F-CFG-15: do NOT call .resolve() on a symlink — that dereferences
+    # the link and hides the attack vector. Return the un-resolved path
+    # so apply_lock's symlink check fires correctly. For non-symlinks
+    # we still resolve for F35 (case-insensitive FS canonical compare).
     try:
+        if candidate.is_symlink():
+            notes.append(f"config is a symlink (refused for safety): {candidate}")
+            return candidate, notes
         return candidate.resolve(), notes
     except OSError as exc:
         notes.append(f"config unresolvable: {exc}")
@@ -354,6 +371,47 @@ def apply_lock(
     config_path = _resolve_active_config_path(state, state.home_dir)
     _check_world_writable(config_path, events)
 
+    # F-CFG-15: refuse symlinked openclaw.json BEFORE any read or write.
+    # ``os.replace`` would clobber the link target, so even an invalid
+    # symlink is unsafe — and a valid one is exactly the attack vector
+    # (point ~/.openclaw/openclaw.json at ~/.bashrc, run worthless lock,
+    # watch ~/.bashrc get destroyed). Defensive depth: set_provider /
+    # unset_provider also have _refuse_if_symlink inside the flock, but
+    # we short-circuit here so the event is correctly tagged
+    # SYMLINK_REFUSED instead of CONFIG_UNREADABLE (which would fire
+    # when get_provider tried to JSON-parse the link target).
+    if config_path is not None:
+        try:
+            is_link = config_path.is_symlink()
+        except OSError:
+            is_link = False
+        if is_link:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=OpenclawErrorCode.SYMLINK_REFUSED,
+                    level="error",
+                    detail=(
+                        f"refusing to follow symlink at {config_path} (F-CFG-15) — "
+                        "symlinked openclaw.json is a known attack vector"
+                    ),
+                    extra={"path": str(config_path)},
+                )
+            )
+            # Continue to Stage B (skill install) but skip Stage A.
+            return OpenclawApplyResult(
+                detected=True,
+                config_path=config_path,
+                workspace_path=state.workspace_path,
+                skill_path=None,
+                providers_set=(),
+                providers_skipped=tuple(
+                    (f"worthless-{provider}", "symlink_refused")
+                    for provider, _alias, _shard in planned_updates
+                ),
+                skill_installed=False,
+                events=tuple(events),
+            )
+
     # ---- Stage A: write providers ----------------------------------------
     for provider, alias, shard_a in planned_updates:
         provider_name = f"worthless-{provider}"
@@ -402,7 +460,18 @@ def apply_lock(
                 continue
 
         try:
-            _config_mod.set_provider(config_path, provider_name, base_url, api_key=shard_a)
+            _config_mod.set_provider(
+                config_path,
+                provider_name,
+                base_url,
+                api_key=shard_a,
+                # Required by OpenClaw daemon — without these the daemon
+                # rejects the config with "Invalid input: expected array,
+                # received undefined". Verified live (WOR-431 evidence).
+                api=_PROVIDER_API.get(provider),
+                # `models=[]` default is applied inside set_provider when
+                # the entry is new. Existing arrays are preserved.
+            )
         except OpenclawConfigError as exc:
             events.append(
                 OpenclawIntegrationEvent(

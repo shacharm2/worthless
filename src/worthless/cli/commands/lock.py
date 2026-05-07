@@ -292,8 +292,15 @@ def _apply_openclaw(
     triples: list[tuple[str, str, str]] = [
         (p.provider, p.alias, p.shard_a.decode("utf-8")) for p in planned
     ]
+    # Plumb the SAME port lock just used for .env's BASE_URL vars so
+    # openclaw.json's baseUrl matches a non-default --port. Without this,
+    # users on non-default ports got a wrong baseUrl in openclaw.json
+    # while .env's BASE_URL was correct (split-brain proxy URL).
+    proxy_base_url = f"http://127.0.0.1:{_resolve_port(None)}"
     try:
-        result = _openclaw_integration.apply_lock(planned_updates=triples)
+        result = _openclaw_integration.apply_lock(
+            planned_updates=triples, proxy_base_url=proxy_base_url
+        )
     except OpenclawIntegrationError as exc:
         # Defensive: apply_lock's contract is "never raise". If it does,
         # log and continue — lock-core success must stand.
