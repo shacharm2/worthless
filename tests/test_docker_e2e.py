@@ -518,8 +518,36 @@ class TestLifecycle:
         assert write.returncode == 0, f"failed to write .env: {write.stderr}"
 
         # Sanity check: /healthz works BEFORE we touch the DB.  If this
-        # fails, the failure is not lock-related and we want to know.
-        pre = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=5.0)
+        # fails, the failure is NOT lock-related — we want full
+        # diagnostics (proxy logs + container state) so CI is
+        # self-explanatory next iteration.
+        try:
+            pre = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=5.0)
+        except httpx.HTTPError as exc:
+            logs = subprocess.run(  # noqa: S603, S607
+                ["docker", "logs", "--tail", "200", name],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            inspect = subprocess.run(  # noqa: S603, S607
+                [
+                    "docker",
+                    "inspect",
+                    "--format",
+                    "status={{.State.Status}} health={{.State.Health.Status}} "
+                    "rc={{.State.ExitCode}}",
+                    name,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            raise AssertionError(
+                f"baseline /healthz failed pre-lock: {exc}\n"
+                f"--- container state: {inspect}\n"
+                f"--- proxy logs (last 200 lines) ---\n{logs.stdout}\n{logs.stderr}"
+            ) from exc
         assert pre.status_code == 200, (
             f"baseline /healthz failed pre-lock: {pre.status_code} {pre.text!r}"
         )
