@@ -1,9 +1,8 @@
----
-title: "IPC Contract — Proxy ↔ Sidecar"
-description: "Length-prefixed msgpack wire protocol between the Worthless proxy and the Fernet sidecar over a Unix domain socket."
----
-
 # IPC Contract: Proxy ↔ Sidecar
+
+*Internal architecture doc. Audience: future v2.0 Rust/MPC reimplementers, security auditors.
+Originally landed via WOR-307. Lives in `engineering/`, not `docs/`, because end users
+never see the IPC wire — they hit the proxy's HTTP surface via OpenAI/Anthropic SDKs.*
 
 **Status:** Draft (WOR-307 prototype — v1.1)
 **Stability:** Wire format frozen for v1.1. Ops may add kinds/fields backward-compatibly.
@@ -121,7 +120,7 @@ Sidecar unreachable, dead, or returning `AUTH`/`PROTO`/`TIMEOUT` → proxy retur
 | `tests/ipc/test_peercred.py` | peer-uid auth tests | WOR-307 |
 | `tests/ipc/test_roundtrip.py` | end-to-end seal→open | WOR-307 |
 | `tests/ipc/test_failure_matrix.py` | sidecar-dies scenarios | WOR-307 → WOR-312 |
-| `docs/sidecar-topology.md` | v2.0 Rust/MPC reuse notes | WOR-307 |
+| `engineering/sidecar-topology.md` | v2.0 Rust/MPC reuse notes | WOR-307 |
 
 ## Versioning
 

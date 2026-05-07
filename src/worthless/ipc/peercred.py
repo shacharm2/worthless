@@ -18,7 +18,7 @@ Why uid, not pid, is the auth primitive:
     what the kernel actually enforces. See socket(7) §SO_PEERCRED for
     the documented PID-reuse race.
 
-See ``docs/ipc-contract.md`` §Transport (auth).
+See ``engineering/ipc-contract.md`` §Transport (auth).
 """
 
 from __future__ import annotations

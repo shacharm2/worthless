@@ -3,7 +3,7 @@
 WOR-307 Day 3 deliverable: prove the no-fallback contract holds under
 every realistic sidecar failure mode, not just the happy path.
 
-The contract (``docs/ipc-contract.md`` §No-fallback, §Errors): every
+The contract (``engineering/ipc-contract.md`` §No-fallback, §Errors): every
 failure path surfaces as a typed :class:`worthless.ipc.client.IPCError`
 subclass. The proxy layer above translates each to HTTP 503. There is
 NO in-process crypto fallback — that is the entire point of the sidecar.

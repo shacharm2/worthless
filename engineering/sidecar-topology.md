@@ -1,15 +1,13 @@
----
-title: "Sidecar Topology — Prototype to v2.0"
-description: "How the Fernet sidecar topology works, which invariants are load-bearing, and what a v2.0 Rust/MPC rewrite must preserve."
----
-
 # Sidecar Topology: What the Prototype Proves, What v2.0 Inherits
 
-*Originally landed via WOR-307. Mission-driven name; ticket lineage in the footer.*
+*Internal architecture doc. Audience: sidecar implementers, container/systemd packagers,
+v2.0 Rust/MPC reimplementers, security auditors.  Originally landed via WOR-307.
+Lives in `engineering/`, not `docs/`, because end users install Worthless via
+`curl | sh` / Docker — they never need to know the sidecar exists.*
 
 **Status:** Gate-closing handoff for the Fernet sidecar epic (WOR-306).
 **Audience:** sidecar implementers, proxy IPC client authors, container/systemd packagers, and the v2.0 Rust/MPC rewrite.
-**Companion:** [`docs/ipc-contract.md`](ipc-contract.md) (wire format, **frozen for v1.1**).
+**Companion:** [`engineering/ipc-contract.md`](ipc-contract.md) (wire format, **frozen for v1.1**).
 
 This document describes what the 3-day prototype built, which invariants are load-bearing, and what a v2.0 Rust/MPC implementation must preserve vs. may freely change.
 
@@ -91,7 +89,7 @@ Socket activation + `User=`/`Group=` directives give the same two-uid shape (pro
 | 2 | Malicious Python dep in proxy | Only path out is IPC verbs | `tests/ipc/test_failure_matrix.py::test_client_module_has_no_crypto_fallback_path` |
 | 3 | `/proc/<proxy-pid>/mem` dump | Key is in crypto process, not proxy | Two-uid container asserts process split; no crypto symbol imported in proxy client (`tests/ipc/test_failure_matrix.py::test_client_module_has_no_crypto_fallback_path`) |
 | 4 | Read shared volume | Socket is rendezvous only | Dockerfile `chmod 0750 /var/run/worthless`, 0660 socket (see row 6) |
-| 5 | Cold-boot memory dump (host) | **Out of scope — documented limit** | `docs/ipc-contract.md` + §7 below |
+| 5 | Cold-boot memory dump (host) | **Out of scope — documented limit** | `engineering/ipc-contract.md` + §7 below |
 | 6 | Connect from random uid | `require_peer_uid` | `tests/ipc/test_peercred.py::TestRequirePeerUid::test_disallowed_uid_raises`, `::test_empty_allowlist_always_rejects`, `::test_multi_uid_allowlist`; AF_UNIX bypass closed in `TestGetPeerCredentials::test_raises_on_non_unix_socket` |
 | 7 | Malformed IPC payload | `FrameError` + envelope validation | `tests/ipc/test_framing.py` (oversized, truncated, non-map body, missing fields) + `tests/ipc/test_failure_matrix.py::test_connect_to_stale_socket_file_raises_protocol_error` |
 | 8 | Sidecar dies mid-request | `IPCProtocolError`, **no fallback** | `tests/ipc/test_failure_matrix.py::test_op_after_transport_closed_raises_protocol_error`, `::test_reconnect_after_server_killed_raises_protocol_error`, `::test_client_module_has_no_crypto_fallback_path` |
@@ -189,7 +187,7 @@ A round-2 architect-reviewer pass flagged four debts that freezing the v1.1 cont
 1. **No `session_id` distinct from `id`.** `id` is per-request correlation. Multi-round MPC protocols need a session token that survives across requests. Today: stuff `session_id` inside `body`. Expected v:2 bump trigger if MPC needs first-class session semantics.
 2. **No `stream` / `cancel` kinds.** Only `req` / `resp` / `err`. Long-running MPC rounds with server-driven progress or client-side deadline cancellation can't express either cleanly — proxy's only recourse is TCP close. Expected v:2 bump trigger and the most likely one.
 3. **Backend-specific `attest` verifier lives proxy-side.** The wire stays opaque (per §5), but whoever verifies an MPC `attest` bundle needs MPC-aware code in the proxy. The contract is wire-agnostic; the verifier split is not. Plan the proxy-side verifier abstraction before v2.0 lands so this coupling doesn't compound.
-4. **Handshake downgrade path unwritten.** `_PROTOCOL_VERSION` is exact-match (server rejects if `1 ∉ client_versions`). A v:2 server accepting v:1 clients is a policy choice, not a spec. Add a "downgrade-on-handshake" clause to the §Versioning section of `docs/ipc-contract.md` *before* we ever ship v:2.
+4. **Handshake downgrade path unwritten.** `_PROTOCOL_VERSION` is exact-match (server rejects if `1 ∉ client_versions`). A v:2 server accepting v:1 clients is a policy choice, not a spec. Add a "downgrade-on-handshake" clause to the §Versioning section of `engineering/ipc-contract.md` *before* we ever ship v:2.
 
 None of these break v1.1 for its stated workload (Fernet request/response). All four are expected to surface when v2.0 work starts; treat them as known-debt, not discovered-debt.
 

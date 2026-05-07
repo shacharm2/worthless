@@ -5,7 +5,7 @@ contract the backend must satisfy in isolation so bugs at that layer
 don't masquerade as IPC-framing bugs in the roundtrip suite.
 
 Contract references:
-    docs/ipc-contract.md §seal, §open, §attest
+    engineering/ipc-contract.md §seal, §open, §attest
 
 Shape pinned here:
     FernetBackend(shares: tuple[bytes, bytes])

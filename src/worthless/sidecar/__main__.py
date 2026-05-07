@@ -27,7 +27,7 @@ Exit codes:
 * ``1``  — config error (missing env, unreadable share, empty allowlist)
 * ``2``  — bind failure
 
-See ``docs/ipc-contract.md`` for the wire contract this server honours.
+See ``engineering/ipc-contract.md`` for the wire contract this server honours.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 def _load_shares(a_path: Path, b_path: Path) -> tuple[bytes, bytes]:
     """Read two XOR shares from disk; the sidecar deliberately avoids any keyring fallback.
 
-    See §11 of ``docs/sidecar-topology.md`` for the no-keyring decision and
+    See §11 of ``engineering/sidecar-topology.md`` for the no-keyring decision and
     why a keyring fallback would collapse the two-share split into one secret.
     """
     share_a = a_path.read_bytes()

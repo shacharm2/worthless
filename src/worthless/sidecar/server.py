@@ -1,6 +1,6 @@
 """Asyncio sidecar server exposing a :class:`Backend` over the IPC contract.
 
-Wire protocol: see ``docs/ipc-contract.md``. This module implements the
+Wire protocol: see ``engineering/ipc-contract.md``. This module implements the
 server side; the proxy-side client lives in ``worthless.ipc.client``.
 
 Design invariants (enforced here, reviewed by security-auditor):

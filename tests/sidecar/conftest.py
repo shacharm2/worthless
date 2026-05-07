@@ -5,7 +5,7 @@ Extracted from ``test_shutdown.py`` so other sidecar tests
 without duplication. Pytest autodiscovers every fixture in this
 file for any test in ``tests/sidecar/``.
 
-See ``docs/ipc-contract.md`` for the env contract these fixtures wire up.
+See ``engineering/ipc-contract.md`` for the env contract these fixtures wire up.
 """
 
 from __future__ import annotations

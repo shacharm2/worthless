@@ -1,6 +1,6 @@
 """Tests for ``worthless.ipc.peercred`` — peer-uid authentication.
 
-Contract: docs/ipc-contract.md §Transport (auth).
+Contract: engineering/ipc-contract.md §Transport (auth).
 
 Cross-platform: exercises SO_PEERCRED on Linux, getpeereid() via ctypes
 on macOS. Windows is unsupported (no AF_UNIX in the way we need).

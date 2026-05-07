@@ -11,7 +11,7 @@ Mix of two test styles:
   Lets us assert drain-deadline behavior without flaky signal-timing
   gymnastics. Signal wiring itself is already covered by slice 1.
 
-See ``docs/ipc-contract.md`` for the env contract and exit codes.
+See ``engineering/ipc-contract.md`` for the env contract and exit codes.
 """
 
 from __future__ import annotations
