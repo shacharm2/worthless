@@ -517,6 +517,13 @@ class TestLifecycle:
         )
         assert write.returncode == 0, f"failed to write .env: {write.stderr}"
 
+        # Sanity check: /healthz works BEFORE we touch the DB.  If this
+        # fails, the failure is not lock-related and we want to know.
+        pre = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=5.0)
+        assert pre.status_code == 200, (
+            f"baseline /healthz failed pre-lock: {pre.status_code} {pre.text!r}"
+        )
+
         lock = subprocess.run(  # noqa: S603, S607
             [
                 "docker",
@@ -534,11 +541,27 @@ class TestLifecycle:
         )
         assert lock.returncode == 0, f"lock failed: {lock.stderr}"
 
-        # Hit healthz
-        resp = httpx.get(
-            f"http://127.0.0.1:{port}/healthz",
-            timeout=5.0,
-        )
+        # Hit healthz post-lock.  If this fails, capture proxy logs so
+        # CI shows what made uvicorn drop the connection.
+        try:
+            resp = httpx.get(
+                f"http://127.0.0.1:{port}/healthz",
+                timeout=5.0,
+            )
+        except httpx.HTTPError as exc:
+            logs = subprocess.run(  # noqa: S603, S607
+                ["docker", "logs", "--tail", "100", name],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            raise AssertionError(
+                f"post-lock /healthz failed: {exc}\n"
+                f"--- pre-lock /healthz returned: {pre.status_code} {pre.text!r}\n"
+                f"--- lock stdout ---\n{lock.stdout}\n"
+                f"--- lock stderr ---\n{lock.stderr}\n"
+                f"--- proxy logs (last 100 lines) ---\n{logs.stdout}\n{logs.stderr}"
+            ) from exc
         assert resp.status_code == 200
         body = resp.json()
         assert "status" in body
