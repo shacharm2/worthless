@@ -32,6 +32,12 @@ services:
     environment:
       WORTHLESS_DEPLOY_MODE: "lan"
       WORTHLESS_ALLOW_INSECURE: "true"
+      # WOR-310: deploy/start.py::_resolve_bind() returns 127.0.0.1
+      # for `lan` mode (only `public` auto-binds 0.0.0.0).  Real LAN
+      # users explicitly set WORTHLESS_HOST to their iface; the
+      # openclaw test stack needs all interfaces so host-side httpx
+      # reaches uvicorn through the docker-published port.
+      WORTHLESS_HOST: "0.0.0.0"
       # 8rqs Phase 5+6 removed the global per-provider URL overrides.
       # The mock-upstream is now reached via per-enrollment base_url
       # stored at lock time — see the openclaw_stack fixture in
