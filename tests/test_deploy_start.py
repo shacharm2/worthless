@@ -385,6 +385,12 @@ class TestMainPrivilegeDrop:
         # this in-place; the default no-op preserves backward compatibility
         # for C3-era tests.
         monkeypatch.setattr(mod.os, "chown", lambda *_a, **_kw: None, raising=False)
+        # C4 follow-up: main() also chmods the parent run_dir so the
+        # forked sidecar (worthless gid) can traverse it. The test path
+        # would resolve parent_run_dir to /tmp on macOS where chmod
+        # raises EPERM. No-op os.chmod so tests don't actually mutate
+        # filesystem permissions.
+        monkeypatch.setattr(mod.os, "chmod", lambda *_a, **_kw: None, raising=False)
 
     def test_main_passes_service_uids_to_spawn_sidecar_when_docker(
         self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
@@ -655,6 +661,12 @@ class TestShareFileOwnership:
         monkeypatch.setattr(mod.os, "setgroups", lambda g: None, raising=False)
         monkeypatch.setattr(mod.os, "setresuid", lambda r, e, s: None, raising=False)
         monkeypatch.setattr(mod.os, "getresuid", lambda: (10001, 10001, 10001), raising=False)
+        # main() chmods the parent run_dir so the forked sidecar (worthless
+        # gid) can traverse it.  The fake shares put run_dir at /tmp/...,
+        # so parent_run_dir resolves to /tmp where chmod EPERMs on macOS.
+        # No-op os.chmod for the same reason os.chown is no-op'd by the
+        # callers that need to OBSERVE chown calls.
+        monkeypatch.setattr(mod.os, "chmod", lambda *_a, **_kw: None, raising=False)
 
     def test_main_chowns_share_files_to_crypto_when_docker(
         self, deploy_start_module, monkeypatch: pytest.MonkeyPatch
@@ -791,14 +803,24 @@ class TestShareFileOwnership:
             lambda: (events.append("getresuid"), (10001, 10001, 10001))[1],
             raising=False,
         )
+        monkeypatch.setattr(
+            deploy_start_module.os,
+            "chmod",
+            lambda path, mode: events.append(f"chmod({Path(path).name},{oct(mode)})"),
+            raising=False,
+        )
         monkeypatch.setattr(deploy_start_module.os, "execvp", lambda *_a: events.append("execvp"))
 
         deploy_start_module.main()
 
         # Pinned sequence — any reorder catches a regression.
+        # The fake shares put run_dir at /tmp/wor-test-deploy-start so its
+        # parent is /tmp; that's why parent_run_dir.name renders as "tmp".
         assert events == [
             "resolve_uids",
             "split_to_tmpfs",
+            "chown(tmp,0,10001)",  # parent run_dir → root:worthless
+            "chmod(tmp,0o710)",  # parent run_dir traversable by worthless gid
             "chown(wor-test-deploy-start,10002,10001)",  # run_dir
             "chown(share_a.bin,10002,10001)",
             "chown(share_b.bin,10002,10001)",

@@ -174,7 +174,22 @@ def main() -> None:
     # files at 0o600 owned by the running uid (root in Docker); without
     # chown the sidecar gets EPERM at startup. We chown the per-PID run_dir
     # too so cleanup-by-anyone-in-the-worthless-group works post-shutdown.
+    #
+    # The parent ``/data/run/`` dir ALSO needs the worthless group with
+    # the execute bit so the sidecar (uid 10002) can traverse into the
+    # per-PID dir below it.  split_to_tmpfs creates the parent at
+    # 0o700 owned by whoever runs it (root in Docker), which would
+    # block the sidecar at the directory-walk before it ever opens
+    # share_a.bin.  Move parent ownership to ``root:worthless`` mode
+    # 0o710 (root rwx, worthless group --x, others nothing) so the
+    # sidecar can cd through but not enumerate sibling per-PID dirs.
     if service_uids is not None:
+        parent_run_dir = shares.run_dir.parent
+        os.chown(parent_run_dir, 0, service_uids.worthless_gid)
+        # ``os.chmod`` (not ``Path.chmod``) so monkeypatch.setattr(mod.os,
+        # "chmod", ...) intercepts it in tests — pathlib routes through
+        # _accessor.chmod which is harder to mock cleanly.
+        os.chmod(parent_run_dir, 0o710)  # noqa: PTH101, S103
         os.chown(shares.run_dir, service_uids.crypto_uid, service_uids.worthless_gid)
         os.chown(shares.share_a_path, service_uids.crypto_uid, service_uids.worthless_gid)
         os.chown(shares.share_b_path, service_uids.crypto_uid, service_uids.worthless_gid)
