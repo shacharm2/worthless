@@ -55,18 +55,24 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 # operators see what flags the security claim depends on.
 #
 # Capability note: ``--cap-drop=ALL`` is INCOMPATIBLE with the WOR-310
-# runtime priv-drop dance — setresuid()/setresgid()/setgroups() in
-# deploy/start.py + the preexec_fn need CAP_SETUID, CAP_SETGID,
-# CAP_SETPCAP.  Without them, the dance fails with EPERM and the
-# container never becomes healthy.  Phase C's priv-drop achieves the
-# SAME end-state as ``--cap-drop=ALL`` because the preexec_fn calls
-# ``prctl(PR_CAPBSET_DROP, cap)`` for cap 0..63 immediately before
-# setresuid — by the time uvicorn execs, the bounding set is empty.
-# So we recommend dropping all caps EXCEPT the three the dance needs;
-# everything else (including the post-drop bounding set) gets cleared
-# at runtime.
+# runtime priv-drop dance — six caps are needed *briefly* during
+# entrypoint bootstrap + the priv-drop dance, all cleared by the
+# preexec_fn before exec so the post-drop process has zero caps:
+#   * SETUID / SETGID — setresuid/setresgid/setgroups
+#   * SETPCAP        — prctl(PR_CAPBSET_DROP)
+#   * DAC_OVERRIDE   — entrypoint bootstrap writes into /data, which
+#                      is owned by worthless-proxy (uid 10001);
+#                      without DAC_OVERRIDE root is treated as "other"
+#                      and mkdir /data/shard_a hits EACCES.
+#   * CHOWN          — chown bootstrap output to worthless-proxy
+#                      after first boot.
+#   * FOWNER         — chmod fernet.key to 0400 (non-root-owned file).
+# Phase C's priv-drop achieves the SAME end-state as ``--cap-drop=ALL``
+# because the preexec_fn calls ``prctl(PR_CAPBSET_DROP, cap)`` for
+# cap 0..63 immediately before setresuid — by the time uvicorn execs,
+# the bounding set is empty.
 LABEL org.worthless.required-run-flags="--security-opt=no-new-privileges"
-LABEL org.worthless.recommended-run-flags="--read-only --tmpfs /tmp --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP"
+LABEL org.worthless.recommended-run-flags="--read-only --tmpfs /tmp --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP --cap-add=DAC_OVERRIDE --cap-add=CHOWN --cap-add=FOWNER"
 
 # Bind/host live in entrypoint.sh — don't re-add `--host` here, it bypasses deploy_mode.
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]

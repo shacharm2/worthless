@@ -122,15 +122,28 @@ def container(docker_image: str) -> tuple[str, int]:
             f"{name}-data:/data",
             "-v",
             f"{name}-secrets:/secrets",
-            # WOR-310: drop all caps EXCEPT the three the runtime
-            # priv-drop dance needs (SETUID/SETGID for setres*; SETPCAP
-            # for prctl(PR_CAPBSET_DROP)). The preexec_fn clears the
-            # bounding set before exec, so the post-drop process has
-            # zero caps anyway — same end-state as --cap-drop=ALL.
+            # WOR-310: drop all caps EXCEPT the six the runtime needs
+            # *briefly* during the priv-drop dance.  The preexec_fn
+            # clears the bounding set before exec, so the post-drop
+            # process has zero caps anyway — same end-state as
+            # --cap-drop=ALL.  The six:
+            #   * SETUID / SETGID — setresuid/setresgid/setgroups
+            #   * SETPCAP        — prctl(PR_CAPBSET_DROP)
+            #   * DAC_OVERRIDE   — entrypoint bootstrap writes into
+            #     /data which is owned by worthless-proxy (uid 10001);
+            #     without DAC_OVERRIDE root is treated as "other"
+            #     and mkdir /data/shard_a hits EACCES.
+            #   * CHOWN          — entrypoint chowns bootstrap output
+            #     to worthless-proxy after first boot.
+            #   * FOWNER         — chmod fernet.key to 0400 after
+            #     bootstrap touches a non-root-owned file.
             "--cap-drop=ALL",
             "--cap-add=SETUID",
             "--cap-add=SETGID",
             "--cap-add=SETPCAP",
+            "--cap-add=DAC_OVERRIDE",
+            "--cap-add=CHOWN",
+            "--cap-add=FOWNER",
             "--security-opt=no-new-privileges",
             docker_image,
         ]

@@ -616,10 +616,19 @@ class TestDockerfile:
         )
         assert match, "WOR-310: missing LABEL org.worthless.recommended-run-flags"
         flags = match.group(1)
-        for needed in ("--cap-add=SETUID", "--cap-add=SETGID", "--cap-add=SETPCAP"):
+        for needed in (
+            "--cap-add=SETUID",
+            "--cap-add=SETGID",
+            "--cap-add=SETPCAP",
+            "--cap-add=DAC_OVERRIDE",
+            "--cap-add=CHOWN",
+            "--cap-add=FOWNER",
+        ):
             assert needed in flags, (
-                f"WOR-310: priv-drop requires {needed} in recommended-run-flags; "
-                f"plain --cap-drop=ALL would EPERM on setresuid"
+                f"WOR-310: priv-drop / bootstrap requires {needed} in "
+                f"recommended-run-flags; without it, entrypoint bootstrap "
+                f"or the setres* dance fails and the container never "
+                f"becomes healthy"
             )
 
     def test_expose_8787(self, dockerfile_text: str):
