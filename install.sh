@@ -254,8 +254,12 @@ install_or_upgrade_worthless() {
     # files so when BOTH attempts fail the user sees both diagnostics; the
     # install error is usually the actionable one (upgrade is a retry).
     # worthless-nrl1.
-    uv_install_err="$(mktemp 2>/dev/null || mktemp -t worthless-uv-install-err)"
-    uv_upgrade_err="$(mktemp 2>/dev/null || mktemp -t worthless-uv-upgrade-err)"
+    # `mktemp -t TEMPLATE` portability: BSD treats the arg as a prefix and appends
+    # random chars; modern GNU coreutils tolerate a bare prefix but emit a stderr
+    # warning. Pass an explicit `.XXXXXX` template so both backends behave
+    # quietly. (CodeRabbit catch on PR #148.)
+    uv_install_err="$(mktemp 2>/dev/null || mktemp -t worthless-uv-install-err.XXXXXX)"
+    uv_upgrade_err="$(mktemp 2>/dev/null || mktemp -t worthless-uv-upgrade-err.XXXXXX)"
     # shellcheck disable=SC2064  # expand the paths NOW so the trap uses the captured values
     trap "rm -f \"$uv_install_err\" \"$uv_upgrade_err\"" EXIT INT TERM
 

@@ -181,10 +181,10 @@ def _failing_uv_stub(install_stderr: str = "", upgrade_stderr: str = "") -> str:
   tool) shift; case "$1" in
     list) ;;  # empty → no fast-path; force install+upgrade attempts
     install)
-      printf '%s' {install_stderr!r} >&2
+      printf '%b' {install_stderr!r} >&2
       exit 1 ;;
     upgrade)
-      printf '%s' {upgrade_stderr!r} >&2
+      printf '%b' {upgrade_stderr!r} >&2
       exit 1 ;;
     *) echo "uv tool: unhandled: $*" >&2; exit 1 ;;
   esac ;;
