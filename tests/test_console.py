@@ -211,8 +211,10 @@ class TestAppEntryPoint:
         assert result.exit_code == 0
         assert "worthless" in result.output.lower() or "api" in result.output.lower()
 
-    @pytest.mark.xdist_group("default_command_pipeline")
     def test_no_args_runs_default_command(self):
+        # No xdist_group marker needed: the autouse `_isolate_default_command_proxy`
+        # fixture in conftest.py stubs the daemon path for every test, so two
+        # workers can run this in parallel without racing port 8787.
         from typer.testing import CliRunner
 
         from worthless.cli.app import app
