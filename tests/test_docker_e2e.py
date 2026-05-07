@@ -115,6 +115,16 @@ def container(docker_image: str) -> tuple[str, int]:
             "WORTHLESS_DEPLOY_MODE=lan",
             "-e",
             "WORTHLESS_ALLOW_INSECURE=true",
+            # Without this, deploy/start.py's _resolve_bind() returns
+            # 127.0.0.1 for `lan` mode (only `public` mode auto-binds
+            # 0.0.0.0).  Docker NAT then can't reach uvicorn from the
+            # host: TCP RST on every host-side connection.  Real users
+            # in `lan` mode set WORTHLESS_HOST explicitly to the LAN
+            # iface; for the test container we want all interfaces so
+            # the host-side httpx can reach the proxy through the
+            # docker-published port.
+            "-e",
+            "WORTHLESS_HOST=0.0.0.0",
             "--read-only",
             "--tmpfs",
             "/tmp:noexec,nosuid",
@@ -201,6 +211,10 @@ def persistent_container(docker_image: str) -> tuple[str, int, str]:
             "WORTHLESS_DEPLOY_MODE=lan",
             "-e",
             "WORTHLESS_ALLOW_INSECURE=true",
+            # See container fixture: lan mode binds 127.0.0.1 by default;
+            # we need 0.0.0.0 so docker NAT can reach uvicorn.
+            "-e",
+            "WORTHLESS_HOST=0.0.0.0",
             "-v",
             f"{vol}:/data",
             docker_image,
@@ -235,7 +249,14 @@ def compose_stack(docker_image: str) -> tuple[str, str]:
 
     created_env = False
     if not env_file.exists():
-        env_file.write_text("WORTHLESS_DEPLOY_MODE=lan\nWORTHLESS_ALLOW_INSECURE=true\n")
+        env_file.write_text(
+            "WORTHLESS_DEPLOY_MODE=lan\n"
+            "WORTHLESS_ALLOW_INSECURE=true\n"
+            # Bind all interfaces so the host-side httpx in test_compose_*
+            # can reach uvicorn through docker NAT (lan mode otherwise
+            # binds 127.0.0.1 only — see deploy/start.py::_resolve_bind).
+            "WORTHLESS_HOST=0.0.0.0\n"
+        )
         created_env = True
 
     # Override port to dynamic to avoid bind conflicts
