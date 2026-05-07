@@ -76,6 +76,7 @@ First release published to PyPI. `pip install worthless` now works.
 - Gate evaluation strictly precedes shard reconstruction (SR-03).
 - Published artifacts built via PyPI trusted publishing (OIDC, no long-lived tokens).
 
+[0.3.5]: https://github.com/shacharm2/worthless/releases/tag/v0.3.5
 [0.3.4]: https://github.com/shacharm2/worthless/releases/tag/v0.3.4
 [0.3.3]: https://github.com/shacharm2/worthless/releases/tag/v0.3.3
 [0.3.0]: https://github.com/shacharm2/worthless/releases/tag/v0.3.0
