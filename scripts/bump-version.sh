@@ -30,6 +30,11 @@ set -eu
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
+# Clean up tempfiles on any exit. Without this, a sed/mv failure under
+# `set -eu` would leave pyproject.toml.tmp / SKILL.md.tmp /
+# CHANGELOG.md.tmp on disk for the user to clean up manually.
+trap 'rm -f pyproject.toml.tmp SKILL.md.tmp CHANGELOG.md.tmp' EXIT
+
 # --- 1. Validate input -------------------------------------------------------
 
 if [ "$#" -ne 1 ]; then
@@ -40,15 +45,15 @@ fi
 
 new_version="$1"
 
-# PEP 440-ish: digits, dots, optional pre-release suffix
-case "$new_version" in
-    [0-9]*.[0-9]*.[0-9]*) ;;
-    *)
-        echo "ERROR: '$new_version' doesn't look like a semver/PEP-440 version."
-        echo "Examples: 0.3.5 / 1.0.0 / 0.4.0rc1"
-        exit 1
-        ;;
-esac
+# PEP 440-ish: MAJOR.MINOR.PATCH plus optional pre/dev/post suffix.
+# Shell glob `*` matches any chars (so the old `[0-9]*.[0-9]*.[0-9]*`
+# would accept `1abc.2.3`). Use a real regex via `grep -E` for actual
+# validation.
+if ! printf '%s' "$new_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([._-]?(a|b|rc|alpha|beta|dev|post)[0-9]+)?$'; then
+    echo "ERROR: '$new_version' doesn't look like a semver/PEP-440 version."
+    echo "Examples: 0.3.5 / 1.0.0 / 0.4.0rc1 / 1.2.3.dev1 / 2.0.0.post1"
+    exit 1
+fi
 
 # --- 2. Discover current version --------------------------------------------
 
@@ -84,8 +89,26 @@ echo "  ✓ SKILL.md: **Version**: $new_version"
 if grep -q "^\[$new_version\]:" CHANGELOG.md; then
     echo "  ✓ CHANGELOG.md: [$new_version] link reference already present"
 else
-    # Insert AFTER the [Unreleased] line if present, otherwise before [previous]
-    new_link="[$new_version]: https://github.com/shacharm2/worthless/releases/tag/v$new_version"
+    # Derive the repo URL from `git remote get-url origin` rather than
+    # hardcoding `shacharm2/worthless` — the org/owner can change (today
+    # `shacharm2` is a personal account, not a `worthless` org). Falls
+    # back to the historical hardcode if origin isn't a recognisable
+    # GitHub URL.
+    origin_url=$(git remote get-url origin 2>/dev/null || true)
+    case "$origin_url" in
+        git@github.com:*)
+            owner_repo=${origin_url#git@github.com:}
+            owner_repo=${owner_repo%.git}
+            ;;
+        https://github.com/*)
+            owner_repo=${origin_url#https://github.com/}
+            owner_repo=${owner_repo%.git}
+            ;;
+        *)
+            owner_repo="shacharm2/worthless"
+            ;;
+    esac
+    new_link="[$new_version]: https://github.com/$owner_repo/releases/tag/v$new_version"
 
     # Find the first existing [X.Y.Z]: link and insert above it
     if grep -q "^\[$current_version\]:" CHANGELOG.md; then
