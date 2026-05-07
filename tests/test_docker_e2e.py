@@ -137,7 +137,30 @@ def container(docker_image: str) -> tuple[str, int]:
     )
     port = int(_run_ok(["docker", "port", name, "8787"]).rsplit(":", 1)[-1])
     try:
-        assert wait_healthy(name), f"Container {name} did not become healthy"
+        if not wait_healthy(name):
+            # Capture logs BEFORE _cleanup_container removes them; otherwise
+            # CI shows only "did not become healthy" with no clue why the
+            # entrypoint died.  See WOR-310 priv-drop dance: a stderr line
+            # like ``setresuid: EPERM`` reveals an incompatible cap-drop;
+            # ``WRTLS-114`` reveals a hardening assertion miss.
+            logs = subprocess.run(
+                ["docker", "logs", name],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            inspect = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Status}} rc={{.State.ExitCode}}", name],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            raise AssertionError(
+                f"Container {name} did not become healthy "
+                f"(state: {inspect})\n"
+                f"--- stdout ---\n{logs.stdout}\n"
+                f"--- stderr ---\n{logs.stderr}"
+            )
         yield name, port  # type: ignore[misc]
     finally:
         _cleanup_container(name)
