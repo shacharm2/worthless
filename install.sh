@@ -246,12 +246,34 @@ install_or_upgrade_worthless() {
 
     # First run: `uv tool install`. Re-run: that fails with "already installed",
     # so we fall through to `uv tool upgrade` for an idempotent upgrade path.
-    if uv tool install "$spec" >/dev/null 2>&1; then
+    #
+    # Capture stderr to tempfiles so we can SHOW it on failure. Pre-fix this
+    # block did `2>&1 >/dev/null` and the user only ever saw a generic "Failed
+    # to install" + proxy hint banner — masking the actual uv error (bad
+    # version, dep conflict, deleted cwd, disk full, etc.). Two separate
+    # files so when BOTH attempts fail the user sees both diagnostics; the
+    # install error is usually the actionable one (upgrade is a retry).
+    # worthless-nrl1.
+    uv_install_err="$(mktemp 2>/dev/null || mktemp -t worthless-uv-install-err)"
+    uv_upgrade_err="$(mktemp 2>/dev/null || mktemp -t worthless-uv-upgrade-err)"
+    # shellcheck disable=SC2064  # expand the paths NOW so the trap uses the captured values
+    trap "rm -f \"$uv_install_err\" \"$uv_upgrade_err\"" EXIT INT TERM
+
+    if uv tool install "$spec" >/dev/null 2>"$uv_install_err"; then
         :
-    elif uv tool upgrade worthless >/dev/null 2>&1; then
+    elif uv tool upgrade worthless >/dev/null 2>"$uv_upgrade_err"; then
         :
     else
         err "Failed to install ${spec}."
+        if [ -s "$uv_install_err" ]; then
+            printf "\n       uv tool install reported:\n" >&2
+            sed 's/^/         /' "$uv_install_err" >&2
+        fi
+        if [ -s "$uv_upgrade_err" ]; then
+            printf "\n       uv tool upgrade reported:\n" >&2
+            sed 's/^/         /' "$uv_upgrade_err" >&2
+        fi
+        printf "\n       If this looks like a network issue:\n" >&2
         proxy_hints
         exit "$EXIT_NETWORK"
     fi

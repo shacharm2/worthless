@@ -167,3 +167,129 @@ def test_success_without_persistent_rc_warns_and_shows_persistence_hint(
         "must NOT print 'Activate in this shell' — PATH is already live here; "
         "that hint would confuse users into thinking worthless doesn't work yet"
     )
+
+
+# ---------------------------------------------------------------------------
+# worthless-nrl1: failure path surfaces uv's actual stderr above the proxy hint
+# ---------------------------------------------------------------------------
+
+
+def _failing_uv_stub(install_stderr: str = "", upgrade_stderr: str = "") -> str:
+    """Build a uv stub that fails BOTH install AND upgrade with the given stderr."""
+    return f"""case "$1" in
+  --version) echo "uv 0.11.7" ;;
+  tool) shift; case "$1" in
+    list) ;;  # empty → no fast-path; force install+upgrade attempts
+    install)
+      printf '%s' {install_stderr!r} >&2
+      exit 1 ;;
+    upgrade)
+      printf '%s' {upgrade_stderr!r} >&2
+      exit 1 ;;
+    *) echo "uv tool: unhandled: $*" >&2; exit 1 ;;
+  esac ;;
+  *) echo "uv: unhandled: $*" >&2; exit 1 ;;
+esac"""
+
+
+def test_install_failure_surfaces_uv_stderr(tmp_path: Path) -> None:
+    """When uv tool install fails, the user sees uv's actual error message —
+    not just a generic "Failed to install" + proxy hint banner that masks
+    the real cause. (worthless-nrl1)
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_stub(bin_dir, "uname", "echo Darwin")
+    write_stub(bin_dir, "sw_vers", 'echo "14.5"')
+    write_stub(
+        bin_dir,
+        "uv",
+        _failing_uv_stub(
+            install_stderr="× No solution found when resolving dependencies\n",
+            upgrade_stderr="× package not installed\n",
+        ),
+    )
+
+    result = run_install(bin_dir)
+
+    assert result.returncode == EXIT_NETWORK, (
+        f"failure path must exit {EXIT_NETWORK}, got {result.returncode}\nstderr: {result.stderr}"
+    )
+    # The install error MUST appear — that's the actionable diagnostic.
+    assert "No solution found" in result.stderr, (
+        f"uv's actual install error must surface to stderr, "
+        f"not be hidden behind the generic banner.\nstderr: {result.stderr}"
+    )
+    # Banner is still there (not removed, just demoted).
+    assert "Failed to install" in result.stderr
+    # Proxy hint is still there.
+    assert "HTTPS_PROXY" in result.stderr
+
+
+def test_install_failure_proxy_hint_is_secondary(tmp_path: Path) -> None:
+    """The proxy hint must come AFTER uv's stderr, not before — uv's actual
+    error is the primary diagnostic; proxy is the fallback suggestion.
+    (worthless-nrl1)
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_stub(bin_dir, "uname", "echo Darwin")
+    write_stub(bin_dir, "sw_vers", 'echo "14.5"')
+    write_stub(
+        bin_dir,
+        "uv",
+        _failing_uv_stub(
+            install_stderr="× No solution found\n",
+            upgrade_stderr="× package not installed\n",
+        ),
+    )
+
+    result = run_install(bin_dir)
+    stderr = result.stderr
+
+    no_sol_idx = stderr.find("No solution found")
+    proxy_hint_idx = stderr.find("HTTPS_PROXY")
+    assert no_sol_idx >= 0, f"install stderr missing from output:\n{stderr}"
+    assert proxy_hint_idx >= 0, f"proxy hint missing from output:\n{stderr}"
+    assert no_sol_idx < proxy_hint_idx, (
+        f"uv's stderr must come BEFORE the proxy hint (it's the primary "
+        f"diagnostic, hint is the fallback). "
+        f"Got: install_err at {no_sol_idx}, proxy_hint at {proxy_hint_idx}.\n{stderr}"
+    )
+    # The "If this looks like a network issue" framing demotes the proxy
+    # hint from "this IS the cause" to "this MIGHT be the cause".
+    assert "If this looks like a network issue" in stderr, (
+        f"proxy hint must be reframed as conditional fallback:\n{stderr}"
+    )
+
+
+def test_install_failure_empty_stderr_still_shows_banner(tmp_path: Path) -> None:
+    """If uv exits 1 with empty stderr (rare but possible), the failure banner
+    + proxy hint still print — and we don't emit an empty 'uv reported:'
+    block that would be more confusing than useful. (worthless-nrl1)
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_stub(bin_dir, "uname", "echo Darwin")
+    write_stub(bin_dir, "sw_vers", 'echo "14.5"')
+    write_stub(
+        bin_dir,
+        "uv",
+        _failing_uv_stub(install_stderr="", upgrade_stderr=""),
+    )
+
+    result = run_install(bin_dir)
+
+    assert result.returncode == EXIT_NETWORK
+    assert "Failed to install" in result.stderr
+    assert "HTTPS_PROXY" in result.stderr
+    # No empty "uv reported:" block — guard against showing
+    # "uv reported:\n\n" with no content underneath.
+    assert "uv tool install reported:" not in result.stderr, (
+        f"empty-stderr path must not show an empty 'uv tool install reported:' "
+        f"block — that's noise, not signal.\nstderr: {result.stderr}"
+    )
+    assert "uv tool upgrade reported:" not in result.stderr, (
+        f"empty-stderr path must not show an empty 'uv tool upgrade reported:' "
+        f"block.\nstderr: {result.stderr}"
+    )
