@@ -1,12 +1,14 @@
 ---
-title: "WOR-307 Handoff — Prototype to v2.0"
-description: "Gate-closing handoff document for the WOR-306 Fernet sidecar epic. What the WOR-307 prototype proves, what v2.0 inherits."
+title: "Sidecar Topology — Prototype to v2.0"
+description: "How the Fernet sidecar topology works, which invariants are load-bearing, and what a v2.0 Rust/MPC rewrite must preserve."
 ---
 
-# WOR-307 Handoff: What the Prototype Proves, What v2.0 Inherits
+# Sidecar Topology: What the Prototype Proves, What v2.0 Inherits
 
-**Status:** Gate-closing handoff for WOR-306 (Fernet sidecar epic).
-**Audience:** WOR-308 (Python sidecar), WOR-309 (proxy IPC client), WOR-310 (container deploy), WOR-312 (failure matrix), and the v2.0 Rust/MPC rewrite.
+*Originally landed via WOR-307. Mission-driven name; ticket lineage in the footer.*
+
+**Status:** Gate-closing handoff for the Fernet sidecar epic (WOR-306).
+**Audience:** sidecar implementers, proxy IPC client authors, container/systemd packagers, and the v2.0 Rust/MPC rewrite.
 **Companion:** [`docs/ipc-contract.md`](ipc-contract.md) (wire format, **frozen for v1.1**).
 
 This document describes what the 3-day prototype built, which invariants are load-bearing, and what a v2.0 Rust/MPC implementation must preserve vs. may freely change.

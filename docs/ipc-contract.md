@@ -121,7 +121,7 @@ Sidecar unreachable, dead, or returning `AUTH`/`PROTO`/`TIMEOUT` → proxy retur
 | `tests/ipc/test_peercred.py` | peer-uid auth tests | WOR-307 |
 | `tests/ipc/test_roundtrip.py` | end-to-end seal→open | WOR-307 |
 | `tests/ipc/test_failure_matrix.py` | sidecar-dies scenarios | WOR-307 → WOR-312 |
-| `docs/wor-307-handoff.md` | v2.0 Rust/MPC reuse notes | WOR-307 |
+| `docs/sidecar-topology.md` | v2.0 Rust/MPC reuse notes | WOR-307 |
 
 ## Versioning
 

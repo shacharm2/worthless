@@ -75,7 +75,7 @@ _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 def _load_shares(a_path: Path, b_path: Path) -> tuple[bytes, bytes]:
     """Read two XOR shares from disk; the sidecar deliberately avoids any keyring fallback.
 
-    See §11 of ``docs/wor-307-handoff.md`` for the no-keyring decision and
+    See §11 of ``docs/sidecar-topology.md`` for the no-keyring decision and
     why a keyring fallback would collapse the two-share split into one secret.
     """
     share_a = a_path.read_bytes()
