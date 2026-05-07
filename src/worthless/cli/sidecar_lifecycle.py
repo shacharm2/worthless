@@ -18,10 +18,13 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
+from collections.abc import Callable
 
 from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.crypto.splitter import split_key
 from worthless.crypto.types import zero_buf
+from worthless.sidecar import _hardening
 
 _logger = logging.getLogger("worthless.cli.sidecar_lifecycle")
 
@@ -44,6 +47,25 @@ class ShareFiles:
     shard_a: bytearray
     shard_b: bytearray
     run_dir: Path
+
+
+class ServiceUids(NamedTuple):
+    """Resolved uid/gid triple for the two-uid Docker topology (WOR-310 Phase C).
+
+    Single Optional through ``spawn_sidecar`` — replaces the original
+    ``target_uid + target_gid`` two-kwarg shape that allowed an invalid
+    ``(set, None)`` combination. ``deploy/start.py::_resolve_service_uids``
+    constructs this from ``pwd.getpwnam`` when running as root, or returns
+    ``None`` to preserve the bare-metal single-uid path.
+
+    Field order is positional-callable (``ServiceUids(10001, 10002, 10001)``);
+    the order of fields IS the contract. Reordering would silently flip
+    proxy/crypto uids in any caller that used positional construction.
+    """
+
+    proxy_uid: int
+    crypto_uid: int
+    worthless_gid: int
 
 
 def _write_share(path: Path, data: bytearray) -> None:
@@ -233,6 +255,102 @@ def _wait_for_ready(
     return False
 
 
+def _verify_socket_inode(socket_path: Path) -> None:
+    """Raise if ``socket_path`` is not a real AF_UNIX socket inode (WOR-310 C4).
+
+    Brutus Q8 defense-in-depth. ``lstat`` (not ``stat`` — we want to see
+    symlinks themselves, not their targets) confirms the rendezvous
+    inode is the actual sidecar socket, not a symlink planted by a
+    same-group attacker between sidecar bind and parent connect. Today
+    the worthless group has only proxy + crypto so this is preventative
+    against future drift. Extracted as a top-level helper so tests can
+    monkeypatch it where mocking real sockets is impractical.
+    """
+    import stat as _stat
+
+    try:
+        st = os.lstat(socket_path)
+    except OSError as exc:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"socket integrity check failed: lstat({socket_path}) "
+            f"raised {exc.__class__.__name__}: {exc}",
+        ) from exc
+    if not _stat.S_ISSOCK(st.st_mode):
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"socket integrity check failed: lstat({socket_path}) returned "
+            f"mode={st.st_mode:#o} (not S_ISSOCK). The inode at the "
+            "rendezvous path is not a Unix socket — possible symlink "
+            "redirect by a same-group attacker. Refusing.",
+        )
+
+
+def _make_priv_drop_preexec(uids: ServiceUids) -> Callable[[], None]:
+    """Build the ``preexec_fn`` that drops privs in the forked sidecar child.
+
+    The returned callable runs in the forked child between ``fork()`` and
+    ``exec()``. Order is kernel-enforced and pinned by tests in
+    ``test_sidecar_lifecycle_priv_drop.py``:
+
+      1. ``setresgid(gid, gid, gid)``     — first, still has CAP_SETGID
+      2. ``setgroups([])``                — clear inherited supplementary groups
+      3. ``set_no_new_privs_or_log()``    — lock NO_NEW_PRIVS pre-uid-drop
+      4. ``setresuid(uid, uid, uid)``     — last, drops cap_set*
+      5. ``set_dumpable_zero_or_log()``   — applies to dropped process
+
+    Why ``setresgid``/``setresuid`` and not ``setgid``/``setuid``: only
+    the ``setres*`` family locks all three (real / effective / saved)
+    atomically. ``setgid`` leaves saved-gid as 0, allowing post-RCE
+    re-escalation if the attacker recovers CAP_SETGID.
+
+    Why ``set_*_or_log`` not the strict ``set_dumpable_zero``: the
+    forked child cannot propagate Python exceptions back to the parent.
+    A raise in preexec_fn yields ``OSError`` in ``Popen.__init__`` —
+    workable but the partial-drop state is opaque. Logging keeps the
+    spawn deterministic.
+    """
+
+    def _drop_in_child() -> None:
+        gid = uids.worthless_gid
+        crypto_uid = uids.crypto_uid
+        os.setresgid(gid, gid, gid)
+        os.setgroups([])
+        _hardening.set_no_new_privs_or_log()
+        # CAPBSET_DROP after NNP and before setresuid: NNP locks "no new
+        # privs" but doesn't clear the existing bounding set. Iterating
+        # PR_CAPBSET_DROP closes the residual escalation surface — dropped
+        # uid cannot regain capabilities even via legacy file caps. Defense
+        # in depth on top of NNP.
+        _hardening.set_capbset_drop_or_log()
+        os.setresuid(crypto_uid, crypto_uid, crypto_uid)
+        _hardening.set_dumpable_zero_or_log()
+
+    return _drop_in_child
+
+
+def _format_ready_timeout_message(proc: subprocess.Popen[bytes], ready_timeout: float) -> str:
+    """Build the WRTLS-114 message with sidecar exit code + stderr tail.
+
+    A bare "did not become ready within Ns" hides the actual cause.
+    If the sidecar already exited (e.g. raised WRTLS-NNN at startup),
+    drain its captured stderr (already piped via ``stderr=PIPE``) and
+    fold it in. If it's still running, say so explicitly so the
+    operator knows the bind itself was slow rather than a crash.
+    """
+    exit_code = proc.poll()
+    if exit_code is None:
+        tail = " (sidecar still running; suspect slow bind)"
+    else:
+        try:
+            _, stderr_bytes = proc.communicate(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            stderr_bytes = b""
+        captured = stderr_bytes.decode("utf-8", errors="replace").strip() if stderr_bytes else ""
+        tail = f" (sidecar exited rc={exit_code}; stderr={captured!r})"
+    return f"sidecar did not become ready within {ready_timeout}s{tail}"
+
+
 def spawn_sidecar(
     socket_path: Path,
     shares: ShareFiles,
@@ -240,6 +358,7 @@ def spawn_sidecar(
     *,
     ready_timeout: float = 5.0,
     drain_timeout: float = 5.0,
+    service_uids: ServiceUids | None = None,
 ) -> SidecarHandle:
     """Spawn ``python -m worthless.sidecar`` and wait for it to be ready.
 
@@ -254,11 +373,66 @@ def spawn_sidecar(
         ready_timeout: Seconds to wait for the socket / ready line.
         drain_timeout: Forwarded to the sidecar via
             ``WORTHLESS_SIDECAR_DRAIN_TIMEOUT``.
+        service_uids: When set (Docker root-entry path), the sidecar is
+            spawned via a ``preexec_fn`` that drops privs to
+            ``service_uids.crypto_uid``. ``None`` (bare metal, dev) preserves
+            the current single-uid behavior. Phase C2 wires the actual
+            preexec_fn; Phase C1 only plumbs the kwarg through.
 
     Raises:
-        WorthlessError: WRTLS-114 if the path is too long for AF_UNIX or
-            the sidecar does not become ready.
+        WorthlessError: WRTLS-114 if the path is too long for AF_UNIX,
+            the sidecar does not become ready, or *service_uids* contains
+            a root id (uid/gid 0) that would silently no-op the drop.
+
+    Environment:
+        ``WORTHLESS_SIDECAR_READY_TIMEOUT_SECS``: when set to a positive
+            float, overrides *ready_timeout*. Required for slow CI
+            runners (GitHub Actions Ubuntu can exceed 5s for cold-start
+            Python + asyncio + bind under xdist load); unused in prod
+            where startup is reliably <2s.
     """
+    # CI override: a slow runner can blow past 5s on cold-start before
+    # asyncio is even up. Env var lets the workflow extend the deadline
+    # without touching the prod default.
+    ready_env = os.environ.get("WORTHLESS_SIDECAR_READY_TIMEOUT_SECS")
+    if ready_env:
+        try:
+            override = float(ready_env)
+        except ValueError:
+            override = 0.0
+        if override > 0:
+            ready_timeout = override
+
+    # If the caller asked for a privilege drop, the ids must be non-root.
+    # ``pw_uid == 0`` means "drop to root" — a no-op that silently breaks
+    # the v1.1 security claim. Validating here so a future Dockerfile
+    # drift / shadowed /etc/passwd that resolves worthless-proxy to uid 0
+    # is caught before we Popen the sidecar.  C2 wires the preexec_fn that
+    # actually consumes ``service_uids``.
+    if service_uids is not None and (
+        service_uids.proxy_uid < 1 or service_uids.crypto_uid < 1 or service_uids.worthless_gid < 1
+    ):
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"service_uids must have non-root ids "
+            f"(proxy={service_uids.proxy_uid}, crypto={service_uids.crypto_uid}, "
+            f"gid={service_uids.worthless_gid}); refusing to spawn",
+        )
+
+    # Brutus's distinctness check: if proxy_uid == crypto_uid the entire
+    # uid-wall security claim collapses — both processes share memory
+    # access via same-uid ptrace/proc-mem and can signal each other via
+    # kill(2). The Dockerfile creates them as 10001 and 10002; this
+    # guard catches a future Dockerfile drift OR a misconfigured
+    # pwd.getpwnam shadowing that returns the same uid for both.
+    if service_uids is not None and service_uids.proxy_uid == service_uids.crypto_uid:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"service_uids.proxy_uid == service_uids.crypto_uid == "
+            f"{service_uids.proxy_uid}; uid wall requires distinct uids. "
+            "Refusing to spawn — security claim would silently break.",
+        )
+
     # AF_UNIX sun_path is 104 on macOS, 108 on Linux. Eager check surfaces
     # the real cause; otherwise the sidecar's bind() fails with ENAMETOOLONG
     # and we'd report a misleading "did not become ready" timeout.
@@ -293,11 +467,25 @@ def spawn_sidecar(
         "WORTHLESS_SIDECAR_DRAIN_TIMEOUT": str(drain_timeout),
         "WORTHLESS_LOG_LEVEL": "WARNING",
     }
+    # When service_uids is set (Docker root-entry path), the forked child
+    # runs the priv-drop dance via preexec_fn before exec'ing the sidecar
+    # python. Bare-metal (None) omits preexec_fn entirely — no callback
+    # to deadlock on, no syscalls to mis-order.
+    preexec_fn = _make_priv_drop_preexec(service_uids) if service_uids is not None else None
+
+    # close_fds=True + pass_fds=() ensures NO inherited descriptors land in the
+    # sidecar — SQLite handles, log fds, prometheus sockets in the parent process
+    # would otherwise be readable from the sidecar's address space, defeating the
+    # uid-wall security claim before it starts. Defense in depth on bare metal too,
+    # where the sidecar shares the parent uid.
     proc = subprocess.Popen(  # noqa: S603  # nosec B603 — args are static, no shell
         [sys.executable, "-m", "worthless.sidecar"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        close_fds=True,
+        pass_fds=(),
+        preexec_fn=preexec_fn,
     )
 
     # Reap the child on ANY BaseException — WRTLS-114 timeout, KeyboardInterrupt
@@ -309,8 +497,9 @@ def spawn_sidecar(
         if not ready:
             raise WorthlessError(
                 ErrorCode.SIDECAR_NOT_READY,
-                f"sidecar did not become ready within {ready_timeout}s",
+                _format_ready_timeout_message(proc, ready_timeout),
             )
+        _verify_socket_inode(socket_path)
     except BaseException:
         # Kill the child, drain stdout+stderr with a deadline (one call,
         # no SIGPIPE risk), unlink any half-formed socket inode.

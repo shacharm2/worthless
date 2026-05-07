@@ -43,6 +43,11 @@ jobs:
         env:
           UV_CACHE_DIR: /tmp/uv-cache
           HYPOTHESIS_PROFILE: ci
+          # Real-sidecar tests Popen a Python interpreter and wait for
+          # the AF_UNIX socket to bind. Cold-start on ubuntu-latest under
+          # xdist load occasionally exceeds the 5.0s prod default; bump
+          # to 20s so a slow runner doesn't masquerade as a regression.
+          WORTHLESS_SIDECAR_READY_TIMEOUT_SECS: "20"
         run: |
           uv sync --extra dev --extra test --extra mcp
           uv run pytest --reruns 1 --cov=worthless --cov-report=xml --cov-report=term-missing --cov-fail-under=80 -n auto --dist loadscope -x -m "not docker"

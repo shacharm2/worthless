@@ -41,6 +41,14 @@ import stat
 import sys
 from pathlib import Path
 
+from worthless.cli.errors import WorthlessError
+
+# Module-level import is load-bearing: tests patch
+# ``_hardening.set_dumpable_zero``/``_hardening.check_yama_ptrace_scope``
+# as module attributes to verify call order and refusal behaviour.
+# Replacing this with ``from ._hardening import set_dumpable_zero, ...``
+# silently breaks those tests (patches wouldn't apply to the local name).
+from worthless.sidecar import _hardening
 from worthless.sidecar.backends.fernet import FernetBackend
 from worthless.sidecar.server import start_sidecar
 
@@ -291,6 +299,44 @@ def main() -> int:
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Hardening must run before share bytes enter the address space
+    # (PR_SET_DUMPABLE=0 covers crashes mid-decrypt) and before the
+    # IPC socket binds.
+    #
+    # assert_hardening_applied() validates AFTER the calls that the
+    # kernel actually honored them — if an LSM/seccomp filter silently
+    # no-op'd the prctl in the parent's preexec_fn, /proc/self/status
+    # will report NoNewPrivs=0 or Dumpable=1 and we refuse to bind.
+    # This is the post-spawn check security-engineer M2 required.
+    #
+    # YAMA gating (CodeRabbit fix): in Docker two-uid mode the kernel
+    # uid wall (proxy_uid != crypto_uid) already blocks ptrace and
+    # /proc/<pid>/mem regardless of YAMA scope. Refusing on
+    # ptrace_scope=0 there would block legitimate startup on hosts
+    # we can't tune (Render/Fly/managed Kubernetes). In bare-metal
+    # same-uid mode, YAMA *is* the primary defense — refusal must
+    # stay loud. We use the same env signal that gates priv-drop in
+    # deploy/start.py: when WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1 the
+    # uid wall is in place and YAMA is defense-in-depth (warn-only);
+    # otherwise YAMA refusal stays mandatory.
+    try:
+        _hardening.set_dumpable_zero()
+        if os.environ.get("WORTHLESS_DOCKER_PRIVDROP_REQUIRED") == "1":
+            try:
+                _hardening.check_yama_ptrace_scope()
+            except WorthlessError as exc:
+                _LOG.warning(
+                    "YAMA ptrace_scope is permissive but two-uid Docker "
+                    "topology blocks cross-uid ptrace at the kernel; "
+                    "treating as defense-in-depth: %s",
+                    exc,
+                )
+        else:
+            _hardening.check_yama_ptrace_scope()
+        _hardening.assert_hardening_applied()
+    except WorthlessError as exc:
+        print(f"sidecar: {exc}", file=sys.stderr, flush=True)
+        return 1
     return asyncio.run(_run())
 
 
