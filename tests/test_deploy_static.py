@@ -41,8 +41,26 @@ RENDER_YAML = DEPLOY_DIR / "render.yaml"
 
 @pytest.fixture(scope="module")
 def dockerfile_text() -> str:
-    """Raw Dockerfile content."""
+    """Raw Dockerfile content (all stages)."""
     return DOCKERFILE.read_text()
+
+
+@pytest.fixture(scope="module")
+def dockerfile_final_stage(dockerfile_text: str) -> str:
+    """Just the final-stage content of the multi-stage Dockerfile.
+
+    CR-3204010120: WOR-310 runtime assertions (USER directive absent,
+    user/group creation, ownership, image LABEL) must be checked
+    against the FINAL stage only — a builder-stage directive
+    (e.g. a stray ``USER builder`` in the build stage) could
+    otherwise satisfy or break a runtime check inadvertently.
+
+    Returns content from the LAST ``FROM`` line to EOF.
+    """
+    from_indices = [m.start() for m in re.finditer(r"^FROM\s", dockerfile_text, re.MULTILINE)]
+    if not from_indices:
+        return dockerfile_text
+    return dockerfile_text[from_indices[-1] :]
 
 
 @pytest.fixture(scope="module")
@@ -385,25 +403,38 @@ class TestEntrypoint:
         )
 
     def test_privdrop_required_env_exported(self, entrypoint_text: str):
-        """WOR-310 C3: entrypoint MUST export WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1.
+        """WOR-310 C3: entrypoint MUST export WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1
+        BEFORE the final ``exec`` line.
 
-        Without this export, deploy/start.py's _resolve_service_uids()
-        sees the env unset → returns None → no priv-drop dance runs.
-        The container would silently boot under bare-metal semantics
-        (single uid for proxy + crypto), defeating the v1.1 security
-        claim with no log line. This signal is the ONLY way for
-        start.py to distinguish "Docker container" from "sudo bare
-        metal" — both have euid=0 but only one should drop.
+        CR-3204010113: a regression that put the export AFTER the exec
+        would silently no-op (the export never runs because exec
+        replaces the process), and start.py would see the env unset →
+        skip priv-drop → boot single-uid → defeat the v1.1 claim with
+        no log line.  Pin both the existence AND the relative order.
         """
-        assert re.search(
+        export_match = re.search(
             r"^export\s+WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1\b",
             entrypoint_text,
             re.MULTILINE,
-        ), (
+        )
+        assert export_match, (
             "WOR-310 C3: entrypoint.sh must export "
             "WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1 before exec'ing start.py. "
             "Without it the priv-drop dance silently no-ops and the v1.1 "
             "security claim is broken with no log line."
+        )
+        # Find the final exec line.  Multiple ``exec`` statements may
+        # appear (e.g. exec 3< for FD passing); the priv-drop guard
+        # must precede the LAST one (which replaces the process).
+        exec_matches = list(re.finditer(r"^exec\s+\S", entrypoint_text, re.MULTILINE))
+        assert exec_matches, "entrypoint.sh has no `exec` line"
+        last_exec_pos = exec_matches[-1].start()
+        assert export_match.start() < last_exec_pos, (
+            "WOR-310 C3: WORTHLESS_DOCKER_PRIVDROP_REQUIRED=1 export must "
+            f"appear BEFORE the final exec (export at offset "
+            f"{export_match.start()}, last exec at offset {last_exec_pos}). "
+            "An export after exec would never run — the priv-drop dance "
+            "would silently no-op."
         )
 
     def test_bootstrap_locks_fernet_key(self, entrypoint_text: str):
@@ -473,7 +504,7 @@ class TestDockerfile:
         assert healthcheck_match, "HEALTHCHECK instruction not found"
         assert "/healthz" in healthcheck_match.group()
 
-    def test_no_static_user_directive(self, dockerfile_text: str):
+    def test_no_static_user_directive(self, dockerfile_final_stage: str):
         """Container must NOT pin a USER at build time (WOR-310 two-uid topology).
 
         Pre-WOR-310 the Dockerfile ended with ``USER worthless``. The
@@ -488,14 +519,14 @@ class TestDockerfile:
         ``setresuid(worthless-proxy)`` after spawning the sidecar as
         ``worthless-crypto`` and before ``execvp(uvicorn)``.
         """
-        assert not re.search(r"^USER\s+\S+", dockerfile_text, re.MULTILINE), (
+        assert not re.search(r"^USER\s+\S+", dockerfile_final_stage, re.MULTILINE), (
             "WOR-310: Dockerfile must not pin a USER at build time. "
             "Privilege drop happens at runtime in deploy/start.py so the "
             "container can spawn the sidecar as worthless-crypto and run "
             "uvicorn as worthless-proxy from a single root entrypoint."
         )
 
-    def test_creates_proxy_user_uid_10001(self, dockerfile_text: str):
+    def test_creates_proxy_user_uid_10001(self, dockerfile_final_stage: str):
         """worthless-proxy must be a real user with a pinned uid (WOR-310).
 
         Pinning the uid (10001) keeps the runtime check
@@ -504,14 +535,14 @@ class TestDockerfile:
         future Dockerfile edit silently flip uvicorn back to root.
         """
         assert re.search(
-            r"useradd[^\n]*-r[^\n]*-u\s+10001[^\n]*worthless-proxy", dockerfile_text
+            r"useradd[^\n]*-r[^\n]*-u\s+10001[^\n]*worthless-proxy", dockerfile_final_stage
         ), (
             "WOR-310: missing 'useradd -r ... -u 10001 ... worthless-proxy' "
             "(-r pins this as a system account; without it useradd creates a "
             "login-capable user with a mailbox)"
         )
 
-    def test_creates_crypto_user_uid_10002(self, dockerfile_text: str):
+    def test_creates_crypto_user_uid_10002(self, dockerfile_final_stage: str):
         """worthless-crypto must be a real user with a pinned uid (WOR-310).
 
         Distinct uid from worthless-proxy is the kernel-enforced wall
@@ -521,13 +552,13 @@ class TestDockerfile:
         (see WOR-310 Phase A).
         """
         assert re.search(
-            r"useradd[^\n]*-r[^\n]*-u\s+10002[^\n]*worthless-crypto", dockerfile_text
+            r"useradd[^\n]*-r[^\n]*-u\s+10002[^\n]*worthless-crypto", dockerfile_final_stage
         ), (
             "WOR-310: missing 'useradd -r ... -u 10002 ... worthless-crypto' "
             "(-r pins this as a system account)"
         )
 
-    def test_shared_group_worthless(self, dockerfile_text: str):
+    def test_shared_group_worthless(self, dockerfile_final_stage: str):
         """A shared 'worthless' group must let both uids share /run/worthless.
 
         Both uids belong to gid 10001 so the AF_UNIX socket file in
@@ -535,11 +566,11 @@ class TestDockerfile:
         process via group permissions, while neither can read the
         other's process memory because uids differ.
         """
-        assert re.search(r"groupadd[^\n]*-r[^\n]*-g\s+10001[^\n]*worthless\b", dockerfile_text), (
-            "WOR-310: missing 'groupadd -r ... -g 10001 worthless' (-r pins system group)"
-        )
+        assert re.search(
+            r"groupadd[^\n]*-r[^\n]*-g\s+10001[^\n]*worthless\b", dockerfile_final_stage
+        ), "WOR-310: missing 'groupadd -r ... -g 10001 worthless' (-r pins system group)"
 
-    def test_worthless_crypto_home_nonexistent(self, dockerfile_text: str):
+    def test_worthless_crypto_home_nonexistent(self, dockerfile_final_stage: str):
         """worthless-crypto home dir must be /nonexistent (Q3 decision).
 
         Debian convention for service users with no real home. If
@@ -548,10 +579,10 @@ class TestDockerfile:
         be tricked into accessing.
         """
         assert re.search(
-            r"useradd[^\n]*-d\s+/nonexistent[^\n]*worthless-crypto", dockerfile_text
+            r"useradd[^\n]*-d\s+/nonexistent[^\n]*worthless-crypto", dockerfile_final_stage
         ), "WOR-310: worthless-crypto must have -d /nonexistent (Q3 decision)"
 
-    def test_creates_run_worthless_dir(self, dockerfile_text: str):
+    def test_creates_run_worthless_dir(self, dockerfile_final_stage: str):
         """/run/worthless must be created so split_to_tmpfs has a writable home.
 
         Phase C sets WORTHLESS_RUN_DIR=/run/worthless so per-PID share
@@ -559,11 +590,11 @@ class TestDockerfile:
         we mkdir at build time to set the right ownership and mode
         before any process tries to write into it.
         """
-        assert re.search(r"mkdir[^\n]*-p[^\n]*/run/worthless", dockerfile_text), (
+        assert re.search(r"mkdir[^\n]*-p[^\n]*/run/worthless", dockerfile_final_stage), (
             "WOR-310: missing 'mkdir -p /run/worthless'"
         )
 
-    def test_run_worthless_owned_root_worthless_group_0770(self, dockerfile_text: str):
+    def test_run_worthless_owned_root_worthless_group_0770(self, dockerfile_final_stage: str):
         """/run/worthless must be root:worthless 0770 (group-writable).
 
         Owner=root means neither uid can rename or chmod the dir.
@@ -572,14 +603,14 @@ class TestDockerfile:
         other user on the box (if /run/worthless ever leaks outside
         the container) can read either.
         """
-        assert re.search(r"chown\s+root:worthless\s+/run/worthless", dockerfile_text), (
+        assert re.search(r"chown\s+root:worthless\s+/run/worthless", dockerfile_final_stage), (
             "WOR-310: /run/worthless must be chown'd root:worthless"
         )
-        assert re.search(r"chmod\s+0?770\s+/run/worthless", dockerfile_text), (
+        assert re.search(r"chmod\s+0?770\s+/run/worthless", dockerfile_final_stage), (
             "WOR-310: /run/worthless must be chmod 0770 (group-writable, world-blocked)"
         )
 
-    def test_image_label_required_run_flags(self, dockerfile_text: str):
+    def test_image_label_required_run_flags(self, dockerfile_final_stage: str):
         """Image must advertise --security-opt=no-new-privileges as required.
 
         ``no-new-privileges`` is what blocks the kernel's setuid-binary
@@ -592,13 +623,13 @@ class TestDockerfile:
         """
         assert re.search(
             r'LABEL[^\n]*org\.worthless\.required-run-flags="?[^"\n]*--security-opt=no-new-privileges',
-            dockerfile_text,
+            dockerfile_final_stage,
         ), (
             "WOR-310: LABEL org.worthless.required-run-flags must mention "
             "--security-opt=no-new-privileges"
         )
 
-    def test_image_label_recommended_run_flags(self, dockerfile_text: str):
+    def test_image_label_recommended_run_flags(self, dockerfile_final_stage: str):
         """Image must advertise the cap-add allowlist needed for priv-drop.
 
         Plain ``--cap-drop=ALL`` is INCOMPATIBLE with the WOR-310
@@ -612,7 +643,7 @@ class TestDockerfile:
         """
         match = re.search(
             r'LABEL[^\n]*org\.worthless\.recommended-run-flags="([^"]*)"',
-            dockerfile_text,
+            dockerfile_final_stage,
         )
         assert match, "WOR-310: missing LABEL org.worthless.recommended-run-flags"
         flags = match.group(1)

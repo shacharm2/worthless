@@ -74,6 +74,13 @@ PR_SET_DUMPABLE = 4
 # query the kernel directly via prctl, which is portable across kernels.
 PR_GET_DUMPABLE = 3
 
+# https://man7.org/linux/man-pages/man2/PR_GET_NO_NEW_PRIVS.2const.html — 39
+# Read-back of the no-new-privs bit, available since Linux 3.5 (the
+# /proc/<pid>/status::NoNewPrivs field arrived in 4.10).  Preferred
+# over procfs because rootless containers and partial /proc bind-mounts
+# may hide procfs while prctl still works.
+PR_GET_NO_NEW_PRIVS = 39
+
 # https://man7.org/linux/man-pages/man2/prctl.2.html — PR_SET_NO_NEW_PRIVS = 38
 # Locks the no_new_privs bit. Once set, the process and its children can
 # never gain privs via setuid/setgid binaries or file capabilities. Phase
@@ -202,6 +209,33 @@ def get_dumpable() -> int | None:
     return rc
 
 
+def get_no_new_privs() -> int | None:
+    """Return ``prctl(PR_GET_NO_NEW_PRIVS)`` — the kernel's view of NNP.
+
+    Returns ``0`` (not set) or ``1`` (set).  Returns ``None`` if libc
+    cannot be loaded or the syscall fails — caller treats ``None`` as
+    "indeterminate, skip".
+
+    Mirrors :func:`get_dumpable`'s pattern.  ``prctl(PR_GET_NO_NEW_PRIVS)``
+    has been available since Linux 3.5 — the procfs field
+    ``/proc/<pid>/status::NoNewPrivs`` only arrived in 4.10 and can be
+    hidden by rootless containers / partial /proc bind-mounts.  Prefer
+    prctl as the source of truth; fall back to procfs only when prctl
+    is unreachable (libc missing).
+
+    Linux-only — silent ``None`` on Darwin/Windows.
+    """
+    if sys.platform != "linux":
+        return None
+    libc = _load_libc()
+    if libc is None:
+        return None
+    rc = libc.prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0)
+    if rc < 0:
+        return None
+    return rc
+
+
 def set_no_new_privs_or_log() -> None:
     """Fork-child-safe ``prctl(PR_SET_NO_NEW_PRIVS, 1)`` (WOR-310 Phase C2).
 
@@ -293,12 +327,8 @@ def set_capbset_drop_or_log() -> None:
 def _read_no_new_privs_from_proc() -> str:
     """Return the ``NoNewPrivs:`` value from ``/proc/self/status`` or ``"missing"``.
 
-    Linux exposes NNP via procfs across every supported kernel — there
-    is no ``prctl(PR_GET_NO_NEW_PRIVS)`` query equivalent to
-    PR_GET_DUMPABLE that is universally available, so we still parse
-    procfs for this one bit. Raises ``WorthlessError`` if procfs
-    itself is unreadable (rootless container with /proc bind-mounted
-    out) — fail-loud is required because this is a security check.
+    Procfs fallback for :func:`get_no_new_privs`.  Used only when
+    ``prctl(PR_GET_NO_NEW_PRIVS)`` is unreachable (libc missing).
     """
     status_path = Path("/proc/self/status")
     try:
@@ -334,10 +364,12 @@ def assert_hardening_applied() -> None:
       CodeRabbit review and again on GitHub Actions Ubuntu runners
       where the field surfaced as ``"missing"``). ``prctl`` is the
       portable kernel API.
-    * **NoNewPrivs**: parsed from ``/proc/self/status``. Linux has
-      no portable ``prctl(PR_GET_NO_NEW_PRIVS)`` query, so procfs is
-      the only option for this bit; it has been exposed on every
-      supported kernel back to 3.5.
+    * **NoNewPrivs**: ``prctl(PR_GET_NO_NEW_PRIVS)`` via
+      :func:`get_no_new_privs` (preferred — available since Linux 3.5).
+      Falls back to ``/proc/self/status`` only when prctl is
+      unreachable (libc missing).  Procfs is exposed back to 4.10
+      so prctl is the more reliable signal in rootless containers
+      with partial /proc bind-mounts.
 
     Mode gating (``WORTHLESS_DOCKER_PRIVDROP_REQUIRED``):
 
@@ -361,11 +393,24 @@ def assert_hardening_applied() -> None:
     docker_mode = os.environ.get("WORTHLESS_DOCKER_PRIVDROP_REQUIRED") == "1"
 
     if docker_mode:
-        no_new_privs = _read_no_new_privs_from_proc()
-        if no_new_privs != "1":
+        # CR-3204010104 (MAJOR): use prctl as the source of truth (since
+        # 3.5); fall back to procfs only when prctl is unreachable.
+        nnp = get_no_new_privs()
+        if nnp is None:
+            no_new_privs = _read_no_new_privs_from_proc()
+            if no_new_privs != "1":
+                raise WorthlessError(
+                    ErrorCode.SIDECAR_NOT_READY,
+                    f"prctl(PR_GET_NO_NEW_PRIVS) unreachable (libc missing) AND "
+                    f"/proc/self/status::NoNewPrivs={no_new_privs!r} (expected '1'); "
+                    "preexec_fn's PR_SET_NO_NEW_PRIVS was no-op'd by an LSM/seccomp "
+                    "filter or kernel bug. Refusing to bind without setuid-escalation "
+                    "defense.",
+                )
+        elif nnp != 1:
             raise WorthlessError(
                 ErrorCode.SIDECAR_NOT_READY,
-                f"/proc/self/status::NoNewPrivs={no_new_privs!r} (expected '1'); "
+                f"prctl(PR_GET_NO_NEW_PRIVS)={nnp} (expected 1); "
                 "preexec_fn's PR_SET_NO_NEW_PRIVS was no-op'd by an LSM/seccomp "
                 "filter or kernel bug. Refusing to bind without setuid-escalation "
                 "defense.",

@@ -1,14 +1,24 @@
 # WOR-310 — Dockerfile, two-uid Fernet sidecar topology
 
-> "API keys stay safe even when the proxy is compromised."
+> "API keys are protected against bulk/offline exfiltration even when the proxy is compromised."
 
 ## What ships
 
 A Docker image that runs the Worthless proxy and Fernet sidecar as **two distinct
-Linux uids inside one container**, with kernel-enforced isolation. Even with full
-RCE in the proxy (read arbitrary memory, send arbitrary signals, open arbitrary
-files), the attacker cannot read the Fernet key — the kernel rejects ptrace,
+Linux uids inside one container**, with kernel-enforced isolation against
+offline key theft. Even with full RCE in the proxy (read arbitrary memory, send
+arbitrary signals, open arbitrary files), the attacker cannot extract the Fernet
+key for offline decryption or bulk exfiltration — the kernel rejects ptrace,
 `/proc/<pid>/mem`, and `kill(-9)` across the uid wall.
+
+**What this does NOT defend against:** a live proxy RCE can still drive the IPC
+to request per-request `seal`/`open` operations on traffic that arrives at the
+proxy while the attacker controls it. The threat model WOR-310 closes is
+*offline key extraction* (steal the key, walk away with it, decrypt later or
+elsewhere); it does not close *online traffic decryption* by an attacker
+co-located with the live proxy. The latter is bounded by other v1.1 controls
+(spend cap, request audit log, sidecar attest) — see the WOR-313 9-row
+red-team table for the full coverage matrix.
 
 ## Runtime flag contract
 

@@ -46,6 +46,12 @@ _PROXY_USER = "worthless-proxy"
 _PROXY_UID = 10001
 _CRYPTO_USER = "worthless-crypto"
 _CRYPTO_UID = 10002
+# Shared `worthless` group — both service users belong to it.  The
+# Dockerfile creates it as gid 10001 (`groupadd -r -g 10001 worthless`).
+# Pinned here so a /etc/group drift (or a hostile shadowed /etc/passwd
+# that resolves both users to a different group) is caught before any
+# chown / setresgid runs.
+_WORTHLESS_GID = 10001
 
 
 def _resolve_service_uids() -> ServiceUids | None:
@@ -98,10 +104,29 @@ def _resolve_service_uids() -> ServiceUids | None:
             "shadowed /etc/passwd or Dockerfile drift. Refusing.",
         )
 
+    # CR-3204010085 (MAJOR): pin the shared `worthless` GID too.
+    # Both service users belong to gid 10001 by Dockerfile contract.
+    # An /etc/group drift that resolves either user to a different
+    # primary group would have us chown share files / chmod the
+    # run_dir to an unexpected gid, breaking the kernel-enforced
+    # group-traversal model.  Refuse on drift before any chown runs.
+    if proxy.pw_gid != _WORTHLESS_GID:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"{_PROXY_USER}.pw_gid={proxy.pw_gid} != Dockerfile literal "
+            f"{_WORTHLESS_GID}; /etc/group drift. Refusing.",
+        )
+    if crypto.pw_gid != _WORTHLESS_GID:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"{_CRYPTO_USER}.pw_gid={crypto.pw_gid} != Dockerfile literal "
+            f"{_WORTHLESS_GID}; /etc/group drift. Refusing.",
+        )
+
     return ServiceUids(
         proxy_uid=proxy.pw_uid,
         crypto_uid=crypto.pw_uid,
-        worthless_gid=proxy.pw_gid,
+        worthless_gid=_WORTHLESS_GID,  # use pinned constant, not pw_gid (drift-safe)
     )
 
 
@@ -171,6 +196,21 @@ def main() -> None:
     if service_uids is not None:
         os.chmod(home.base_dir, 0o710)  # noqa: PTH101, S103
 
+    # CR-3197215771 / 3204010085 (CRITICAL/MAJOR): refuse a multi-
+    # threaded entrypoint BEFORE we read the fernet key or call
+    # split_to_tmpfs.  BPO-34394 (fork from multi-threaded = undefined)
+    # is a security-relevant invariant, and on the failure path we
+    # would otherwise have already written share files and held
+    # plaintext shard bytearrays in memory before raising.
+    active = threading.active_count()
+    if active != 1:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"deploy/start.py expects single-threaded entry; got {active} "
+            "threads. Forking with threads alive is undefined per BPO-34394 — "
+            "refusing to spawn sidecar.",
+        )
+
     fernet_key = home.fernet_key
     try:
         shares = split_to_tmpfs(fernet_key, home.base_dir)
@@ -214,26 +254,6 @@ def main() -> None:
         os.chmod(shares.run_dir, 0o710)  # noqa: PTH101, S103
         os.chown(shares.share_a_path, service_uids.crypto_uid, service_uids.worthless_gid)
         os.chown(shares.share_b_path, service_uids.crypto_uid, service_uids.worthless_gid)
-
-    # BPO-34394: forking from a multi-threaded process is undefined. The
-    # preexec_fn calls glibc-allocator-using helpers (ctypes, logger) that
-    # can deadlock if any thread held the dynamic-linker mutex at fork.
-    # main() is the entrypoint; nothing should have started threads.
-    # Hard-fail before Popen so a future regression that imports a
-    # thread-starting library at module scope fails loud.
-    #
-    # NOT ``assert`` — Python with ``-O`` / ``PYTHONOPTIMIZE=1`` strips
-    # asserts silently. This is a security-relevant invariant (BPO-34394
-    # is undefined behavior, no log line on failure), so it must survive
-    # optimization. Raise WorthlessError(SIDECAR_NOT_READY) instead.
-    active = threading.active_count()
-    if active != 1:
-        raise WorthlessError(
-            ErrorCode.SIDECAR_NOT_READY,
-            f"deploy/start.py expects single-threaded entry; got {active} "
-            "threads. Forking with threads alive is undefined per BPO-34394 — "
-            "refusing to spawn sidecar.",
-        )
 
     # When dropping privs, the proxy uid is the only one that may connect
     # to the sidecar's socket. On bare metal (service_uids is None), the

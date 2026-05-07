@@ -17,7 +17,16 @@ RUN apt-get update \
     && useradd -r -u 10001 -g worthless -d /data -s /sbin/nologin worthless-proxy \
     && useradd -r -u 10002 -g worthless -d /nonexistent -s /sbin/nologin worthless-crypto \
     && mkdir -p /data /secrets /run/worthless \
-    && chown worthless-proxy:worthless /data /secrets \
+    && chown worthless-proxy:worthless /data \
+    # CR-3204010091 (MAJOR): /secrets must NOT be proxy-writable.  A
+    # proxy-RCE could otherwise unlink/replace fernet.key inside the
+    # secrets volume.  Keep /secrets root:worthless 0750 — root owns,
+    # worthless group can list+traverse so the sidecar (worthless-crypto)
+    # can read fernet.key when WORTHLESS_FERNET_KEY_PATH points there;
+    # the proxy uid (also in group worthless) gets only group r-x which
+    # cannot create/unlink files at the dir level.
+    && chown root:worthless /secrets \
+    && chmod 0750 /secrets \
     && chown root:worthless /run/worthless \
     && chmod 0770 /run/worthless
 

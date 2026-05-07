@@ -1531,38 +1531,42 @@ def test_assert_hardening_applied_passes_in_bare_metal_when_dumpable_zero(
 
 
 def test_assert_hardening_applied_passes_in_docker_mode_when_both_set(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Docker mode: NNP=1 (procfs) AND Dumpable=0 (prctl) → return silently."""
+    """Docker mode: NNP=1 (prctl) AND Dumpable=0 (prctl) → return silently.
+
+    CR-3204010104: NNP is now read via prctl(PR_GET_NO_NEW_PRIVS),
+    not procfs.  Mock the prctl helper directly.
+    """
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
     monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
-    fake_status = tmp_path / "status"
-    fake_status.write_text("NoNewPrivs:\t1\n")
-    monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: fake_status)
+    monkeypatch.setattr(_hardening, "get_no_new_privs", lambda: 1)
     monkeypatch.setattr(_hardening, "get_dumpable", lambda: 0)
     _hardening.assert_hardening_applied()  # must not raise
 
 
 def test_assert_hardening_applied_raises_when_no_new_privs_is_zero_in_docker_mode(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """In Docker mode, LSM/seccomp filter silently no-op'd PR_SET_NO_NEW_PRIVS → refuse to bind.
 
     NoNewPrivs is a preexec_fn-only primitive; in Docker mode the
     parent's preexec_fn must have set it, so NNP=0 here means the
     kernel silently dropped a security primitive.  Refuse loudly.
+
+    CR-3204010104: read via prctl(PR_GET_NO_NEW_PRIVS) (preferred over
+    procfs since it's available since kernel 3.5 vs procfs's 4.10
+    and works in rootless containers with partial /proc bind-mounts).
     """
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
     monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
-    fake_status = tmp_path / "status"
-    fake_status.write_text("NoNewPrivs:\t0\n")
-    monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: fake_status)
+    monkeypatch.setattr(_hardening, "get_no_new_privs", lambda: 0)
     monkeypatch.setattr(_hardening, "get_dumpable", lambda: 0)
 
     with pytest.raises(WorthlessError) as exc_info:
         _hardening.assert_hardening_applied()
     assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
-    assert "NoNewPrivs" in exc_info.value.message
+    assert "NO_NEW_PRIVS" in exc_info.value.message or "NoNewPrivs" in exc_info.value.message
 
 
 def test_assert_hardening_applied_allows_no_new_privs_zero_in_bare_metal_mode(
@@ -1622,17 +1626,22 @@ def test_assert_hardening_applied_raises_when_get_dumpable_returns_none(
     assert "PR_GET_DUMPABLE" in exc_info.value.message
 
 
-def test_assert_hardening_applied_raises_when_proc_status_unreadable_in_docker_mode(
+def test_assert_hardening_applied_raises_when_procfs_unreadable_and_prctl_indeterminate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Docker mode + rootless container with /proc bind-mounted out → fail loud.
+    """Docker mode + prctl unreachable + /proc bind-mounted out → fail loud.
 
-    Procfs is the only way we can read NoNewPrivs (no portable prctl
-    equivalent). In Docker mode NNP is mandatory, so an unreadable
-    procfs blocks the security check entirely.
+    CR-3204010104: prctl is the primary source of truth for NNP; we
+    only fall back to procfs if get_no_new_privs() returns None
+    (libc unreachable).  This test pins the failure path: BOTH
+    sources unavailable → WorthlessError.  In normal Docker
+    deployments prctl is always reachable (libc.so.6 is present);
+    this models the pathological "rootless + distroless without libc"
+    edge case where we must still fail loud.
     """
     monkeypatch.setattr(_hardening.sys, "platform", "linux")
     monkeypatch.setenv("WORTHLESS_DOCKER_PRIVDROP_REQUIRED", "1")
+    monkeypatch.setattr(_hardening, "get_no_new_privs", lambda: None)  # libc missing
     nonexistent = tmp_path / "does-not-exist"
     monkeypatch.setattr("worthless.sidecar._hardening.Path", lambda p: nonexistent)
     monkeypatch.setattr(_hardening, "get_dumpable", lambda: 0)

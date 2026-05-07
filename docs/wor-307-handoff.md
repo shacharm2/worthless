@@ -50,34 +50,36 @@ All three share the **same IPC contract**. Choice is operational, not protocol.
 ### 3.1 Single-container (demonstrated, blessed for v1.1)
 
 ```text
-┌────────── container ─────────────────────────────┐
-│  tini (PID 1)                                    │
-│   └─ supervise.sh                                │
-│        ├─ worthless-proxy   (uid 1001, group 1002) │  ← HTTP in
-│        └─ worthless-crypto  (uid 1002, group 1002) │  ← binds socket
-│                                                  │
-│  /var/run/worthless/sidecar.sock  (0660, crypto:crypto) │
-└──────────────────────────────────────────────────┘
+┌────────── container ─────────────────────────────────┐
+│  tini (PID 1)                                        │
+│   └─ deploy/start.py (root, briefly — privilege drop)│
+│        ├─ worthless-proxy   (uid 10001, gid 10001)   │  ← HTTP in
+│        └─ worthless-crypto  (uid 10002, gid 10001)   │  ← binds socket
+│                                                      │
+│  /run/worthless                       (root:worthless 0770)  │
+│  /run/worthless/<pid>/sidecar.sock    (crypto:worthless ~0600/0660) │
+└──────────────────────────────────────────────────────┘
 ```
 
-- Socket mode **0660**, not 0600 — proxy uid connects via shared group. Lower would block the two-uid pattern; higher exposes the socket to world.
-- tini handles PID-1 duties (zombie reaping, SIGTERM forwarding). `supervise.sh` is intentionally simple; v2.0 may swap in s6-overlay without contract changes.
-- Built and exercised by `tests/docker/test_container_smoke.py` on every `-m docker` run.
+- WOR-310 contract: `worthless-proxy=10001`, `worthless-crypto=10002`, shared `worthless` group `gid=10001`. `/run/worthless` is `root:worthless` mode `0770`; per-PID dirs and the socket inside are `crypto:worthless`.
+- Socket file mode is set by `start_sidecar()` (`0660` so the proxy can connect via shared group); the directory perms (`/run/worthless` 0770, `/run/worthless/<pid>/` 0710 with crypto:worthless) gate which uid can even traverse to the socket inode.
+- tini handles PID-1 duties (zombie reaping, SIGTERM forwarding). `deploy/start.py` runs the priv-drop dance + spawns the sidecar before exec'ing uvicorn — no `supervise.sh`. v2.0 may swap in s6-overlay without contract changes.
+- Built and exercised by `tests/test_docker_e2e.py` on every `-m docker` run; the two-uid invariant is asserted by `test_runs_as_non_root` (proves `{10001, 10002} ⊆ uids_seen`).
 
 ### 3.2 Sidecar-container (documented, optional)
 
-Two containers share `/var/run/worthless` as a volume. Peer-uid auth still works across the volume — the uid must be allocated consistently (e.g. both images derive from the same base, or both declare `user: 1001` / `user: 1002` in compose). Exposes no extra surface beyond single-container.
+Two containers share `/run/worthless` as a volume. Peer-uid auth still works across the volume — the uid must be allocated consistently (e.g. both images derive from the same base, or both declare `user: 10001` / `user: 10002` in compose). Exposes no extra surface beyond single-container.
 
 ### 3.3 systemd-managed (documented, optional)
 
 ```text
-systemd socket unit          binds /var/run/worthless/sidecar.sock
+systemd socket unit          binds /run/worthless/sidecar.sock
       │
-      ├─ worthless-sidecar.service  User=worthless-crypto, socket-activated
-      └─ worthless-proxy.service    User=worthless-proxy,  Group=worthless-crypto
+      ├─ worthless-sidecar.service  User=worthless-crypto, Group=worthless, socket-activated
+      └─ worthless-proxy.service    User=worthless-proxy,  Group=worthless
 ```
 
-Socket activation + `User=` / `Group=` directives give the same two-uid/0660 shape without a container runtime. Useful for host installs. The sidecar accepts an already-bound fd via `LISTEN_FDS=1` **in v1.2** — prototype does not implement this yet; v2.0 Rust rewrite should.
+Socket activation + `User=`/`Group=` directives give the same two-uid shape (proxy 10001 + crypto 10002 in shared group `worthless`) without a container runtime. Useful for host installs. The sidecar accepts an already-bound fd via `LISTEN_FDS=1` **in v1.2** — prototype does not implement this yet; v2.0 Rust rewrite should.
 
 ## 4. WOR-306 9-row red-team table → test mapping
 

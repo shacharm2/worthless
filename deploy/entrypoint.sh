@@ -73,10 +73,14 @@ fi
 # user-mounted volumes might have prior content with different
 # semantics.
 if [ "$(id -u)" = "0" ]; then
-  chown -R worthless-proxy:worthless "$HOME_DIR" 2>/dev/null || true
-  if [ -n "$WORTHLESS_FERNET_KEY_PATH" ] && [ -f "$FERNET_PATH" ]; then
-    chown worthless-proxy:worthless "$FERNET_PATH" 2>/dev/null || true
-  fi
+  # CR-3204010079 (CRITICAL): a recursive chown on $HOME_DIR would
+  # re-own fernet.key to worthless-proxy too, defeating the two-uid
+  # isolation (the proxy uid must NOT own the fernet key).  Use find
+  # to skip $FERNET_PATH explicitly.  fernet.key keeps the ownership
+  # the bootstrap or operator put on it (typically root or
+  # worthless-crypto on the secrets volume).
+  find "$HOME_DIR" -mindepth 1 -not -path "$FERNET_PATH" \
+    -exec chown worthless-proxy:worthless {} + 2>/dev/null || true
   # bootstrap.ensure_home pinned $HOME_DIR to mode 0o700 — that's
   # owner-only.  After we chowned to worthless-proxy:worthless, the
   # sidecar (worthless-crypto, in group worthless) can't traverse
