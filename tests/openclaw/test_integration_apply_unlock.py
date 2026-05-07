@@ -387,3 +387,107 @@ def test_apply_lock_then_apply_unlock_round_trip_byte_identical(
     )
     # And the skill folder we installed during apply_lock got swept too.
     assert not (openclaw_present["workspace"] / "skills" / "worthless").exists()
+
+
+# ---------------------------------------------------------------------------
+# RT-03 / CONFIG_MISSING: openclaw.json deleted between lock and unlock
+# ---------------------------------------------------------------------------
+
+
+def test_apply_unlock_emits_config_missing_when_config_deleted(
+    openclaw_present: dict[str, Path],
+) -> None:
+    """RT-03 (Phase 2.c spec): user manually deletes openclaw.json between
+    ``lock`` and ``unlock`` (or some other tool removed it). detect()'s
+    presence verdict is OR(config, workspace) — workspace alive keeps us in
+    the present=True path. apply_unlock must surface
+    ``OpenclawErrorCode.CONFIG_MISSING`` instead of silently no-opping, so
+    doctor / --json can report the user-visible state. Stage B (skill
+    removal) still runs.
+    """
+    from worthless.openclaw import integration
+    from worthless.openclaw.errors import OpenclawErrorCode
+
+    # Pre-install the skill so we can verify Stage B still runs.
+    skill_root = openclaw_present["workspace"] / "skills" / "worthless"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text("placeholder", encoding="utf-8")
+
+    # Delete config — workspace stays.
+    openclaw_present["config_path"].unlink()
+
+    result = integration.apply_unlock(aliases=[("openai", "openai-deadbeef")])
+
+    assert result.detected is True
+    codes = [event.code for event in result.events]
+    assert OpenclawErrorCode.CONFIG_MISSING in codes, codes
+    # All requested providers reported as skipped with the named reason.
+    assert ("worthless-openai", "config_missing") in result.providers_skipped
+    assert result.providers_set == ()
+    # Stage B (skill removal) still ran.
+    assert not skill_root.exists()
+
+
+def test_apply_unlock_config_missing_emits_one_event_for_many_aliases(
+    openclaw_present: dict[str, Path],
+) -> None:
+    """CONFIG_MISSING is per-config, not per-alias — one event no matter
+    how many aliases the caller passed. Each alias still gets its own
+    ``providers_skipped`` row so --json downstream can render them.
+    """
+    from worthless.openclaw import integration
+    from worthless.openclaw.errors import OpenclawErrorCode
+
+    openclaw_present["config_path"].unlink()
+
+    result = integration.apply_unlock(
+        aliases=[
+            ("openai", "openai-aaaa1111"),
+            ("anthropic", "anthropic-bbbb2222"),
+        ]
+    )
+
+    config_missing_events = [
+        event for event in result.events if event.code == OpenclawErrorCode.CONFIG_MISSING
+    ]
+    assert len(config_missing_events) == 1, [event.code for event in result.events]
+    assert len(result.providers_skipped) == 2
+
+
+# ---------------------------------------------------------------------------
+# F-CFG-15 (symmetric with apply_lock): symlinked openclaw.json refused
+# ---------------------------------------------------------------------------
+
+
+def test_apply_unlock_refuses_symlinked_openclaw_json(
+    openclaw_present: dict[str, Path],
+) -> None:
+    """F-CFG-15 symmetry: a symlinked openclaw.json must be refused with a
+    SYMLINK_REFUSED event (not the generic CONFIG_UNREADABLE that
+    unset_provider's flock-protected check would raise). Without the
+    upfront short-circuit in apply_unlock, an attacker who plants
+    ``~/.openclaw/openclaw.json -> ~/.bashrc`` between ``lock`` and
+    ``unlock`` would see a misleading event tag in ``--json`` output.
+    """
+    from worthless.openclaw import integration
+    from worthless.openclaw.errors import OpenclawErrorCode
+
+    config_path = openclaw_present["config_path"]
+    sentinel = openclaw_present["home"] / "sentinel.txt"
+    sentinel.write_bytes(b"USER FILE - MUST SURVIVE\n")
+    sentinel_before = sentinel.read_bytes()
+
+    # Replace the regular file with a symlink pointing at the sentinel.
+    config_path.unlink()
+    config_path.symlink_to(sentinel)
+
+    result = integration.apply_unlock(aliases=[("openai", "openai-deadbeef")])
+
+    codes = [event.code for event in result.events]
+    assert OpenclawErrorCode.SYMLINK_REFUSED in codes, codes
+    assert ("worthless-openai", "symlink_refused") in result.providers_skipped
+    # Sentinel content untouched — the symlink target was not followed.
+    assert sentinel.read_bytes() == sentinel_before
+    # detected is True (host had OpenClaw); skill_installed stays False.
+    assert result.detected is True
+    assert result.skill_installed is False

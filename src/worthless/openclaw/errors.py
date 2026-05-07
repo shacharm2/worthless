@@ -29,6 +29,7 @@ class OpenclawErrorCode(str, Enum):
     CONFIG_UNREADABLE = "openclaw.config_unreadable"
     CONFIG_RECREATED = "openclaw.config_recreated"
     CONFIG_UPDATED = "openclaw.config_updated"
+    CONFIG_MISSING = "openclaw.config_missing"
     PROVIDER_CONFLICT = "openclaw.provider_conflict"
     SYMLINK_REFUSED = "openclaw.symlink_refused"
     WRITE_FAILED = "openclaw.write_failed"

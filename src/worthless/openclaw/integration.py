@@ -397,7 +397,11 @@ def apply_lock(
                     extra={"path": str(config_path)},
                 )
             )
-            # Continue to Stage B (skill install) but skip Stage A.
+            # Refuse the whole transaction. Stage B (skill install) is
+            # technically independent (writes to workspace/skills/), but a
+            # symlinked config means the user's home is in an unsafe state
+            # and we don't want to half-install. doctor --fix can recover
+            # once the user removes the symlink.
             return OpenclawApplyResult(
                 detected=True,
                 config_path=config_path,
@@ -595,8 +599,68 @@ def apply_unlock(
 
     config_path = _resolve_active_config_path(state, state.home_dir)
 
+    # F-CFG-15 (symmetric with apply_lock): refuse symlinked openclaw.json.
+    # _refuse_if_symlink inside unset_provider's flock is a last line of
+    # defense, but raises OpenclawConfigError which would tag the event
+    # CONFIG_UNREADABLE — wrong code, wrong story. Short-circuit here so
+    # the event is correctly tagged SYMLINK_REFUSED and Stage A doesn't
+    # iterate uselessly through every alias hitting the same flock check.
+    is_link = False
+    try:
+        is_link = config_path.is_symlink()
+    except OSError:
+        is_link = False
+    if is_link:
+        events.append(
+            OpenclawIntegrationEvent(
+                code=OpenclawErrorCode.SYMLINK_REFUSED,
+                level="error",
+                detail=(
+                    f"refusing to follow symlink at {config_path} (F-CFG-15) — "
+                    "symlinked openclaw.json is a known attack vector"
+                ),
+                extra={"path": str(config_path)},
+            )
+        )
+        return OpenclawApplyResult(
+            detected=True,
+            config_path=config_path,
+            workspace_path=state.workspace_path,
+            skill_path=None,
+            providers_set=(),
+            providers_skipped=tuple(
+                (f"worthless-{provider}", "symlink_refused") for provider, _alias in aliases
+            ),
+            skill_installed=False,
+            events=tuple(events),
+        )
+
+    # RT-03: config was deleted between lock and unlock. detect()'s
+    # presence verdict is OR(config, workspace) — a missing config alone
+    # leaves us with present=True (workspace still there). Surface the
+    # named event so doctor / --json can report it; skip Stage A but
+    # continue to Stage B since skill removal is still useful.
+    config_missing = not config_path.exists()
+    if config_missing:
+        events.append(
+            OpenclawIntegrationEvent(
+                code=OpenclawErrorCode.CONFIG_MISSING,
+                level="warn",
+                detail=(
+                    f"openclaw.json not found at {config_path} — provider entries "
+                    "already absent; skipping Stage A"
+                ),
+                extra={"path": str(config_path)},
+            )
+        )
+        for provider, _alias in aliases:
+            providers_skipped.append((f"worthless-{provider}", "config_missing"))
+
     # ---- Stage A: remove worthless-* provider entries --------------------
-    for provider, _alias in aliases:
+    # Skipped entirely when config_missing — providers_skipped already
+    # populated above with reason="config_missing", and Stage B (skill
+    # removal) still runs below.
+    for provider, _alias in aliases if not config_missing else []:
         provider_name = f"worthless-{provider}"
         try:
             removed = _config_mod.unset_provider(config_path, provider_name)
