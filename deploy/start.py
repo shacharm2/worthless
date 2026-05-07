@@ -202,6 +202,16 @@ def main() -> None:
         # _accessor.chmod which is harder to mock cleanly.
         os.chmod(parent_run_dir, 0o710)  # noqa: PTH101, S103
         os.chown(shares.run_dir, service_uids.crypto_uid, service_uids.worthless_gid)
+        # Per-PID run_dir holds both the share files (which only the
+        # crypto uid reads) AND the sidecar's Unix socket (which the
+        # proxy uid connects to).  split_to_tmpfs created it at 0o700
+        # (owner-only); the proxy needs group --x to traverse in and
+        # connect() to sidecar.sock.  0o710 with crypto:worthless: the
+        # crypto uid keeps full rwx, the worthless group (which the
+        # proxy is in) gets traverse-only — proxy can connect to the
+        # socket but cannot ls or read share_a/b.bin (those have file
+        # mode 0o600 owner-rw which the group bits don't expand).
+        os.chmod(shares.run_dir, 0o710)  # noqa: PTH101, S103
         os.chown(shares.share_a_path, service_uids.crypto_uid, service_uids.worthless_gid)
         os.chown(shares.share_b_path, service_uids.crypto_uid, service_uids.worthless_gid)
 

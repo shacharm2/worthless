@@ -824,6 +824,7 @@ class TestShareFileOwnership:
             "chown(tmp,0,10001)",  # parent run_dir → root:worthless
             "chmod(tmp,0o710)",  # parent run_dir traversable by worthless gid
             "chown(wor-test-deploy-start,10002,10001)",  # run_dir
+            "chmod(wor-test-deploy-start,0o710)",  # run_dir group --x for proxy connect
             "chown(share_a.bin,10002,10001)",
             "chown(share_b.bin,10002,10001)",
             "spawn",
