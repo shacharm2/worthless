@@ -599,17 +599,28 @@ class TestDockerfile:
         )
 
     def test_image_label_recommended_run_flags(self, dockerfile_text: str):
-        """Image must advertise --read-only + --cap-drop=ALL as recommended.
+        """Image must advertise the cap-add allowlist needed for priv-drop.
 
-        These are best-practice hardening flags users SHOULD set but
-        won't always be able to (Render/Fly defaults vary). The LABEL
-        documents intent without enforcing — the docs site (WOR-314)
-        will reference this label so the image is self-documenting.
+        Plain ``--cap-drop=ALL`` is INCOMPATIBLE with the WOR-310
+        priv-drop dance — setresuid/setresgid/setgroups need SETUID +
+        SETGID; prctl(PR_CAPBSET_DROP) needs SETPCAP.  The recommended
+        flags drop everything else and let the runtime clear the
+        bounding set itself, so the post-drop end-state matches
+        --cap-drop=ALL.  The LABEL documents intent without enforcing —
+        the docs site (WOR-314) will reference it so the image is
+        self-documenting.
         """
-        assert re.search(
-            r"LABEL[^\n]*org\.worthless\.recommended-run-flags",
+        match = re.search(
+            r'LABEL[^\n]*org\.worthless\.recommended-run-flags="([^"]*)"',
             dockerfile_text,
-        ), "WOR-310: missing LABEL org.worthless.recommended-run-flags"
+        )
+        assert match, "WOR-310: missing LABEL org.worthless.recommended-run-flags"
+        flags = match.group(1)
+        for needed in ("--cap-add=SETUID", "--cap-add=SETGID", "--cap-add=SETPCAP"):
+            assert needed in flags, (
+                f"WOR-310: priv-drop requires {needed} in recommended-run-flags; "
+                f"plain --cap-drop=ALL would EPERM on setresuid"
+            )
 
     def test_expose_8787(self, dockerfile_text: str):
         """Port 8787 must be exposed (the standard proxy port)."""

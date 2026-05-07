@@ -122,7 +122,15 @@ def container(docker_image: str) -> tuple[str, int]:
             f"{name}-data:/data",
             "-v",
             f"{name}-secrets:/secrets",
+            # WOR-310: drop all caps EXCEPT the three the runtime
+            # priv-drop dance needs (SETUID/SETGID for setres*; SETPCAP
+            # for prctl(PR_CAPBSET_DROP)). The preexec_fn clears the
+            # bounding set before exec, so the post-drop process has
+            # zero caps anyway — same end-state as --cap-drop=ALL.
             "--cap-drop=ALL",
+            "--cap-add=SETUID",
+            "--cap-add=SETGID",
+            "--cap-add=SETPCAP",
             "--security-opt=no-new-privileges",
             docker_image,
         ]

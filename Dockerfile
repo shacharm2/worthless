@@ -53,8 +53,20 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 
 # Self-documenting security contract: docker inspect surfaces these so
 # operators see what flags the security claim depends on.
+#
+# Capability note: ``--cap-drop=ALL`` is INCOMPATIBLE with the WOR-310
+# runtime priv-drop dance — setresuid()/setresgid()/setgroups() in
+# deploy/start.py + the preexec_fn need CAP_SETUID, CAP_SETGID,
+# CAP_SETPCAP.  Without them, the dance fails with EPERM and the
+# container never becomes healthy.  Phase C's priv-drop achieves the
+# SAME end-state as ``--cap-drop=ALL`` because the preexec_fn calls
+# ``prctl(PR_CAPBSET_DROP, cap)`` for cap 0..63 immediately before
+# setresuid — by the time uvicorn execs, the bounding set is empty.
+# So we recommend dropping all caps EXCEPT the three the dance needs;
+# everything else (including the post-drop bounding set) gets cleared
+# at runtime.
 LABEL org.worthless.required-run-flags="--security-opt=no-new-privileges"
-LABEL org.worthless.recommended-run-flags="--read-only --tmpfs /tmp --cap-drop=ALL"
+LABEL org.worthless.recommended-run-flags="--read-only --tmpfs /tmp --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP"
 
 # Bind/host live in entrypoint.sh — don't re-add `--host` here, it bypasses deploy_mode.
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]

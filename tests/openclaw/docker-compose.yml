@@ -49,8 +49,17 @@ services:
     read_only: true
     tmpfs:
       - /tmp:noexec,nosuid,size=64m
+    # WOR-310: drop all caps EXCEPT the three the runtime priv-drop
+    # dance needs (SETUID/SETGID for setres*; SETPCAP for
+    # prctl(PR_CAPBSET_DROP)). The preexec_fn clears the bounding set
+    # before exec, so the post-drop process has zero caps anyway —
+    # same end-state as cap_drop: ALL.
     cap_drop:
       - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - SETPCAP
     security_opt:
       - no-new-privileges:true
     deploy:

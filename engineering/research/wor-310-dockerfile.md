@@ -16,7 +16,7 @@ files), the attacker cannot read the Fernet key — the kernel rejects ptrace,
 |---|---|---|
 | `--security-opt=no-new-privileges` | **required** for the security claim | Locks NO_NEW_PRIVS at the kernel level. Without it, a future setuid binary on PATH could re-escalate the dropped uid back to root. |
 | `--read-only` + `--tmpfs /tmp` | recommended | Container filesystem is immutable. Blocks a class of "write malware to disk" attacks; doesn't affect functionality because writable spots are explicit volumes. |
-| `--cap-drop=ALL` | recommended | Drops every Linux capability. Defense-in-depth on top of NO_NEW_PRIVS + `PR_CAPBSET_DROP` (which the sidecar runs at startup). |
+| `--cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP` | recommended | Drops every Linux capability EXCEPT the three the runtime priv-drop needs (`setresuid`/`setresgid`/`setgroups` need SETUID+SETGID; `prctl(PR_CAPBSET_DROP)` needs SETPCAP). The preexec_fn clears the bounding set before exec, so the post-drop process has zero caps anyway — same end-state as `--cap-drop=ALL`. Plain `--cap-drop=ALL` is INCOMPATIBLE with the priv-drop dance: setresuid would fail with EPERM and the container would never become healthy. |
 
 Image self-documents via labels:
 
