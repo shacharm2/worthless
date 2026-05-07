@@ -221,7 +221,7 @@ install_or_upgrade_worthless() {
             ''|*[!0-9A-Za-z.+!-]*)
                 die "$EXIT_INTERNAL" \
                     "Invalid WORTHLESS_VERSION='${WORTHLESS_VERSION}' — must match [0-9A-Za-z.+!-]+." \
-                    "Example: WORTHLESS_VERSION=0.3.3 curl https://worthless.sh | sh"
+                    "Example: WORTHLESS_VERSION=<version> curl https://worthless.sh | sh"
                 ;;
         esac
     fi
