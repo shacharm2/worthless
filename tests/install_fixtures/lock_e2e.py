@@ -25,6 +25,10 @@ from pathlib import Path
 
 PROXY_PORT = 8787
 MOCK_URL = "http://mock-upstream:9999"
+# OpenAI base URL on the mock — the proxy appends /chat/completions when
+# forwarding requests under the alias.  Must match the path served by
+# tests/openclaw/mock-upstream/app.py::chat_completions.
+MOCK_OPENAI_BASE_URL = f"{MOCK_URL}/v1"
 PROXY_HEALTH_URL = f"http://127.0.0.1:{PROXY_PORT}/healthz"
 
 
@@ -72,18 +76,42 @@ def main() -> int:
     env_path = env_dir / ".env"
 
     real_key = fake_openai_key()
+    # Write OPENAI_BASE_URL alongside OPENAI_API_KEY BEFORE locking so
+    # ``worthless lock`` stores the mock URL on the per-enrollment row
+    # (8rqs Phase 5+6 ripped the global WORTHLESS_UPSTREAM_OPENAI_URL
+    # override).  Same pattern as tests/test_openclaw_e2e.py::openclaw_stack.
     with env_path.open("w") as f:
         f.write(f"OPENAI_API_KEY={real_key}\n")
-    print(f"[1] wrote real key to {env_path} ({real_key[:10]}...)")
+        f.write(f"OPENAI_BASE_URL={MOCK_OPENAI_BASE_URL}\n")
+    print(f"[1] wrote real key + base URL to {env_path} ({real_key[:10]}...)")
 
-    # NOTE: this fixture installs Worthless from PyPI via install.sh
-    # (see Dockerfile.ubuntu-bare-lock-e2e). PyPI's Worthless is older
-    # than 8rqs and still honors WORTHLESS_UPSTREAM_OPENAI_URL (set in
-    # docker-compose.lock-e2e.yml's environment section) for upstream
-    # redirection to the mock. Once 8rqs ships to PyPI, swap this for
-    # `worthless providers register --name openai-mock ...` followed
-    # by writing OPENAI_BASE_URL into .env — same pattern used in
-    # tests/test_openclaw_e2e.py::openclaw_stack post-8rqs.
+    # Register the mock URL in the user provider registry.  Lock refuses
+    # an unregistered ``OPENAI_BASE_URL`` (M3 / Blocker #1: an attacker
+    # who can write .env should not redirect the proxy at an arbitrary
+    # upstream), so the URL must be in ~/.worthless/providers.toml
+    # before lock runs.
+    register = subprocess.run(  # noqa: S603, S607
+        [  # noqa: S607
+            "worthless",
+            "providers",
+            "register",
+            "--name",
+            "openai-mock",
+            "--url",
+            MOCK_OPENAI_BASE_URL,
+            "--protocol",
+            "openai",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if register.returncode != 0:
+        sys.stdout.write(register.stdout)
+        sys.stderr.write(register.stderr)
+        return fail(f"`worthless providers register` exited {register.returncode}")
+    print("[1.5] registered openai-mock provider")
+
     lock = subprocess.run(  # noqa: S603, S607
         ["worthless", "lock", "--env", str(env_path)],  # noqa: S607
         capture_output=True,
