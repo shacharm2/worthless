@@ -12,6 +12,7 @@ import pytest
 from cryptography.fernet import Fernet
 from hypothesis import HealthCheck, settings
 
+from worthless.cli import default_command  # used by _isolate_default_command_proxy autouse fixture
 from worthless.cli.bootstrap import WorthlessHome, ensure_home
 from worthless.crypto import SplitResult, split_key
 from worthless.storage.repository import ShardRepository, StoredShard
@@ -29,6 +30,19 @@ from tests.helpers import fake_openai_key
 # ``keyring_available()`` returns False and the file-fallback path is used
 # — same code path tests always exercised, minus the system-wide contention.
 keyring.set_keyring(keyring.backends.null.Keyring())
+
+# Belt-and-braces for SUBPROCESSES (WOR-463): the line above only protects the
+# parent pytest Python process. Any test that subprocess-spawns ``worthless``
+# (e2e tests, install.sh tests) loads ``keyring`` fresh in its child process
+# and ignores the parent's ``set_keyring`` call. Pre-WOR-463 this leaked
+# real ``fernet-key-*`` entries into the user's macOS keychain on every run
+# (128 orphans found in one machine's dogfood history).
+#
+# ``WORTHLESS_KEYRING_BACKEND=null`` is honored by ``keystore.keyring_available``
+# itself, so children see the same gate. ``setdefault`` (not ``[..]=``) so a
+# test that genuinely wants the real backend can opt back in via
+# ``monkeypatch.delenv("WORTHLESS_KEYRING_BACKEND")``.
+os.environ.setdefault("WORTHLESS_KEYRING_BACKEND", "null")
 
 # Suppress differing_executors health check ONLY when running under mutmut.
 # Mutmut runs tests from its mutants/ directory with a different rootdir,
@@ -78,14 +92,30 @@ def home_dir(tmp_path) -> WorthlessHome:
 
 
 @pytest.fixture()
-def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
-    """Home with one enrolled key (openai)."""
+def home_with_key(home_dir: WorthlessHome, tmp_path: Path) -> WorthlessHome:
+    """Home with one enrolled key (openai), bound to a real .env file.
+
+    HF5 (worthless-gmky): the env_path must point at a real file
+    containing the OPENAI_API_KEY line so ``is_orphan()`` returns False.
+    Pre-HF5 the fixture used a fake `/tmp/.env` path; status didn't check
+    .env content so PROTECTED was reported regardless. Post-HF5 a fake
+    path correctly reads as BROKEN — fixture updated to match the
+    healthy-state contract that its callers assume.
+    """
     import asyncio
 
     key = fake_openai_key()
     sr = split_key(key.encode())
     try:
         alias = "openai-a1b2c3d4"
+
+        # Write the SAME key into the fixture .env so the enrolled shard
+        # and the .env line agree. Using a fresh fake_openai_key() here would
+        # mismatch the enrolled value — fine today since is_orphan() only
+        # checks var-name presence, but fragile if a future check ever cares.
+        # CodeRabbit PR #131.
+        env_path = tmp_path / ".env"
+        env_path.write_text(f"OPENAI_API_KEY={key}\n")
 
         repo = make_repo(home_dir)
         asyncio.run(repo.initialize())
@@ -95,7 +125,7 @@ def home_with_key(home_dir: WorthlessHome) -> WorthlessHome:
                 alias,
                 stored,
                 var_name="OPENAI_API_KEY",
-                env_path="/tmp/.env",  # noqa: S108
+                env_path=str(env_path),
             )
         )
     finally:
@@ -226,3 +256,74 @@ async def repo(tmp_db_path: str, fernet_key: bytes) -> ShardRepository:
     r = ShardRepository(tmp_db_path, fernet_key)
     await r.initialize()
     return r
+
+
+# Synthetic PID returned by the start_daemon mock below. Must be non-zero —
+# POSIX reserves PID 0 for "the calling process's process group", and
+# ``os.kill(0, ...)`` signals every process in the group. Liveness probes
+# (``os.kill(pid, 0)``) treat PID 0 as a positive ack regardless of whether
+# any worthless daemon was actually started, masking bugs. 12345 is a
+# synthetic, well-out-of-the-way value that no real long-lived process
+# is going to land on. Keep this as a constant so audit greps stay easy.
+_FAKE_DAEMON_PID = 12345
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_command_proxy(request, monkeypatch):
+    """Stop ``run_default()`` from spawning a real proxy daemon mid-test.
+
+    Tests that hit the bare ``worthless`` no-args entry point flow through
+    ``default_command.run_default()`` → ``_proxy_is_running`` → ``poll_health(8787)``
+    → ``start_daemon(..., port=8787, ...)``. Under pytest-xdist, four workers
+    racing for the same port produces non-deterministic state: one wins the
+    bind, the others see a "running" daemon belonging to a different test's
+    home, and assertions diverge. The same race also leaves orphan uvicorn
+    children if a worker fails between spawn and cleanup.
+
+    This autouse fixture neutralises the daemon path for every test by
+    default. The autouse-everywhere scope is deliberate (not a missed
+    narrowing): tests that accidentally invoke ``run_default()`` from any
+    code path are auto-protected from spawning a real daemon. The
+    measured cost is ~0.8s / 2.9% across the full suite (microseconds
+    per test); the safety net is broad and prevents the "future test
+    forgets the marker" failure mode entirely.
+
+    Tests that genuinely need a real proxy daemon must opt out with
+    ``@pytest.mark.integration`` (already a registered marker in
+    pyproject.toml) and own their own daemon teardown.
+
+    Tests that monkeypatch ``start_daemon`` / ``poll_health`` themselves
+    still work — pytest's ``monkeypatch`` stacks LIFO within a single test,
+    so the per-test override wins over this fixture's default. Verified
+    against ``tests/test_cli_default.py`` which already does this for
+    ~10 of its tests.
+
+    Mock return values are chosen to match the real shapes:
+    - ``_proxy_is_running`` returns ``(running=False, pid=None, port=0)``
+      — same tuple production code returns when the daemon is absent.
+    - ``start_daemon`` returns ``_FAKE_DAEMON_PID`` (12345). PID 0 would
+      hijack ``os.kill`` liveness probes (POSIX-reserved); a non-zero
+      synthetic PID lets such probes fail honestly.
+    - ``poll_health`` returns ``True`` so callers that only check
+      "responsive?" don't loop.
+
+    Closes worthless-ba1c.
+    """
+    if request.node.get_closest_marker("integration"):
+        return
+
+    monkeypatch.setattr(
+        default_command,
+        "_proxy_is_running",
+        lambda home: (False, None, 0),
+    )
+    monkeypatch.setattr(
+        default_command,
+        "start_daemon",
+        lambda *_a, **_kw: _FAKE_DAEMON_PID,
+    )
+    monkeypatch.setattr(
+        default_command,
+        "poll_health",
+        lambda port, timeout=10.0: True,
+    )

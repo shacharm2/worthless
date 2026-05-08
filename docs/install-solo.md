@@ -1,3 +1,8 @@
+---
+title: "Install — Solo Developer"
+description: "Install Worthless on your laptop in under 90 seconds."
+---
+
 # Install — Solo Developer
 
 ```bash

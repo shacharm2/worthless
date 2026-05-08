@@ -1,8 +1,25 @@
 #!/bin/sh
+# Composes uvicorn bind + proxy-header trust list from WORTHLESS_DEPLOY_MODE.
 set -e
 
 HOME_DIR="${WORTHLESS_HOME:-/data}"
 FERNET_PATH="${WORTHLESS_FERNET_KEY_PATH:-$HOME_DIR/fernet.key}"
+MODE="${WORTHLESS_DEPLOY_MODE:-loopback}"
+PORT="${PORT:-8787}"
+
+# Refuse unsafe combinations before Python startup. Exit 78 = sysexits EX_CONFIG.
+if [ "$MODE" = "public" ]; then
+  if [ "${WORTHLESS_ALLOW_INSECURE:-}" = "true" ] || [ "${WORTHLESS_ALLOW_INSECURE:-}" = "1" ]; then
+    echo "FATAL: WORTHLESS_ALLOW_INSECURE is forbidden when WORTHLESS_DEPLOY_MODE=public." >&2
+    echo "       Set WORTHLESS_TRUSTED_PROXIES=<edge-CIDR> instead." >&2
+    exit 78
+  fi
+  if [ -z "${WORTHLESS_TRUSTED_PROXIES:-}" ]; then
+    echo "FATAL: WORTHLESS_DEPLOY_MODE=public requires WORTHLESS_TRUSTED_PROXIES" >&2
+    echo "       (CIDR of the edge layer, e.g. Render/Fly internal CIDR)." >&2
+    exit 78
+  fi
+fi
 
 # Migrate fernet.key to a separate volume when WORTHLESS_FERNET_KEY_PATH is
 # explicitly set (e.g., docker-compose with a secrets volume).  Without the
@@ -24,5 +41,34 @@ fi
 # Pass Fernet key via file descriptor (not env var — env is visible in /proc)
 exec 3< "$FERNET_PATH"
 export WORTHLESS_FERNET_FD=3
+
+case "$MODE" in
+  public)
+    HOST="0.0.0.0"
+    set -- uvicorn worthless.proxy.app:create_app --factory \
+      --host "$HOST" --port "$PORT" \
+      --proxy-headers --forwarded-allow-ips="$WORTHLESS_TRUSTED_PROXIES"
+    ;;
+  lan)
+    HOST="${WORTHLESS_HOST:-0.0.0.0}"
+    if [ -n "${WORTHLESS_TRUSTED_PROXIES:-}" ]; then
+      set -- uvicorn worthless.proxy.app:create_app --factory \
+        --host "$HOST" --port "$PORT" \
+        --proxy-headers --forwarded-allow-ips="$WORTHLESS_TRUSTED_PROXIES"
+    else
+      set -- uvicorn worthless.proxy.app:create_app --factory \
+        --host "$HOST" --port "$PORT"
+    fi
+    ;;
+  loopback)
+    HOST="${WORTHLESS_HOST:-127.0.0.1}"
+    set -- uvicorn worthless.proxy.app:create_app --factory \
+      --host "$HOST" --port "$PORT"
+    ;;
+  *)
+    echo "FATAL: unknown WORTHLESS_DEPLOY_MODE=$MODE (expected loopback|lan|public)" >&2
+    exit 78
+    ;;
+esac
 
 exec "$@"

@@ -1,3 +1,8 @@
+---
+title: "Wire Protocol"
+description: "Worthless proxy ↔ reconstruction service wire protocol."
+---
+
 # Worthless Wire Protocol
 
 > [!NOTE]

@@ -29,9 +29,20 @@ INSTALL_MATRIX = [
     "ubuntu-bare",  # 24.04, no python, no uv
     "ubuntu-2204-bare",  # 22.04 LTS — still the prod majority
     "ubuntu-with-uv",  # 24.04 + pre-installed uv (reuse path)
+    "ubuntu-nonroot",  # 24.04 + non-root user, no sudo (WOR-318)
+    "ubuntu-idempotency",  # 24.04, runs install.sh twice → expects no-op (WOR-317)
     "debian-12-bare",  # second glibc distro
     "alpine-bare",  # musl — uv fetches musl-compatible Python via PBS
 ]
+
+# Per-fixture success marker. verify_install.sh (used by every fixture
+# that exercises the fresh-box install AC) prints "OK: install verified".
+# verify_idempotency.sh (WOR-317) prints "OK: install.sh is idempotent"
+# instead — it's a different invariant, different message.
+SUCCESS_MARKER = {
+    "ubuntu-idempotency": "OK: install.sh is idempotent",
+}
+DEFAULT_SUCCESS_MARKER = "OK: install verified"
 
 # Lock-lifecycle matrix — (distro_label, dockerfile_name). The compose file
 # selects the dockerfile via the LOCK_E2E_DOCKERFILE env var.
@@ -42,6 +53,29 @@ LOCK_E2E_MATRIX = [
 
 BUILD_PLATFORM = "linux/amd64"
 
+# Per-step subprocess budgets (seconds). Comments capture WHY each value:
+#
+# BUILD_S — cold-cache CI runner: pulls pinned base-image digests (~50MB,
+#   no shared layer reuse across digests), runs apt-get + install.sh which
+#   downloads uv + worthless from PyPI. 240s was tight; bumped on PR #127.
+# RUN_S — runs install.sh inside the container; bounded by uv tool install
+#   + smoke test on a fresh-box.
+# RMI_S — local-only image deletion.
+# COMPOSE_UP_S — pulls 2 base images + builds 2 services + runs lock_e2e.py.
+# COMPOSE_LOGS_S / COMPOSE_DOWN_S — local docker compose teardown.
+# OUTER_BUFFER_S — buffer above sum-of-subprocess-budgets so pytest-timeout
+#   doesn't preempt a legitimately slow stage before it can report.
+BUILD_S = 480
+RUN_S = 180
+RMI_S = 30
+COMPOSE_UP_S = 600
+COMPOSE_LOGS_S = 30
+COMPOSE_DOWN_S = 60
+OUTER_BUFFER_S = 30
+
+INSTALL_TIMEOUT = BUILD_S + RUN_S + RMI_S + OUTER_BUFFER_S
+LOCK_E2E_TIMEOUT = COMPOSE_UP_S + COMPOSE_LOGS_S + COMPOSE_DOWN_S + OUTER_BUFFER_S
+
 
 pytestmark = [
     pytest.mark.docker,
@@ -49,10 +83,7 @@ pytestmark = [
 ]
 
 
-# Test timeout must exceed the sum of subprocess budgets below
-# (build=240 + run=180 + rmi=30) so pytest-timeout doesn't preempt
-# a legitimately slow build before it gets a chance to report.
-@pytest.mark.timeout(480)
+@pytest.mark.timeout(INSTALL_TIMEOUT)
 @pytest.mark.parametrize("fixture", INSTALL_MATRIX)
 def test_install_succeeds_on_distro(fixture: str) -> None:
     """Build image, run install.sh + verify_install.sh, assert both succeed."""
@@ -63,6 +94,11 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
     assert dockerfile.is_file(), f"missing fixture: {dockerfile}"
 
     try:
+        # DOCKER_BUILDKIT=1 forces the BuildKit frontend so RUN --mount=type=cache
+        # directives in the fixtures (WOR-320) actually cache uv downloads
+        # between matrix runs. Modern docker defaults to BuildKit, but older
+        # CI runners and some daemon configs still fall back to the legacy
+        # builder, which silently strips --mount.
         build = subprocess.run(  # noqa: S603
             [  # noqa: S607
                 "docker",
@@ -77,8 +113,9 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
             ],
             capture_output=True,
             text=True,
-            timeout=240,
+            timeout=BUILD_S,
             check=False,
+            env={**os.environ, "DOCKER_BUILDKIT": "1"},
         )
         assert build.returncode == 0, (
             f"docker build failed for {fixture}:\nstdout:\n{build.stdout}\nstderr:\n{build.stderr}"
@@ -88,16 +125,18 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
             ["docker", "run", "--rm", "--platform", BUILD_PLATFORM, image_tag],  # noqa: S607
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=RUN_S,
             check=False,
         )
         assert run.returncode == 0, (
             f"install + verify failed inside {fixture} container:\n"
             f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
         )
-        # verify_install.sh prints 'OK: install verified at ...' on success.
-        assert "OK: install verified" in run.stdout, (
-            f"verify_install.sh did not complete successfully in {fixture}:\n"
+        # Each fixture's verify script emits an "OK: …" marker on success.
+        # See SUCCESS_MARKER for the per-fixture overrides.
+        marker = SUCCESS_MARKER.get(fixture, DEFAULT_SUCCESS_MARKER)
+        assert marker in run.stdout, (
+            f"verify script did not emit '{marker}' in {fixture}:\n"
             f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}"
         )
     finally:
@@ -105,15 +144,12 @@ def test_install_succeeds_on_distro(fixture: str) -> None:
             ["docker", "rmi", "-f", image_tag],  # noqa: S607
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=RMI_S,
             check=False,
         )
 
 
-# 480s test timeout covers: compose up (360) + logs (30) + down (60)
-# with buffer. Otherwise the teardown and log-capture `finally` blocks
-# the test was designed around could be preempted before they run.
-@pytest.mark.timeout(480)
+@pytest.mark.timeout(LOCK_E2E_TIMEOUT)
 @pytest.mark.parametrize(("distro", "dockerfile_name"), LOCK_E2E_MATRIX)
 def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
     """Post-install: `worthless lock` + proxied request → real key at upstream.
@@ -139,10 +175,14 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
     # Minimal env — avoid leaking arbitrary WORTHLESS_* / provider keys from
     # the host into the compose build context and service env. Compose needs
     # HOME to locate its context cache; fall back to the runner's real HOME.
+    # DOCKER_BUILDKIT=1 + COMPOSE_DOCKER_CLI_BUILD=1 ensure the lock-e2e
+    # Dockerfiles' cache mounts (WOR-320) are honored on older daemons.
     env = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": os.environ["HOME"],
         "LOCK_E2E_DOCKERFILE": dockerfile_name,
+        "DOCKER_BUILDKIT": "1",
+        "COMPOSE_DOCKER_CLI_BUILD": "1",
     }
 
     up_stdout, up_stderr, up_rc = "", "", None
@@ -160,7 +200,7 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
                 ],
                 capture_output=True,
                 text=True,
-                timeout=360,
+                timeout=COMPOSE_UP_S,
                 check=False,
                 env=env,
             )
@@ -172,7 +212,7 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
                 [*compose_base, "logs", "--no-color"],  # noqa: S607
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=COMPOSE_LOGS_S,
                 check=False,
                 env=env,
             )
@@ -182,7 +222,7 @@ def test_lock_lifecycle_end_to_end(distro: str, dockerfile_name: str) -> None:
             [*compose_base, "down", "-v", "--remove-orphans"],  # noqa: S607
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=COMPOSE_DOWN_S,
             check=False,
             env=env,
         )

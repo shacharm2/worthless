@@ -1,3 +1,8 @@
+---
+title: "Install — Docker"
+description: "Pull a pre-built, signed multi-arch image from GHCR."
+---
+
 # Install -- Docker (from GHCR)
 
 Pull a pre-built, multi-arch image from the GitHub Container Registry. No clone, no build. Every image is vulnerability-scanned with [Grype](https://github.com/anchore/grype) on both architectures and signed with cosign before publish.

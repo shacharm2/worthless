@@ -122,7 +122,12 @@ class TestHelpText:
             assert cmd in output, f"Command {cmd!r} missing from --help output"
 
     def test_no_args_runs_default_command(self) -> None:
-        """worthless with no args runs the default pipeline (not help)."""
+        """worthless with no args runs the default pipeline (not help).
+
+        No xdist_group marker: the autouse `_isolate_default_command_proxy`
+        fixture in conftest.py stubs the daemon path for every test, so two
+        workers can run this in parallel without racing port 8787.
+        """
         result = runner.invoke(app, [])
         assert result.exit_code == 0
         output = result.stdout + result.stderr
@@ -138,12 +143,22 @@ class TestHelpText:
 class TestLockUx:
     """User-facing messages from the lock command."""
 
-    def test_lock_success_message(self, home_dir: WorthlessHome, env_with_openai: Path) -> None:
-        """After locking, user sees ``[OK] Protected N key(s).``
+    def test_lock_success_message_tells_the_story(
+        self, home_dir: WorthlessHome, env_with_openai: Path
+    ) -> None:
+        """Success message names the .env file + says what changed (UX P1#3).
 
-        Wording was tightened in the 2026-05-08 trust-fix to lead with
-        ``[OK]`` text prefix (carrier for monochrome terminals + screen
-        readers + CI log scrapers, per UX-researcher).
+        Combines two intents:
+
+        - Main's storytelling shape: name what changed and which .env file
+          is now safe ("split between this machine and your system
+          keystore — {env_filename} no longer contains a usable secret.").
+        - Trust-fix accessibility (2026-05-08 verification gauntlet):
+          lead with the literal ``[OK]`` text prefix as the carrier for
+          monochrome terminals + screen readers + CI log scrapers
+          (color/glyph reinforces but is never the carrier).
+
+        Both must hold — no regression on either side.
         """
         result = runner.invoke(
             app,
@@ -152,10 +167,91 @@ class TestLockUx:
         )
         assert result.exit_code == 0
         combined = result.stdout + result.stderr
-        # Trust-fix wording: "[OK] Protected N key(s)." with text prefix
-        # as the accessible carrier (color/glyph reinforce only).
-        assert "[OK]" in combined
-        assert "Protected 1 key(s)" in combined
+        # Trust-fix accessibility: literal ``[OK]`` carrier present.
+        assert "[OK]" in combined, f"success message missing [OK] text prefix:\n{combined}"
+        # Main's storytelling: must say what changed.
+        assert "split between" in combined, (
+            f"success message missing storytelling shape:\n{combined}"
+        )
+        # Must name the actual .env file so user knows which file is now safe.
+        assert env_with_openai.name in combined, (
+            f"success message did not reference {env_with_openai.name}:\n{combined}"
+        )
+        # Count is still surfaced.
+        assert "1 key(s)" in combined, f"count missing from success:\n{combined}"
+
+    def test_lock_protect_message_names_each_key(
+        self, home_dir: WorthlessHome, env_with_openai: Path
+    ) -> None:
+        """During lock, the 'Protecting ...' line names the env vars (UX P0#2).
+
+        Prior "  Protecting {N} key(s)..." was opaque. Users couldn't tell
+        which secrets were being touched. New wording lists var names:
+        "  Protecting OPENAI_API_KEY...".
+        """
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_with_openai)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+        combined = result.stdout + result.stderr
+        assert "OPENAI_API_KEY" in combined, (
+            f"protect message did not name the var being touched:\n{combined}"
+        )
+
+    def test_lock_macos_pre_announces_keychain_dialog(
+        self,
+        home_dir: WorthlessHome,
+        env_with_openai: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """On macOS, lock pre-announces the Keychain dialog (UX P0#1).
+
+        First-time users on macOS see a system dialog labelled 'python3.10'
+        mid-`lock`, panic, and click Deny. The pre-announce sets expectation
+        and tells them to click 'Always Allow'. Mock sys.platform so this
+        test runs on every CI platform.
+        """
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_with_openai)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+        combined = result.stdout + result.stderr
+        # The hint must mention Keychain AND Always Allow so the user knows
+        # exactly what the dialog will look like and what to click.
+        assert "Keychain" in combined, f"macOS pre-announce missing 'Keychain':\n{combined}"
+        assert "Always Allow" in combined, f"macOS pre-announce missing 'Always Allow':\n{combined}"
+
+    def test_lock_non_macos_does_not_pre_announce_keychain(
+        self,
+        home_dir: WorthlessHome,
+        env_with_openai: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """On non-macOS platforms, no Keychain pre-announce — wrong UX cue.
+
+        Linux Secret Service / Windows DPAPI prompt differently (or not at
+        all). Saying 'click Always Allow' on those platforms confuses users.
+        """
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_with_openai)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0
+        combined = result.stdout + result.stderr
+        assert "Always Allow" not in combined, (
+            f"non-macOS run leaked the macOS-only Keychain hint:\n{combined}"
+        )
 
     def test_lock_no_keys_message(self, home_dir: WorthlessHome, env_clean: Path) -> None:
         """When .env has no API keys, user sees 'No unprotected API keys found.'"""
@@ -191,7 +287,12 @@ class TestUnlockUx:
     """User-facing messages from the unlock command."""
 
     def test_unlock_single_alias_message(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
-        """After unlocking a specific alias, user sees 'Unlocked {alias}.'"""
+        """After unlocking a specific alias, user sees a per-key 'Restored …' line.
+
+        HF4 (worthless-5u6y): replaces the old 'Unlocked {alias}.' message
+        with a precise per-key audit line that names the env var, provider,
+        alias, and target path. Auditable on a glance; loud on a typo'd --env.
+        """
         env = tmp_path / ".env"
         env.write_text(f"OPENAI_API_KEY={_OPENAI_KEY}\n")
         home_env = {"WORTHLESS_HOME": str(home_dir.base_dir)}
@@ -215,15 +316,22 @@ class TestUnlockUx:
         )
         assert result.exit_code == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
         combined = result.stdout + result.stderr
-        assert f"Unlocked {alias}" in combined
+        assert "Restored" in combined and alias in combined, (
+            f"expected per-key 'Restored ... alias {alias} ...' line, got:\n{combined}"
+        )
 
     def test_unlock_all_keys_message(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
-        """After unlocking all keys, user sees 'N key(s) restored.'"""
+        """After unlocking 2+ keys, user sees 'N key(s) restored.' summary
+        in addition to per-key Restored lines.
+
+        For N==1 the per-key line already names the var/provider/path; the
+        summary would be redundant and is intentionally skipped.
+        """
         env = tmp_path / ".env"
-        env.write_text(f"OPENAI_API_KEY={_OPENAI_KEY}\n")
+        env.write_text(f"OPENAI_API_KEY={_OPENAI_KEY}\nANTHROPIC_API_KEY={_ANTHROPIC_KEY}\n")
         home_env = {"WORTHLESS_HOME": str(home_dir.base_dir)}
 
-        # Lock first (creates format-preserving enrollment)
+        # Lock first (creates format-preserving enrollments for both keys)
         lock_result = runner.invoke(app, ["lock", "--env", str(env)], env=home_env)
         assert lock_result.exit_code == 0, (
             f"lock failed: {lock_result.stdout}\n{lock_result.stderr}"
@@ -236,7 +344,7 @@ class TestUnlockUx:
         )
         assert result.exit_code == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
         combined = result.stdout + result.stderr
-        assert "key(s) restored" in combined
+        assert "2 key(s) restored" in combined, combined
 
     def test_unlock_no_keys_message(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """When no keys enrolled, user sees 'No enrolled keys found.'"""
@@ -354,9 +462,18 @@ class TestEnrollUx:
 class TestScanUx:
     """User-facing messages and exit codes from the scan command."""
 
-    def test_scan_no_keys_message(self, env_clean: Path) -> None:
-        """'No API keys found.' when scanning a clean .env."""
-        result = runner.invoke(app, ["scan", str(env_clean)])
+    def test_scan_no_keys_message(self, env_clean: Path, tmp_path: Path) -> None:
+        """'No API keys found.' when scanning a clean .env.
+
+        Isolated WORTHLESS_HOME so dev-box orphans (HF5 surfaces orphan DB
+        rows in scan output, which would otherwise contribute to the
+        no-findings early-exit being skipped).
+        """
+        result = runner.invoke(
+            app,
+            ["scan", str(env_clean)],
+            env={"WORTHLESS_HOME": str(tmp_path / ".worthless")},
+        )
         assert result.exit_code == 0
         combined = result.stdout + result.stderr
         assert "No API keys found" in combined
@@ -377,13 +494,16 @@ class TestScanUx:
         assert result.exit_code == 2
 
     def test_scan_format_json_valid(self, env_with_openai: Path) -> None:
-        """--format json returns valid JSON array."""
+        """--format json returns valid JSON object with schema_version+findings+orphans (HF5)."""
         result = runner.invoke(app, ["scan", "--format", "json", str(env_with_openai)])
         assert result.exit_code == 1
-        findings = json.loads(result.stdout)
-        assert isinstance(findings, list)
-        assert len(findings) >= 1
-        assert "provider" in findings[0]
+        data = json.loads(result.stdout)
+        assert isinstance(data, dict)
+        assert data["schema_version"] >= 2
+        assert isinstance(data["findings"], list)
+        assert len(data["findings"]) >= 1
+        assert "provider" in data["findings"][0]
+        assert "orphans" in data and isinstance(data["orphans"], list)
 
     def test_scan_format_sarif_valid(self, env_with_openai: Path) -> None:
         """--format sarif returns valid SARIF v2.1.0."""
@@ -537,9 +657,12 @@ class TestJsonMode:
         assert data["keys"][0]["alias"] == "openai-a1b2c3d4"
         assert data["keys"][0]["provider"] == "openai"
 
-    def test_json_scan_emits_array(self, env_with_openai: Path) -> None:
-        """--json scan emits a JSON array of findings."""
+    def test_json_scan_emits_object(self, env_with_openai: Path) -> None:
+        """--json scan emits a JSON object with findings + orphans (HF5)."""
         result = runner.invoke(app, ["scan", "--json", str(env_with_openai)])
         assert result.exit_code == 1
-        findings = json.loads(result.stdout)
-        assert isinstance(findings, list)
+        data = json.loads(result.stdout)
+        assert isinstance(data, dict)
+        assert "findings" in data and isinstance(data["findings"], list)
+        assert "orphans" in data and isinstance(data["orphans"], list)
+        assert data["schema_version"] >= 2

@@ -35,22 +35,15 @@ from worthless.cli.process import (
     prepare_proxy_env,
     proxy_cmd,
     read_pid,
+    resolve_port,
     spawn_proxy,
     write_pid,
 )
 
-
-def _resolve_port(port_arg: int | None) -> int:
-    """Resolve port from argument, env var, or default.
-
-    Priority: explicit arg > WORTHLESS_PORT env > 8787 default.
-    """
-    if port_arg is not None:
-        return port_arg
-    env_port = os.environ.get("WORTHLESS_PORT")
-    if env_port:
-        return int(env_port)
-    return 8787
+# Backward-compatible alias — ``up`` historically owned this name. Kept so
+# existing tests (tests/test_cli_up.py) keep importing from here while the
+# canonical home is now ``worthless.cli.process.resolve_port``.
+_resolve_port = resolve_port
 
 
 def start_daemon(

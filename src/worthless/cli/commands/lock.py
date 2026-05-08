@@ -14,8 +14,7 @@ from pathlib import Path
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
-from worthless.cli.commands.up import _resolve_port
-from worthless.cli.commands.wrap import _PROVIDER_ENV_MAP
+from worthless.cli.process import resolve_port
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import (
     build_enrolled_locations,
@@ -30,7 +29,8 @@ from worthless.cli.errors import (
     error_boundary,
     sanitize_exception,
 )
-from worthless.cli.key_patterns import detect_prefix
+from worthless.cli.key_patterns import CANONICAL_KEY_VAR_RE, detect_prefix
+from worthless.cli.providers import lookup_by_name, lookup_by_url
 from worthless.crypto.splitter import (
     _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
     derive_shard_a_fp,
@@ -45,7 +45,24 @@ from worthless.storage.repository import ShardRepository, StoredShard
 
 logger = logging.getLogger(__name__)
 
-_SUPPORTED_PROVIDERS = frozenset(_PROVIDER_ENV_MAP.keys())
+# Map of supported wire protocols → canonical fallback env var name.
+# Used only when the user's API-key var doesn't follow the ``<NAME>_API_KEY``
+# convention. After 8rqs, ``wrap`` no longer owns this — lock has the only
+# remaining consumer (plus ``unlock`` which imports it), so the map lives here.
+#
+# Keys here are WIRE PROTOCOLS (``openai``, ``anthropic``), NOT registry
+# provider names. Post-HF1, ``detect_provider`` can return registry names
+# like ``openrouter`` / ``groq`` / ``together`` that all speak the
+# ``openai`` wire protocol. ``_pass1_db_writes`` translates the detected
+# registry name to its protocol via ``lookup_by_name`` before checking
+# this map. ``worthless-9t74`` will promote that translation into a
+# structural ``provider name`` vs ``protocol`` separation post-merge.
+_PROVIDER_ENV_MAP: dict[str, str] = {
+    "openai": "OPENAI_BASE_URL",
+    "anthropic": "ANTHROPIC_BASE_URL",
+}
+
+_SUPPORTED_PROTOCOLS = frozenset(_PROVIDER_ENV_MAP.keys())
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
@@ -57,7 +74,50 @@ def _make_alias(provider: str, api_key: str) -> str:
 
 def _proxy_base_url(alias: str) -> str:
     """Build the proxy BASE_URL for a given alias."""
-    return f"http://127.0.0.1:{_resolve_port(None)}/{alias}/v1"
+    return f"http://127.0.0.1:{resolve_port(None)}/{alias}/v1"
+
+
+def _derive_base_url_var(var_name: str, provider: str) -> str:
+    """Derive the corresponding ``*_BASE_URL`` variable name for a key var.
+
+    Convention: ``OPENROUTER_API_KEY`` → ``OPENROUTER_BASE_URL``. Falls
+    back to the canonical ``_PROVIDER_ENV_MAP`` mapping when the key var
+    name doesn't end in ``_API_KEY``.
+    """
+    if var_name.endswith("_API_KEY"):
+        return var_name[: -len("_API_KEY")] + "_BASE_URL"
+    return _PROVIDER_ENV_MAP.get(provider, "OPENAI_BASE_URL")
+
+
+def _resolve_upstream_base_url(
+    base_url_var: str, env_values: dict[str, str | None], provider: str
+) -> str:
+    """Pick the upstream URL for the DB row.
+
+    Prefers the user's explicit ``*_BASE_URL`` value from ``.env`` when set
+    AND when that URL is in the provider registry. Otherwise falls back to
+    the bundled registry default for the provider.
+
+    Refuses unregistered user URLs (M3 / Blocker #1): an attacker who can
+    write to .env should not be able to redirect the proxy at an arbitrary
+    upstream. worthless-rzi1 (P1 follow-up) adds per-request re-validation
+    to close the post-lock-tamper variant; worthless-8fbg adds RFC1918 /
+    loopback hardening. See seam 2 in worthless-8rqs design notes.
+    """
+    user_value = env_values.get(base_url_var)
+    if user_value:
+        if lookup_by_url(user_value) is None:
+            raise WorthlessError(
+                ErrorCode.INVALID_INPUT,
+                f"unknown upstream URL {user_value!r} from {base_url_var}. "
+                "Register it first: 'worthless providers register --name <n> "
+                "--url <url> --protocol openai|anthropic'.",
+            )
+        return user_value
+    entry = lookup_by_name(provider)
+    if entry is None:  # pragma: no cover — provider is validated above
+        return "https://api.openai.com/v1"
+    return entry.url
 
 
 @dataclass(eq=False)
@@ -75,6 +135,11 @@ class _PlannedUpdate:
     prefix: str
     charset: str
     was_fresh_enroll: bool
+    # 8rqs Phase 7: per-enrollment base_url plumbing. ``base_url_var`` is the
+    # .env variable name to write the local proxy URL to (e.g.
+    # ``OPENROUTER_BASE_URL`` for ``OPENROUTER_API_KEY``); preserves the
+    # user's naming convention rather than forcing OPENAI_BASE_URL.
+    base_url_var: str = ""
 
     def zero(self) -> None:
         for buf in (self.shard_a, self.shard_b, self.commitment, self.nonce):
@@ -124,18 +189,65 @@ async def _pass1_db_writes(
     env_str: str,
     token_budget_daily: int | None,
     planned_out: list[_PlannedUpdate],
+    env_values: dict[str, str | None],
 ) -> None:
     """Do every DB write; append each ``_PlannedUpdate`` to *planned_out*.
 
     MUTATES *planned_out* so partial-failure paths still expose the
     bytearrays the caller's ``finally`` needs to zero.
+
+    *env_values* is the parsed ``.env`` (from ``dotenv_values``) so we can
+    read the user's existing ``*_BASE_URL`` value at lock time and store
+    that as the upstream URL in the DB.
     """
-    for var_name, value, provider in candidates:
-        if provider not in _SUPPORTED_PROVIDERS:
+    for var_name, value, detected_provider in candidates:
+        # Translate registry-name → wire-protocol. Post-HF1,
+        # ``detect_provider`` returns registry names like ``openrouter``
+        # for OpenAI-protocol-compatible services. Lock's downstream uses
+        # (alias building, _PROVIDER_ENV_MAP fallback, _SUPPORTED_PROTOCOLS
+        # gate, DB ``provider`` column for proxy adapter dispatch) all
+        # need the WIRE PROTOCOL, not the registry name.
+        #
+        # Pre-HF1, detect_provider only returned ``openai``/``anthropic``,
+        # so name == protocol and this translation was a no-op. Post-HF1
+        # we MUST resolve via the registry or OpenRouter keys would be
+        # silently skipped, leaving the plaintext key in .env (the exact
+        # leak 8rqs is meant to close). worthless-9t74 will promote this
+        # into a structural separation of name/protocol post-merge.
+        registry_entry = lookup_by_name(detected_provider)
+        protocol = registry_entry.protocol if registry_entry else detected_provider
+
+        if protocol not in _SUPPORTED_PROTOCOLS:
             get_console().print_warning(
-                f"Skipping {var_name}: provider {provider!r} not yet supported"
+                f"Skipping {var_name}: wire protocol {protocol!r} not yet "
+                f"supported (detected provider: {detected_provider!r})"
             )
             continue
+
+        # Use the wire protocol for everything downstream so adapter
+        # dispatch in the proxy picks the right format, and so the alias
+        # namespace stays stable across pre- and post-HF1 enrollments.
+        provider = protocol
+
+        base_url_var = _derive_base_url_var(var_name, provider)
+
+        # M4 (Blocker #2): warn on non-canonical var names. Apps that read
+        # MY_OPENAI_KEY directly (instead of OPENAI_API_KEY) and construct
+        # the SDK client without base_url= will fall through to the real
+        # provider — bypassing the proxy and leaking shard-A on the wire.
+        # Soft warning per product-manager review; worthless-v5sy adds
+        # --strict for CI/team policy. See seam 5 in worthless-8rqs notes.
+        if not CANONICAL_KEY_VAR_RE.match(var_name):
+            get_console().print_warning(
+                f"env var {var_name!r} doesn't match the canonical "
+                f"'<PROVIDER>_API_KEY' pattern. lock will set "
+                f"{base_url_var}, but if your app reads {var_name} "
+                f"without auto-detecting {base_url_var}, requests will "
+                f"bypass the proxy and send shard-A upstream. Rename to "
+                f"follow <PROVIDER>_API_KEY to silence this warning."
+            )
+
+        upstream_base_url = _resolve_upstream_base_url(base_url_var, env_values, provider)
 
         alias = _make_alias(provider, value)
         db_shard = await repo.fetch_encrypted(alias)
@@ -183,6 +295,7 @@ async def _pass1_db_writes(
                         prefix=db_shard.prefix,
                         charset=db_shard.charset,
                         was_fresh_enroll=False,
+                        base_url_var=base_url_var,
                     )
                 )
             finally:
@@ -211,6 +324,7 @@ async def _pass1_db_writes(
                 token_budget_daily=token_budget_daily,
                 prefix=sr.prefix,
                 charset=sr.charset,
+                base_url=upstream_base_url,
             )
             planned_out.append(
                 _PlannedUpdate(
@@ -225,6 +339,7 @@ async def _pass1_db_writes(
                     prefix=sr.prefix,
                     charset=sr.charset,
                     was_fresh_enroll=True,
+                    base_url_var=base_url_var,
                 )
             )
         finally:
@@ -237,19 +352,27 @@ def _batch_rewrite(
     keys_only: bool,
     existing_env_keys: set[str],
 ) -> None:
-    """One ``safe_rewrite`` call for every planned update + BASE_URL additions."""
+    """One ``safe_rewrite`` call for every planned update + BASE_URL changes."""
     updates: dict[str, str] = {p.var_name: p.shard_a.decode("utf-8") for p in planned}
     additions: dict[str, str] = {}
     if not keys_only:
         for p in planned:
-            base_url_var = _PROVIDER_ENV_MAP.get(p.provider)
-            if (
-                base_url_var
-                and base_url_var not in updates
-                and base_url_var not in existing_env_keys
-                and base_url_var not in additions
+            local_proxy = _proxy_base_url(p.alias)
+            if p.base_url_var in existing_env_keys:
+                # User already has e.g. OPENROUTER_BASE_URL=<upstream>;
+                # rewrite the value to the local proxy URL (the upstream
+                # value was already captured into the DB at pass-1 time).
+                updates[p.base_url_var] = local_proxy
+            elif (
+                p.base_url_var and p.base_url_var not in updates and p.base_url_var not in additions
             ):
-                additions[base_url_var] = _proxy_base_url(p.alias)
+                # Fresh: lock auto-creates the BASE_URL var with a one-line
+                # stderr notice so the user knows something was added.
+                additions[p.base_url_var] = local_proxy
+                sys.stderr.write(
+                    f"worthless: added {p.base_url_var}={local_proxy} to {env_path} (was missing)\n"
+                )
+                sys.stderr.flush()
 
     rewrite_env_keys(
         env_path,
@@ -310,7 +433,7 @@ def _apply_openclaw(
     # openclaw.json's baseUrl matches a non-default --port. Without this,
     # users on non-default ports got a wrong baseUrl in openclaw.json
     # while .env's BASE_URL was correct (split-brain proxy URL).
-    proxy_base_url = f"http://127.0.0.1:{_resolve_port(None)}"
+    proxy_base_url = f"http://127.0.0.1:{resolve_port(None)}"
     try:
         result = _openclaw_integration.apply_lock(
             planned_updates=triples, proxy_base_url=proxy_base_url
@@ -462,6 +585,8 @@ def _lock_keys(
         console.print_hint(f"Scanning {env_path} for API keys...")
 
     async def _lock_async() -> tuple[int, bool]:
+        from dotenv import dotenv_values  # noqa: PLC0415 — local import keeps test surface tight
+
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         await repo.initialize()
 
@@ -474,17 +599,29 @@ def _lock_keys(
             console.print_warning("No unprotected API keys found.")
             return 0, False
 
+        # 8rqs Phase 7: snapshot the full .env so _pass1 can read existing
+        # *_BASE_URL values and pull them into the DB row.
+        env_values = dict(dotenv_values(env_path))
+
         candidates = [
             (var_name, value, provider_override or detected_provider)
             for var_name, value, detected_provider in scanned
         ]
-        existing_env_keys = {var_name for var_name, _, _ in scanned}
+        existing_env_keys = set(env_values.keys())
 
         planned: list[_PlannedUpdate] = []
         try:
             if not quiet:
-                console.print_hint(f"  Protecting {len(candidates)} key(s)...")
-            await _pass1_db_writes(repo, candidates, env_str, token_budget_daily, planned)
+                # HF2 UX: name the keys so the user knows exactly which env
+                # vars are being touched — prior "Protecting N key(s)..."
+                # was opaque about which secrets just changed.
+                key_names = ", ".join(var_name for var_name, _, _ in candidates)
+                console.print_hint(f"  Protecting {key_names}...")
+            # 8rqs Phase 7: env_values flows through so _pass1_db_writes can
+            # read each key's matching *_BASE_URL from .env at lock time.
+            await _pass1_db_writes(
+                repo, candidates, env_str, token_budget_daily, planned, env_values
+            )
             if not planned:
                 return 0, False
             _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
@@ -518,7 +655,18 @@ def _lock_keys(
 
     if not quiet:
         if count:
-            console.print_success(f"[OK] Protected {count} key(s).")
+            # Storytelling shape (UX P1): tell the user keys are split
+            # between this machine and the OS keystore, name the .env so
+            # they know which file is now safe.
+            # Trust-fix accessibility (2026-05-08 verification gauntlet):
+            # lead with literal ``[OK]`` text prefix as the carrier for
+            # monochrome terminals + screen readers + CI log scrapers
+            # (color/glyph reinforce but is never the carrier).
+            console.print_success(
+                f"[OK] Done. {count} key(s) split between this machine and "
+                f"your system keystore — {env_path.name} no longer contains "
+                f"a usable secret."
+            )
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
             )
@@ -576,6 +724,10 @@ def _enroll_single(
             nonce=sr.nonce,
             provider=provider,
         )
+        # 8rqs: enroll falls back to the registry default URL — _enroll_single
+        # is the no-.env path so there's no user var to read.
+        registry_default = lookup_by_name(provider)
+        base_url = registry_default.url if registry_default else None
         await repo.store_enrolled(
             alias,
             stored,
@@ -583,6 +735,7 @@ def _enroll_single(
             env_path=None,
             prefix=sr.prefix,
             charset=sr.charset,
+            base_url=base_url,
         )
 
     try:
@@ -619,6 +772,17 @@ def register_lock_commands(app: typer.Typer) -> None:
         ),
     ) -> None:
         """Protect API keys in a .env file."""
+        # Pre-announce the macOS Keychain dialog so users aren't surprised by a
+        # system prompt mid-command. The dialog labels itself "python3.10" not
+        # "worthless"; without this hint, first-time users panic and click Deny.
+        # Per HF2 (worthless-mnlp) the prompt fires at most once per invocation
+        # (cache + lock + probe-via-property collapse 3+ → 1).
+        if sys.platform == "darwin":
+            console = get_console()
+            console.print_hint(
+                "macOS may ask once to access your Keychain — click 'Always Allow' "
+                "so we don't ask again."
+            )
         home = get_home()
         with acquire_lock(home):
             _lock_keys(

@@ -18,7 +18,6 @@ from typer.testing import CliRunner
 from worthless.cli.app import app
 from tests.conftest import make_repo as _repo
 from worthless.cli.commands.wrap import (
-    _build_child_env,
     _cleanup_proxy,
     _list_enrolled_aliases,
     _run_child_and_wait,
@@ -28,76 +27,96 @@ from worthless.cli.process import create_liveness_pipe
 runner = CliRunner()
 
 
-class TestWrapEnvInjection:
-    """wrap injects BASE_URL env vars for enrolled providers."""
+@pytest.fixture(autouse=True)
+def _default_port_free(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default ``_port_in_use=False`` for every wrap test in this file.
 
-    def test_child_env_has_base_url(self):
-        """wrap should inject OPENAI_BASE_URL into child environment."""
-        child_env = _build_child_env(port=9999, aliases=[("my-alias", "openai")])
-        assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:9999/my-alias/v1"
+    v0.3.4 added a pre-spawn port-conflict check; without this fixture
+    every existing wrap test that doesn't explicitly mock ``_port_in_use``
+    would short-circuit on a busy port (real or simulated) instead of
+    exercising the path the test was written for. Tests that need the
+    conflict path (``TestWrapPortConflict``) override this via their own
+    ``monkeypatch.setattr`` calls — pytest's monkeypatch stacks LIFO,
+    so the override wins.
+    """
+    monkeypatch.setattr(
+        "worthless.cli.commands.wrap._port_in_use",
+        lambda *_a, **_kw: False,
+    )
 
-    def test_child_env_anthropic(self):
-        """wrap should inject ANTHROPIC_BASE_URL for anthropic provider."""
-        child_env = _build_child_env(port=8888, aliases=[("anth-alias", "anthropic")])
-        assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8888/anth-alias/v1"
 
-    def test_child_env_multiple_providers(self):
-        """wrap injects env vars for all enrolled providers."""
-        child_env = _build_child_env(
-            port=7777,
-            aliases=[("oai-alias", "openai"), ("anth-alias", "anthropic")],
+class TestWrapChildEnvContract:
+    """``wrap`` inherits parent env into the child unchanged.
+
+    Pre-8rqs, wrap synthesised ``OPENAI_BASE_URL`` / ``ANTHROPIC_BASE_URL``
+    into the child env. PR #127 (8rqs Phase 8) moved the contract to
+    ``lock``: lock writes ``*_BASE_URL`` into the user's .env preserving
+    their var names, and wrap stops touching env entirely. v0.3.5 removes
+    the dead ``_build_child_env`` helper that wrapped that empty contract;
+    these tests now assert the contract end-to-end against the real
+    ``subprocess.Popen`` ``env=`` kwarg captured during a wrap run, not
+    against the deleted helper's return value.
+    """
+
+    @staticmethod
+    def _capture_child_env(home_with_key, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+        """Run wrap with everything mocked except the child-env construction
+        path. Capture the env= kwarg passed to subprocess.Popen for the child."""
+        captured: dict = {}
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 33330
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+        mock_child = MagicMock()
+        mock_child.pid = 33331
+        mock_child.wait.return_value = 0
+        mock_child.returncode = 0
+
+        def _capture_popen(*args, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            return mock_child
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.spawn_proxy", lambda **kw: (mock_proxy, kw["port"])
         )
-        assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:7777/oai-alias/v1"
-        assert child_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:7777/anth-alias/v1"
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
+        monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
+        monkeypatch.setattr("subprocess.Popen", _capture_popen)
 
-    def test_child_env_no_session_token(self):
-        """Session token should not be in child env (dead code removed)."""
-        child_env = _build_child_env(port=9999, aliases=[("my-alias", "openai")])
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir), "WORTHLESS_PORT": "8787"},
+        )
+        assert result.exit_code == 0, result.output
+        return captured["env"]
+
+    def test_no_base_url_synthesis(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Headline 8rqs Phase 8 contract: wrap does NOT synthesise *_BASE_URL.
+        With a parent env that's clean of BASE_URL vars, the child env is too."""
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+        child_env = self._capture_child_env(home_with_key, monkeypatch)
+        assert "OPENAI_BASE_URL" not in child_env
+        assert "ANTHROPIC_BASE_URL" not in child_env
+        assert "OPENROUTER_BASE_URL" not in child_env
+
+    def test_parent_baseurl_passes_through(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the parent has ``OPENROUTER_BASE_URL`` set (because the user's
+        .env was sourced or exported), wrap MUST NOT overwrite it — the user's
+        value reaches the child unchanged."""
+        monkeypatch.setenv("OPENROUTER_BASE_URL", "http://127.0.0.1:8787/openrouter-x/v1")
+        child_env = self._capture_child_env(home_with_key, monkeypatch)
+        assert child_env.get("OPENROUTER_BASE_URL") == "http://127.0.0.1:8787/openrouter-x/v1"
+
+    def test_no_session_token(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``WORTHLESS_SESSION_TOKEN`` is dead — wrap must never add it back."""
+        monkeypatch.delenv("WORTHLESS_SESSION_TOKEN", raising=False)
+        child_env = self._capture_child_env(home_with_key, monkeypatch)
         assert "WORTHLESS_SESSION_TOKEN" not in child_env
-
-
-class TestBuildChildEnvEdgeCases:
-    """Edge cases for _build_child_env."""
-
-    def test_unknown_provider_skipped(self, monkeypatch: pytest.MonkeyPatch):
-        """Unknown provider should not inject any env var."""
-        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
-        child_env = _build_child_env(port=9999, aliases=[("gem-alias", "gemini")])
-        assert "OPENAI_BASE_URL" not in child_env
-        assert "ANTHROPIC_BASE_URL" not in child_env
-
-    def test_multi_alias_same_provider_last_wins(self):
-        """When multiple aliases map to the same provider, the last one wins."""
-        child_env = _build_child_env(
-            port=9999,
-            aliases=[("first-oai", "openai"), ("second-oai", "openai")],
-        )
-        assert child_env["OPENAI_BASE_URL"] == "http://127.0.0.1:9999/second-oai/v1"
-
-    def test_multi_alias_same_provider_warns(self, caplog):
-        """Multiple aliases for the same provider should log a warning."""
-        import logging
-
-        with caplog.at_level(logging.WARNING):
-            _build_child_env(
-                port=9999,
-                aliases=[("first-oai", "openai"), ("second-oai", "openai")],
-            )
-        assert any("Multiple aliases" in r.message for r in caplog.records)
-
-    def test_empty_aliases(self, monkeypatch: pytest.MonkeyPatch):
-        """Empty aliases list produces env without any BASE_URL vars."""
-        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
-        child_env = _build_child_env(port=9999, aliases=[])
-        assert "OPENAI_BASE_URL" not in child_env
-        assert "ANTHROPIC_BASE_URL" not in child_env
-
-    def test_inherits_current_env(self):
-        """Child env should include current process env vars."""
-        child_env = _build_child_env(port=9999, aliases=[("a", "openai")])
-        assert "PATH" in child_env
 
 
 class TestListEnrolledAliasesWithDB:
@@ -163,7 +182,9 @@ class TestWrapSpawnProxyFailure:
     """wrap exits 1 and cleans up FDs when spawn_proxy fails."""
 
     def test_spawn_failure_exit_code(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
-        """When spawn_proxy raises, wrap exits 1."""
+        """When spawn_proxy raises and the port is free, wrap exits 1 with
+        the generic 'failed to start proxy' message (branch 3 of
+        ``_diagnose_proxy_failure``)."""
 
         def _fail(**_kw):
             raise RuntimeError("bind failed")
@@ -171,6 +192,11 @@ class TestWrapSpawnProxyFailure:
         monkeypatch.setattr(
             "worthless.cli.commands.wrap.spawn_proxy",
             _fail,
+        )
+        # Force the port-free branch: test machine state shouldn't matter.
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap._port_in_use",
+            lambda *_a, **_kw: False,
         )
         result = runner.invoke(
             app,
@@ -187,7 +213,16 @@ class TestWrapHealthTimeout:
     def test_health_timeout_cleans_proxy(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When poll_health returns False, proxy is terminated and exit 1."""
+        """When poll_health returns False, proxy is terminated and exit 1.
+
+        v0.3.4 changed the timeout error message from a fixed
+        "Proxy failed to become healthy" string to whatever
+        ``_diagnose_proxy_failure`` returns (so the actionable
+        ``worthless up`` hint fires when applicable). The semantic
+        contract under test is still cleanup + non-zero exit; the
+        specific wording is verified in
+        ``test_poll_health_timeout_runs_diagnostic`` below.
+        """
         mock_proxy = MagicMock()
         mock_proxy.poll.return_value = None
         mock_proxy.wait.return_value = 0
@@ -207,7 +242,8 @@ class TestWrapHealthTimeout:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
         assert result.exit_code == 1
-        assert "healthy" in result.output.lower() or "health" in result.output.lower()
+        # Cleanup invariant: terminate is called regardless of which
+        # diagnostic message branch fires.
         mock_proxy.terminate.assert_called()
 
 
@@ -575,11 +611,14 @@ class TestWrapSetsEnvAndRunsCommand:
         )
         assert result.exit_code == 0, f"wrap failed: {result.output}"
 
-        # Verify env vars were injected for the enrolled provider
-        assert "OPENAI_BASE_URL" in captured_env, (
-            "wrap should inject OPENAI_BASE_URL for enrolled openai key"
+        # 8rqs Phase 8: wrap no longer injects OPENAI_BASE_URL (lock owns
+        # that now via the user's own .env). The child env is the parent
+        # env passed through; we verify it's NOT the synthetic alias-URL
+        # form that pre-8rqs wrap would have produced.
+        synthetic = "http://127.0.0.1:9999/"
+        assert not captured_env.get("OPENAI_BASE_URL", "").startswith(synthetic), (
+            f"wrap synthesised OPENAI_BASE_URL post-8rqs: {captured_env.get('OPENAI_BASE_URL')!r}"
         )
-        assert "127.0.0.1" in captured_env["OPENAI_BASE_URL"]
 
 
 # ------------------------------------------------------------------
@@ -588,12 +627,22 @@ class TestWrapSetsEnvAndRunsCommand:
 
 
 class TestWrapDaemonCoexistence:
-    """wrap always uses port=0 (ephemeral), ignoring daemon state."""
+    """v0.3.4 contract: wrap binds the same port lock wrote to .env (not 0).
 
-    def test_wrap_always_requests_ephemeral_port(
+    Pre-v0.3.4 wrap used port=0 (OS-random) on the theory that wrap should
+    co-exist with `worthless up`. But wrap stopped injecting *_BASE_URL
+    into the child env (8rqs), so the only port the child can see is the
+    one in .env — which is whatever lock wrote (default 8787 or
+    WORTHLESS_PORT). Random-port wrap was unreachable. v0.3.4 binds the
+    same port; if it's already in use (e.g. up is running), wrap errors
+    cleanly instead of silently spawning unreachable proxies.
+    """
+
+    def test_wrap_binds_resolved_port_matching_lock(
         self, home_with_key, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """wrap passes port=0 to spawn_proxy even when WORTHLESS_PORT is set."""
+        """wrap passes _resolve_port(None) to spawn_proxy — same value lock
+        writes to .env so child .env URL → wrap proxy."""
         captured_kwargs: dict = {}
 
         def _capture_spawn(**kw):
@@ -602,7 +651,7 @@ class TestWrapDaemonCoexistence:
             mock_proxy.pid = 77777
             mock_proxy.poll.return_value = None
             mock_proxy.wait.return_value = 0
-            return (mock_proxy, 11111)
+            return (mock_proxy, kw["port"])
 
         mock_child = MagicMock()
         mock_child.pid = 77778
@@ -614,7 +663,6 @@ class TestWrapDaemonCoexistence:
         monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
         monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
         monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
-        monkeypatch.setenv("WORTHLESS_PORT", "8787")
 
         result = runner.invoke(
             app,
@@ -622,7 +670,9 @@ class TestWrapDaemonCoexistence:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir), "WORTHLESS_PORT": "8787"},
         )
         assert result.exit_code == 0, f"wrap failed: {result.output}"
-        assert captured_kwargs.get("port") == 0
+        assert captured_kwargs.get("port") == 8787, (
+            f"wrap should bind 8787 (matching lock); got {captured_kwargs.get('port')}"
+        )
 
 
 # ------------------------------------------------------------------
@@ -776,3 +826,220 @@ class TestWrapKeyboardInterruptCleanup:
             env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
         )
         assert result.exit_code == 130
+
+
+class TestWrapPortDiscovery:
+    """v0.3.4 (worthless-djoe): wrap must bind the port lock wrote to .env.
+
+    The default-port-8787 invariant lives in
+    :class:`TestWrapDaemonCoexistence` above; this class covers the
+    distinct cases (env-var override, port-conflict diagnostics).
+    """
+
+    def test_wrap_honors_worthless_port_env(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """WORTHLESS_PORT env var overrides the 8787 default — same priority
+        chain lock and up use, so all three commands agree."""
+        captured: dict[str, int] = {}
+
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 66672
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+
+        mock_child = MagicMock()
+        mock_child.pid = 66673
+        mock_child.wait.return_value = 0
+        mock_child.returncode = 0
+
+        def _capture_port(**kw):
+            captured["port"] = kw["port"]
+            return (mock_proxy, kw["port"])
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _capture_port)
+        monkeypatch.setattr("worthless.cli.commands.wrap.poll_health", lambda *_a, **_kw: True)
+        monkeypatch.setattr("worthless.cli.commands.wrap.forward_signals", lambda **_kw: None)
+        monkeypatch.setattr("subprocess.Popen", lambda *_a, **_kw: mock_child)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={
+                "WORTHLESS_HOME": str(home_with_key.base_dir),
+                "WORTHLESS_PORT": "9876",
+            },
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["port"] == 9876, (
+            f"wrap should honor WORTHLESS_PORT=9876; got {captured.get('port')}"
+        )
+
+
+class TestWrapPortConflict:
+    """v0.3.4: clean errors when wrap's target port is occupied."""
+
+    def test_conflict_with_worthless_daemon_names_up(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the target port is already serving a worthless daemon,
+        the pre-spawn check short-circuits with a message naming
+        `worthless up` so the user knows which process to stop (or that
+        they don't need wrap at all). spawn_proxy is never reached."""
+        # Isolate from any host WORTHLESS_PORT so we can hard-assert 8787.
+        monkeypatch.delenv("WORTHLESS_PORT", raising=False)
+
+        def _spawn_should_not_be_called(**_kw):
+            raise AssertionError("pre-check should short-circuit; spawn_proxy must not run")
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _spawn_should_not_be_called)
+        monkeypatch.setattr("worthless.cli.commands.wrap._port_in_use", lambda *_a, **_kw: True)
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.check_proxy_health",
+            lambda *_a, **_kw: {"healthy": True, "port": 8787, "mode": "up", "requests_proxied": 0},
+        )
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code != 0
+        assert "worthless up" in result.output, (
+            f"error message should name `worthless up`:\n{result.output}"
+        )
+
+    def test_conflict_with_random_process_names_port(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the port is busy with a non-worthless process, the
+        pre-spawn check short-circuits with a message naming the port
+        and pointing at WORTHLESS_PORT as the escape hatch."""
+        # Isolate from any host WORTHLESS_PORT so we can hard-assert 8787.
+        monkeypatch.delenv("WORTHLESS_PORT", raising=False)
+
+        def _spawn_should_not_be_called(**_kw):
+            raise AssertionError("pre-check should short-circuit; spawn_proxy must not run")
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _spawn_should_not_be_called)
+        monkeypatch.setattr("worthless.cli.commands.wrap._port_in_use", lambda *_a, **_kw: True)
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.check_proxy_health",
+            lambda *_a, **_kw: {
+                "healthy": False,
+                "port": 8787,
+                "mode": None,
+                "requests_proxied": 0,
+            },
+        )
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code != 0
+        assert "8787" in result.output and "WORTHLESS_PORT" in result.output, (
+            f"error should name port + escape hatch:\n{result.output}"
+        )
+
+    def test_poll_health_timeout_runs_diagnostic(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The realistic conflict path (CodeRabbit MAJOR): subprocess.Popen
+        succeeds even when uvicorn child can't bind, so spawn_proxy returns
+        normally and the failure surfaces only when poll_health times out.
+        Pre-fix this raised a generic 'Proxy failed to become healthy';
+        post-fix the same diagnostic that names `worthless up` runs again
+        on the timeout path."""
+        monkeypatch.delenv("WORTHLESS_PORT", raising=False)
+
+        mock_proxy = MagicMock()
+        mock_proxy.pid = 88880
+        mock_proxy.poll.return_value = None
+        mock_proxy.wait.return_value = 0
+
+        # _port_in_use changes between pre-check (False, port free) and
+        # post-timeout diagnostic (True, conflict now visible). Models a
+        # real TOCTOU race or a daemon that started during wrap startup.
+        port_in_use_calls = {"n": 0}
+
+        def _port_in_use_toggling(*_a, **_kw):
+            port_in_use_calls["n"] += 1
+            # First call = pre-check (must be False so we proceed);
+            # subsequent calls = diagnostic (return True so the daemon
+            # branch fires).
+            return port_in_use_calls["n"] > 1
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap._port_in_use",
+            _port_in_use_toggling,
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.spawn_proxy",
+            lambda **kw: (mock_proxy, kw["port"]),
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.poll_health",
+            lambda *_a, **_kw: False,
+        )
+        monkeypatch.setattr(
+            "worthless.cli.commands.wrap.check_proxy_health",
+            lambda *_a, **_kw: {
+                "healthy": True,
+                "port": 8787,
+                "mode": "up",
+                "requests_proxied": 0,
+            },
+        )
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+
+        assert result.exit_code != 0
+        # The whole point of the MAJOR fix: we get the actionable
+        # `worthless up`-naming diagnostic, not a generic timeout
+        # message that left the user staring at "failed to become
+        # healthy" with no fix hint.
+        assert "worthless up" in result.output, (
+            f"poll_health-timeout path must run the same diagnostic that "
+            f"names `worthless up`. Got:\n{result.output}"
+        )
+        mock_proxy.terminate.assert_called()
+
+    def test_spawn_failure_with_free_port_falls_through(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Branch 3 of _diagnose_proxy_failure: when spawn_proxy fails for
+        some reason OTHER than a port conflict (port is genuinely free),
+        the error falls through to ``sanitize_exception`` with the generic
+        'failed to start proxy' message — not one of the port-conflict
+        strings, which would mislead the user."""
+
+        def _fail_for_other_reason(**_kw):
+            raise RuntimeError("uvicorn import failed (just an example)")
+
+        monkeypatch.setattr("worthless.cli.commands.wrap.spawn_proxy", _fail_for_other_reason)
+        # Port truly free — _port_in_use returns False, the daemon-check
+        # branch is skipped, message generation falls through.
+        monkeypatch.setattr("worthless.cli.commands.wrap._port_in_use", lambda *_a, **_kw: False)
+
+        result = runner.invoke(
+            app,
+            ["wrap", "--", "echo", "hi"],
+            env={"WORTHLESS_HOME": str(home_with_key.base_dir)},
+        )
+        assert result.exit_code != 0
+        # Must NOT name port-conflict messaging, since the port is free.
+        assert "worthless up" not in result.output, (
+            f"port is free → error should NOT mention `worthless up`:\n{result.output}"
+        )
+        assert "another process holds it" not in result.output, (
+            f"port is free → error should NOT mention foreign-process conflict:\n{result.output}"
+        )
+        assert "proxy" in result.output.lower(), (
+            f"error should still indicate proxy startup failure:\n{result.output}"
+        )

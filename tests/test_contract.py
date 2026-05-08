@@ -29,8 +29,6 @@ from worthless.proxy.config import ProxySettings
 from worthless.storage.repository import ShardRepository, StoredShard
 
 # Import mock app from harness (same mock upstream)
-import worthless.adapters.anthropic as _anth_mod
-import worthless.adapters.openai as _oai_mod
 
 # Inline the mock app to avoid importing scripts/ with sys.path hacks
 from starlette.applications import Starlette
@@ -89,11 +87,25 @@ _mock_app = Starlette(
 )
 
 
-def _free_port() -> int:
-    """Return an OS-assigned ephemeral port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def _bind_listening_socket() -> tuple[socket.socket, int]:
+    """Bind to an ephemeral port and KEEP THE SOCKET OPEN.
+
+    Closing the socket between port allocation and uvicorn startup creates
+    a TOCTOU race under pytest-xdist: two workers can each call
+    ``socket.bind(0)``, the kernel hands them the same port from the
+    ephemeral pool (the close immediately released it), and whichever
+    uvicorn binds second dies with ``EADDRINUSE``. Discovered via flake on
+    PR #146 CI 2026-05-07 (errno 98 on 127.0.0.1:60261). WOR-459.
+
+    Returning the live socket lets uvicorn take ownership directly via
+    ``Server.run(sockets=[sock])`` — the port stays reserved by THIS
+    process from bind() through uvicorn handover, no window for collision.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(128)
+    return sock, sock.getsockname()[1]
 
 
 @pytest.fixture(scope="module")
@@ -103,13 +115,21 @@ def live_proxy():
     db_path = str(Path(tmpdir) / "worthless.db")
     fernet_key = Fernet.generate_key()
 
-    mock_port = _free_port()
-    proxy_port = _free_port()
+    mock_sock, mock_port = _bind_listening_socket()
+    proxy_sock, proxy_port = _bind_listening_socket()
 
     # Enroll fake keys and collect shard_a tokens for Bearer auth
     shard_a_tokens: dict[str, str] = {}
 
     prefixes = {"openai": "sk-proj-", "anthropic": "sk-ant-api03-"}
+    # 8rqs Phase 5+6: each enrollment carries its own base_url. Point both at
+    # the local mock upstream so the per-enrollment routing in proxy/app.py
+    # delivers the request there.
+    mock_upstream = f"http://127.0.0.1:{mock_port}"
+    enrollment_base_urls = {
+        "openai": f"{mock_upstream}/v1",
+        "anthropic": f"{mock_upstream}/v1",
+    }
 
     async def _enroll():
         repo = ShardRepository(db_path, fernet_key)
@@ -124,21 +144,20 @@ def live_proxy():
                 nonce=bytearray(sr.nonce),
                 provider=provider,
             )
-            await repo.store(f"{provider}-contract", shard, prefix=sr.prefix, charset=sr.charset)
+            await repo.store_enrolled(
+                f"{provider}-contract",
+                shard,
+                var_name=f"{provider.upper()}_API_KEY",
+                env_path=None,
+                prefix=sr.prefix,
+                charset=sr.charset,
+                base_url=enrollment_base_urls[provider],
+            )
             shard_a_tokens[provider] = sr.shard_a.decode("utf-8")
 
     asyncio.run(_enroll())
 
-    # Save originals before patching — restore in finally to prevent xdist pollution
-    _oai_original = _oai_mod.UPSTREAM_URL
-    _anth_original = _anth_mod.UPSTREAM_URL
-
     try:
-        # Patch upstream URLs to mock
-        mock_upstream = f"http://127.0.0.1:{mock_port}"
-        _oai_mod.UPSTREAM_URL = f"{mock_upstream}/v1/chat/completions"
-        _anth_mod.UPSTREAM_URL = f"{mock_upstream}/v1/messages"
-
         # Create proxy app
         settings = ProxySettings(
             db_path=db_path,
@@ -148,7 +167,11 @@ def live_proxy():
         )
         proxy_app = create_app(settings)
 
-        # Start both servers in background threads
+        # Start both servers in background threads.
+        # `sockets=[sock]` hands the pre-bound listening socket to uvicorn
+        # so the port is never released between allocation and bind — closes
+        # the WOR-459 TOCTOU race window. host/port in Config become
+        # advisory in this mode; we keep them for log-readability.
         mock_server = uvicorn.Server(
             uvicorn.Config(_mock_app, host="127.0.0.1", port=mock_port, log_level="error")
         )
@@ -156,8 +179,12 @@ def live_proxy():
             uvicorn.Config(proxy_app, host="127.0.0.1", port=proxy_port, log_level="error")
         )
 
-        mock_thread = threading.Thread(target=mock_server.run, daemon=True)
-        proxy_thread = threading.Thread(target=proxy_server.run, daemon=True)
+        mock_thread = threading.Thread(
+            target=mock_server.run, kwargs={"sockets": [mock_sock]}, daemon=True
+        )
+        proxy_thread = threading.Thread(
+            target=proxy_server.run, kwargs={"sockets": [proxy_sock]}, daemon=True
+        )
         mock_thread.start()
         proxy_thread.start()
 
@@ -181,10 +208,6 @@ def live_proxy():
         mock_thread.join(timeout=3)
         proxy_thread.join(timeout=3)
     finally:
-        # Always restore upstream URLs — prevents cross-test pollution under xdist
-        _oai_mod.UPSTREAM_URL = _oai_original
-        _anth_mod.UPSTREAM_URL = _anth_original
-
         import shutil
 
         shutil.rmtree(tmpdir, ignore_errors=True)

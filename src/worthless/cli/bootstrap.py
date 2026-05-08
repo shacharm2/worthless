@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -13,8 +15,15 @@ from collections.abc import Generator
 from cryptography.fernet import Fernet
 
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
-from worthless.cli.keystore import migrate_file_to_keyring, read_fernet_key, store_fernet_key
+from worthless.cli.keystore import (
+    migrate_file_to_keyring,
+    read_fernet_key,
+    read_fernet_key_from_file,
+    store_fernet_key,
+)
 from worthless.cli.platform import IS_WINDOWS
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE = Path.home() / ".worthless"
 _STALE_LOCK_SECONDS = 300  # 5 minutes
@@ -25,6 +34,26 @@ class WorthlessHome:
     """Paths within the ``~/.worthless/`` directory tree."""
 
     base_dir: Path = field(default_factory=lambda: _DEFAULT_BASE)
+    # HF2 / worthless-mnlp: per-instance cache for the Fernet key so a single
+    # CLI invocation triggers exactly one keychain probe (one macOS Keychain
+    # prompt on first run). Excluded from init/repr/compare so it doesn't
+    # leak into reprs or break dataclass equality across cached/uncached
+    # instances.
+    _cached_fernet_key: bytearray | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    # Per-instance lock guarding the lazy-populate path. The check-then-set
+    # in ``fernet_key`` is two operations; without this lock, two threads
+    # accessing the property concurrently on the same instance can both
+    # observe ``None`` and both call ``read_fernet_key`` — firing duplicate
+    # macOS Keychain prompts and discarding one bytearray without
+    # ``zero_buf``. Real call site: ``src/worthless/mcp/server.py`` runs
+    # FastMCP's asyncio loop on the main thread but dispatches blocking
+    # work (``_do_lock``) via ``loop.run_in_executor`` to the default
+    # thread pool — main + executor can both touch ``home.fernet_key``.
+    _cache_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False, compare=False
+    )
 
     @property
     def db_path(self) -> Path:
@@ -46,16 +75,87 @@ class WorthlessHome:
         return self.base_dir / ".lock-in-progress"
 
     @property
+    def bootstrapped_marker(self) -> Path:
+        """Marker file written at the end of a successful ensure_home().
+
+        HF3 (worthless-cmpf): used to distinguish "first-run /
+        previously-failed bootstrap" (probe must run, key must be
+        generated) from "bootstrap completed at least once" (probe
+        gated). Stronger than ``base_dir.exists()`` because a failed
+        prior run leaves the dir present but the keystore empty; the
+        marker is only created at the END of a successful ensure_home,
+        so its presence is a positive signal of completed bootstrap.
+        """
+        return self.base_dir / ".bootstrapped"
+
+    @property
     def fernet_key(self) -> bytearray:
-        """Read the Fernet key via keystore cascade (SR-01: mutable bytearray)."""
-        return read_fernet_key(self.base_dir)
+        """Read the Fernet key via keystore cascade (SR-01: mutable bytearray).
+
+        Memoized per-instance with double-checked locking. macOS Keychain
+        re-evaluates the per-call ACL, so without this cache one
+        ``worthless lock`` triggers 3+ Keychain prompts.
+
+        Returns a fresh bytearray copy on each access so callers can
+        ``zero_buf()`` per SR-01 without poisoning the cache.
+        """
+        if self._cached_fernet_key is None:
+            with self._cache_lock:
+                if self._cached_fernet_key is None:
+                    logger.debug("WorthlessHome.fernet_key cache MISS — reading from keystore")
+                    self._cached_fernet_key = read_fernet_key(self.base_dir)
+        else:
+            logger.debug("WorthlessHome.fernet_key cache HIT")
+        return bytearray(self._cached_fernet_key)
+
+    def _seed_cached_fernet_key(self, key: bytes | bytearray) -> None:
+        """Install *key* into the cache under ``_cache_lock``.
+
+        HF3 (worthless-cmpf): single entry point for any code that
+        wants to populate the cache from a known source (env var,
+        on-disk file, freshly generated key). Mirrors the locking
+        discipline of the property's read path so a concurrent
+        ``home.fernet_key`` call cannot race the assignment.
+        """
+        with self._cache_lock:
+            self._cached_fernet_key = bytearray(key)
+
+
+def _fernet_key_present(home: WorthlessHome) -> bool:
+    """True if a Fernet key is provisioned WITHOUT touching the keyring.
+
+    HF3 (worthless-cmpf): cheap probe that lets read-only commands
+    (``worthless scan`` in particular) bypass the keystore entirely.
+    Sources, in priority order:
+
+    1. ``WORTHLESS_FERNET_KEY`` env var — used by IPC fd transport
+       and CI environments.
+    2. The on-disk fernet key file — pre-keyring fallback that still
+       exists on legacy installs.
+
+    The keyring is intentionally NOT consulted here — its access on
+    macOS triggers a per-call keychain prompt, which is the very UX
+    bug HF3 is closing. For users with only a keyring entry (no env
+    var, no file), this returns False and the caller falls through
+    to the keyring probe — that's correct: first-run detection has
+    to happen somewhere.
+    """
+    if os.environ.get("WORTHLESS_FERNET_KEY"):
+        return True
+    if home.fernet_key_path.exists():
+        return True
+    return False
 
 
 def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
     """Create ``~/.worthless/`` structure on first run (idempotent).
 
-    Creates directories with 0700 permissions, generates a Fernet key if
-    missing, and initialises the SQLite database.
+    Creates directories with 0700 permissions, generates a Fernet key
+    if missing, initialises the SQLite database, and writes a
+    ``.bootstrapped`` marker on completion. The marker gates future
+    keystore probes so post-bootstrap CLI invocations skip the
+    keyring entirely when scan/status/other read-only paths run
+    (HF3 — worthless-cmpf).
     """
     home = WorthlessHome(base_dir=base_dir or _DEFAULT_BASE)
 
@@ -79,16 +179,73 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 "Create it or mount a volume at that path.",
             )
 
-        # Generate Fernet key if missing (keyring or file fallback)
-        try:
-            read_fernet_key(home.base_dir)
-        except WorthlessError as exc:
-            if exc.code != ErrorCode.KEY_NOT_FOUND:
-                raise
-            key = Fernet.generate_key()
-            store_fernet_key(key, home_dir=home.base_dir)
-        else:
-            migrate_file_to_keyring(home.base_dir)
+        # HF3 (worthless-cmpf): the keystore-touching logic is gated
+        # on ``bootstrapped_marker`` — a marker file written at the
+        # END of a successful first-run, NOT just ``base_dir.exists()``
+        # (which a Docker volume mount or a failed prior run can pre-
+        # create). Marker absent ⇒ probe-and-generate. Marker present
+        # AND env-or-file present ⇒ pre-populate the cache without
+        # touching the keyring. Marker present AND keyring-only ⇒
+        # skip; key-using commands fetch lazily via ``home.fernet_key``.
+        # Migration is NOT run on the post-bootstrap file path — that
+        # would re-introduce a keyring touch on every CLI invocation,
+        # defeating the read-only-no-keychain contract. Filed as
+        # ``worthless-d8it`` (doctor --migrate) for legacy file
+        # installs.
+        if not home.bootstrapped_marker.exists():
+            try:
+                _ = home.fernet_key
+            except WorthlessError as exc:
+                if exc.code != ErrorCode.KEY_NOT_FOUND:
+                    raise
+                logger.info("ensure_home: no Fernet key found, generating new one")
+                key = Fernet.generate_key()
+                store_fernet_key(key, home_dir=home.base_dir)
+                home._seed_cached_fernet_key(key)
+            else:
+                migrate_file_to_keyring(home.base_dir)
+            # Marker is written ONLY on the first-run path. Subsequent
+            # invocations short-circuit above without touching mtime.
+            home.bootstrapped_marker.touch(mode=0o600, exist_ok=True)
+        elif _fernet_key_present(home):
+            # Both post-bootstrap branches treat the env/file signal as
+            # advisory: if the source disappears or is malformed between
+            # ``_fernet_key_present`` and the actual read, defer to the
+            # lazy keyring fetch on next ``home.fernet_key`` access
+            # rather than crashing ensure_home on a read-only invocation.
+            # ``logger.debug`` (not info) on the defer paths because
+            # this is best-effort recovery from a TOCTOU race — no
+            # operator action is required and it's not a state
+            # transition worth surfacing in normal logs.
+            if os.environ.get("WORTHLESS_FERNET_KEY"):
+                # Cascade short-circuits at the env step, no keyring touch.
+                try:
+                    _ = home.fernet_key
+                except WorthlessError as exc:
+                    if exc.code != ErrorCode.KEY_NOT_FOUND:
+                        raise
+                    logger.debug(
+                        "ensure_home: WORTHLESS_FERNET_KEY env var unset or "
+                        "malformed between _fernet_key_present and read; "
+                        "deferring to lazy keyring fetch"
+                    )
+            else:
+                # File-only. Read OUTSIDE the lock so concurrent
+                # ``home.fernet_key`` readers aren't blocked on disk I/O;
+                # acquire only for the assignment.
+                try:
+                    key = read_fernet_key_from_file(home.base_dir)
+                except WorthlessError as exc:
+                    if exc.code != ErrorCode.KEY_NOT_FOUND:
+                        raise
+                    logger.debug(
+                        "ensure_home: fernet key file disappeared between "
+                        "_fernet_key_present and read; deferring to lazy "
+                        "keyring fetch"
+                    )
+                else:
+                    home._seed_cached_fernet_key(key)
+        # else: keyring-only post-bootstrap → skip; lazy fetch later.
     except WorthlessError:
         raise
     except OSError as exc:

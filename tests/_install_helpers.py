@@ -70,6 +70,11 @@ def run_install(
         "PATH": f"{bin_dir}:{base_path}",
         "HOME": str(bin_dir.parent),
         "SHELL": "/bin/zsh",
+        # WOR-463: prevent any subprocess `worthless` invocation from
+        # writing fernet-key-* entries to the host's real keychain.
+        # install.sh's smoke_test stubs `worthless` today, but this stays
+        # defensive against future install.sh paths that exec the binary.
+        "WORTHLESS_KEYRING_BACKEND": "null",
     }
     if env_extra:
         env.update(env_extra)

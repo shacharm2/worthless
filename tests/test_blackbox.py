@@ -166,8 +166,9 @@ class TestScan:
         )
         assert result.exit_code == 1
 
-        findings = json.loads(result.stdout)
-        unprotected = [f for f in findings if not f["is_protected"]]
+        data = json.loads(result.stdout)
+        # HF5: scan --json shape is {schema_version, findings, orphans}.
+        unprotected = [f for f in data["findings"] if not f["is_protected"]]
         assert len(unprotected) >= 1
 
     def test_scan_after_lock_reports_zero_unprotected(
@@ -200,8 +201,9 @@ class TestScan:
         )
         assert result.exit_code == 1
 
-        findings = json.loads(result.stdout)
-        unprotected = [f for f in findings if not f["is_protected"]]
+        data = json.loads(result.stdout)
+        # HF5: scan --json shape is {schema_version, findings, orphans}.
+        unprotected = [f for f in data["findings"] if not f["is_protected"]]
         assert len(unprotected) >= 1
 
 
