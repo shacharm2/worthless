@@ -56,8 +56,14 @@ ENV WORTHLESS_HOME=/data \
 
 EXPOSE 8787
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/healthz')"
+# WOR-466: hybrid sidecar healthcheck — proves the AF_UNIX accept loop is
+# alive end-to-end (stat + S_ISSOCK + IPC HELLO handshake). The previous HTTP
+# /healthz probe only proved uvicorn was answering, missing the false-greens
+# the WOR-310 spec called out (stale socket inode, hung accept loop).
+# Exec form skips /bin/sh: ~10ms faster per probe and avoids signal-forwarding
+# bugs. See .planning/wor-310/design-sidecar-health-cli.md.
+HEALTHCHECK --interval=10s --timeout=2s --start-period=5s --retries=3 \
+    CMD ["python", "-m", "worthless.sidecar.health"]
 
 # WOR-310: no static USER directive — container starts as root so deploy/start.py
 # can spawn the sidecar as worthless-crypto (uid 10002) and drop self to
