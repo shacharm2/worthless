@@ -15,8 +15,23 @@ from worthless.cli.app import app
 runner = CliRunner(mix_stderr=False)
 
 
+def _scrubbed_env(home: Path) -> dict[str, str | None]:
+    return {
+        "WORTHLESS_HOME": str(home),
+        "WORTHLESS_DB_PATH": None,
+        "WORTHLESS_FERNET_KEY": None,
+        "WORTHLESS_FERNET_KEY_PATH": None,
+        "WORTHLESS_FERNET_FD": None,
+        "WORTHLESS_PORT": None,
+        "OPENAI_API_KEY": None,
+        "ANTHROPIC_API_KEY": None,
+        "OPENAI_BASE_URL": None,
+        "ANTHROPIC_BASE_URL": None,
+    }
+
+
 def _invoke(args: list[str], home: Path, **kwargs: object):
-    return runner.invoke(app, args, env={"WORTHLESS_HOME": str(home)}, **kwargs)
+    return runner.invoke(app, args, env=_scrubbed_env(home), **kwargs)
 
 
 def _combined_output(result) -> str:
@@ -47,20 +62,11 @@ def test_teammate_handoff_locked_env_without_db_fails_with_hint(tmp_path: Path) 
     assert unlock.exit_code != 0, unlock_output
     assert "Traceback" not in unlock_output
     assert "OPENAI_API_KEY" in unlock_output
-    assert any(
-        token in unlock_output.lower()
-        for token in ("not enrolled", "no enrollment", "unrecognised shard", "no shard")
-    ), unlock_output
+    assert "no enrollment found" in unlock_output.lower()
+    assert "re-lock from the original machine" in unlock_output.lower()
 
 
 @pytest.mark.user_flow
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "WOR-445 contract: re-lock after manual raw-key rotation is not implemented yet; "
-        "scan suppresses already-enrolled var/path locations."
-    ),
-)
 def test_rotation_relock_restores_new_raw_key(tmp_path: Path) -> None:
     """User rotates a raw key in `.env`, re-locks it, and unlock restores the new key."""
     home = tmp_path / ".worthless"

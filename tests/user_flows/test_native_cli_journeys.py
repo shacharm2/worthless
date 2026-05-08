@@ -21,8 +21,32 @@ from worthless.cli.app import app
 runner = CliRunner(mix_stderr=False)
 
 
+def _scrubbed_env(home: Path) -> dict[str, str | None]:
+    return {
+        "WORTHLESS_HOME": str(home),
+        "WORTHLESS_DB_PATH": None,
+        "WORTHLESS_FERNET_KEY": None,
+        "WORTHLESS_FERNET_KEY_PATH": None,
+        "WORTHLESS_FERNET_FD": None,
+        "WORTHLESS_PORT": None,
+        "OPENAI_API_KEY": None,
+        "ANTHROPIC_API_KEY": None,
+        "OPENAI_BASE_URL": None,
+        "ANTHROPIC_BASE_URL": None,
+    }
+
+
 def _invoke(args: list[str], home: Path, **kwargs: object):
-    return runner.invoke(app, args, env={"WORTHLESS_HOME": str(home)}, **kwargs)
+    return runner.invoke(app, args, env=_scrubbed_env(home), **kwargs)
+
+
+@pytest.mark.user_flow
+def test_scrubbed_env_deletes_ambient_worthless_overrides(tmp_path: Path) -> None:
+    """Guard the user-flow isolation contract against Click env overlay drift."""
+    env = _scrubbed_env(tmp_path / ".worthless")
+    assert env["WORTHLESS_HOME"] == str(tmp_path / ".worthless")
+    assert env["WORTHLESS_FERNET_KEY_PATH"] is None
+    assert env["OPENAI_API_KEY"] is None
 
 
 def _combined_output(result) -> str:

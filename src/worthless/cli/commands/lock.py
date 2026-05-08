@@ -17,7 +17,6 @@ from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.process import resolve_port
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import (
-    build_enrolled_locations,
     rewrite_env_keys,
     scan_env_keys,
 )
@@ -183,6 +182,86 @@ def _build_verify_hook(planned: list[_PlannedUpdate]):
     return _hook
 
 
+async def _filter_unprotected_candidates(
+    repo: ShardRepository,
+    scanned: list[tuple[str, str, str]],
+    enrollments: list,
+    env_str: str,
+) -> list[tuple[str, str, str]]:
+    """Drop enrolled locations only when the current value is still shard-A.
+
+    ``scan_env_keys`` cannot tell whether an enrolled ``VAR`` still contains
+    the protected shard-A or whether the user pasted a new raw key into the
+    same location. For re-lock, we must suppress the former and process the
+    latter.
+    """
+    by_location: dict[tuple[str, str], list] = {}
+    for enrollment in enrollments:
+        if enrollment.env_path:
+            by_location.setdefault((enrollment.var_name, enrollment.env_path), []).append(
+                enrollment
+            )
+
+    candidates: list[tuple[str, str, str]] = []
+    for var_name, value, provider in scanned:
+        location_enrollments = by_location.get((var_name, env_str), [])
+        if not location_enrollments:
+            candidates.append((var_name, value, provider))
+            continue
+
+        still_protected = False
+        for enrollment in location_enrollments:
+            encrypted = await repo.fetch_encrypted(enrollment.key_alias)
+            if encrypted is None or encrypted.prefix is None or encrypted.charset is None:
+                continue
+            stored = repo.decrypt_shard(encrypted)
+            shard_a = bytearray(value.encode("utf-8"))
+            reconstructed: bytearray | None = None
+            try:
+                reconstructed = reconstruct_key_fp(
+                    shard_a,
+                    stored.shard_b,
+                    stored.commitment,
+                    stored.nonce,
+                    encrypted.prefix,
+                    encrypted.charset,
+                )
+                still_protected = True
+                break
+            except ShardTamperedError:
+                continue
+            finally:
+                zero_buf(shard_a)
+                if reconstructed is not None:
+                    zero_buf(reconstructed)
+                stored.zero()
+
+        if not still_protected:
+            candidates.append((var_name, value, provider))
+
+    return candidates
+
+
+async def _delete_superseded_location_enrollments(
+    repo: ShardRepository,
+    *,
+    alias: str,
+    var_name: str,
+    env_path: str,
+) -> None:
+    """Remove stale enrollments for a var/path after a rotated key is locked."""
+    enrollments = await repo.list_enrollments()
+    stale_aliases = {
+        e.key_alias
+        for e in enrollments
+        if e.var_name == var_name and e.env_path == env_path and e.key_alias != alias
+    }
+    for stale_alias in stale_aliases:
+        await repo.delete_enrollment(stale_alias, env_path)
+        if not await repo.list_enrollments(stale_alias):
+            await repo.delete_enrolled(stale_alias)
+
+
 async def _pass1_db_writes(
     repo: ShardRepository,
     candidates: list[tuple[str, str, str]],
@@ -341,6 +420,12 @@ async def _pass1_db_writes(
                     was_fresh_enroll=True,
                     base_url_var=base_url_var,
                 )
+            )
+            await _delete_superseded_location_enrollments(
+                repo,
+                alias=alias,
+                var_name=var_name,
+                env_path=env_str,
             )
         finally:
             sr.zero()
@@ -592,9 +677,13 @@ def _lock_keys(
 
         env_str = str(env_path.resolve())
         all_enrollments = await repo.list_enrollments()
-        enrolled_locations = build_enrolled_locations(all_enrollments)
 
-        scanned = scan_env_keys(env_path, enrolled_locations=enrolled_locations)
+        scanned = await _filter_unprotected_candidates(
+            repo,
+            scan_env_keys(env_path),
+            all_enrollments,
+            env_str,
+        )
         if not scanned:
             console.print_warning("No unprotected API keys found.")
             return 0, False
