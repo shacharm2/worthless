@@ -213,6 +213,11 @@ class TestWrapProxiesRequest:
                 # Pass .env path so the child can pick up the OPENAI_BASE_URL
                 # that lock wrote (post-8rqs wrap doesn't synthesise it).
                 "WORTHLESS_E2E_ENV_PATH": str(env_file),
+                # WOR-463: explicit even though conftest.py setdefault
+                # propagates via **os.environ. Self-documents the contract:
+                # this subprocess must not leak fernet-key-* into the host
+                # keychain. Defense-in-depth.
+                "WORTHLESS_KEYRING_BACKEND": "null",
             },
             timeout=45,
             capture_output=True,

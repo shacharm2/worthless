@@ -41,7 +41,27 @@ _REJECTED_BACKENDS = frozenset(
 
 
 def keyring_available() -> bool:
-    """Return True if the OS keyring backend is a real credential store."""
+    """Return True if the OS keyring backend is a real credential store.
+
+    Honors the ``WORTHLESS_KEYRING_BACKEND`` env-var escape hatch: when set
+    to ``"null"``, force file-only Fernet storage without touching the OS
+    keyring backend at all. Two audiences:
+
+    1. **Tests that subprocess-spawn ``worthless``** — ``tests/conftest.py``
+       sets this var via ``os.environ.setdefault`` so the parent pytest's
+       ``keyring.backends.null`` convention propagates across the process
+       boundary. Pre-WOR-463 the convention was lost, leaving real
+       ``fernet-key-*`` entries in the user's macOS keychain on every
+       e2e test run (128 orphans found in dogfood discovery).
+    2. **Production users** who don't trust their OS keyring (shared dev
+       machine, audit-locked environment) — opt out by exporting the var.
+       Sibling override to ``WORTHLESS_FERNET_KEY_PATH`` and
+       ``WORTHLESS_FERNET_KEY``. The ``logger.info`` makes the choice
+       visible in support logs.
+    """
+    if os.environ.get("WORTHLESS_KEYRING_BACKEND") == "null":
+        logger.info("Keyring backend forced to null via WORTHLESS_KEYRING_BACKEND")
+        return False
     try:
         backend = keyring.get_keyring()
         fqn = f"{type(backend).__module__}.{type(backend).__qualname__}"

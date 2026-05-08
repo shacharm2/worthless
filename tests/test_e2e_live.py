@@ -170,6 +170,10 @@ class TestOpenAILive:
                 **os.environ,
                 "WORTHLESS_HOME": str(worthless_home),
                 "WORTHLESS_TEST_ENV_PATH": str(env_file),
+                # WOR-463: explicit even though conftest.py setdefault
+                # propagates via **os.environ. Self-documents the
+                # no-keychain-leak contract; defense-in-depth.
+                "WORTHLESS_KEYRING_BACKEND": "null",
             },
             timeout=90,
             capture_output=True,
@@ -239,6 +243,10 @@ class TestAnthropicLive:
                 **os.environ,
                 "WORTHLESS_HOME": str(worthless_home),
                 "WORTHLESS_TEST_ENV_PATH": str(env_file),
+                # WOR-463: explicit even though conftest.py setdefault
+                # propagates via **os.environ. Self-documents the
+                # no-keychain-leak contract; defense-in-depth.
+                "WORTHLESS_KEYRING_BACKEND": "null",
             },
             timeout=90,
             capture_output=True,
@@ -353,6 +361,10 @@ class TestWrapBaseUrlInjection:
                 **os.environ,
                 "WORTHLESS_HOME": str(worthless_home),
                 "WORTHLESS_TEST_ENV_PATH": str(env_file),
+                # WOR-463: explicit even though conftest.py setdefault
+                # propagates via **os.environ. Self-documents the
+                # no-keychain-leak contract; defense-in-depth.
+                "WORTHLESS_KEYRING_BACKEND": "null",
             },
             timeout=45,
             capture_output=True,
