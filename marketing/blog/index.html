@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Blog — Worthless</title>
+  <meta name="description" content="Deep dives on API key security, secret management, and developer tooling from the Worthless team." />
+  <link rel="canonical" href="https://wless.io/blog/" />
+  <meta name="theme-color" content="#4a6fa5" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Blog — Worthless" />
+  <meta property="og:description" content="Deep dives on API key security, secret management, and developer tooling from the Worthless team." />
+  <meta property="og:image" content="https://wless.io/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:url" content="https://wless.io/blog/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Worthless" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Blog — Worthless" />
+  <meta name="twitter:description" content="Deep dives on API key security, secret management, and developer tooling from the Worthless team." />
+  <meta name="twitter:image" content="https://wless.io/og-image.png" />
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/x-icon" href="../favicon.ico" />
+  <link rel="apple-touch-icon" href="../apple-touch-icon.png" />
+  <link rel="manifest" href="../site.webmanifest" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg:#f8fafd; --bg2:#eef3fb; --white:#ffffff;
+      --border:#dde5f0; --border-soft:#ecf1f8;
+      --slate:#4a6fa5; --slate-dim:#3a5a8a; --slate-pale:#d6e4f7; --slate-fog:#edf4fd;
+      --text:#2c3a4a; --text2:#6c7e95; --text3:#a8bccf;
+      --green-soft:#e6f4ea; --green-text:#276749;
+      --red-soft:#fdecea; --red-text:#9e2a2b;
+      --mono:'JetBrains Mono',monospace;
+      --radius:10px; --radius-lg:16px;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    html{scroll-behavior:smooth}
+    body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+
+    nav{position:sticky;top:0;z-index:100;height:60px;display:flex;align-items:center;padding:0 2.5rem;gap:2rem;background:rgba(248,250,253,.9);backdrop-filter:blur(14px);border-bottom:1px solid var(--border-soft)}
+    .nav-logo{font-size:.95rem;font-weight:700;color:var(--text);text-decoration:none;display:flex;align-items:center;gap:.55rem}
+    .nav-icon{width:26px;height:26px;border-radius:7px;flex-shrink:0;overflow:hidden}
+    .nav-icon img{width:100%;height:100%;object-fit:cover}
+    .nav-links{display:flex;gap:.1rem;margin-left:1.5rem}
+    .nav-links a{font-size:.855rem;font-weight:500;color:var(--text2);text-decoration:none;padding:.4rem .8rem;border-radius:7px;transition:color .2s,background .2s}
+    .nav-links a:hover,.nav-links a.active{color:var(--text);background:var(--bg2)}
+    .nav-actions{margin-left:auto;display:flex;align-items:center;gap:.65rem}
+    .nav-kofi{display:inline-flex;align-items:center;gap:0.4rem;font-size:0.8rem;font-weight:600;color:white;text-decoration:none;padding:0.38rem 0.85rem;border-radius:7px;background:#ffb3b0;transition:background 0.2s;white-space:nowrap}
+    .nav-kofi:hover{background:#ff9c98}
+    .nav-gh{font-size:.82rem;font-weight:500;color:var(--text2);text-decoration:none;padding:.4rem .85rem;border:1px solid var(--border);border-radius:7px;background:var(--white);transition:color .2s}
+    .nav-gh:hover{color:var(--text)}
+
+    /* Blog header */
+    .blog-hdr{padding:4rem 2.5rem 3rem;background:linear-gradient(180deg,var(--white) 0%,var(--bg) 100%);border-bottom:1px solid var(--border-soft);text-align:center}
+    .eyebrow{font-size:.7rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin-bottom:.55rem}
+    .blog-hdr h1{font-size:clamp(1.8rem,3vw,2.4rem);font-weight:800;letter-spacing:-.04em;color:var(--text);margin-bottom:.6rem}
+    .blog-hdr p{font-size:1rem;color:var(--text2);max-width:440px;margin:0 auto}
+
+    /* Post list */
+    .posts{max-width:720px;margin:0 auto;padding:3rem 2rem 5rem}
+
+    .post-card{
+      background:var(--white);
+      border:1px solid var(--border-soft);
+      border-radius:var(--radius-lg);
+      overflow:hidden;
+      margin-bottom:1.25rem;
+      transition:border-color .2s,box-shadow .2s,transform .2s;
+    }
+    .post-card:hover{border-color:var(--slate-pale);box-shadow:0 4px 20px rgba(74,111,165,.08);transform:translateY(-1px)}
+
+    .post-summary{display:flex;gap:1.25rem;padding:1.5rem 1.75rem;cursor:pointer;align-items:flex-start}
+    .post-emoji{font-size:2rem;flex-shrink:0;line-height:1;margin-top:.1rem}
+    .post-meta{display:flex;gap:.65rem;align-items:center;margin-bottom:.4rem;flex-wrap:wrap}
+    .post-tag{font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;padding:.18rem .55rem;border-radius:4px}
+    .post-tag.blue{background:#e0f2fe;color:#0369a1}
+    .post-tag.red{background:var(--red-soft);color:var(--red-text)}
+    .post-tag.meme{background:#fef3c7;color:#92400e}
+
+    .filters{display:flex;gap:.5rem;justify-content:center;margin-bottom:2rem}
+    .filter-btn{font-size:.8rem;font-weight:600;padding:.4rem 1rem;border-radius:20px;border:1px solid var(--border);background:var(--white);color:var(--text2);cursor:pointer;transition:all .2s;font-family:inherit}
+    .filter-btn:hover{border-color:var(--slate-pale);color:var(--text)}
+    .filter-btn.active{background:var(--slate);color:white;border-color:var(--slate)}
+    .post-card.hidden{display:none}
+    .post-date,.post-read{font-size:.75rem;color:var(--text3)}
+    .post-title{font-size:1rem;font-weight:700;color:var(--text);margin-bottom:.35rem;line-height:1.35;letter-spacing:-.02em}
+    .post-excerpt{font-size:.86rem;color:var(--text2);line-height:1.65}
+
+    .expand-btn{
+      width:100%;background:none;border:none;border-top:1px solid var(--border-soft);
+      color:var(--text3);font-size:.75rem;font-family:inherit;
+      padding:.4rem 1.75rem;cursor:pointer;display:flex;justify-content:center;
+      transition:color .15s;
+    }
+    .expand-btn:hover{background:var(--slate-fog)}
+    .chevron{margin-left:auto;transition:transform .3s;display:inline-block}
+    .expand-btn.open .chevron{transform:rotate(180deg)}
+
+    /* Article body */
+    .post-full{display:none;padding:0 1.75rem 1.75rem;border-top:1px solid var(--border-soft)}
+    .post-full.visible{display:block}
+
+    .article{color:var(--text2);padding-top:1.5rem}
+    .article h2{font-size:1.1rem;font-weight:700;color:var(--text);margin:1.75rem 0 .6rem;letter-spacing:-.02em}
+    .article h3{font-size:.95rem;font-weight:700;color:var(--text);margin:1.25rem 0 .4rem}
+    .article p{font-size:.9rem;line-height:1.8;margin-bottom:.9rem}
+    .article ul,.article ol{margin:.6rem 0 1rem 1.5rem;font-size:.9rem;line-height:1.8}
+    .article li{margin-bottom:.35rem}
+    .article code{font-family:var(--mono);font-size:.82em;color:var(--slate);background:var(--slate-fog);border-radius:4px;padding:.1em .4em}
+    .article pre{background:#1c2333;border-radius:var(--radius);padding:1.1rem 1.25rem;overflow-x:auto;margin:1rem 0}
+    .article pre code{background:none;border:none;padding:0;color:#98d4a0;font-size:.82rem;line-height:1.75}
+    .article blockquote{border-left:3px solid var(--slate-pale);padding:.6rem 1.1rem;margin:.75rem 0;background:var(--slate-fog);border-radius:0 var(--radius) var(--radius) 0;color:var(--text);font-style:italic;font-size:.9rem}
+    .article strong{color:var(--text);font-weight:600}
+    .article hr{border:none;border-top:1px solid var(--border-soft);margin:1.5rem 0}
+    .article a{color:var(--slate);text-decoration:none;font-weight:500}
+    .article a:hover{text-decoration:underline}
+
+    .info-box{background:var(--slate-fog);border:1px solid var(--slate-pale);border-radius:var(--radius);padding:.9rem 1.1rem;margin:.75rem 0;font-size:.875rem;color:var(--text2);line-height:1.7}
+    .info-box strong{color:var(--slate)}
+    .info-box.success{background:var(--green-soft);border-color:#c3e6cb}
+    .info-box.success strong{color:var(--green-text)}
+
+    .incident{background:var(--bg2);border:1px solid var(--border-soft);border-radius:var(--radius);padding:1.1rem 1.25rem;margin:.75rem 0}
+    .incident h4{font-size:.82rem;font-weight:700;color:var(--text);margin-bottom:.4rem}
+
+    footer{background:var(--white);border-top:1px solid var(--border-soft);padding:1.75rem 2.5rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem}
+    .footer-brand{font-size:.85rem;font-weight:600;color:var(--text2)}
+    .footer-copy{font-size:.77rem;color:var(--text3)}
+    .footer-links{display:flex;gap:1.5rem}
+    .footer-links a{font-size:.77rem;color:var(--text3);text-decoration:none;transition:color .2s}
+    .footer-links a:hover{color:var(--text2)}
+
+    @media(max-width:600px){.nav-links{display:none}.post-summary{flex-direction:column}}
+  </style>
+</head>
+<body>
+
+<nav>
+  <a href="../index.html" class="nav-logo"><div class="nav-icon"><img src="../logo-transparent.png" alt="Worthless logo" /></div>worthless</a>
+  <div class="nav-links">
+    <a href="../how-it-works.html">How it works</a>
+    <a href="../features.html">Features</a>
+    <a href="index.html" class="active">Blog</a>
+    <a href="../red/index.html">Red Blog</a>
+    <a href="../memes.html">Memes</a>
+  </div>
+  <div class="nav-actions">
+    <a href="https://ko-fi.com/shacharme" class="nav-kofi" target="_blank" rel="noopener">☕ Ko-fi</a>
+    <a href="https://github.com/shacharm2/worthless" class="nav-gh" target="_blank" rel="noopener">GitHub</a>
+  </div>
+</nav>
+
+<div style="max-width:720px;margin:0 auto;padding:3rem 2rem 0;">
+  <h1 style="font-size:1.4rem;font-weight:700;color:var(--text);letter-spacing:-.02em;">Blog</h1>
+</div>
+
+<div class="posts">
+
+  <!-- Post 0: Why I Built Worthless -->
+  <div class="post-card" id="why-i-built-worthless" data-category="blue">
+    <div class="post-summary" onclick="togglePost('p0')">
+      <div>
+        <div class="post-meta">
+
+          <span class="post-date">April 17, 2026</span>
+        </div>
+        <div class="post-title">Why I built Worthless — make API keys worthless post leak</div>
+      </div>
+    </div>
+    <button class="expand-btn" id="btn-p0" onclick="togglePost('p0')" aria-label="Expand post" aria-controls="p0" aria-expanded="false">
+      <span class="chevron">▾</span>
+    </button>
+    <div class="post-full" id="p0">
+      <div class="article">
+        <h2>The problem nobody solved</h2>
+        <p>API keys leak. Constantly. Not because developers are careless, but because the entire AI ecosystem runs on plaintext secrets in .env files, and every tool in the chain is designed to move fast and break things.</p>
+        <p>AI agents run <code>git add .</code> and push your .env to GitHub. CI pipelines print keys in logs. Package managers get compromised and exfiltrate environment variables. And every week, someone discovers their $10k OpenAI bill came from a key they thought was safe.</p>
+
+        <h2>How many keys are out there right now?</h2>
+        <p>Search GitHub for <code>sk-proj-</code> (OpenAI's key prefix). You'll find tens of thousands of results. Live, working API keys sitting in public repositories. Some have been there for months. Some are being used right now by someone who isn't the owner.</p>
+        <p>OpenClaw leaks are massive. GitGuardian's annual report says millions of secrets are exposed on GitHub every year. And those are just the ones they can detect.</p>
+        <p>And it's getting worse. Google's Gemini API keys <a href="https://trufflesecurity.com/blog/google-api-keys-werent-secrets-but-then-gemini-changed-the-rules">weren't even considered secrets</a> until Gemini changed the rules. Suddenly, API keys that were safe to commit became attack vectors overnight. Every developer who followed Google's own guidance had keys exposed.</p>
+
+        <h2>The solutions don't work</h2>
+        <p>Vaults protect keys at rest. Great. But the moment you use the key, it's in memory, in environment variables, in places where it can leak. A vault doesn't help when your CI pipeline logs the key, or when a compromised npm package reads process.env.</p>
+        <p>Key rotation? You're playing whack-a-mole. Rotate after every leak, hope you catch it in time, pray the attacker didn't rack up a bill in the 47 seconds between leak and rotation.</p>
+        <p>Then there's the Cloudflare approach: build an entire infrastructure layer with Workers, KV stores, custom auth, rate limiting, and hope your team maintains it. It works, but it's complex enough that most teams won't do it. And the ones that do spend weeks on it.</p>
+
+        <h2>What if leaked keys just didn't work?</h2>
+        <p>That's the question I couldn't stop thinking about. Not "how do we prevent leaks" (you can't) but "how do we make leaks harmless."</p>
+        <p>The answer turned out to be simple: split the key. Your .env gets one half. Your server gets the other. Neither half works alone. When you make an API call, the halves combine for a split second, the call goes through, and the key is destroyed.</p>
+        <p>If someone steals your .env, they get one half of an XOR split. Mathematically useless. They can't brute-force it. They can't derive anything from it. It's just random bytes.</p>
+
+        <h2>That's Worthless</h2>
+        <p>Two commands. Your key is split. Your .env now contains a share that's worthless to steal. The proxy handles reconstruction, enforces spend caps, and never lets the full key leave server memory.</p>
+        <p>No vault. No complex infrastructure. No key rotation dance. Just a key that doesn't work when stolen.</p>
+        <p><code>pip install worthless</code></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Post: The landscape -->
+  <div class="post-card" id="the-landscape" data-category="blue">
+    <div class="post-summary" onclick="togglePost('p4')">
+      <div>
+        <div class="post-meta">
+          <span class="post-date">April 17, 2026</span>
+        </div>
+        <div class="post-title">Every tool protects your key. None protect you after it leaks</div>
+      </div>
+    </div>
+    <button class="expand-btn" id="btn-p4" onclick="togglePost('p4')" aria-label="Expand post" aria-controls="p4" aria-expanded="false">
+      <span class="chevron">▾</span>
+    </button>
+    <div class="post-full" id="p4">
+      <div class="article">
+        <p>Let's get this out of the way: the tools below are good. Some are great. You should probably use them. This isn't a "we're better" post. It's a "we do a different thing" post.</p>
+
+        <h2>What everyone does</h2>
+        <p>The entire secrets management industry is built around one idea: keep the key from leaking. Encrypt it at rest. Inject it at runtime. Scan for it in commits. Rotate it when it slips through. And honestly? That works. Most of the time.</p>
+        <p>Until it doesn't. And it doesn't more often than anyone admits.</p>
+
+        <h2>1Password / Doppler / Infisical</h2>
+        <p>Solid vaults. You store your secrets in them, they inject into your environment at runtime. 1Password even has CLI integration that's genuinely nice to use. Doppler syncs across environments. Infisical is open source and self-hostable.</p>
+        <p>The catch: your key still ends up in <code>process.env</code>. A compromised package reads it. A bad <code>console.log</code> prints it. The vault did its job perfectly. The key still leaked.</p>
+
+        <h2>GitGuardian / GitHub Secret Scanning</h2>
+        <p>These scan your repos for leaked secrets and alert you. GitGuardian catches keys in commits, PRs, even Slack messages. GitHub's built-in scanning works on push and can block the commit entirely.</p>
+        <p>Genuinely useful. Use them. But they're reactive. They tell you after the key is out there. You still need to rotate, pray nobody used it in the window, and figure out how it slipped through.</p>
+
+        <h2>Cloudflare's approach</h2>
+        <p>Cloudflare recently <a href="https://x.com/cloudflare/status/2043692614445133933">showed their API key protection setup</a>. It's impressive: Workers, KV stores, custom auth layers, rate limiting, the works. A proper engineering effort.</p>
+        <p>But look at it. That's a serious infrastructure project. How many teams are going to build and maintain that? Most of us are shipping features, not building security infrastructure from scratch. If you're Cloudflare, you have the team for it. If you're three people and a Slack channel, you don't.</p>
+
+        <h2>HashiCorp Vault</h2>
+        <p>The gold standard for secrets management. Dynamic secrets, lease-based access, audit logging, the whole thing. If you're running a 200-person engineering org with a dedicated platform team, Vault is probably the right answer.</p>
+        <p>If you're a solo dev or a small team building with AI APIs, Vault is like buying a forklift to move a chair.</p>
+
+        <h2>So where does Worthless fit?</h2>
+        <p>All of the above protect the key before it leaks. Worthless protects you after it leaks.</p>
+        <p>Your key gets split. Your .env has one half. The proxy has the other. Neither works alone. The full key exists for microseconds during a request, then it's gone.</p>
+        <p>Use a vault AND Worthless. Use GitGuardian AND Worthless. They're complementary, not competing. The vault prevents leaks. Worthless makes leaks harmless.</p>
+        <p>Two commands:</p>
+        <pre><code>pip install worthless
+worthless lock</code></pre>
+        <p>That's the entire setup. No infrastructure to build. No team to maintain it. Your key is split, your .env is safe to leak, and you get back to shipping.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Post 1 -->
+  <div class="post-card" id="introducing-worthless" data-category="blue">
+    <div class="post-summary" onclick="togglePost('p1')">
+      <div>
+        <div class="post-meta">
+
+          <span class="post-date">April 13, 2026</span>
+        </div>
+        <div class="post-title">Introducing Worthless — post-leak API key protection</div>
+      </div>
+    </div>
+    <button class="expand-btn" id="btn-p1" onclick="togglePost('p1')" aria-label="Expand post" aria-controls="p1" aria-expanded="false">
+      <span class="chevron">▾</span>
+    </button>
+    <div class="post-full" id="p1">
+      <div class="article">
+        <p>Every developer knows the feeling. You paste an API key into your code "just for testing," it ends up in a git commit, and seconds later it's live on GitHub. Bots scan repos constantly. Your bills spike. You rotate. Repeat next month.</p>
+        <h2>What exists today</h2>
+        <p>Two kinds of tools deal with API key security:</p>
+        <ol>
+          <li><strong>Pre-leak prevention</strong> — Vault, dotenv, GitHub secret scanning. These keep keys out of code and logs.</li>
+          <li><strong>Post-leak response</strong> — rotating the key, monitoring for abuse, revoking tokens.</li>
+        </ol>
+        <p>What's missing is the middle: <strong>what if the key leaks, but it's already useless?</strong></p>
+        <h2>How Worthless works</h2>
+        <p>Worthless splits your API key into two cryptographic shares. Neither share reveals anything about the original key — you need both to reconstruct it. Reconstruction happens in memory only, for milliseconds, and only when your app actually needs to make an API call.</p>
+        <pre><code>$ worthless lock
+1 key(s) protected.
+
+$ worthless wrap python app.py
+# your code is unchanged
+
+$ worthless unlock
+1 key(s) restored.</code></pre>
+        <p>There's also a budget enforcement layer: if your spending limit is hit, the key simply never forms — even if your code tries to use it. A hard stop.</p>
+        <blockquote>"Every secrets tool protects the key until your app uses it. Worthless protects you after it leaks."</blockquote>
+        <h2>Get started</h2>
+        <pre><code>pip install worthless
+worthless lock
+worthless wrap python app.py</code></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Post 2 -->
+  <div class="post-card" id="split-key-crypto" data-category="blue">
+    <div class="post-summary" onclick="togglePost('p2')">
+      <div>
+        <div class="post-meta">
+
+          <span class="post-date">April 13, 2026</span>
+        </div>
+        <div class="post-title">Why splitting a key makes it useless — the cryptography in plain English</div>
+      </div>
+    </div>
+    <button class="expand-btn" id="btn-p2" onclick="togglePost('p2')" aria-label="Expand post" aria-controls="p2" aria-expanded="false">
+      <span class="chevron">▾</span>
+    </button>
+    <div class="post-full" id="p2">
+      <div class="article">
+        <p>When we say "a leaked share is worthless," we mean it in a precise mathematical sense. This post explains why — without requiring a cryptography background.</p>
+        <h2>The intuition: a lock with two keys</h2>
+        <p>Imagine a padlock that requires two keys simultaneously to open. If someone steals one, they can't open the lock. They have something real — but it's useless without the other half. Secret sharing is the mathematical equivalent.</p>
+        <h2>The XOR method (2-of-2 sharing)</h2>
+        <ol>
+          <li>Generate a truly random string <strong>A</strong> the same length as your secret <strong>S</strong></li>
+          <li>Compute <strong>B = S XOR A</strong></li>
+          <li>Store A locally, B in the proxy</li>
+        </ol>
+        <p>Reconstruction: <code>S = A XOR B</code>. Simple. Brilliant.</p>
+        <h3>Why is A useless alone?</h3>
+        <p>Because A is purely random. An attacker with only A sees that every possible value of S produces a valid B — the share A is statistically independent of S. It could have come from any secret equally well.</p>
+        <div class="info-box"><strong>Information-theoretic security.</strong> This is called one-time pad secret sharing. It cannot be broken even with unlimited computational power — no brute force is possible because every guess is equally valid.</div>
+        <h2>What Worthless does in practice</h2>
+        <p>When you run <code>worthless lock</code>: your key is read, Share A is generated randomly, Share B is derived so A XOR B = key. A goes to local encrypted storage; B lives in proxy memory. Your <code>.env</code> is updated to point at the proxy. The full key exists for milliseconds, then memory is zeroed.</p>
+        <div class="info-box success"><strong>Two independent protections:</strong><br/>1. Cryptographic split — a leaked share reveals nothing.<br/>2. Budget enforcement — even with full key access, spending is capped.</div>
+      </div>
+    </div>
+  </div>
+
+
+</div>
+
+<footer>
+  <span class="footer-brand">⚔ worthless</span>
+  <span class="footer-copy">© 2026 · AGPL-3.0</span>
+  <div class="footer-links">
+    <a href="../index.html">Home</a>
+    <a href="https://github.com/shacharm2/worthless" target="_blank" rel="noopener">GitHub</a>
+    <a href="../features.html">Features</a>
+  </div>
+</footer>
+
+<script>
+  function togglePost(id) {
+    const full = document.getElementById(id);
+    const btn = document.getElementById('btn-' + id);
+    if (!full || !btn) return;
+    const open = full.classList.contains('visible');
+    full.classList.toggle('visible', !open);
+    btn.classList.toggle('open', !open);
+    btn.setAttribute('aria-expanded', String(!open));
+  }
+  function filterPosts(cat) {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    event.target.classList.add('active');
+    document.querySelectorAll('.post-card').forEach(c => {
+      c.classList.toggle('hidden', cat !== 'all' && c.dataset.category !== cat);
+    });
+  }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    const h = location.hash;
+    if (h === '#why-i-built-worthless') togglePost('p0');
+    else if (h === '#the-landscape') togglePost('p4');
+    else if (h === '#introducing-worthless') togglePost('p1');
+    else if (h === '#split-key-crypto') togglePost('p2');
+    else if (h === '#real-leaks' && document.getElementById('p3')) togglePost('p3');
+  });
+</script>
+</body>
+</html>

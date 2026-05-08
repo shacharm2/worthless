@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>How It Works — Worthless</title>
+  <meta name="description" content="A step-by-step walkthrough of how Worthless splits API keys and enforces spending budgets." />
+  <link rel="canonical" href="https://wless.io/how-it-works" />
+  <meta name="theme-color" content="#4a6fa5" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="How It Works — Worthless" />
+  <meta property="og:description" content="A step-by-step walkthrough of how Worthless splits API keys and enforces spending budgets." />
+  <meta property="og:image" content="https://wless.io/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:url" content="https://wless.io/how-it-works" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Worthless" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="How It Works — Worthless" />
+  <meta name="twitter:description" content="A step-by-step walkthrough of how Worthless splits API keys and enforces spending budgets." />
+  <meta name="twitter:image" content="https://wless.io/og-image.png" />
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="manifest" href="site.webmanifest" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      /* Soothing palette — soft blue-grays, no harsh tones */
+      --bg: #eef6ff;
+      --bg2: #eef3fb;
+      --white: #ffffff;
+      --surface: #ffffff;
+      --border: #dde5f0;
+      --border-soft: #ecf1f8;
+
+      --slate: #4a6fa5;
+      /* muted, calm blue */
+      --slate-dim: #3a5a8a;
+      --slate-pale: #d6e4f7;
+      --slate-fog: #edf4fd;
+
+      --text: #2c3a4a;
+      /* soft dark, not black */
+      --text2: #6c7e95;
+      /* muted mid */
+      --text3: #a8bccf;
+      /* very soft */
+
+      --green-soft: #e6f4ea;
+      --green-text: #276749;
+      --red-soft: #fdecea;
+      --red-text: #9e2a2b;
+
+      --mono: 'JetBrains Mono', monospace;
+
+      --radius: 10px;
+      --radius-lg: 16px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: linear-gradient(to bottom, #eef6ff 0%, #ffffff 25%, #ffffff 75%, #eef6ff 100%); color: var(--text); line-height: 1.6; }
+
+    nav {
+      position: sticky; top: 0; z-index: 100; height: 60px;
+      display: flex; align-items: center; padding: 0 2.5rem;
+      background: rgba(248,250,253,0.92); backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .nav-logo { font-size: 0.95rem; font-weight: 700; color: #005f73; text-decoration: none; display: flex; align-items: center; gap: 0.55rem; }
+    .nav-icon {
+      width: 26px;
+      height: 26px;
+      border-radius: 7px;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .nav-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .nav-links { display: flex; gap: 0.1rem; margin-left: 1.5rem; }
+    .nav-links a { font-size: 0.855rem; font-weight: 500; color: #0a9396; text-decoration: none; padding: 0.4rem 0.8rem; border-radius: 7px; transition: color 0.2s, background 0.2s; }
+    .nav-links a:hover, .nav-links a.active { color: var(--text); background: var(--bg2); }
+    .nav-kofi {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: white;
+      text-decoration: none;
+      padding: 0.38rem 0.85rem;
+      border-radius: 7px;
+      background: #ffb3b0;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+
+    .nav-kofi:hover {
+      background: #ff9c98;
+    }
+    .nav-gh { margin-left: auto; font-size: 0.82rem; font-weight: 500; color: var(--text2); text-decoration: none; padding: 0.4rem 0.85rem; border: 1px solid var(--border); border-radius: 7px; background: var(--white); transition: color 0.2s; }
+    .nav-gh:hover { color: var(--text); }
+
+    .page { max-width: 760px; margin: 0 auto; padding: 4rem 2rem 6rem; }
+    .eyebrow { font-size: 14px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text2); margin-bottom: 0.6rem; }
+    h1 { font-size: clamp(2rem, 3.5vw, 2.8rem); font-weight: 800; letter-spacing: -0.04em; margin-bottom: 1rem; line-height: 1.1; color: #005f73; }
+    .intro { font-size: 1.1rem; color: #0a9396; line-height: 1.8; max-width: 600px; padding-bottom: 2.5rem; margin-bottom: 2.5rem; border-bottom: 1px solid var(--border-soft); }
+    .intro::before { content: '...'; }
+    /* Steps */
+    .step { display: grid; grid-template-columns: 48px 1fr; gap: 0 1.5rem; }
+    .step-rail { display: flex; flex-direction: column; align-items: center; }
+    .step-num {
+      width: 34px; height: 34px; border-radius: 50%;
+      background: var(--slate-fog); border: 1px solid var(--slate-pale);
+      display: grid; place-items: center;
+      font-family: var(--mono); font-size: 0.75rem; color: var(--slate); font-weight: 600;
+      flex-shrink: 0;
+    }
+    .step-line { flex: 1; width: 1px; background: var(--border-soft); margin: 8px 0; min-height: 20px; }
+    .step:last-child .step-line { display: none; }
+    .step-body { padding-bottom: 2.75rem; }
+    .step h2 { font-size: 1.05rem; font-weight: 700; color: var(--text); margin-bottom: 0.5rem; padding-top: 0.3rem; letter-spacing: -0.01em; }
+    .step p { font-size: 0.875rem; color: var(--text2); line-height: 1.8; }
+    details { margin-top: 0.75rem; }
+    details summary { font-size: 0.82rem; color: var(--slate); cursor: pointer; font-weight: 500; }
+    details summary:hover { color: var(--slate-dim); }
+    details p { font-size: 0.82rem; color: var(--text2); line-height: 1.8; margin-top: 0.5rem; padding-left: 0.5rem; border-left: 2px solid var(--slate-pale); }
+    code { font-family: var(--mono); font-size: 0.82em; color: var(--slate); background: var(--slate-fog); border-radius: 4px; padding: 0.1em 0.4em; }
+
+    /* Code block */
+    .code-card {
+      margin-top: 1rem;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border-soft);
+      box-shadow: 0 2px 12px rgba(74,111,165,0.06);
+    }
+    .code-bar {
+      background: #f2f5f9; border-bottom: 1px solid var(--border-soft);
+      padding: 0.6rem 1rem; display: flex; align-items: center; gap: 0.4rem;
+    }
+    .cd { width: 9px; height: 9px; border-radius: 50%; }
+    .cd.r { background: #f4b8b5; } .cd.y { background: #f7d98b; } .cd.g { background: #a3d9a5; }
+    .code-fname { font-family: var(--mono); font-size: 0.7rem; color: var(--text3); margin-left: 0.4rem; }
+    .code-body { background: #1c2333; padding: 1.1rem 1.4rem; font-family: var(--mono); font-size: 0.8rem; line-height: 1.9; color: #c5ccd6; }
+    .ck { color: #82aadf; } .co { color: #98d4a0; } .cc { color: #6b7a8f; } .cp { color: #6b7a8f; }
+
+    /* Arch diagram */
+    .arch-card {
+      margin-top: 1rem;
+      background: var(--white);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius);
+      padding: 1.4rem 1.6rem;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      color: var(--text2);
+    }
+    .arch-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.35rem 0; flex-wrap: wrap; }
+    .an { background: var(--bg2); border: 1px solid var(--border); border-radius: 5px; padding: 0.28rem 0.7rem; color: var(--text); font-size: 0.76rem; white-space: nowrap; }
+    .an.blue { border-color: var(--slate-pale); color: var(--slate); background: var(--slate-fog); }
+    .an.green { border-color: #c3e6cb; color: var(--green-text); background: var(--green-soft); }
+    .an.muted { color: var(--text3); border-color: var(--border-soft); }
+    .aa { color: var(--text3); }
+    .arch-note { font-size: 0.7rem; color: var(--text3); margin-top: 0.4rem; padding-left: 0.2rem; font-family: var(--mono); }
+
+    /* Callout */
+    .callout {
+      margin-top: 1rem; display: flex; gap: 0.85rem;
+      background: var(--slate-fog); border: 1px solid var(--slate-pale);
+      border-radius: var(--radius); padding: 1rem 1.25rem;
+      font-size: 0.86rem; color: var(--text2); line-height: 1.7;
+    }
+    .callout strong { color: var(--slate); }
+    .callout-icon { flex-shrink: 0; }
+
+    /* YAML */
+    .yaml-block { margin-top: 1rem; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border-soft); }
+    .yaml-body { background: #1c2333; padding: 1.1rem 1.4rem; font-family: var(--mono); font-size: 0.8rem; line-height: 1.9; }
+    .yk { color: #e8a87c; } .ys { color: #98d4a0; } .yc { color: #6b7a8f; }
+
+    /* Nav links at bottom */
+    .page-nav { margin-top: 3rem; padding-top: 2rem; border-top: 1px solid var(--border-soft); display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    .btn-calm { display:inline-flex; align-items:center; gap:0.5rem; background:var(--slate); color:white; font-weight:600; font-size:0.875rem; padding:0.6rem 1.25rem; border-radius:var(--radius); text-decoration:none; transition:background 0.2s; box-shadow:0 2px 8px rgba(74,111,165,0.18); }
+    .btn-calm:hover { background:var(--slate-dim); }
+    .btn-ghost { display:inline-flex; align-items:center; gap:0.5rem; color:var(--text2); font-weight:500; font-size:0.875rem; padding:0.6rem 1.1rem; border-radius:var(--radius); text-decoration:none; border:1px solid var(--border); background:var(--white); transition:color 0.2s, border-color 0.2s; }
+    .btn-ghost:hover { color:var(--text); border-color:var(--slate-pale); }
+
+    footer { background:transparent; padding:1.75rem 2.5rem; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:1rem; }
+    .footer-brand { font-size:0.85rem; font-weight:600; color:var(--text2); }
+    .footer-copy { font-size:0.77rem; color:var(--text3); }
+    .footer-links { display:flex; gap:1.5rem; }
+    .footer-links a { font-size:0.77rem; color:var(--text3); text-decoration:none; transition:color 0.2s; }
+    .footer-links a:hover { color:var(--text2); }
+  </style>
+</head>
+<body>
+<nav>
+  <a href="index.html" class="nav-logo">
+    <div class="nav-icon"><img src="logo-transparent.png" alt="Worthless logo" /></div>
+    worthless
+  </a>
+  <div class="nav-links">
+    <a href="how-it-works.html" class="active">How it works</a>
+    <a href="features.html">Features</a>
+    <a href="blog/index.html">Blog</a>
+    <a href="red/index.html">Red Blog</a>
+    <a href="memes.html">Memes</a>
+  </div>
+  <a href="https://ko-fi.com/shacharme" class="nav-kofi" target="_blank" rel="noopener">☕ Ko-fi</a>
+  <a href="https://github.com/shacharm2/worthless" class="nav-gh" target="_blank" rel="noopener">GitHub</a>
+</nav>
+
+<div class="page">
+  <div class="eyebrow">How it works</div>
+  <h1>Your key gets split. Leaked half does nothing.</h1>
+
+  <div class="step">
+    <div class="step-rail"><div class="step-num">01</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <h2>You have an API key in your .env</h2>
+      <p>Right now it's sitting there in plaintext. If anyone gets that file, they have your key. They can use it. You pay.</p>
+      <details><summary>but why is that bad?</summary><p>Your .env gets committed to git, printed in CI logs, read by compromised packages, or pushed by an AI agent running <code>git add -A</code>. It happens constantly. Once the key is out there, anyone can use it and you get the bill.</p></details>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-rail"><div class="step-num">02</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <h2>Worthless splits it in half</h2>
+      <p>Run <code>worthless lock</code>. Your key gets split into two random-looking pieces. One stays in your .env. The other goes to a local proxy on your machine. Neither piece works on its own.</p>
+      <p>Someone steals your .env? They get random bytes. Can't use it. Can't brute-force it. Mathematically impossible.</p>
+      <details><summary>wait, how is it impossible?</summary><p>It's called XOR secret sharing. Think of it like tearing a photo in half — each piece looks like random noise. You need both halves to see the picture. The math guarantees that one half reveals zero information about the original. Not "hard to guess" — literally zero. Even with every computer on earth running forever.</p></details>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-rail"><div class="step-num">03</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <h2>Your app works exactly the same</h2>
+      <p>Run <code>worthless wrap python app.py</code> instead of <code>python app.py</code>. That's the only change. Your code reads environment variables like before. The proxy combines both halves for a split second, makes the API call, then destroys the key.</p>
+      <details><summary>what happens under the hood?</summary><p>The proxy sits between your app and the API provider. When your app makes a request, the proxy grabs both halves, XORs them back together, makes the real API call, gets the response, wipes the key from memory, and passes the response to your app. The full key exists for milliseconds. Your app never sees it.</p></details>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-rail"><div class="step-num">04</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <h2>Spending cap stops the bleeding</h2>
+      <p>Set a dollar limit. Hit it, the proxy stops reconstructing the key. Hard stop. Your app can't override it. Even if someone somehow gets both halves, the budget gate fires first.</p>
+      <details><summary>how is this different from OpenAI's spending limit?</summary><p>OpenAI's limit is checked after the request. Worthless checks before the key even forms. If you're over budget, the key never gets reconstructed. No API call happens. No money spent. The gate is at the infrastructure layer, not the provider's billing page.</p></details>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-rail"><div class="step-num">05</div><div class="step-line"></div></div>
+    <div class="step-body">
+      <h2>Don't like it? One command to undo</h2>
+      <p>Run <code>worthless unlock</code>. Original .env restored. Proxy gone. Shares deleted. Like it was never there.</p>
+      <details><summary>is there really zero lock-in?</summary><p>Zero. Your original key is stored encrypted locally. <code>worthless unlock</code> decrypts it, writes it back to .env, stops the proxy, and deletes the shares. Your app goes back to reading the real key directly. No artifacts, no config files, no dependencies left behind.</p></details>
+    </div>
+  </div>
+
+  <div class="page-nav">
+    <a href="features.html" class="btn-calm">View all features →</a>
+    <a href="https://github.com/shacharm2/worthless" class="btn-ghost" target="_blank" rel="noopener">GitHub ↗</a>
+    <a href="blog/index.html" class="btn-ghost">Read the blog →</a>
+  </div>
+</div>
+
+  <footer style="justify-content: flex-start; gap: 1.5rem;">
+    <span class="footer-copy">Open source · AGPL-3.0</span>
+    <a href="https://ko-fi.com/shacharme" target="_blank" rel="noopener" class="footer-copy" style="text-decoration: none; border-left: 1px solid var(--border-soft); padding-left: 1.5rem;">Buy me a Ko-fi ☕</a>
+  </footer>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "How does Worthless split API keys?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "XOR secret sharing. Your key is split into two shares. Neither share reveals the original key. Recombining them reconstructs it."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Where are the key shares stored?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Share A stays on your machine in .env. Share B is held by the local Worthless proxy, also on your machine. The full key never exists at rest."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Worthless see my full API key?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Only for a split second during a request, inside the local proxy's memory on your machine. The key is destroyed immediately after the API call completes."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What if the Worthless server is compromised?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The attacker gets Share B, which is useless without Share A from your machine. Neither share works alone."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Worthless add latency?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Minimal. Key reconstruction takes microseconds. The proxy adds single-digit milliseconds to each request."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I self-host Worthless?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Docker Compose, Railway, or Render. Full control over your key shares."
+      }
+    }
+  ]
+}
+</script>
+</body>
+</html>
