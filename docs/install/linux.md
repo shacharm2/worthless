@@ -89,7 +89,7 @@ worthless
 - On a server with no DBus session: **no prompt** — worthless uses the
   file-backed fallback at `~/.worthless/.fernet-key` (mode 0600).
 
-`.env` is rewritten (see [README — what `worthless lock` does](./README.md#what-worthless-lock-does-to-your-env)) and the proxy spawns on `127.0.0.1:8787`.
+`.env` is rewritten (see [README — what `worthless lock` does](/install/#what-worthless-lock-does-to-your-env)) and the proxy spawns on `127.0.0.1:8787`.
 
 ## 4. Point your app at the proxy
 
@@ -106,7 +106,7 @@ EnvironmentFile=/path/to/your/project/.env
 
 ## 5. Verify
 
-See [README — Verify it works](./README.md#verify-it-works) for the
+See [README — Verify it works](/install/#verify-it-works) for the
 SDK snippet. Same on every platform.
 
 ## 6. Daily use
@@ -175,7 +175,7 @@ rm -rf ~/.worthless
 | `Failed to install worthless==X.Y.Z` (network) | curl/uv blocked | Set `HTTPS_PROXY=...` and re-run |
 | Proxy starts but health check fails | Port 8787 in use | `lsof -i :8787` to find the squatter |
 | Server with no session bus, install hangs at keychain step | `keyring` waiting for unavailable service | This shouldn't happen; if it does, file an issue with `keyring --list-backends` output |
-| App in container can't reach `127.0.0.1:8787` | Container loopback ≠ host | See [docker.md](./docker.md) |
+| App in container can't reach `127.0.0.1:8787` | Container loopback ≠ host | See [docker.md](/install/docker/) |
 
 ## What worthless does NOT defend against on Linux
 
@@ -183,7 +183,7 @@ rm -rf ~/.worthless
   shell access, they can read shard A + the file-backed keystore +
   query the proxy.
 - Containerized apps without proper networking — see
-  [docker.md](./docker.md).
+  [docker.md](/install/docker/).
 - Multi-user systems. `~/.worthless/` is mode 0700 but other admins
   on the box can still read it. worthless is a per-user tool.
 
@@ -191,7 +191,7 @@ rm -rf ~/.worthless
 
 > Human readers can stop here — the YAML below is for AI agents.
 
-Schema documented in [agent-schema.md](./agent-schema.md).
+Schema documented in [agent-schema.md](/install/agent-schema/).
 
 ```yaml
 schema_version: 1

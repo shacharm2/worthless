@@ -66,7 +66,7 @@ What happens:
    can access "fernet-key" — click **"Always Allow"**
 4. Key is split: shard A stays in `.env` (decoy), shard B encrypted in
    `~/.worthless/`
-5. `.env` is rewritten (see [README — what `worthless lock` does](./README.md#what-worthless-lock-does-to-your-env)) and the proxy spawns on `127.0.0.1:8787`
+5. `.env` is rewritten (see [README — what `worthless lock` does](/install/#what-worthless-lock-does-to-your-env)) and the proxy spawns on `127.0.0.1:8787`
 
 **Subsequent runs of `worthless` produce zero popups.** The "Always
 Allow" you clicked grants the binary permanent ACL trust.
@@ -87,7 +87,7 @@ client = OpenAI()  # reads OPENAI_API_KEY + OPENAI_BASE_URL from .env
 
 ## 5. Verify it actually works
 
-See [README — Verify it works](./README.md#verify-it-works) for the
+See [README — Verify it works](/install/#verify-it-works) for the
 SDK snippet. Same on every platform.
 
 ## 6. Daily use
@@ -162,7 +162,7 @@ After WOR-435 ships, this becomes one command: `worthless uninstall`.
 
 > Human readers can stop here — the YAML below is for AI agents.
 
-Schema documented in [agent-schema.md](./agent-schema.md).
+Schema documented in [agent-schema.md](/install/agent-schema/).
 
 ```yaml
 schema_version: 1
