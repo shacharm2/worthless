@@ -64,3 +64,37 @@ class OpenclawIntegrationError(Exception):
     def __init__(self, code: OpenclawErrorCode, detail: str) -> None:
         self.code = code
         super().__init__(detail)
+
+
+@dataclass(frozen=True)
+class OpenclawIntegrationReport:
+    """Wire-stable JSON shape for ``worthless --json lock|unlock`` output.
+
+    Spec AC6: parseable by Pi (the JSON consumer agent). Wire format
+    mirrored to the on-disk sentinel at
+    ``$WORTHLESS_HOME/last-lock-status.json`` so doctor + status can read
+    the same shape without re-deriving it.
+
+    Frozen — once emitted, downstream consumers must see a stable payload.
+    Spec said "Pydantic" originally; this codebase doesn't have pydantic
+    as a dep, so we use a frozen dataclass + ``dataclasses.asdict`` for
+    JSON serialization. Wire shape is the only contract that matters.
+
+    Fields:
+        ts: ISO 8601 UTC timestamp of the operation.
+        status: ``"ok"`` (everything succeeded) or ``"partial"`` (lock-core
+            succeeded but the OpenClaw stage hit a detected+failed condition).
+            ``"partial"`` triggers the trust-fix exit-non-zero path.
+        openclaw: ``"ok"`` | ``"failed"`` | ``"absent"`` — the OpenClaw stage
+            outcome. ``"absent"`` means OpenClaw was not detected on this host.
+        alias_count: number of aliases the operation touched (lock: wired;
+            unlock: removed).
+        events: structured event list, one entry per
+            :class:`OpenclawIntegrationEvent` surfaced during the operation.
+    """
+
+    ts: str
+    status: str  # "ok" | "partial"
+    openclaw: str  # "ok" | "failed" | "absent"
+    alias_count: int
+    events: tuple[dict[str, str], ...] = field(default_factory=tuple)

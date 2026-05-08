@@ -192,43 +192,140 @@ async def _cleanup_enrollment(
 def _apply_openclaw_unlock(
     unlocked: list[tuple[str, str]],
     console,  # noqa: ANN001 — Console type is opaque from this layer
-) -> None:
-    """Best-effort OpenClaw symmetric undo. Never raises into unlock-core.
+    home: WorthlessHome,
+) -> bool:
+    """OpenClaw symmetric undo + sentinel write. Returns ``partial_failure``.
 
-    Per L1/L2 in
-    ``engineering/research/openclaw-WOR-431-phase-2-spec.md``: failures
-    here surface as structured events on the returned
-    :class:`worthless.openclaw.integration.OpenclawApplyResult` or are
-    logged + swallowed if the integration layer raises unexpectedly.
-    The user's ``.env`` is already restored — losing the OpenClaw cleanup
-    must never block the unlock outcome.
+    Symmetric with ``lock.py::_apply_openclaw``. Per L1: never rolls back
+    unlock-core. Per L2 (revised 2026-05-08 by the verification gauntlet):
+    detected+failed returns True so the caller raises ``typer.Exit(73)``
+    AFTER unlock-core's `.env` restoration commits.
+
+    Returns:
+        True if detected+failed (caller should exit non-zero post-commit).
+        False if all succeeded OR OpenClaw was not detected on this host.
+
+    Side effects:
+        Writes ``$WORTHLESS_HOME/last-lock-status.json`` so ``worthless
+        status`` reports DEGRADED state across terminal sessions.
     """
     if not unlocked:
-        return
+        # Nothing to undo on the OpenClaw side — also nothing to record.
+        return False
     try:
         result = _openclaw_integration.apply_unlock(aliases=unlocked)
     except OpenclawIntegrationError as exc:
         logger.warning("openclaw apply_unlock raised unexpectedly: %s", exc)
-        return
+        _emit_openclaw_unlock_failure(console, home, len(unlocked), str(exc))
+        return True
     except Exception as exc:  # noqa: BLE001 — last-resort guard for L1
         logger.warning("openclaw apply_unlock raised unexpectedly: %s", exc)
-        return
+        _emit_openclaw_unlock_failure(console, home, len(unlocked), str(exc))
+        return True
 
+    # ---- Classify the result ---------------------------------------------
     if not result.detected:
-        return
+        # No OpenClaw on this host — record absent, no UI noise.
+        _write_unlock_sentinel(home, status="ok", openclaw="absent", alias_count=0, events=())
+        return False
 
-    if result.providers_set:
-        console.print_hint(
-            f"  OpenClaw: removed {len(result.providers_set)} provider(s) "
-            f"({', '.join(result.providers_set)})"
+    # Trust-fix classification (refined post-test): only ``error``-level
+    # events count as failure. ``config_missing`` is warn-level (idempotent
+    # no-op when openclaw.json was already removed); only genuine errors
+    # (config_unreadable, write_failed, skill_install_failed) trigger
+    # detected+failed.
+    has_failure = any(e.level == "error" for e in result.events)
+
+    if not has_failure:
+        if result.providers_set:
+            console.print_success(f"[OK] OpenClaw: removed {len(result.providers_set)} provider(s)")
+            for provider_name in result.providers_set:
+                console.print_hint(f"   • {provider_name}")
+        if result.skill_installed:
+            console.print_hint("   • ~/.openclaw/workspace/skills/worthless/ — removed")
+        _write_unlock_sentinel(
+            home,
+            status="ok",
+            openclaw="ok",
+            alias_count=len(result.providers_set),
+            events=tuple(_event_to_dict_unlock(e) for e in result.events),
         )
-    if result.skill_installed:
-        console.print_hint("  OpenClaw: skill removed")
+        return False
+
+    # Detected + failed: trust-failure path.
+    console.print_failure("[FAIL] OpenClaw cleanup did NOT complete.")
+    console.print_warning("   Your .env is restored, but worthless-* entries may remain in")
+    console.print_warning("   ~/.openclaw/openclaw.json — re-run `worthless unlock` or")
+    console.print_warning("   `worthless doctor` to repair.")
     for name, reason in result.providers_skipped:
-        console.print_warning(f"  OpenClaw: skipped {name} ({reason})")
+        console.print_warning(f"   skipped {name} ({reason})")
     for event in result.events:
         if event.level == "error":
-            console.print_warning(f"  OpenClaw: {event.code.value} — {event.detail}")
+            console.print_warning(f"   {event.code.value} — {event.detail}")
+    _write_unlock_sentinel(
+        home,
+        status="partial",
+        openclaw="failed",
+        alias_count=len(result.providers_set),
+        events=tuple(_event_to_dict_unlock(e) for e in result.events),
+    )
+    return True
+
+
+def _event_to_dict_unlock(event) -> dict[str, str]:  # noqa: ANN001
+    """Serialize an OpenclawIntegrationEvent for sentinel/JSON output."""
+    return {
+        "code": event.code.value,
+        "level": event.level,
+        "detail": event.detail,
+    }
+
+
+def _emit_openclaw_unlock_failure(
+    console,  # noqa: ANN001
+    home: WorthlessHome,
+    alias_count: int,
+    detail: str,
+) -> None:
+    """Print [FAIL] block + write partial sentinel for the unexpected-raise path."""
+    console.print_failure("[FAIL] OpenClaw cleanup did NOT complete.")
+    console.print_warning("   Your .env is restored, but worthless-* entries may remain in")
+    console.print_warning("   ~/.openclaw/openclaw.json — repair via:")
+    console.print_warning(f"   detail: {detail}")
+    console.print_warning("")
+    console.print_warning("   Fix:    worthless doctor")
+    _write_unlock_sentinel(
+        home,
+        status="partial",
+        openclaw="failed",
+        alias_count=alias_count,
+        events=({"code": "openclaw.unexpected_raise", "level": "error", "detail": detail},),
+    )
+
+
+def _write_unlock_sentinel(
+    home: WorthlessHome,
+    *,
+    status: str,
+    openclaw: str,
+    alias_count: int,
+    events: tuple[dict[str, str], ...],
+) -> None:
+    """Best-effort sentinel write. Failure is logged + swallowed."""
+    try:
+        from worthless.cli.sentinel import write_sentinel
+
+        write_sentinel(
+            home.base_dir,
+            status=status,
+            openclaw=openclaw,
+            alias_count=alias_count,
+            events=list(events),
+        )
+    except OSError as exc:
+        logger.warning("sentinel write failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — sentinel is best-effort
+        logger.warning("sentinel write failed unexpectedly: %s", exc)
 
 
 def register_unlock_commands(app: typer.Typer) -> None:
@@ -247,14 +344,14 @@ def register_unlock_commands(app: typer.Typer) -> None:
         home = get_home()
         repo = ShardRepository(str(home.db_path), home.fernet_key)
 
-        async def _unlock_async():
+        async def _unlock_async() -> bool:
             await repo.initialize()
             unlocked: list[tuple[str, str]] = []
             if alias:
                 outcome = await _unlock_alias(alias, home, repo, env)
                 if outcome is not None:
                     unlocked.append(outcome)
-                console.print_success(f"Unlocked {alias}.")
+                console.print_success(f"[OK] Unlocked {alias}.")
             else:
                 # Scope to aliases enrolled in this specific .env
                 env_str = str(env.resolve())
@@ -262,18 +359,26 @@ def register_unlock_commands(app: typer.Typer) -> None:
                 aliases = sorted({e.key_alias for e in all_enrollments if e.env_path == env_str})
                 if not aliases:
                     console.print_warning("No enrolled keys found.")
-                    return
+                    return False
                 for a in aliases:
                     outcome = await _unlock_alias(a, home, repo, env)
                     if outcome is not None:
                         unlocked.append(outcome)
-                console.print_success(f"{len(aliases)} key(s) restored.")
+                console.print_success(f"[OK] {len(aliases)} key(s) restored.")
 
-            # Phase 2.c: OpenClaw symmetric undo. Per L1/L2 in
+            # Phase 2.c: OpenClaw symmetric undo. Per L1 in
             # engineering/research/openclaw-WOR-431-phase-2-spec.md, this
-            # NEVER aborts unlock-core success. Failures surface as
-            # structured events, not exceptions.
-            _apply_openclaw_unlock(unlocked, console)
+            # NEVER aborts unlock-core success. Per L2 (revised 2026-05-08
+            # by the verification gauntlet): detected+failed returns
+            # partial_failure=True so the caller raises typer.Exit(73)
+            # AFTER unlock-core's .env restoration commits.
+            return _apply_openclaw_unlock(unlocked, console, home)
 
         with acquire_lock(home):
-            asyncio.run(_unlock_async())
+            partial_failure = asyncio.run(_unlock_async())
+
+        # Trust-fix (2026-05-08): symmetric with lock — exit non-zero AFTER
+        # unlock-core has restored the .env. Sentinel already updated by
+        # _apply_openclaw_unlock; the [FAIL] block already printed.
+        if partial_failure:
+            raise typer.Exit(code=73)

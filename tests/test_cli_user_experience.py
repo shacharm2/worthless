@@ -139,7 +139,12 @@ class TestLockUx:
     """User-facing messages from the lock command."""
 
     def test_lock_success_message(self, home_dir: WorthlessHome, env_with_openai: Path) -> None:
-        """After locking, user sees 'N key(s) protected.'"""
+        """After locking, user sees ``[OK] Protected N key(s).``
+
+        Wording was tightened in the 2026-05-08 trust-fix to lead with
+        ``[OK]`` text prefix (carrier for monochrome terminals + screen
+        readers + CI log scrapers, per UX-researcher).
+        """
         result = runner.invoke(
             app,
             ["lock", "--env", str(env_with_openai)],
@@ -147,7 +152,10 @@ class TestLockUx:
         )
         assert result.exit_code == 0
         combined = result.stdout + result.stderr
-        assert "1 key(s) protected" in combined
+        # Trust-fix wording: "[OK] Protected N key(s)." with text prefix
+        # as the accessible carrier (color/glyph reinforce only).
+        assert "[OK]" in combined
+        assert "Protected 1 key(s)" in combined
 
     def test_lock_no_keys_message(self, home_dir: WorthlessHome, env_clean: Path) -> None:
         """When .env has no API keys, user sees 'No unprotected API keys found.'"""
@@ -472,8 +480,11 @@ class TestQuietMode:
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 0
-        # In quiet mode, success messages are suppressed
-        assert "key(s) protected" not in result.stderr
+        # In quiet mode, success messages are suppressed.
+        # Trust-fix wording is "[OK] Protected N key(s)." — assert that
+        # neither the prefix nor the body leaks through quiet mode.
+        assert "[OK]" not in result.stderr
+        assert "Protected" not in result.stderr
 
     def test_quiet_scan_suppresses_output(self, env_with_openai: Path) -> None:
         """--quiet scan produces no stderr output (exit code only)."""

@@ -148,15 +148,19 @@ def test_unlock_with_openclaw_removes_provider_and_skill(
 # ---------------------------------------------------------------------------
 
 
-def test_unlock_with_openclaw_apply_unlock_failure_exits_zero(
+def test_unlock_with_openclaw_apply_unlock_failure_exits_nonzero(
     home_dir: WorthlessHome,
     env_file: Path,
     openclaw_present: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """L1/L2 + AC10: monkeypatch ``apply_unlock`` to raise → ``worthless
-    unlock`` still exits 0 and the .env is still restored. The OpenClaw
-    failure must never re-raise into unlock-core.
+    """L1 + AC10 (revised 2026-05-08): monkeypatch ``apply_unlock`` to
+    raise → ``worthless unlock`` exits **73** AND the .env is still
+    restored. Symmetric with the lock-side trust-fix.
+
+    L1 preserved: unlock-core's `.env` restoration is NOT rolled back
+    even though we exit non-zero. The user gets BOTH the .env recovery
+    AND a loud signal that OpenClaw cleanup is incomplete.
     """
     # Set up a locked state first.
     lock_result = runner.invoke(
@@ -182,9 +186,11 @@ def test_unlock_with_openclaw_apply_unlock_failure_exits_zero(
         ["unlock", "--env", str(env_file)],
         env={"WORTHLESS_HOME": str(home_dir.base_dir)},
     )
-    assert result.exit_code == 0, result.output
+    # Trust-fix: detected+failed → exit 73, not 0.
+    assert result.exit_code == 73, result.output
 
-    # .env was restored (OPENAI_API_KEY back to a real-shape key, no BASE_URL).
+    # AC11/L1: .env was still restored (OPENAI_API_KEY back to a real-shape
+    # key, no BASE_URL). Unlock-core was NOT rolled back.
     body = env_file.read_text()
     assert "OPENAI_API_KEY=" in body
     assert "OPENAI_BASE_URL=" not in body

@@ -134,15 +134,24 @@ def test_lock_with_openclaw_writes_openclaw_json_and_installs_skill(
 # ---------------------------------------------------------------------------
 
 
-def test_lock_with_openclaw_failure_exits_zero_and_preserves_env_state(
+def test_lock_with_openclaw_failure_exits_nonzero_and_preserves_env_state(
     home_dir: WorthlessHome,
     env_file: Path,
     openclaw_present: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC10 + AC11: monkeypatch apply_lock to raise OpenclawIntegrationError
-    → ``worthless lock`` still exits 0 and the .env still has shard-A
-    written. The OpenClaw failure must not roll back lock-core (L1).
+    """AC10 + AC11 (revised by 2026-05-08 verification gauntlet):
+    monkeypatch apply_lock to raise OpenclawIntegrationError → ``worthless
+    lock`` exits **73** (EX_CANTCREAT, distinguishable from generic 1)
+    AND the .env still has shard-A written.
+
+    L1 preserved: lock-core's ``.env``/DB writes are NOT rolled back
+    even though we exit non-zero. The user gets BOTH the binding-contract
+    protection of the .env split AND a loud signal that OpenClaw is broken.
+
+    This replaces the prior "exit 0 + surfaced events" behavior, which
+    failed the trust contract for users whose CI scripts ignore exit
+    codes (verification gauntlet finding by brutus + ux-researcher).
     """
     from worthless.openclaw import errors as openclaw_errors
     from worthless.openclaw import integration
@@ -162,26 +171,29 @@ def test_lock_with_openclaw_failure_exits_zero_and_preserves_env_state(
         env={"WORTHLESS_HOME": str(home_dir.base_dir)},
     )
 
-    assert result.exit_code == 0, result.output
+    # Trust-fix: detected+failed → exit 73, not 0.
+    assert result.exit_code == 73, result.output
     new_body = env_file.read_text()
-    # .env state advanced past the original (shard-A and/or BASE_URL added).
+    # AC11/L1: .env state advanced past the original (shard-A and/or
+    # BASE_URL added). Lock-core was NOT rolled back.
     assert new_body != original_key_line
     assert "OPENAI_API_KEY=" in new_body
 
 
-def test_lock_with_openclaw_apply_lock_returns_failure_events_exits_zero(
+def test_lock_with_openclaw_apply_lock_returns_failure_events_exits_nonzero(
     home_dir: WorthlessHome,
     env_file: Path,
     openclaw_present: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """AC10: when apply_lock returns a result with failure events (the
-    contracted path — not raising), ``lock`` still exits 0 and reports
-    the events without aborting lock-core.
+    """AC10 (revised 2026-05-08): when apply_lock returns a result with
+    failure events (the contracted path — not raising), ``lock`` exits
+    **73** AND lock-core's `.env` writes are preserved.
 
     Simulates F-XS-40 at the command level: writing openclaw.json blows
-    up internally, apply_lock surfaces it as a structured event, lock
-    proceeds.
+    up internally, apply_lock surfaces it as a structured error event,
+    lock-core's `.env`/DB writes commit, and then `lock` exits non-zero
+    so the user can't miss the partial failure.
     """
     from worthless.openclaw import config as config_mod
 
@@ -196,5 +208,7 @@ def test_lock_with_openclaw_apply_lock_returns_failure_events_exits_zero(
         env={"WORTHLESS_HOME": str(home_dir.base_dir)},
     )
 
-    assert result.exit_code == 0, result.output
+    # Trust-fix: detected+failed → exit 73, not 0.
+    assert result.exit_code == 73, result.output
+    # L1: lock-core preserved its .env write despite OpenClaw failure.
     assert "OPENAI_API_KEY=" in env_file.read_text()

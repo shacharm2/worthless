@@ -25,7 +25,7 @@
 | # | Decision | Why |
 |---|---|---|
 | L1 | **Best-effort + idempotent retry** rollback (NOT 2-phase commit) | OpenClaw integration is downstream of `lock` core; failures there must never roll back `.env`/DB writes |
-| L2 | **`.env`/DB success + OpenClaw failure → exit code 0**, events surfaced in `--json` | The `.env` is the binding contract; OpenClaw is enhancement |
+| L2 | **(revised 2026-05-08 by 8-agent verification gauntlet)** — `.env`/DB success + OpenClaw NOT-DETECTED → exit 0; `.env`/DB success + OpenClaw DETECTED + integration failed → **exit 73 (EX_CANTCREAT)** + `[FAIL]` block on stderr + persistent sentinel at `$WORTHLESS_HOME/last-lock-status.json` (`status=partial`, `openclaw=failed`) so `worthless status` reports DEGRADED across terminal sessions. The `.env` is still the binding contract (never rolled back per L1); when OpenClaw is detected, integration becomes part of the user's expected outcome and partial failure must be unmissable. | Original L2 ("exit 0 + surfaced events") failed for users whose CI ignores exit codes — five minutes after lock, agent silently bypasses worthless, attacker drains. New L2 closes brutus B2 + UX-researcher + architect-reviewer trust contract. |
 | L3 | **We own `~/.openclaw/workspace/skills/worthless/`** — overwrite stale content | Treating it as ours is documented in SKILL.md itself |
 | L4 | **Real-container e2e deferred to WOR-432** | Phase 2 ships unit + functional + injection + concurrency; WOR-432 spins up the actual container |
 | L5 | **Shard A in `openclaw.json` apiKey is OK** | Non-secret on its own; matches `.env` wrap-mode behavior; SR-04 not violated |
@@ -84,7 +84,7 @@ Each AC is a single verifiable assertion. Implementation is "done" when **all** 
 | AC7 | `lock` → `unlock` round-trip leaves `openclaw.json` byte-identical to its pre-`lock` state | RT-01 (sort_keys=True from Phase 1 makes byte-comparison deterministic) |
 | AC8 | Concurrency stress test (CONC-45) passes 50/50 iterations | CI smoke gate |
 | AC9 | Phase 1's full test suite still passes (27/27, 93% coverage) | Regression — Phase 1 invariants unchanged |
-| AC10 | `.env`/DB success + OpenClaw stage failure → exit code 0 with surfaced events (per L2) | Failure-injection tests INJ-20, INJ-21, F-XS-40, F-XS-41 |
+| AC10 | (revised 2026-05-08) `.env`/DB success + OpenClaw NOT-DETECTED → exit 0; `.env`/DB success + OpenClaw DETECTED + integration failed → **exit 73** with `[FAIL]` block + sentinel at `$WORTHLESS_HOME/last-lock-status.json` set to `partial`/`failed` (per revised L2). | `tests/openclaw/test_trust_fix.py` TF-01..TF-11 + `tests/openclaw/test_lock_command_openclaw.py::test_lock_with_openclaw_failure_exits_nonzero_and_preserves_env_state` + symmetric on unlock. |
 | AC11 | `lock` core never rolls back due to OpenClaw failure (per L1) | Verify in F-XS-40: poison openclaw.json write, assert .env still gets the locked Shard A |
 | AC12 | No private-repo references introduced in any Phase 2 file (per the segmentation rule from CLAUDE.md) | pre-commit `segmentation` hook |
 | AC13 | All new files have ruff-clean code, 80%+ coverage, type hints | `uv run ruff check` + `uv run pytest --cov` |
@@ -136,8 +136,8 @@ Each AC is a single verifiable assertion. Implementation is "done" when **all** 
 ### Cross-stage (F40–F47)
 | ID | Failure | Recovery | Test |
 |---|---|---|---|
-| F40 | `.env` succeeded, `openclaw.json` failed | Per L1/L2: surface in `--json`, exit 0. Re-run idempotent. | F-XS-40 |
-| F41 | `.env` + config OK, skill failed | Same. | F-XS-41 |
+| F40 | `.env` succeeded, `openclaw.json` failed | Per L1: keep `.env`/DB writes (binding contract preserved). Per revised L2 (2026-05-08): `[FAIL]` to stderr, sentinel set to `partial`/`failed`, exit 73. Re-run idempotent. | F-XS-40 + TF-03/TF-05 |
+| F41 | `.env` + config OK, skill failed | Same — surfaces as detected+failed via `events[level=error]` from `apply_lock`'s skill stage. | F-XS-41 |
 | F42 | SIGTERM/SIGKILL between phases | Each phase atomic; next run reconciles via idempotency. No journal. | IDEM-42 |
 | F43 | Daemon hot-reloads on `os.replace` | Desired. Emit `openclaw.config_updated` for log readability. | F-XS-43 |
 | F44 | Config orphan (no daemon running) | Not our problem. Doctor surfaces hint. | F-XS-44 |

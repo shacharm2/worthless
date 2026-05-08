@@ -281,13 +281,27 @@ def _apply_openclaw(
     planned: list[_PlannedUpdate],
     console,  # noqa: ANN001 — Console type is opaque from this layer
     quiet: bool,
-) -> None:
-    """Best-effort OpenClaw integration call. Never raises into lock-core.
+    home: WorthlessHome,
+) -> bool:
+    """OpenClaw integration call + sentinel write. Returns ``partial_failure``.
 
-    Per L1/L2 in
-    ``engineering/research/openclaw-WOR-431-phase-2-spec.md``: failures
-    here surface as structured events on the returned ``OpenclawApplyResult``
-    or are logged + swallowed if the integration layer raises unexpectedly.
+    Per L1 in ``engineering/research/openclaw-WOR-431-phase-2-spec.md``:
+    failures here NEVER roll back lock-core. Per L2 (revised 2026-05-08
+    by the verification gauntlet): when OpenClaw is **detected** AND the
+    integration stage fails, the user is in a false-invariant state ("lock
+    succeeded but my agent traffic isn't gated"). Caller (`_lock_keys`)
+    raises ``typer.Exit(73)`` AFTER lock-core's `.env`/DB writes are
+    fully committed — the binding contract is preserved, but the user
+    learns about the partial failure unmissably.
+
+    Returns:
+        True if detected+failed (caller should exit non-zero post-commit).
+        False if all succeeded OR OpenClaw was not detected on this host.
+
+    Side effects:
+        Writes ``$WORTHLESS_HOME/last-lock-status.json`` so ``worthless
+        status`` can report DEGRADED state across terminal sessions.
+        Sentinel write failure is itself best-effort (logged, swallowed).
     """
     triples: list[tuple[str, str, str]] = [
         (p.provider, p.alias, p.shard_a.decode("utf-8")) for p in planned
@@ -302,29 +316,138 @@ def _apply_openclaw(
             planned_updates=triples, proxy_base_url=proxy_base_url
         )
     except OpenclawIntegrationError as exc:
-        # Defensive: apply_lock's contract is "never raise". If it does,
-        # log and continue — lock-core success must stand.
+        # apply_lock's contract is "never raise". If it does, treat as
+        # detected+failed (we don't know which, but the user is in a
+        # genuinely broken state — surface it loudly).
         logger.warning("openclaw apply_lock raised unexpectedly: %s", exc)
-        return
+        _emit_openclaw_failure(console, quiet, home, len(planned), str(exc))
+        return True
     except Exception as exc:  # noqa: BLE001 — last-resort guard for L1
         logger.warning("openclaw apply_lock raised unexpectedly: %s", exc)
-        return
+        _emit_openclaw_failure(console, quiet, home, len(planned), str(exc))
+        return True
 
-    if quiet or not result.detected:
-        return
+    # ---- Classify the result ---------------------------------------------
+    if not result.detected:
+        # No OpenClaw on this host — sentinel reflects "absent", not failure.
+        _write_lock_sentinel(home, status="ok", openclaw="absent", alias_count=0, events=())
+        return False
 
-    if result.providers_set:
-        console.print_hint(
-            f"  OpenClaw: wired {len(result.providers_set)} provider(s) "
-            f"({', '.join(result.providers_set)})"
+    # Trust-fix classification (refined post-test): only ``error``-level
+    # events count as failure. ``provider_conflict`` (warn) means the user
+    # configured the provider themselves and we respected it — that's a
+    # CLEAN state, not a partial failure. ``symlink_refused`` IS error-level
+    # because the user's home is in a genuinely unsafe state. ``config_missing``
+    # on unlock is warn-level (idempotent no-op).
+    has_failure = any(e.level == "error" for e in result.events)
+
+    if not has_failure:
+        # Fully successful integration — record OK + enumerate to user.
+        if not quiet:
+            console.print_success("[OK] OpenClaw integration:")
+            for provider_name in result.providers_set:
+                console.print_hint(
+                    f"   • ~/.openclaw/openclaw.json — added provider '{provider_name}'"
+                )
+            if result.skill_installed:
+                console.print_hint("   • ~/.openclaw/workspace/skills/worthless/ — installed skill")
+            console.print_hint("   • Undo: worthless unlock")
+        _write_lock_sentinel(
+            home,
+            status="ok",
+            openclaw="ok",
+            alias_count=len(result.providers_set),
+            events=tuple(_event_to_dict(e) for e in result.events),
         )
-    if result.skill_installed:
-        console.print_hint("  OpenClaw: skill installed")
-    for name, reason in result.providers_skipped:
-        console.print_warning(f"  OpenClaw: skipped {name} ({reason})")
-    for event in result.events:
-        if event.level == "error":
-            console.print_warning(f"  OpenClaw: {event.code.value} — {event.detail}")
+        return False
+
+    # Detected + failed: the trust-failure path. Print [FAIL] block, write
+    # sentinel as partial. Caller raises typer.Exit(73) after lock-core's
+    # .env/DB writes finish committing.
+    if not quiet:
+        console.print_failure("[FAIL] OpenClaw integration did NOT complete.")
+        console.print_warning("   Your .env is locked, but OpenClaw is still calling the")
+        console.print_warning("   provider directly with the unsplit key.")
+        for name, reason in result.providers_skipped:
+            console.print_warning(f"   skipped {name} ({reason})")
+        for event in result.events:
+            if event.level == "error":
+                console.print_warning(f"   {event.code.value} — {event.detail}")
+        console.print_warning("")
+        console.print_warning("   Fix:       worthless doctor")
+        console.print_warning("   Roll back: worthless unlock")
+    _write_lock_sentinel(
+        home,
+        status="partial",
+        openclaw="failed",
+        alias_count=len(result.providers_set),
+        events=tuple(_event_to_dict(e) for e in result.events),
+    )
+    return True
+
+
+def _event_to_dict(event) -> dict[str, str]:  # noqa: ANN001
+    """Serialize an OpenclawIntegrationEvent for sentinel/JSON output."""
+    return {
+        "code": event.code.value,
+        "level": event.level,
+        "detail": event.detail,
+    }
+
+
+def _emit_openclaw_failure(
+    console,  # noqa: ANN001
+    quiet: bool,
+    home: WorthlessHome,
+    alias_count: int,
+    detail: str,
+) -> None:
+    """Print [FAIL] block + write partial sentinel for the unexpected-raise path.
+
+    Used when ``apply_lock`` raises despite contracting not to. Mirrors the
+    in-line FAIL block above — we don't know exactly what failed, but the
+    user is in a genuinely broken state and must be told loudly.
+    """
+    if not quiet:
+        console.print_failure("[FAIL] OpenClaw integration did NOT complete.")
+        console.print_warning("   Your .env is locked, but OpenClaw is still calling the")
+        console.print_warning("   provider directly with the unsplit key.")
+        console.print_warning(f"   detail: {detail}")
+        console.print_warning("")
+        console.print_warning("   Fix:       worthless doctor")
+        console.print_warning("   Roll back: worthless unlock")
+    _write_lock_sentinel(
+        home,
+        status="partial",
+        openclaw="failed",
+        alias_count=alias_count,
+        events=({"code": "openclaw.unexpected_raise", "level": "error", "detail": detail},),
+    )
+
+
+def _write_lock_sentinel(
+    home: WorthlessHome,
+    *,
+    status: str,
+    openclaw: str,
+    alias_count: int,
+    events: tuple[dict[str, str], ...],
+) -> None:
+    """Best-effort sentinel write. Failure is logged + swallowed."""
+    try:
+        from worthless.cli.sentinel import write_sentinel
+
+        write_sentinel(
+            home.base_dir,
+            status=status,
+            openclaw=openclaw,
+            alias_count=alias_count,
+            events=list(events),
+        )
+    except OSError as exc:
+        logger.warning("sentinel write failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — sentinel is best-effort
+        logger.warning("sentinel write failed unexpectedly: %s", exc)
 
 
 def _lock_keys(
@@ -352,7 +475,7 @@ def _lock_keys(
     if not quiet:
         console.print_hint(f"Scanning {env_path} for API keys...")
 
-    async def _lock_async() -> int:
+    async def _lock_async() -> tuple[int, bool]:
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         await repo.initialize()
 
@@ -363,7 +486,7 @@ def _lock_keys(
         scanned = scan_env_keys(env_path, enrolled_locations=enrolled_locations)
         if not scanned:
             console.print_warning("No unprotected API keys found.")
-            return 0
+            return 0, False
 
         candidates = [
             (var_name, value, provider_override or detected_provider)
@@ -377,14 +500,16 @@ def _lock_keys(
                 console.print_hint(f"  Protecting {len(candidates)} key(s)...")
             await _pass1_db_writes(repo, candidates, env_str, token_budget_daily, planned)
             if not planned:
-                return 0
+                return 0, False
             _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
-            # Phase 2.b: OpenClaw magic. Per L1/L2 in
+            # Phase 2.b: OpenClaw magic. Per L1 in
             # engineering/research/openclaw-WOR-431-phase-2-spec.md, this
-            # NEVER rolls back lock-core success. Failures surface as
-            # structured events, not exceptions.
-            _apply_openclaw(planned, console, quiet)
-            return len(planned)
+            # NEVER rolls back lock-core success. Per L2 (revised 2026-05-08
+            # by the verification gauntlet): detected+failed returns
+            # partial_failure=True so the caller can raise typer.Exit(73)
+            # AFTER lock-core's .env/DB writes are fully committed.
+            partial_failure = _apply_openclaw(planned, console, quiet, home)
+            return len(planned), partial_failure
         except Exception:
             if planned:
                 unwind_errors = await _compensating_unwind(repo, planned)
@@ -398,7 +523,7 @@ def _lock_keys(
             for p in planned:
                 p.zero()
 
-    count = asyncio.run(_lock_async())
+    count, partial_failure = asyncio.run(_lock_async())
 
     if count and env_path.exists():
         current = env_path.stat().st_mode
@@ -407,12 +532,22 @@ def _lock_keys(
 
     if not quiet:
         if count:
-            console.print_success(f"{count} key(s) protected.")
+            console.print_success(f"[OK] Protected {count} key(s).")
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
             )
         else:
             console.print_warning("No unprotected API keys found.")
+
+    # Trust-fix (2026-05-08 verification gauntlet): when OpenClaw was
+    # detected on this host AND the integration stage failed, the user is
+    # in a false-invariant state — .env is locked, but their agent traffic
+    # is not gated. Surface this LOUDLY by exiting non-zero AFTER the
+    # lock-core writes have committed (L1 binding contract preserved).
+    # Exit code 73 = EX_CANTCREAT (POSIX), distinguishable from 1.
+    # The [FAIL] block is already printed by _apply_openclaw.
+    if partial_failure:
+        raise typer.Exit(code=73)
 
     return count
 
