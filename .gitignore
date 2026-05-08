@@ -86,3 +86,10 @@ docs-standalone/
 # Starlight / Astro docs site
 dist/
 .astro/
+
+# Wrangler local cache (`wrangler dev` writes here for the marketing
+# Worker; not deploy-relevant, not tracked).
+.wrangler/
+
+# Phase 1 audit scratch (WOR-455 plan §2.16); never committed.
+phase1-audit/

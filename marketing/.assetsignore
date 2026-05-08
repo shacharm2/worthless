@@ -1,0 +1,14 @@
+# Wrangler 3.91+ honors this file the same way `.gitignore` works:
+# any path matched here is excluded from the published asset bundle.
+# Belt-and-braces against accidental inclusion of repo metadata.
+wrangler*.toml
+wrangler*.jsonc
+.env*
+.dev.vars
+node_modules/
+.git/
+*.md
+tsconfig.json
+package*.json
+.assetsignore
+phase1-audit/

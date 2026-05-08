@@ -1,0 +1,7 @@
+/*
+  Strict-Transport-Security: max-age=15552000; includeSubDomains; preload
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://tally.so; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; frame-src https://tally.so
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()

@@ -1,0 +1,50 @@
+# Cloudflare Worker for wless.io marketing surface — WOR-455.
+#
+# Static-assets-only Worker (no `main` field). Modeled on the existing
+# `worthless-docs` config (root wrangler.jsonc) but spec'd in TOML
+# with explicit named environments matching the `worthless-sh`
+# two-env pattern.
+#
+# CRITICAL — `wrangler deploy` MUST be invoked with
+# `--config wrangler-marketing.toml --env <env>`. Without `--config`,
+# Wrangler 4 walks up the tree, finds root `wrangler.jsonc` first
+# (the docs Worker), and either deploys to the wrong Worker or fails
+# with "No environment named 'production'". The `deploy-marketing.yml`
+# workflow enforces this; `lint-marketing.yml` lints all workflows
+# for `wrangler` invocations missing `--config`.
+
+name = "wless-marketing"
+compatibility_date = "2026-04-26"
+
+[assets]
+directory = "./marketing/"
+not_found_handling = "404-page"
+# `html_handling` defaults to `auto-trailing-slash` — `/foo.html` 307s
+# to `/foo` and serves the body, while `/` serves `index.html`. We
+# accept that behavior and align canonical URLs + sitemap.xml + llms.txt
+# to the post-redirect form (extensionless). Legacy inbound links to
+# `*.html` will 307 once but reach 200 with the correct canonical.
+# Workers Static Assets honors marketing/.assetsignore — see that
+# file for the deny list (wrangler*.toml, package.json, etc.).
+
+[env.preview]
+name = "wless-marketing-preview"
+
+[env.production]
+name = "wless-marketing"
+# Disable workers.dev fallback for production. Identical reasoning to
+# workers/worthless-sh/wrangler.toml § env.production: a parallel
+# *.workers.dev surface would bypass the wless.io route, the security
+# headers anchored to it via marketing/_headers, and any zone-level
+# WAF rules. Production must only be reachable via the wless.io route.
+#
+# Phase 1 does NOT claim the wless.io/* route — that's Phase 2/3.
+# Until then the route block below stays commented; production deploys
+# (workers_dev = false) target a Worker with no public surface.
+workers_dev = false
+
+# Production route — NOT claimed in Phase 1. Uncommented in Phase 3
+# cutover commit, gated by a signed `marketing-v*` tag.
+# [[env.production.routes]]
+# pattern = "wless.io/*"
+# zone_name = "wless.io"
