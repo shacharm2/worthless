@@ -75,10 +75,13 @@ async def _probe(socket_path: Path) -> int:
     except asyncio.TimeoutError:
         _emit("handshake timeout")
         return 1
-    except OSError as exc:
-        # Generic socket error (EACCES, ENOTCONN, etc). Map to a fixed string;
-        # include errno for operator triage but no traceback.
-        _emit(f"connect failed (errno={exc.errno})")
+    except PermissionError:
+        # errno == EACCES — proxy uid lacks group membership on the socket.
+        _emit("connect denied (permission)")
+        return 1
+    except OSError:
+        # Other socket error (ENOTCONN, EPIPE, etc). Fixed string only.
+        _emit("connect failed")
         return 1
 
 
@@ -95,10 +98,14 @@ def main() -> int:
     try:
         st = os.lstat(socket_path)
     except FileNotFoundError:
-        _emit(f"socket missing at {socket_path}")
+        # Path comes from env; operator already knows it. No interpolation.
+        _emit("socket missing")
         return 1
-    except OSError as exc:
-        _emit(f"stat failed (errno={exc.errno})")
+    except PermissionError:
+        _emit("stat denied (permission)")
+        return 1
+    except OSError:
+        _emit("stat failed")
         return 1
 
     if not stat.S_ISSOCK(st.st_mode):

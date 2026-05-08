@@ -1,17 +1,20 @@
-"""Unit tests for ``python -m worthless.sidecar.health``.
+"""Unit tests for ``python -m worthless.sidecar.health`` (WOR-466).
 
-Covers the failure-mode table from
-``.planning/wor-310/design-sidecar-health-cli.md``:
+Failure-mode coverage table — every row maps to a test below:
 
 * missing env                       → exit 2, "WORTHLESS_SIDECAR_SOCKET unset"
 * socket path missing (ENOENT)      → exit 1, "socket missing"
 * path exists, wrong type           → exit 1, "not a socket"
-* happy path (real sidecar)         → exit 0, no stdout
+* stale inode (sidecar died)        → exit 1, "connect refused" / "protocol error"
 * sidecar bound, accept loop hung   → exit 1, "handshake timeout"
 * uid not in allowlist              → exit 1, "AUTH rejected"
+* happy path (real sidecar)         → exit 0, no stdout
 
-The hung-accept-loop test is the key value-add: it would false-green an
-HTTP `/healthz` probe (uvicorn answers, sidecar is dead).
+The hung-accept-loop and stale-inode tests are the key value-add: both would
+false-green an HTTP `/healthz` probe (uvicorn answers, sidecar is dead).
+
+Linear ticket WOR-466. Integration lane (real Docker container) tracked
+separately as WOR-474.
 """
 
 from __future__ import annotations
@@ -141,6 +144,31 @@ def wrong_uid_sidecar(short_tmpdir: Path) -> Iterator[Path]:
 
 
 @pytest.fixture
+def stale_inode_socket(short_tmpdir: Path) -> Iterator[Path]:
+    """AF_UNIX socket file that exists on disk but has no listener — the
+    classic "sidecar process died, stale socket inode lingered" scenario.
+    Bind + close leaves the inode behind; connect() returns ECONNREFUSED."""
+    sock = short_tmpdir / "s.sock"
+    if len(str(sock)) >= _SUN_PATH_MAX:
+        pytest.skip(f"tmp path too long for AF_UNIX: {sock}")
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(str(sock))
+    # Close WITHOUT listen — kernel teardown leaves the inode but no accept queue.
+    s.close()
+    if not sock.exists():
+        # Some kernels unlink on close; fall back to creating a regular-file
+        # at the path then promoting it. If that's also impossible, skip.
+        pytest.skip("kernel auto-unlinks AF_UNIX socket on close on this platform")
+    try:
+        yield sock
+    finally:
+        try:
+            sock.unlink()
+        except OSError:
+            pass
+
+
+@pytest.fixture
 def hung_socket(short_tmpdir: Path) -> Iterator[Path]:
     """AF_UNIX socket that listens but never accepts — simulates a wedged
     accept loop. Connect succeeds (kernel handles backlog) but no hello
@@ -215,6 +243,27 @@ def test_happy_path_exit_0_no_stdout(
     rc = health.main()
     captured = capsys.readouterr()
     assert rc == 0, f"expected exit 0 (healthy), stderr={captured.err!r}"
+    assert captured.out == ""
+
+
+def test_stale_inode_econnrefused(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stale_inode_socket: Path,
+) -> None:
+    """The "sidecar died, socket inode lingered" case. stat passes (inode
+    exists, type is socket), connect gets ECONNREFUSED. HTTP /healthz would
+    pass; we must fail."""
+    monkeypatch.setenv("WORTHLESS_SIDECAR_SOCKET", str(stale_inode_socket))
+    rc = health.main()
+    captured = capsys.readouterr()
+    assert rc == 1, f"expected exit 1 (stale inode), stderr={captured.err!r}"
+    # Kernel-dependent: Linux returns ECONNREFUSED on connect; macOS accepts
+    # then immediately resets, surfacing as a protocol error during HELLO.
+    # Both signal "sidecar dead, stale inode" to the operator.
+    assert any(
+        s in captured.err for s in ("connect refused", "connect failed", "protocol error")
+    ), f"unexpected stderr: {captured.err!r}"
     assert captured.out == ""
 
 
