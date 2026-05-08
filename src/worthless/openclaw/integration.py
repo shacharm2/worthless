@@ -285,6 +285,23 @@ class OpenclawApplyResult:
     skill_installed: bool = False
     events: tuple[OpenclawIntegrationEvent, ...] = field(default_factory=tuple)
 
+    @property
+    def has_failure(self) -> bool:
+        """Did this stage hit a genuine failure that should trigger trust-fix exit?
+
+        Trust-fix classification (per spec § L2 revised 2026-05-08):
+        only ``error``-level events count. ``provider_conflict``
+        (warn-level) means the user configured the provider themselves
+        and we respected it — that is a CLEAN state, not a partial
+        failure. ``symlink_refused`` IS error-level because the user's
+        home is in a genuinely unsafe state. ``config_missing`` on
+        unlock is warn-level (idempotent no-op).
+
+        Single-source the rule so it cannot drift between the lock and
+        unlock call sites.
+        """
+        return any(e.level == "error" for e in self.events)
+
 
 def _resolve_active_config_path(state: IntegrationState, home: Path | None) -> Path:
     """Pick the config file path to write to.

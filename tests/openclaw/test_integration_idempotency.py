@@ -18,32 +18,11 @@ config entry intact AND the skill folder installed, with no orphan
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
-
-@pytest.fixture
-def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    return home
-
-
-@pytest.fixture
-def openclaw_present(fake_home: Path) -> dict[str, Path]:
-    openclaw_dir = fake_home / ".openclaw"
-    workspace = openclaw_dir / "workspace"
-    workspace.mkdir(parents=True)
-    config_path = openclaw_dir / "openclaw.json"
-    config_path.write_text(
-        json.dumps({"models": {"providers": {}}}, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    return {"home": fake_home, "workspace": workspace, "config_path": config_path}
+# ``fake_home`` + ``openclaw_present`` come from ``tests/openclaw/conftest.py``.
 
 
 # ---------------------------------------------------------------------------

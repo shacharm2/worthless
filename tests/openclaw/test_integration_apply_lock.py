@@ -22,40 +22,8 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures: ``fake_home`` + ``openclaw_present`` provided by conftest.py.
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Pin HOME at a tmp_path-rooted directory so detect() probes the sandbox.
-
-    Mirrors the ``fake_home`` fixture in ``test_integration_detect.py`` —
-    ``apply_lock`` calls ``detect()`` first, so HOME must be sandboxed.
-    """
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    return home
-
-
-@pytest.fixture
-def openclaw_present(fake_home: Path) -> dict[str, Path]:
-    """Pre-stage ``~/.openclaw/`` with a workspace and a minimal openclaw.json.
-
-    Returns a dict with ``home``, ``workspace``, ``config_path`` for tests
-    that need to assert on the on-disk artifacts.
-    """
-    openclaw_dir = fake_home / ".openclaw"
-    workspace = openclaw_dir / "workspace"
-    workspace.mkdir(parents=True)
-    config_path = openclaw_dir / "openclaw.json"
-    config_path.write_text(
-        json.dumps({"models": {"providers": {}}}, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    return {"home": fake_home, "workspace": workspace, "config_path": config_path}
 
 
 # ---------------------------------------------------------------------------

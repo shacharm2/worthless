@@ -229,14 +229,9 @@ def _apply_openclaw_unlock(
         _write_unlock_sentinel(home, status="ok", openclaw="absent", alias_count=0, events=())
         return False
 
-    # Trust-fix classification (refined post-test): only ``error``-level
-    # events count as failure. ``config_missing`` is warn-level (idempotent
-    # no-op when openclaw.json was already removed); only genuine errors
-    # (config_unreadable, write_failed, skill_install_failed) trigger
-    # detected+failed.
-    has_failure = any(e.level == "error" for e in result.events)
-
-    if not has_failure:
+    # Trust-fix classification lives on OpenclawApplyResult.has_failure
+    # (single-sourced — see integration.py docstring).
+    if not result.has_failure:
         if result.providers_set:
             console.print_success(f"[OK] OpenClaw: removed {len(result.providers_set)} provider(s)")
             for provider_name in result.providers_set:
@@ -248,7 +243,7 @@ def _apply_openclaw_unlock(
             status="ok",
             openclaw="ok",
             alias_count=len(result.providers_set),
-            events=tuple(_event_to_dict_unlock(e) for e in result.events),
+            events=tuple(e.to_dict() for e in result.events),
         )
         return False
 
@@ -267,18 +262,9 @@ def _apply_openclaw_unlock(
         status="partial",
         openclaw="failed",
         alias_count=len(result.providers_set),
-        events=tuple(_event_to_dict_unlock(e) for e in result.events),
+        events=tuple(e.to_dict() for e in result.events),
     )
     return True
-
-
-def _event_to_dict_unlock(event) -> dict[str, str]:  # noqa: ANN001
-    """Serialize an OpenclawIntegrationEvent for sentinel/JSON output."""
-    return {
-        "code": event.code.value,
-        "level": event.level,
-        "detail": event.detail,
-    }
 
 
 def _emit_openclaw_unlock_failure(

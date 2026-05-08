@@ -333,15 +333,10 @@ def _apply_openclaw(
         _write_lock_sentinel(home, status="ok", openclaw="absent", alias_count=0, events=())
         return False
 
-    # Trust-fix classification (refined post-test): only ``error``-level
-    # events count as failure. ``provider_conflict`` (warn) means the user
-    # configured the provider themselves and we respected it — that's a
-    # CLEAN state, not a partial failure. ``symlink_refused`` IS error-level
-    # because the user's home is in a genuinely unsafe state. ``config_missing``
-    # on unlock is warn-level (idempotent no-op).
-    has_failure = any(e.level == "error" for e in result.events)
-
-    if not has_failure:
+    # Trust-fix classification lives on OpenclawApplyResult.has_failure
+    # (single-sourced — see integration.py docstring). Lock + unlock both
+    # call this property.
+    if not result.has_failure:
         # Fully successful integration — record OK + enumerate to user.
         if not quiet:
             console.print_success("[OK] OpenClaw integration:")
@@ -357,7 +352,7 @@ def _apply_openclaw(
             status="ok",
             openclaw="ok",
             alias_count=len(result.providers_set),
-            events=tuple(_event_to_dict(e) for e in result.events),
+            events=tuple(e.to_dict() for e in result.events),
         )
         return False
 
@@ -381,18 +376,9 @@ def _apply_openclaw(
         status="partial",
         openclaw="failed",
         alias_count=len(result.providers_set),
-        events=tuple(_event_to_dict(e) for e in result.events),
+        events=tuple(e.to_dict() for e in result.events),
     )
     return True
-
-
-def _event_to_dict(event) -> dict[str, str]:  # noqa: ANN001
-    """Serialize an OpenclawIntegrationEvent for sentinel/JSON output."""
-    return {
-        "code": event.code.value,
-        "level": event.level,
-        "detail": event.detail,
-    }
 
 
 def _emit_openclaw_failure(

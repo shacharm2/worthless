@@ -44,13 +44,32 @@ class OpenclawIntegrationEvent:
     """One structured event emitted by the OpenClaw integration layer.
 
     Frozen so a downstream stage can't flip ``level`` before the JSON
-    renderer reads it. Use :func:`dataclasses.asdict` to serialize.
+    renderer reads it.
     """
 
     code: OpenclawErrorCode
     level: str  # "info" | "warn" | "error"
     detail: str
     extra: dict[str, str] | None = field(default=None)
+
+    def to_dict(self) -> dict[str, str]:
+        """Wire-stable serialization for sentinel + ``--json`` output.
+
+        Single-source the {code, level, detail} shape so downstream
+        consumers (sentinel writer, ``--json`` renderer, doctor) all
+        agree. Replaces a pair of byte-identical ``_event_to_dict``
+        helpers that lived in ``cli/commands/lock.py`` and
+        ``cli/commands/unlock.py``.
+
+        ``extra`` is intentionally omitted from the wire shape — it's a
+        debug-side-channel for human readers, not part of the JSON
+        contract Pi consumes.
+        """
+        return {
+            "code": self.code.value,
+            "level": self.level,
+            "detail": self.detail,
+        }
 
 
 class OpenclawIntegrationError(Exception):
