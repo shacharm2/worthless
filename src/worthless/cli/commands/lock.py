@@ -663,7 +663,7 @@ def _lock_keys(
             # monochrome terminals + screen readers + CI log scrapers
             # (color/glyph reinforce but is never the carrier).
             console.print_success(
-                f"[OK] Done. {count} key(s) split between this machine and "
+                f"[OK] {count} key(s) split between this machine and "
                 f"your system keystore — {env_path.name} no longer contains "
                 f"a usable secret."
             )

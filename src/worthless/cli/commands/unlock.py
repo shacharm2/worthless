@@ -50,7 +50,7 @@ _RECOVERY_LABEL = "<recovery>"
 def _format_restored_line(p: _PlannedRestore) -> str:
     """Per-key audit line emitted after a successful restore (HF4)."""
     where = str(p.env_path) if p.env_path is not None else _RECOVERY_LABEL
-    return f"Restored {p.var_name or p.alias} ({p.provider}, alias {p.alias}) → {where}"
+    return f"[OK] Restored {p.var_name or p.alias} ({p.provider}, alias {p.alias}) → {where}"
 
 
 def _unrecognised_shards(env: Path) -> list[str]:
