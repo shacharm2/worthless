@@ -1,0 +1,103 @@
+name: Lint marketing
+
+# WOR-455 — guards on the marketing/ tree and its deploy plumbing.
+# Runs on every PR that touches marketing/, wrangler-marketing.toml,
+# or any deploy workflow. Cheap, fast, fail-fast.
+
+on:
+  pull_request:
+    paths:
+      - 'marketing/**'
+      - 'wrangler-marketing.toml'
+      - '.github/workflows/lint-marketing.yml'
+      - '.github/workflows/deploy-marketing.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'marketing/**'
+      - 'wrangler-marketing.toml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-marketing-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guards:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Block worthless.cloud references in marketing/
+        # Catches the bug-class WOR-455 was created to fix: marketing
+        # copy that still self-identifies as the legacy domain. The
+        # alternation covers literal `worthless.cloud`, escaped
+        # `worthless\.cloud`, and URL-encoded `worthless%2Ecloud`. The
+        # `run: |` literal-block scalar preserves the backslash inside
+        # the regex char class (YAML would otherwise fold it).
+        run: |
+          if git grep -niE 'worthless[.\\]cloud|worthless%2[Ee]cloud' -- marketing/ ; then
+            echo "::error::worthless.cloud reference found in marketing/. Sweep step #18a missed something."
+            exit 1
+          fi
+          echo "OK: no worthless.cloud references in marketing/"
+
+      - name: Require canonical install command in hero (WOR-454)
+        # Closes WOR-454 by construction: marketing/index.html must
+        # contain at least one canonical install command.
+        run: |
+          if ! grep -qE 'pipx install worthless|curl.*worthless\.sh|docker run.*worthless' \
+               marketing/index.html; then
+            echo "::error::marketing/index.html missing canonical install command (WOR-454)."
+            exit 1
+          fi
+          echo "OK: install command present"
+
+      - name: Forbid wrangler invocation without --config
+        # The repo has THREE Wrangler configs: wrangler.jsonc (root,
+        # worthless-docs), workers/worthless-sh/wrangler.toml, and
+        # wrangler-marketing.toml. Without `--config`, Wrangler 4 walks
+        # up the tree and picks whichever it finds first — non-obvious
+        # cross-Worker collisions ensue. Every wrangler invocation in
+        # any workflow MUST pass `--config`.
+        run: |
+          set -e
+          bad=$(grep -RIEn 'wrangler (deploy|publish|dev)\b' .github/workflows/ \
+                | grep -v -- '--config ' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::wrangler invocation without --config:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "OK: every wrangler call uses --config"
+
+      - name: Require six security headers in marketing/_headers
+        # WOR-299 posture parity. Decision 1 in WOR-455 plan: Worker
+        # is the source of truth for these headers, not the zone
+        # Transform Rule. Block merges that quietly drop one.
+        run: |
+          set -e
+          required=(
+            "Strict-Transport-Security"
+            "Content-Security-Policy"
+            "X-Frame-Options"
+            "X-Content-Type-Options"
+            "Referrer-Policy"
+            "Permissions-Policy"
+          )
+          missing=()
+          for h in "${required[@]}"; do
+            if ! grep -q "^[[:space:]]*${h}:" marketing/_headers ; then
+              missing+=("${h}")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::marketing/_headers missing required header(s): ${missing[*]}"
+            exit 1
+          fi
+          echo "OK: all six WOR-299 headers present"

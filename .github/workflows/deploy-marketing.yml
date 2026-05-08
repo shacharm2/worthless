@@ -1,0 +1,208 @@
+name: Deploy Worker (wless-marketing)
+
+# WOR-455 Phase 1 — marketing Worker for wless.io.
+# Modeled on .github/workflows/deploy-worker.yml (worthless-sh), same
+# threat model: signed-tag-only production, dispatch=preview only.
+#
+# Tag namespace is `marketing-v*` — distinct from `v*` used by
+# worthless-sh — so a Worker code release does NOT also ship marketing
+# copy and vice versa.
+#
+# Cross-references:
+#   - WOR-455         — parent migration ticket
+#   - WOR-457         — marketing-url-smoke.yml (called by `smoke` job)
+#   - WOR-323/WOR-401 — signed-tag verify + scoped tokens pattern
+#   - WOR-299         — security-header posture (asserted by lint job)
+
+on:
+  push:
+    tags:
+      - 'marketing-v*'
+  workflow_dispatch:
+    # LOAD-BEARING — DO NOT add `production` to `options` below.
+    #
+    # The verify steps in both jobs guard with
+    # `if: github.event_name == 'push'` so they intentionally skip GPG
+    # signature verification on `workflow_dispatch` runs. That skip is
+    # ONLY safe because dispatch is restricted to `target=preview` —
+    # production deploys are tag-only, so the only path to production
+    # is a signed `marketing-v*` tag push that triggers verify.
+    #
+    # Adding `production` to `options` (innocent-looking 1-line change)
+    # silently re-opens dispatch-to-production with NO signature check.
+    # See deploy-worker.yml for the same reasoning on the worthless-sh
+    # tag namespace, and WOR-323 "Non-obvious couplings for future
+    # contributors" #1 for the full threat model.
+    inputs:
+      target:
+        description: "Deploy target (preview only — production is tag-triggered)"
+        type: choice
+        options:
+          - preview
+        default: preview
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-marketing-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify (lint, sweep, tag signature)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      target: ${{ steps.target.outputs.value }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # Need full history so `git verify-tag` can read the signed
+          # tag object; shallow clone strips signatures.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag GPG signature (fatal, tag-push only)
+        if: github.event_name == 'push'
+        # Single source of truth for tag-signature verification:
+        # .github/scripts/verify-tag.sh. Reused by deploy-worker.yml.
+        # Regression-tested by .github/workflows/verify-tag-test.yml.
+        env:
+          MAINTAINER_PUBKEY: ${{ vars.MAINTAINER_GPG_PUBKEY }}
+          MAINTAINER_FINGERPRINT: ${{ vars.MAINTAINER_GPG_FINGERPRINT }}
+        run: bash .github/scripts/verify-tag.sh
+
+      - name: Resolve deploy target
+        id: target
+        # Inputs piped through env vars (security-hardening guide) so
+        # workflow_dispatch input cannot escape into shell.
+        env:
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            echo "value=production" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${INPUT_TARGET}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Re-run lint guards
+        # Defense-in-depth: lint-marketing.yml runs on PR, but a tag
+        # push from a topic branch could bypass PR review. Re-run the
+        # guards here so a broken tree never reaches `wrangler deploy`.
+        run: |
+          set -e
+          if git grep -niE 'worthless[.\\]cloud|worthless%2[Ee]cloud' -- marketing/ ; then
+            echo "::error::worthless.cloud reference found in marketing/."
+            exit 1
+          fi
+          if ! grep -qE 'pipx install worthless|curl.*worthless\.sh|docker run.*worthless' \
+               marketing/index.html; then
+            echo "::error::marketing/index.html missing canonical install command (WOR-454)."
+            exit 1
+          fi
+          for h in Strict-Transport-Security Content-Security-Policy \
+                   X-Frame-Options X-Content-Type-Options \
+                   Referrer-Policy Permissions-Policy ; do
+            grep -q "^[[:space:]]*${h}:" marketing/_headers \
+              || { echo "::error::missing header in _headers: ${h}"; exit 1; }
+          done
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      # Per-target Actions environment scopes secrets per deploy
+      # surface. The `wless-marketing-production` env's
+      # deployment-branch rule restricts it to `marketing-v*` tags
+      # (configured in repo Settings, not in this file).
+      name: wless-marketing-${{ needs.verify.outputs.target }}
+      url: >-
+        ${{ needs.verify.outputs.target == 'production'
+            && 'https://wless.io/'
+            || 'https://dash.cloudflare.com/' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Re-verify tag GPG signature (defense-in-depth)
+        if: github.event_name == 'push'
+        # Trust between jobs flows through `needs:` job-graph, not
+        # cryptographic artifacts. Re-running verify here closes the
+        # transitive-trust gap (~5s on a runner that already has gpg).
+        env:
+          MAINTAINER_PUBKEY: ${{ vars.MAINTAINER_GPG_PUBKEY }}
+          MAINTAINER_FINGERPRINT: ${{ vars.MAINTAINER_GPG_FINGERPRINT }}
+        run: bash .github/scripts/verify-tag.sh
+
+      - name: Deploy via Wrangler
+        # Per-Worker, per-env scoped tokens. Do NOT reuse
+        # worthless-sh-deploy-* tokens — the WOR-323/401 hardening
+        # pattern requires distinct tokens so a leaked marketing token
+        # cannot redeploy worthless-sh and vice versa.
+        #
+        # `--config wrangler-marketing.toml` is REQUIRED. The repo root
+        # has its own `wrangler.jsonc` (the worthless-docs Worker auto-
+        # deployed by Cloudflare Workers Builds). Wrangler 4 walks up
+        # looking for config and finds the docs `.jsonc` first; without
+        # `--config` it would deploy the wrong Worker (docs, not
+        # marketing). lint-marketing.yml asserts this flag is always
+        # present in any wrangler invocation under .github/workflows/.
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_MARKETING }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DEPLOY_TARGET: ${{ needs.verify.outputs.target }}
+        run: |
+          npx --yes wrangler@^4 deploy \
+            --config wrangler-marketing.toml \
+            --env "${DEPLOY_TARGET}"
+
+  smoke:
+    # Calls into marketing-url-smoke.yml when WOR-457 lands. Until
+    # then, run the inline placeholder smoke below — preview only.
+    # Production smoke is gated by Phase 2/3 cutover; the production
+    # route is not claimed in Phase 1.
+    name: Marketing smoke (preview)
+    needs: [verify, deploy]
+    if: needs.verify.outputs.target == 'preview'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Placeholder smoke (until WOR-457 ships marketing-url-smoke.yml)
+        # Five-line smoke — replaced by `uses:` of the WOR-457 reusable
+        # workflow once it lands. Asserts: 200 on root, install command
+        # in body, six security headers each appearing exactly once.
+        env:
+          ACCOUNT_SUBDOMAIN: ${{ secrets.CLOUDFLARE_ACCOUNT_SUBDOMAIN }}
+        run: |
+          set -euo pipefail
+          URL="https://wless-marketing-preview.${ACCOUNT_SUBDOMAIN}.workers.dev/"
+          curl -fsSL "${URL}" | grep -qE 'pipx install worthless|curl.*worthless\.sh|docker run.*worthless' \
+            || { echo "::error::install command missing on ${URL}"; exit 1; }
+          for h in strict-transport-security content-security-policy \
+                   x-frame-options x-content-type-options \
+                   referrer-policy permissions-policy ; do
+            count=$(curl -fsI "${URL}" | grep -ic "^${h}:" || true)
+            if [ "${count}" -ne 1 ]; then
+              echo "::error::header ${h} count=${count} (expected 1)"
+              exit 1
+            fi
+          done
+          echo "OK: smoke passed"
+
+  # NOTE — wire-attacks deliberately not chained from this workflow.
+  # `worker-wire-attacks.yml` probes the worthless-sh install-script
+  # Worker with UA-based shell-injection sequences; that threat model
+  # does not apply to a static-asset marketing surface (no input
+  # execution, no UA-conditional response). A marketing-specific
+  # adversarial probe set (e.g. canonical-rewrite injection, header
+  # echo, path traversal) is a separate follow-up ticket — out of
+  # scope for Phase 1.
