@@ -470,6 +470,42 @@ class TestEntrypoint:
             "unlink it but the worthless group can read."
         )
 
+    def test_fernet_key_chmod_gated_by_ipc_only(self, entrypoint_text: str):
+        """WOR-465 Phase A1: the fernet.key chmod path must branch on
+        ``WORTHLESS_FERNET_IPC_ONLY``.
+
+        Default off (env unset or "0"): keep ``root:worthless 0440`` so
+        the proxy uid can still read the key for ``lock --env`` /
+        bootstrap-validation — docker-e2e stays green during migration.
+
+        Flag on (``WORTHLESS_FERNET_IPC_ONLY=1``): switch fernet.key to
+        ``root:worthless-crypto 0400``. The proxy uid is not in that
+        group; kernel rejects the open(). Phases A2-A3 add the IPC
+        verbs the proxy will call instead. Phase A4 makes the flag
+        default and removes the legacy 0440 path.
+
+        Rollback at any phase = unset the flag.
+        """
+        assert "WORTHLESS_FERNET_IPC_ONLY" in entrypoint_text, (
+            "WOR-465 Phase A1: entrypoint.sh must reference "
+            "WORTHLESS_FERNET_IPC_ONLY to gate the fernet.key chmod path."
+        )
+        assert "worthless-crypto" in entrypoint_text, (
+            "WOR-465 Phase A1: gated branch must chown fernet.key to "
+            "the worthless-crypto group (root:worthless-crypto 0400)."
+        )
+        assert "chmod 0400" in entrypoint_text, (
+            "WOR-465 Phase A1: gated branch must chmod fernet.key to 0400 "
+            "(owner-only) so a proxy uid not in worthless-crypto group "
+            "cannot open() it even via shared-gid traversal."
+        )
+        # Default branch stays — docker-e2e ships unchanged in A1.
+        assert "chmod 0440" in entrypoint_text, (
+            "WOR-465 Phase A1: default (env unset) branch must keep "
+            "chmod 0440 so existing docker-e2e + bootstrap-validation "
+            "still work until Phase A4 flips the default."
+        )
+
     def test_no_hardcoded_secrets(self, entrypoint_text: str):
         """Entrypoint must not contain hardcoded secrets or keys."""
         # Patterns that would indicate leaked secrets
@@ -592,6 +628,53 @@ class TestDockerfile:
         assert re.search(
             r"groupadd[^\n]*-r[^\n]*-g\s+10001[^\n]*worthless\b", dockerfile_final_stage
         ), "WOR-310: missing 'groupadd -r ... -g 10001 worthless' (-r pins system group)"
+
+    def test_creates_crypto_group_gid_10002(self, dockerfile_final_stage: str):
+        """WOR-465 Phase A1: a dedicated ``worthless-crypto`` system group at
+        gid 10002 must exist in the image, distinct from the shared
+        ``worthless`` (gid 10001) group.
+
+        Why: ``fernet.key`` currently sits at ``root:worthless 0440`` and
+        the proxy uid is in group ``worthless`` — so a proxy RCE can
+        ``open(O_RDONLY)`` and read the key, voiding WOR-310's
+        "offline-key-theft blocked even with proxy RCE" claim.
+
+        Phase A1 adds the gid as the *target* identity for fernet.key
+        once ``WORTHLESS_FERNET_IPC_ONLY=1`` flips the entrypoint chmod
+        to ``root:worthless-crypto 0400``. The proxy uid is NOT a member
+        of this gid; the kernel rejects the open() that the gap relied
+        on. Default-off via the env flag keeps docker-e2e green during
+        the migration (Phases A2-A4 ship the IPC verbs and the flip).
+        """
+        assert re.search(
+            r"groupadd[^\n]*-r[^\n]*-g\s+10002[^\n]*worthless-crypto\b",
+            dockerfile_final_stage,
+        ), (
+            "WOR-465: missing 'groupadd -r ... -g 10002 worthless-crypto' "
+            "(-r pins system group; gid 10002 is unique to the crypto uid "
+            "so the proxy uid cannot reach fernet.key once mode flips to "
+            "root:worthless-crypto 0400 under WORTHLESS_FERNET_IPC_ONLY=1)"
+        )
+
+    def test_crypto_user_is_member_of_crypto_group(self, dockerfile_final_stage: str):
+        """worthless-crypto uid must be a member of the worthless-crypto gid.
+
+        Without the supplementary group on the crypto user, no service
+        identity in the image owns gid 10002 — chowning fernet.key to
+        ``root:worthless-crypto 0400`` would lock out the sidecar too,
+        not just the proxy. The crypto uid keeps ``-g worthless`` as
+        its primary gid (needed for /run/worthless socket traversal)
+        and gains ``-G worthless-crypto`` as supplementary.
+        """
+        assert re.search(
+            r"useradd[^\n]*-G\s+worthless-crypto[^\n]*worthless-crypto\b",
+            dockerfile_final_stage,
+        ), (
+            "WOR-465: worthless-crypto user must be a supplementary "
+            "member of the worthless-crypto group (-G worthless-crypto). "
+            "Otherwise nothing in the image can read fernet.key after "
+            "Phase A4 chmods it to root:worthless-crypto 0400."
+        )
 
     def test_worthless_crypto_home_nonexistent(self, dockerfile_final_stage: str):
         """worthless-crypto home dir must be /nonexistent (Q3 decision).

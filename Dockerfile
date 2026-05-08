@@ -14,8 +14,16 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -g 10001 worthless \
+    # WOR-465 Phase A1: dedicated gid 10002 for the crypto uid only.
+    # The proxy uid is NOT a member of this gid. fernet.key flips to
+    # ``root:worthless-crypto 0400`` once WORTHLESS_FERNET_IPC_ONLY=1
+    # so the proxy uid cannot open(O_RDONLY) it — closing the
+    # offline-key-theft gap left open by the shared-gid 0440 mode.
+    # Phases A2-A3 add IPC verbs the proxy calls instead; A4 flips
+    # the env flag to default-on and removes the legacy 0440 path.
+    && groupadd -r -g 10002 worthless-crypto \
     && useradd -r -u 10001 -g worthless -d /data -s /sbin/nologin worthless-proxy \
-    && useradd -r -u 10002 -g worthless -d /nonexistent -s /sbin/nologin worthless-crypto \
+    && useradd -r -u 10002 -g worthless -G worthless-crypto -d /nonexistent -s /sbin/nologin worthless-crypto \
     && mkdir -p /data /secrets /run/worthless \
     && chown worthless-proxy:worthless /data \
     # CR-3204010091 (MAJOR): /secrets must NOT be proxy-writable.  A
