@@ -10,7 +10,7 @@ WSL2 is the **documented happy path for Windows developers**.
 ## TL;DR
 
 - Run `worthless` **inside your WSL home** (`~`), NOT inside `/mnt/c/...`
-- Everything else is identical to [linux.md](./linux.md)
+- Everything else is identical to [linux.md](/install/linux/)
 
 ## 0. Prerequisites
 
@@ -86,7 +86,7 @@ WSL2 typically does NOT have a session bus by default → worthless uses
 the **file-backed keystore** at `~/.worthless/.fernet-key` (mode 0600).
 **No popups.** No Windows Credential Manager involvement.
 
-`.env` is rewritten (see [README — what `worthless lock` does](./README.md#what-worthless-lock-does-to-your-env)).
+`.env` is rewritten (see [README — what `worthless lock` does](/install/#what-worthless-lock-does-to-your-env)).
 
 ## 4. Point your app at the proxy
 
@@ -110,7 +110,7 @@ Use that IP from Windows-side tools.
 
 ## 5. Verify
 
-See [README — Verify it works](./README.md#verify-it-works) for the
+See [README — Verify it works](/install/#verify-it-works) for the
 SDK snippet. Same on every platform.
 
 ## 6. Daily use
@@ -145,7 +145,7 @@ needed.)
 |---|---|---|
 | Install runs but is unreasonably slow (~minutes) | You're in `/mnt/c/...` | `cd ~` and re-run |
 | `worthless` works in WSL but Windows app can't reach `127.0.0.1:8787` | WSL2 should auto-forward, but firewalls/VPNs sometimes break it | Get WSL IP via `hostname -I` and use that explicitly |
-| `worthless lock` writes `127.0.0.1:8787` but a *Docker container running INSIDE WSL* can't reach it | Container's loopback ≠ WSL's loopback | See [docker.md](./docker.md) |
+| `worthless lock` writes `127.0.0.1:8787` but a *Docker container running INSIDE WSL* can't reach it | Container's loopback ≠ WSL's loopback | See [docker.md](/install/docker/) |
 | `wsl --shutdown` then proxy is gone | Expected — WSL state was cleared | `worthless up` after restarting WSL |
 | GitHub credential helper conflicts | WSL's git might use Windows-side credential helper | Unrelated to worthless; configure git separately |
 
@@ -174,7 +174,7 @@ So if you're on Windows: install WSL2 first, then follow this guide.
 
 > Human readers can stop here — the YAML below is for AI agents.
 
-Schema documented in [agent-schema.md](./agent-schema.md).
+Schema documented in [agent-schema.md](/install/agent-schema/).
 
 ```yaml
 schema_version: 1

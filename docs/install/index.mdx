@@ -7,15 +7,15 @@ description: "Zero-to-working-proxy install guides for macOS, Linux, WSL2, and D
 
 | Platform | Guide | Time to working proxy |
 |---|---|---|
-| **macOS** (Apple Silicon or Intel) | [mac.md](./mac.md) | ~2 min on a fast network |
-| **Linux** (Ubuntu / Debian / Alpine) | [linux.md](./linux.md) | ~1-2 min on a fast network |
-| **Windows + WSL2** | [wsl.md](./wsl.md) | ~2-3 min on a fast network |
-| **Docker** (your app runs in a container) | [docker.md](./docker.md) | ~5 min (one-time per project) |
+| **macOS** (Apple Silicon or Intel) | [macOS guide](/install/mac/) | ~2 min on a fast network |
+| **Linux** (Ubuntu / Debian / Alpine) | [Linux guide](/install/linux/) | ~1-2 min on a fast network |
+| **Windows + WSL2** | [WSL2 guide](/install/wsl/) | ~2-3 min on a fast network |
+| **Docker** (your app runs in a container) | [Docker guide](/install/docker/) | ~5 min (one-time per project) |
 
 > **Note:** Worthless is **always installed natively on your host**,
 > even if your app runs in Docker. The Docker image is for self-hosting
 > a worthless *server* for a team — not for running the CLI. See
-> [docker.md](./docker.md) for the full explanation.
+> [Docker guide](/install/docker/) for the full explanation.
 
 *Behind a corporate proxy or with cold uv caches, add 1-2 min for the
 PyPI fetch.*
@@ -73,13 +73,13 @@ Honest list — these are tracked, not unknown.
 | `worthless up &` may exit prematurely instead of staying attached | `worthless-n8tj`, v0.3.4 |
 | Stale orphan proxy can confuse `worthless up` PID detection | `worthless-6gkb`, v0.3.4 |
 | `uv tool uninstall worthless` doesn't purge the keychain entry or `~/.worthless/` | WOR-435, v1.2 |
-| No `worthless` CLI is exposed by `docker run ghcr.io/.../worthless` — you still install natively | by design; see [docker.md](./docker.md) |
+| No `worthless` CLI is exposed by `docker run ghcr.io/.../worthless` — you still install natively | by design; see [Docker guide](/install/docker/) |
 
 If you hit something that isn't on this list, file a GitHub issue.
 
 ---
 
 *Installing worthless via an AI coding agent? See
-[agent-schema.md](./agent-schema.md) — each platform guide's
+[agent-schema](/install/agent-schema/) — each platform guide's
 `## For AI agents` section carries a fenced YAML the agent can extract
 without parsing prose.*
