@@ -40,6 +40,11 @@ def _run_worthless(
         **os.environ,
         "WORTHLESS_HOME": str(home),
         "WORTHLESS_PORT": str(_TEST_PORT),
+        # WOR-463: explicit even though tests/conftest.py setdefault propagates
+        # via **os.environ — self-documents that this subprocess MUST NOT
+        # write fernet-key-* to the host's real keychain. Defense-in-depth
+        # against future drift if conftest is refactored.
+        "WORTHLESS_KEYRING_BACKEND": "null",
     }
     return subprocess.run(
         [_WORTHLESS, *args],

@@ -31,6 +31,19 @@ from tests.helpers import fake_openai_key
 # — same code path tests always exercised, minus the system-wide contention.
 keyring.set_keyring(keyring.backends.null.Keyring())
 
+# Belt-and-braces for SUBPROCESSES (WOR-463): the line above only protects the
+# parent pytest Python process. Any test that subprocess-spawns ``worthless``
+# (e2e tests, install.sh tests) loads ``keyring`` fresh in its child process
+# and ignores the parent's ``set_keyring`` call. Pre-WOR-463 this leaked
+# real ``fernet-key-*`` entries into the user's macOS keychain on every run
+# (128 orphans found in one machine's dogfood history).
+#
+# ``WORTHLESS_KEYRING_BACKEND=null`` is honored by ``keystore.keyring_available``
+# itself, so children see the same gate. ``setdefault`` (not ``[..]=``) so a
+# test that genuinely wants the real backend can opt back in via
+# ``monkeypatch.delenv("WORTHLESS_KEYRING_BACKEND")``.
+os.environ.setdefault("WORTHLESS_KEYRING_BACKEND", "null")
+
 # Suppress differing_executors health check ONLY when running under mutmut.
 # Mutmut runs tests from its mutants/ directory with a different rootdir,
 # which triggers this check spuriously.  In normal test runs, the check

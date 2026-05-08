@@ -112,11 +112,21 @@ def build_proxy_env(home: WorthlessHome) -> dict[str, str]:
 
     When OS keyring is available, omits WORTHLESS_FERNET_KEY — the proxy
     reads from keyring directly via ``read_fernet_key()``.
+
+    Forwards ``WORTHLESS_KEYRING_BACKEND`` so the proxy child inherits the
+    parent's keyring opt-out choice. Without this, a production user who
+    set ``WORTHLESS_KEYRING_BACKEND=null`` in their shell would get
+    file-fallback in the CLI but the proxy child would still try the
+    real OS keyring (defeating the override). Same forwarding handles
+    the test-suite case (conftest sets the var; this propagates it).
+    (WOR-463)
     """
     env: dict[str, str] = {
         "WORTHLESS_DB_PATH": str(home.db_path),
         "WORTHLESS_HOME": str(home.base_dir),
     }
+    if "WORTHLESS_KEYRING_BACKEND" in os.environ:
+        env["WORTHLESS_KEYRING_BACKEND"] = os.environ["WORTHLESS_KEYRING_BACKEND"]
     if not keyring_available():
         env["WORTHLESS_FERNET_KEY"] = home.fernet_key.decode()
     return env
