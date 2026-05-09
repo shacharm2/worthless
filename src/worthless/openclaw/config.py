@@ -29,10 +29,17 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import fcntl
 import json
 import os
+import sys
 import tempfile
+
+# fcntl is POSIX-only. worthless refuses native Windows (WRTLS-110) but the
+# module must still be *importable* on Windows so the CLI can print the error.
+if sys.platform != "win32":
+    import fcntl as _fcntl
+else:
+    _fcntl = None  # type: ignore[assignment]
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -175,11 +182,11 @@ def _file_lock(target: Path) -> Iterator[None]:
     lock_path = target.parent / f".{target.name}.lock"
     fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        _fcntl.flock(fd, _fcntl.LOCK_EX)  # type: ignore[union-attr]
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _fcntl.flock(fd, _fcntl.LOCK_UN)  # type: ignore[union-attr]
     finally:
         os.close(fd)
 
