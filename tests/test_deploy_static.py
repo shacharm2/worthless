@@ -784,11 +784,12 @@ class TestDockerfile:
             "--cap-add=DAC_OVERRIDE",
             "--cap-add=CHOWN",
             "--cap-add=FOWNER",
-            # WOR-466: /run/worthless must be a tmpfs so start.py can create
-            # the stable sidecar.sock symlink at runtime. Without it, --read-only
-            # makes /run/worthless immutable → symlink silently skipped →
-            # HEALTHCHECK "socket missing" → container never healthy.
-            "--tmpfs /run/worthless",
+            # WOR-466: /run/worthless must be a writable tmpfs with gid=10001
+            # (worthless group) so the HEALTHCHECK probe (uid 10001) can traverse
+            # the directory and stat the stable sidecar.sock symlink.  Without
+            # gid=10001, Docker resets the tmpfs to root:root and the probe gets
+            # EACCES → "stat denied (permission)" → container never healthy.
+            "--tmpfs /run/worthless:uid=0,gid=10001,mode=0770",
         ):
             assert needed in flags, (
                 f"WOR-310: priv-drop / bootstrap requires {needed} in "

@@ -129,12 +129,13 @@ def container(docker_image: str) -> tuple[str, int]:
             "--tmpfs",
             "/tmp:noexec,nosuid",
             # WOR-466: sidecar stable-symlink lives at /run/worthless/sidecar.sock.
-            # The image creates /run/worthless/ at build time (root:worthless 0770)
-            # but --read-only makes it immutable at runtime.  A tmpfs overlay lets
-            # start.py write the symlink while root; the proxy/crypto uids only
-            # need to follow it (r-x on the directory is enough).
+            # The image bakes /run/worthless root:worthless 0770 but Docker's
+            # --tmpfs resets uid/gid to root:root — the probe (uid 10001) becomes
+            # "other" with zero access → EACCES on stat.  Specifying
+            # uid=0,gid=10001,mode=0770 restores the image intent: root owns,
+            # worthless group (proxy + crypto) can rwx.
             "--tmpfs",
-            "/run/worthless",
+            "/run/worthless:uid=0,gid=10001,mode=0770",
             "-v",
             f"{name}-data:/data",
             "-v",

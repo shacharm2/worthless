@@ -95,7 +95,7 @@ HEALTHCHECK --interval=10s --timeout=2s --start-period=5s --retries=3 \
 # cap 0..63 immediately before setresuid — by the time uvicorn execs,
 # the bounding set is empty.
 LABEL org.worthless.required-run-flags="--security-opt=no-new-privileges"
-LABEL org.worthless.recommended-run-flags="--read-only --tmpfs /tmp --tmpfs /run/worthless --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP --cap-add=DAC_OVERRIDE --cap-add=CHOWN --cap-add=FOWNER"
+LABEL org.worthless.recommended-run-flags="--read-only --tmpfs /tmp --tmpfs /run/worthless:uid=0,gid=10001,mode=0770 --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP --cap-add=DAC_OVERRIDE --cap-add=CHOWN --cap-add=FOWNER"
 
 # Bind/host live in entrypoint.sh — don't re-add `--host` here, it bypasses deploy_mode.
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]
