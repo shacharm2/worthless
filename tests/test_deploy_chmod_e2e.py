@@ -242,6 +242,78 @@ def test_default_off_keeps_legacy_root_worthless_0440(image: str) -> None:
         _cleanup(cnt, vol)
 
 
+def test_flag_on_fails_closed_when_chown_is_silently_dropped(image: str) -> None:
+    """If chown silently no-ops, entrypoint must exit 78 — no false security claim.
+
+    Simulates a misconfigured host bind-mount (macOS Docker Desktop / WSL
+    /mnt/c/...) by dropping ``CAP_CHOWN``. ``chown`` then fails inside the
+    container; the ``2>/dev/null || true`` swallows the error so the
+    chmod block's stat verification is the last line of defense. Without
+    fail-closed the container would boot with fernet.key still
+    ``root:root 0644`` (the seed) while claiming IPC-only mode.
+    """
+    vol = f"chmod-failclosed-{uuid.uuid4().hex[:8]}"
+    cnt = f"chmod-failclosed-{uuid.uuid4().hex[:8]}"
+    try:
+        _seed_fernet_key(image, vol)
+        # Identical to _CAPS but with CAP_CHOWN intentionally omitted —
+        # this is the kernel-equivalent of "host filesystem ignored chown".
+        caps_no_chown = [c for c in _CAPS if c != "--cap-add=CHOWN"]
+        cmd = [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            cnt,
+            "-v",
+            f"{vol}:/secrets",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:noexec,nosuid",
+            "-e",
+            "WORTHLESS_FERNET_IPC_ONLY=1",
+            "-e",
+            "WORTHLESS_FERNET_KEY_PATH=/secrets/fernet.key",
+            "-e",
+            "WORTHLESS_DEPLOY_MODE=lan",
+            "-e",
+            "WORTHLESS_ALLOW_INSECURE=true",
+            "-e",
+            "WORTHLESS_HOST=0.0.0.0",
+            *caps_no_chown,
+            image,
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        wait = subprocess.run(
+            ["docker", "wait", cnt],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        exit_code = wait.stdout.strip()
+        assert exit_code == "78", (
+            "WOR-465 Phase A1 fail-closed: entrypoint must exit 78 "
+            f"(EX_CONFIG) when fernet.key chmod silently no-ops. Got {exit_code!r}. "
+            "Without this check, an operator on a misconfigured host "
+            "bind-mount would boot a container claiming IPC-only mode "
+            "while the proxy can still read the key."
+        )
+        logs = subprocess.run(
+            ["docker", "logs", cnt],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        combined = logs.stdout + logs.stderr
+        assert "FATAL" in combined and "expected 10002:10002 400" in combined, (
+            "Fail-closed FATAL message must mention the expected mode so "
+            f"operators can debug. Got logs: {combined!r}"
+        )
+    finally:
+        _cleanup(cnt, vol)
+
+
 def test_flag_on_chowns_to_crypto_owner_and_locks_proxy_out(image: str) -> None:
     """WORTHLESS_FERNET_IPC_ONLY=1 → worthless-crypto:worthless-crypto 0400, proxy denied.
 

@@ -99,6 +99,18 @@ if [ "$(id -u)" = "0" ]; then
       # Sidecar owns and reads via owner bit; proxy uid lacks gid 10002.
       chown worthless-crypto:worthless-crypto "$FERNET_PATH" 2>/dev/null || true
       chmod 0400 "$FERNET_PATH" 2>/dev/null || true
+      # Fail closed: a host bind-mount on macOS Docker Desktop or WSL
+      # /mnt/c/... can silently swallow chown/chmod, leaving the file
+      # at its prior loose mode while the container claims IPC-only
+      # mode. Verify the kernel actually applied our changes — if not,
+      # exit 78 (EX_CONFIG) so an operator sees the failure instead
+      # of booting with a false security claim.
+      actual="$(stat -c '%u:%g %a' "$FERNET_PATH" 2>/dev/null || echo unknown)"
+      if [ "$actual" != "10002:10002 400" ]; then
+        echo "FATAL: $FERNET_PATH is $actual, expected 10002:10002 400" >&2
+        echo "Hint: use a Docker named volume; host bind-mounts on macOS/WSL drop POSIX ops." >&2
+        exit 78
+      fi
     else
       chown root:worthless "$FERNET_PATH" 2>/dev/null || true
       chmod 0440 "$FERNET_PATH" 2>/dev/null || true
