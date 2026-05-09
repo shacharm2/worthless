@@ -53,7 +53,9 @@ ENV WORTHLESS_HOME=/data \
     HOME=/data \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8787 \
-    WORTHLESS_SIDECAR_SOCKET=/run/worthless/sidecar.sock
+    WORTHLESS_SIDECAR_SOCKET=/run/worthless/sidecar.sock \
+    WORTHLESS_PROXY_UID=10001 \
+    WORTHLESS_PROXY_GID=10001
 
 EXPOSE 8787
 

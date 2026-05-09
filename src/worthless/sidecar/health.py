@@ -84,8 +84,41 @@ async def _probe(socket_path: Path) -> int:
         return 1
 
 
+def _drop_to_proxy_if_root() -> None:
+    """Drop from root to the proxy uid/gid before probing the sidecar.
+
+    Docker HEALTHCHECK processes run as uid 0 (this image has no static USER
+    directive — WOR-310 requires the entrypoint to start as root for the
+    runtime priv-drop dance).  The sidecar's peer-credential allowlist only
+    admits the proxy uid; a root connection is rejected with AUTH error.
+
+    When WORTHLESS_PROXY_UID / WORTHLESS_PROXY_GID are set (both present in
+    the Dockerfile ENV), drop before the socket stat so every operation that
+    follows runs as the proxy user — matching the uid the sidecar expects.
+    """
+    if os.getuid() != 0:
+        return
+    uid_s = os.environ.get("WORTHLESS_PROXY_UID")
+    gid_s = os.environ.get("WORTHLESS_PROXY_GID")
+    if not uid_s or not gid_s:
+        return
+    try:
+        uid, gid = int(uid_s), int(gid_s)
+        # Order matters: setresgid before setresuid (once uid drops,
+        # CAP_SETGID is lost on Linux if the new uid is unprivileged).
+        os.setgroups([gid])
+        os.setresgid(gid, gid, gid)
+        os.setresuid(uid, uid, uid)
+    except OSError:
+        # Insufficient capabilities (e.g. CAP_SETUID not granted).
+        # Proceed as root — the sidecar will reject and exit 1.
+        pass
+
+
 def main() -> int:
     """Entry point. Returns the exit code; does NOT call ``sys.exit``."""
+    _drop_to_proxy_if_root()
+
     raw = os.environ.get("WORTHLESS_SIDECAR_SOCKET")
     if not raw:
         _emit("WORTHLESS_SIDECAR_SOCKET unset")
