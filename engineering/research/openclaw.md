@@ -168,11 +168,82 @@ key-handling skills (per [clawhub#669](https://github.com/openclaw/clawhub/issue
 
 ---
 
+## Phase 2 implementation notes (WOR-431, 2026-05-08)
+
+### What shipped
+
+Phase 2 (branch `feature/wor-421-openclaw-research-doc`) delivered the full
+magic-UX integration: `worthless lock` silently wires OpenClaw, `worthless unlock`
+cleans it up, `worthless doctor` surfaces drift, and `worthless status` persists
+DEGRADED state across terminal sessions.
+
+**New modules:**
+
+| File | Role |
+|------|------|
+| `src/worthless/openclaw/integration.py` | `detect()`, `apply_lock()`, `apply_unlock()` |
+| `src/worthless/openclaw/skill.py` | `install()`, `uninstall()`, `current_version()` |
+| `src/worthless/openclaw/errors.py` | `OpenclawErrorCode`, `OpenclawIntegrationEvent`, `OpenclawIntegrationReport` |
+| `src/worthless/openclaw/skill_assets/SKILL.md` | Embedded skill file shipped in the wheel |
+| `src/worthless/cli/sentinel.py` | Atomic JSON sentinel for trust-fix persistent DEGRADED state |
+
+**CLI changes:**
+
+- `lock`: Stage 3 (`_apply_openclaw`) runs after `.env`+DB committed. On
+  detected+failed → exit 73, writes sentinel, emits `[FAIL]` block.
+- `unlock`: `_apply_openclaw_unlock` runs after key restore. `[OK]` prefix on
+  each key restore line.
+- `doctor`: `_check_openclaw_section()` checks skill version + provider entries.
+  `--fix` reinstalls stale/missing skill.
+- `status`: reads sentinel via `read_sentinel()` + `is_partial()`. Emits
+  `[WARN]` and exits 73 on DEGRADED state.
+
+### Key design decisions locked in Phase 2
+
+**L1 (unchanged):** OpenClaw stage failures NEVER roll back `.env`/DB. The
+`.env` is the binding security contract.
+
+**L2 (revised 2026-05-08):** detected+failed → exit 73 (not exit 0). The
+original spec said exit 0; this was revised after the verification gauntlet
+showed that a silent success on partial failure destroys user trust. The sentinel
+(`last-lock-status.json`) persists the DEGRADED state so `worthless status`
+catches it even if the terminal session that ran `lock` was closed.
+
+**L3 (unchanged):** We own `~/.openclaw/workspace/skills/worthless/` — overwrite
+stale content without prompting.
+
+**Trust-fix exit code 73:** `EX_CANTCREAT` (POSIX). Chosen because it is
+distinct from all other worthless exit codes, makes grep-able in CI, and is
+semantically close ("can't create the secure state we promised").
+
+### Idempotency guarantee
+
+Both `apply_lock` and `apply_unlock` are idempotent: running them twice produces
+the same state as running once. This means `worthless doctor --fix` (which calls
+`skill.install()`) and a subsequent `worthless lock` (which calls `apply_lock()`)
+compose safely without leaving residue.
+
+### What Phase 2 does NOT include
+
+- Real-container e2e proof (deferred to WOR-432).
+- `SKILL.md` content authoring (deferred to Phase 3, separate ticket).
+- `worthless openclaw` CLI namespace (deferred by design — see locked decision L6).
+- Rolling back `.env`/DB on OpenClaw stage failure (L1 prohibition).
+
+### WOR-321 disposition
+
+WOR-321 ("worthless lock multi-config detection — .env + openclaw.json") is closed
+as a duplicate. Its scope (detecting and writing both `.env` and `openclaw.json` in
+one lock invocation) is fully delivered by Phase 2.b.
+
+---
+
 ## References
 
 - Linear: [WOR-211](https://linear.app/plumbusai/issue/WOR-211) (drop-in SDK compat — done),
   [WOR-213](https://linear.app/plumbusai/issue/WOR-213) (OpenClaw integration test — done),
-  [WOR-321](https://linear.app/plumbusai/issue/WOR-321) (worthless lock multi-config — backlog),
+  [WOR-321](https://linear.app/plumbusai/issue/WOR-321) (closed as duplicate of WOR-431),
+  [WOR-431](https://linear.app/plumbusai/issue/WOR-431) (Phase 2 magic integration — done),
   [WOR-94](https://linear.app/plumbusai/issue/WOR-94) (SKILL.md agent discovery — backlog).
 - Code: `tests/openclaw/`, `tests/test_openclaw_e2e.py`, `tests/test_openclaw_live.py`.
 - External: [docs.openclaw.ai](https://docs.openclaw.ai), [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw),
