@@ -563,15 +563,29 @@ class TestDockerfile:
         """
         assert re.search(r"^HEALTHCHECK\s", dockerfile_text, re.MULTILINE)
 
-    def test_healthcheck_hits_healthz(self, dockerfile_text: str):
-        """HEALTHCHECK must probe /healthz, matching Railway and Render configs."""
+    def test_healthcheck_uses_ipc_probe(self, dockerfile_text: str):
+        """HEALTHCHECK must use the hybrid IPC sidecar probe (WOR-466).
+
+        The old HTTP /healthz probe only proved uvicorn was alive — it missed
+        two false-green failure modes: stale socket inode (sidecar died, inode
+        lingered) and hung accept loop (sidecar alive but wedged).  The new
+        probe runs ``python -m worthless.sidecar.health`` which does a real
+        AF_UNIX IPC HELLO handshake, catching both failure modes.
+
+        Railway and Render use /healthz for their own platform HTTP readiness
+        checks; that is intentionally separate from the Docker HEALTHCHECK.
+        """
         healthcheck_match = re.search(
-            r"HEALTHCHECK.*?(?=\n(?:FROM|RUN|COPY|ENV|EXPOSE|USER|ENTRYPOINT|CMD|\Z))",
+            r"HEALTHCHECK.*?(?=\n[A-Z]|\Z)",
             dockerfile_text,
             re.DOTALL | re.MULTILINE,
         )
         assert healthcheck_match, "HEALTHCHECK instruction not found"
-        assert "/healthz" in healthcheck_match.group()
+        assert "worthless.sidecar.health" in healthcheck_match.group(), (
+            "HEALTHCHECK must invoke 'python -m worthless.sidecar.health' (WOR-466). "
+            "Do not revert to the HTTP /healthz probe — it misses stale-inode and "
+            "hung-accept-loop failure modes."
+        )
 
     def test_no_static_user_directive(self, dockerfile_final_stage: str):
         """Container must NOT pin a USER at build time (WOR-310 two-uid topology).
@@ -770,6 +784,12 @@ class TestDockerfile:
             "--cap-add=DAC_OVERRIDE",
             "--cap-add=CHOWN",
             "--cap-add=FOWNER",
+            # WOR-466: /run/worthless must be a writable tmpfs with gid=10001
+            # (worthless group) so the HEALTHCHECK probe (uid 10001) can traverse
+            # the directory and stat the stable sidecar.sock symlink.  Without
+            # gid=10001, Docker resets the tmpfs to root:root and the probe gets
+            # EACCES → "stat denied (permission)" → container never healthy.
+            "--tmpfs /run/worthless:uid=0,gid=10001,mode=0770",
         ):
             assert needed in flags, (
                 f"WOR-310: priv-drop / bootstrap requires {needed} in "
@@ -881,14 +901,18 @@ class TestCrossConfigConsistency:
     def test_healthcheck_path_consistent(
         self, railway_data: dict, render_data: dict, dockerfile_text: str
     ):
-        """All configs must use the same healthcheck path (/healthz).
+        """Platform HTTP probes (Railway/Render) agree on /healthz; Dockerfile
+        uses the IPC sidecar probe (WOR-466).
 
-        If Dockerfile probes /healthz but Railway expects /health, the
-        container appears healthy locally but gets killed on Railway.
+        Railway and Render use their own platform-level HTTP liveness check at
+        /healthz — these two must stay in sync.  The Docker HEALTHCHECK now
+        runs ``python -m worthless.sidecar.health`` (an AF_UNIX IPC probe)
+        rather than an HTTP call; it is intentionally different and checked by
+        ``test_healthcheck_uses_ipc_probe``.
         """
         assert railway_data["deploy"]["healthcheckPath"] == "/healthz"
         assert render_data["services"][0]["healthCheckPath"] == "/healthz"
-        assert "/healthz" in dockerfile_text
+        assert "worthless.sidecar.health" in dockerfile_text
 
     def test_port_8787_consistent(self, compose_data: dict, dockerfile_text: str):
         """Port 8787 must be consistent between Dockerfile and Compose."""

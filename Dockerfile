@@ -52,12 +52,21 @@ ENV WORTHLESS_HOME=/data \
     WORTHLESS_SHARD_A_DIR=/data/shard_a \
     HOME=/data \
     PYTHONDONTWRITEBYTECODE=1 \
-    PORT=8787
+    PORT=8787 \
+    WORTHLESS_SIDECAR_SOCKET=/run/worthless/sidecar.sock \
+    WORTHLESS_PROXY_UID=10001 \
+    WORTHLESS_PROXY_GID=10001
 
 EXPOSE 8787
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/healthz')"
+# WOR-466: hybrid sidecar healthcheck — proves the AF_UNIX accept loop is
+# alive end-to-end (stat + S_ISSOCK + IPC HELLO handshake). The previous HTTP
+# /healthz probe only proved uvicorn was answering, missing the false-greens
+# the WOR-310 spec called out (stale socket inode, hung accept loop).
+# Exec form skips /bin/sh: ~10ms faster per probe and avoids signal-forwarding
+# bugs. See .planning/wor-310/design-sidecar-health-cli.md.
+HEALTHCHECK --interval=10s --timeout=2s --start-period=5s --retries=3 \
+    CMD ["python", "-m", "worthless.sidecar.health"]
 
 # WOR-310: no static USER directive — container starts as root so deploy/start.py
 # can spawn the sidecar as worthless-crypto (uid 10002) and drop self to
@@ -86,7 +95,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 # cap 0..63 immediately before setresuid — by the time uvicorn execs,
 # the bounding set is empty.
 LABEL org.worthless.required-run-flags="--security-opt=no-new-privileges"
-LABEL org.worthless.recommended-run-flags="--read-only --tmpfs /tmp --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP --cap-add=DAC_OVERRIDE --cap-add=CHOWN --cap-add=FOWNER"
+LABEL org.worthless.recommended-run-flags="--read-only --tmpfs /tmp --tmpfs /run/worthless:uid=0,gid=10001,mode=0770 --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP --cap-add=DAC_OVERRIDE --cap-add=CHOWN --cap-add=FOWNER"
 
 # Bind/host live in entrypoint.sh — don't re-add `--host` here, it bypasses deploy_mode.
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]

@@ -289,6 +289,22 @@ def main() -> None:
 
     os.environ["WORTHLESS_SIDECAR_SOCKET"] = str(socket_path)
 
+    # WOR-466: Create a stable well-known symlink so the Docker HEALTHCHECK
+    # process can discover the PID-scoped socket path.  HEALTHCHECK processes
+    # run in a fresh process tree that only inherits Dockerfile ENV — they
+    # never see os.environ mutations made here.  The Dockerfile sets
+    # WORTHLESS_SIDECAR_SOCKET=/run/worthless/sidecar.sock (stable); this
+    # symlink points it at the real per-PID socket that the sidecar bound.
+    # Must be created here (still root) before the privilege drop below.
+    # OSError is caught because /run/worthless/ only exists inside Docker
+    # (created by the Dockerfile RUN); bare-metal and test environments skip.
+    stable_socket = Path("/run/worthless/sidecar.sock")
+    try:
+        stable_socket.unlink(missing_ok=True)
+        stable_socket.symlink_to(socket_path)
+    except OSError:
+        pass
+
     # WOR-310 C3: drop self to worthless-proxy before exec uvicorn. Mirrors
     # the preexec_fn dance in the sidecar's forked child:
     #   1. setresgid(gid, gid, gid)  — first, still has CAP_SETGID
