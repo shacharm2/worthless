@@ -243,6 +243,31 @@ shows `count=0`, the Worker is not serving them — re-enable the rule
 immediately and investigate (most likely cause: `marketing/_headers`
 not in the deployed bundle; check `.assetsignore` did not include it).
 
+Then verify the `www.wless.io` → apex redirect is intact. The
+redirect is served by a Cloudflare zone-level Redirect Rule, separate
+from the Transform Rule disabled in 3.5 — but both rules live on the
+same dashboard screen and a misclick could disable both. Baseline
+captured pre-cutover: `curl -sSI https://www.wless.io/` returns 301
+with `location: https://wless.io/`.
+
+```bash
+set -euo pipefail
+loc=$(curl -fsSI --max-redirs 0 https://www.wless.io/ \
+  | awk 'tolower($1) == "location:" { print $2 }' | tr -d '\r')
+case "$loc" in
+  https://wless.io/*|https://wless.io)
+    echo "OK: www → apex 301 intact" ;;
+  *)
+    echo "FAIL: www.wless.io did not 301 to apex (Location=$loc)"
+    exit 1 ;;
+esac
+```
+
+If this fails, re-enable the Redirect Rule from the Cloudflare
+dashboard immediately. The Worker route claims `wless.io/*` only;
+without the zone-level redirect, `www.wless.io` has no path back to
+apex.
+
 ### 3.7 — Phase 3 done
 
 Outputs:
