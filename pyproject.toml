@@ -130,6 +130,11 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 worthless = ["providers.toml"]
+# OpenClaw skill assets ship with the wheel; loaded at runtime via
+# Path(__file__).parent / "skill_assets" in worthless.openclaw.skill.
+# Without this, SKILL.md is dropped from sdists/wheels and install()
+# fails with FileNotFoundError on a wheel-installed worthless.
+"worthless.openclaw.skill_assets" = ["*.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

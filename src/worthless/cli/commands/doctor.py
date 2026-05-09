@@ -1,15 +1,22 @@
 """Doctor command — diagnose and repair stuck DB/.env states (HF7 / worthless-3907).
 
-Currently handles ONE known shape: orphan DB enrollments whose ``.env``
-line was deleted by the user. The result is the dogfood-discovered stuck
-state from 2026-04-30:
+Currently handles TWO known shapes:
 
-  worthless unlock -> "No enrolled keys found." (silently skips orphan)
-  worthless status -> "Enrolled keys: ... PROTECTED" (lists the orphan)
+1. Orphan DB enrollments whose ``.env`` line was deleted by the user (HF7).
+   The dogfood-discovered stuck state from 2026-04-30:
 
-``worthless doctor`` is read-only: it lists orphans.
-``worthless doctor --fix`` purges them (destructive). Prompts unless
-``--yes``. ``--dry-run`` shows the planned action without writing.
+     worthless unlock -> "No enrolled keys found." (silently skips orphan)
+     worthless status -> "Enrolled keys: ... PROTECTED" (lists the orphan)
+
+2. OpenClaw integration drift (Phase 2.d / WOR-431): OpenClaw installed
+   after ``worthless lock`` ran, or skill folder gone stale. Doctor
+   surfaces skill version mismatches and un-wired providers, and can
+   reinstall the skill when ``--fix`` is passed.
+
+``worthless doctor`` is read-only: it lists issues.
+``worthless doctor --fix`` repairs what it can (destructive for orphans,
+safe for skill reinstall). Prompts unless ``--yes``. ``--dry-run`` shows
+the planned action without writing.
 
 Design seams (foreseen extensions, NOT in this PR):
 
@@ -27,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -38,11 +46,17 @@ if sys.platform != "win32":
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
+from worthless.cli.process import resolve_port
 from worthless.cli.commands.revoke import _revoke_async
 from worthless.cli.console import WorthlessConsole, get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.keystore import _SERVICE
-from worthless.cli.orphans import FIX_PHRASE, PROBLEM_PHRASE, find_orphans
+from worthless.cli.orphans import FIX_PHRASE, PROBLEM_PHRASE, find_orphans, is_orphan
+from worthless.openclaw import config as _oc_config
+from worthless.openclaw import integration as _oc_integration
+from worthless.openclaw import skill as _oc_skill
+from worthless.openclaw.errors import OpenclawIntegrationError
+from worthless.openclaw.integration import IntegrationState
 from worthless.storage.repository import EnrollmentRecord, ShardRepository
 
 # WOR-456: top-level conditional import so tests can monkeypatch the
@@ -145,6 +159,148 @@ def _print_orphan_lines(
         )
     if show_fix_hint:
         typer.echo(f"    fix: run `{FIX_PHRASE}`")
+
+
+_VERSION_LINE = re.compile(r"^Version:\s*(\S+)\s*$", re.MULTILINE)
+
+
+def _skill_installed_version(skill_dir: Path) -> str | None:
+    """Return the ``Version:`` string from the installed SKILL.md, or None.
+
+    Returns None when the dir / file is absent, unreadable, or has no
+    Version line. The parse pattern mirrors :func:`worthless.openclaw.skill.current_version`
+    so the comparison in :func:`_check_openclaw_section` is apples-to-apples.
+    """
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.is_file():
+        return None
+    try:
+        body = skill_md.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = _VERSION_LINE.search(body)
+    return match.group(1) if match else None
+
+
+def _check_skill(
+    state: IntegrationState,
+    *,
+    fix: bool,
+    dry_run: bool,
+) -> tuple[list[str], list[str]]:
+    """Check skill install health. Returns ``(issues, fixed_items)``."""
+    issues: list[str] = []
+    fixed_items: list[str] = []
+
+    if state.workspace_path is None:
+        return ["workspace not found — skill check skipped"], []
+
+    skill_dir = state.workspace_path / "skills" / "worthless"
+    installed_ver = _skill_installed_version(skill_dir)
+    try:
+        bundled_ver = _oc_skill.current_version()
+    except OpenclawIntegrationError:
+        bundled_ver = None
+
+    skill_needs_repair = installed_ver is None or (
+        bundled_ver is not None and installed_ver != bundled_ver
+    )
+    if installed_ver is None:
+        issues.append("skill not installed")
+    elif skill_needs_repair:
+        issues.append(f"skill stale (installed {installed_ver}, bundled {bundled_ver})")
+
+    if fix and skill_needs_repair:
+        if dry_run:
+            fixed_items.append("[dry-run] would reinstall skill")
+        else:
+            try:
+                _oc_skill.install(state.workspace_path / "skills")
+                fixed_items.append("skill reinstalled")
+            except (OpenclawIntegrationError, OSError) as exc:
+                issues.append(f"skill repair failed: {exc}")
+
+    return issues, fixed_items
+
+
+def _check_providers(
+    state: IntegrationState,
+    healthy: list,
+    *,
+    port: int,
+) -> list[str]:
+    """Check openclaw.json provider entries for each healthy enrollment.
+
+    ``port`` must come from ``resolve_port(None)`` so non-default deployments
+    (``WORTHLESS_PORT`` env or ``--port``) are not falsely reported as drift.
+
+    Returns a list of issue strings (empty = all wired correctly).
+    """
+    issues: list[str] = []
+    for e in healthy:
+        provider_name = f"worthless-{e.provider}"
+        if state.config_path is None:
+            issues.append(f"{provider_name} not wired (no openclaw.json) — re-run `worthless lock`")
+            continue
+        try:
+            entry = _oc_config.get_provider(state.config_path, provider_name)
+        except Exception:
+            issues.append(f"{provider_name} config unreadable — re-run `worthless lock`")
+            continue
+        if entry is None:
+            issues.append(f"{provider_name} not wired in openclaw.json — re-run `worthless lock`")
+        else:
+            actual_url = entry.get("baseUrl", "")
+            expected_url = f"http://127.0.0.1:{port}/{e.key_alias}/v1"
+            if actual_url != expected_url:
+                issues.append(
+                    f"{provider_name} baseUrl mismatch "
+                    f"(got {actual_url!r}, expected {expected_url!r}) — re-run `worthless lock`"
+                )
+    return issues
+
+
+def _check_openclaw_section(
+    repo: ShardRepository,
+    *,
+    fix: bool,
+    dry_run: bool,
+) -> bool:
+    """Check OpenClaw health. Print diagnostics; optionally repair skill.
+
+    Returns True when any issue was found (even if ``--fix`` repaired it).
+    Returns False and prints nothing when OpenClaw is absent OR all checks
+    pass — caller shows "No issues found." in that case.
+
+    Spec: ``.claude/plans/graceful-dreaming-reef.md`` §"Phase 2.d" /
+    test matrix rows U-DOC-01..07.
+    """
+    state = _oc_integration.detect()
+    if not state.present:
+        return False
+
+    skill_issues, fixed_items = _check_skill(state, fix=fix, dry_run=dry_run)
+
+    try:
+        enrollments = asyncio.run(repo.list_enrollments())
+    except Exception:
+        enrollments = []
+        skill_issues.append("could not read enrollment DB — provider check skipped")
+
+    healthy = [e for e in enrollments if not is_orphan(e)]
+    port = resolve_port(None)
+    provider_issues = _check_providers(state, healthy, port=port)
+
+    all_issues = skill_issues + provider_issues
+    if not all_issues and not fixed_items:
+        return False  # all checks passed, stay silent
+
+    typer.echo("\nOpenClaw:")
+    for issue in all_issues:
+        typer.echo(f"  ✗ {issue}")
+    for item in fixed_items:
+        typer.echo(f"  ✓ {item}")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -424,12 +580,13 @@ def _doctor_apply(
 def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
     """Diagnose and (optionally) repair stuck states.
 
-    Three checks, run in order:
+    Four checks, run in order:
       1. Recovery file imports (sibling-Mac coming online with files copied across)
       2. Orphan DB rows (HF7)
-      3. iCloud-synced keychain entries (WOR-456)
+      3. OpenClaw integration drift (WOR-431)
+      4. iCloud-synced keychain entries (WOR-456)
 
-    A clean state on all three reports ``No issues found.`` and exits 0.
+    A clean state on all four reports ``No issues found.`` and exits 0.
     """
     console = get_console()
     home = get_home()
@@ -449,11 +606,12 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
         # ----------- check 2: orphan DB rows -----------
         repo = ShardRepository(str(home.db_path), home.fernet_key)
         orphans = asyncio.run(_list_orphans(repo))
+        openclaw_issues = _check_openclaw_section(repo, fix=fix, dry_run=dry_run)
 
-        # ----------- check 3: iCloud-synced keychain entries -----------
+        # ----------- check 4: iCloud-synced keychain entries -----------
         synced = _list_synced_keychain_entries()
 
-        if not orphans and not synced:
+        if not orphans and not openclaw_issues and not synced:
             if not imported:
                 console.print_success("No issues found.")
             return

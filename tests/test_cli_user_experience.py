@@ -148,10 +148,17 @@ class TestLockUx:
     ) -> None:
         """Success message names the .env file + says what changed (UX P1#3).
 
-        Prior wording was "{N} key(s) protected." — opaque about what just
-        happened. New wording: "Done. {N} key(s) split between this machine
-        and your system keystore — {env_filename} no longer contains a
-        usable secret." Tells the user a story, names the file.
+        Combines two intents:
+
+        - Main's storytelling shape: name what changed and which .env file
+          is now safe ("split between this machine and your system
+          keystore — {env_filename} no longer contains a usable secret.").
+        - Trust-fix accessibility (2026-05-08 verification gauntlet):
+          lead with the literal ``[OK]`` text prefix as the carrier for
+          monochrome terminals + screen readers + CI log scrapers
+          (color/glyph reinforces but is never the carrier).
+
+        Both must hold — no regression on either side.
         """
         result = runner.invoke(
             app,
@@ -160,7 +167,9 @@ class TestLockUx:
         )
         assert result.exit_code == 0
         combined = result.stdout + result.stderr
-        # Must say what changed (split between machine + keystore).
+        # Trust-fix accessibility: literal ``[OK]`` carrier present.
+        assert "[OK]" in combined, f"success message missing [OK] text prefix:\n{combined}"
+        # Main's storytelling: must say what changed.
         assert "split between" in combined, (
             f"success message missing storytelling shape:\n{combined}"
         )
@@ -591,8 +600,11 @@ class TestQuietMode:
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 0
-        # In quiet mode, success messages are suppressed
-        assert "key(s) protected" not in result.stderr
+        # In quiet mode, success messages are suppressed.
+        # Trust-fix wording is "[OK] Protected N key(s)." — assert that
+        # neither the prefix nor the body leaks through quiet mode.
+        assert "[OK]" not in result.stderr
+        assert "Protected" not in result.stderr
 
     def test_quiet_scan_suppresses_output(self, env_with_openai: Path) -> None:
         """--quiet scan produces no stderr output (exit code only)."""
