@@ -65,13 +65,26 @@ jobs:
         # up the tree and picks whichever it finds first — non-obvious
         # cross-Worker collisions ensue. Every wrangler invocation in
         # any workflow MUST pass `--config`.
+        #
+        # Naive line-by-line grep produces false positives on (a)
+        # comments that mention `wrangler deploy` and (b) multi-line
+        # backslash-continued invocations where `--config` is on the
+        # next line. So we skip comment lines and, for each real match,
+        # look ahead within the same `run:` block (5 lines covers any
+        # realistic continuation) for `--config`.
         run: |
           set -e
-          bad=$(grep -RIEn 'wrangler (deploy|publish|dev)\b' .github/workflows/ \
-                | grep -v -- '--config ' || true)
-          if [ -n "$bad" ]; then
-            echo "::error::wrangler invocation without --config:"
-            echo "$bad"
+          fail=0
+          while IFS=: read -r file ln _; do
+            if sed -n "${ln}p" "$file" | grep -qE '^[[:space:]]*#'; then
+              continue
+            fi
+            if ! sed -n "${ln},$((ln+5))p" "$file" | grep -q -- '--config'; then
+              echo "::error file=${file},line=${ln}::wrangler invocation missing --config"
+              fail=1
+            fi
+          done < <(grep -RIEn 'wrangler (deploy|publish|dev)\b' .github/workflows/ || true)
+          if [ "$fail" -ne 0 ]; then
             exit 1
           fi
           echo "OK: every wrangler call uses --config"
