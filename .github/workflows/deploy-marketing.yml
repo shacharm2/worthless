@@ -108,6 +108,21 @@ jobs:
             grep -q "^[[:space:]]*${h}:" marketing/_headers \
               || { echo "::error::missing header in _headers: ${h}"; exit 1; }
           done
+          # 4th guard — wrangler invocations must pass --config. Mirrors
+          # the form in lint-marketing.yml (post-WOR-455 lint fix): skips
+          # comment lines, looks ahead 5 lines for `--config` to handle
+          # backslash-continued multi-line invocations. Defense-in-depth
+          # against a tag push from a topic branch that adds a wrangler
+          # call without --config and bypasses PR review.
+          fail=0
+          while IFS=: read -r f l _; do
+            if sed -n "${l}p" "$f" | grep -qE '^[[:space:]]*#'; then continue; fi
+            if ! sed -n "${l},$((l+5))p" "$f" | grep -q -- '--config'; then
+              echo "::error file=${f},line=${l}::wrangler invocation missing --config"
+              fail=1
+            fi
+          done < <(grep -RIEn 'wrangler (deploy|publish|dev)\b' .github/workflows/ || true)
+          [ "$fail" -eq 0 ] || exit 1
 
   deploy:
     name: Deploy to Cloudflare

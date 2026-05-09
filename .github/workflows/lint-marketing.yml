@@ -70,8 +70,17 @@ jobs:
         # comments that mention `wrangler deploy` and (b) multi-line
         # backslash-continued invocations where `--config` is on the
         # next line. So we skip comment lines and, for each real match,
-        # look ahead within the same `run:` block (5 lines covers any
-        # realistic continuation) for `--config`.
+        # look ahead within the same `run:` block for `--config`.
+        #
+        # **Window contract:** the lookahead is 5 lines past the match
+        # (so 6 lines total including the match line). Authors of
+        # wrangler invocations in `.github/workflows/**` MUST keep
+        # `--config <path>` within those 6 lines. A pathological
+        # `wrangler deploy \` followed by 6+ continuation flags before
+        # `--config` would slip through silently — keep config near
+        # the verb. If a future invocation legitimately needs a longer
+        # window, bump the constant in both this guard AND the mirror
+        # in deploy-marketing.yml verify job.
         run: |
           set -e
           fail=0

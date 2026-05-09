@@ -91,5 +91,7 @@ dist/
 # Worker; not deploy-relevant, not tracked).
 .wrangler/
 
-# Phase 1 audit scratch (WOR-455 plan §2.16); never committed.
+# WOR-455 audit scratch — Phase 1 plan §2.16, Phase 2 runbook §2.2.
+# Never committed.
 phase1-audit/
+phase2-audit/

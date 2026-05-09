@@ -1,14 +1,16 @@
 # WOR-455 Phase 1 — Implementation Plan
 
-**Status:** Plan only. Phase 1 not executed. No commits, no pushes, no
-`wrangler deploy` (not even `--dry-run`). Awaiting review before
-execution.
+**Status:** Historical. This document captures the plan as authored
+before Phase 1 implementation. Phase 1 has since been executed on
+branch `claude/wor-455-implementation-plan-6ZO0f` and is open as
+PR #160. For the post-Phase-1 forward path, see
+`WOR-455-phase-2-4-runbook.md`.
 
-**Branch:** `claude/wor-455-implementation-plan-6ZO0f` (this clone).
-The prompt referenced a worktree at `feature/wor-455-marketing-worker`;
-that branch was not present here. Create or rebase onto
-`feature/wor-455-marketing-worker` per project convention before any
-execution work begins. The plan itself is branch-agnostic.
+**Branch:** `claude/wor-455-implementation-plan-6ZO0f`. Originally the
+prompt referenced a notional worktree at
+`feature/wor-455-marketing-worker`; that branch was not present in
+the repo and the implementation proceeded on the actual branch above.
+The plan itself is branch-agnostic.
 
 **Scope:** WOR-455 description steps #16–#26. Build a new Cloudflare
 Worker (`wless-marketing`) serving Static Assets for `wless.io`,

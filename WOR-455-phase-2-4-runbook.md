@@ -142,7 +142,9 @@ PR title: `feat(marketing): claim wless.io/* route for production Worker (WOR-45
 
 PR body MUST include:
 - Link to this runbook.
-- The Phase 2 baseline → preview drift-check output (zero drift).
+- The Phase 2 baseline → preview drift-check output: zero drift on
+  five headers, plus the one expected HSTS drift line per §2.3
+  (180d → 1y bump for preload-list eligibility).
 - Operator confirmation P1–P9 all green.
 
 Reviewer must verify the route block is the **only** material change.
@@ -329,7 +331,7 @@ OPERATOR — Linear WOR-455:
 
 | Phase | Surface | Body check | Headers count==1 | Cert valid | Notes |
 |-------|---------|------------|------------------|------------|-------|
-| 2 end | `wless-marketing-preview.<sub>.workers.dev` | install cmd | yes | CF default | drift vs baseline = 0 |
+| 2 end | `wless-marketing-preview.<sub>.workers.dev` | install cmd | yes | CF default | drift = 0 on 5 headers; expected HSTS drift per §2.3 |
 | 3.4 | `wless.io/` | install cmd | **count==2 expected briefly** | yes | rule + Worker overlap |
 | 3.6 | `wless.io/` | install cmd | yes | yes | rule disabled |
 | 4.1 end | `shacharm2.github.io/worthless/` | n/a | n/a | n/a | expected 404 |
