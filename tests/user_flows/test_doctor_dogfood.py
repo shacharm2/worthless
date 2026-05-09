@@ -134,6 +134,6 @@ def test_full_dogfood_lock_break_doctor_recover(tmp_path: Path) -> None:
     # nothing to report. This double-checks step 7 closed the loop.
     doctor_done = runner.invoke(app, ["doctor"], env=cli_env)
     assert doctor_done.exit_code == 0, f"doctor on clean state must exit 0:\n{doctor_done.output}"
-    assert "nothing to fix" in doctor_done.output.lower(), (
+    assert "no issues found" in doctor_done.output.lower(), (
         f"doctor must announce a clean state once the orphan is gone:\n{doctor_done.output}"
     )

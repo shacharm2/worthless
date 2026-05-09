@@ -14,7 +14,7 @@ run worthless`?") doesn't happen.
 
 | Your setup | What to do | Container URL |
 |---|---|---|
-| **Solo dev. App runs natively. No Docker.** | Use [mac.md](./mac.md) / [linux.md](./linux.md) / [wsl.md](./wsl.md) | n/a (`127.0.0.1:8787`) |
+| **Solo dev. App runs natively. No Docker.** | Use [mac.md](/install/mac/) / [linux.md](/install/linux/) / [wsl.md](/install/wsl/) | n/a (`127.0.0.1:8787`) |
 | **Solo dev. App in container. worthless on host.** | [Scenario A](#scenario-a-your-app-in-docker-worthless-on-host) | `host.docker.internal:8787` |
 | **Solo dev. worthless + app in same Compose stack.** | [Scenario B](#scenario-b-both-worthless-and-app-in-the-same-compose-stack) | service-name `worthless:8787` |
 | **Team. Shared worthless server (single-tenant).** | [Scenario C](#scenario-c-single-tenant-team-server) | your TLS endpoint |
@@ -26,7 +26,7 @@ service in a container. worthless lives on your host.
 
 ### A.1 Install worthless natively on your host
 
-Follow [mac.md](./mac.md) / [linux.md](./linux.md) / [wsl.md](./wsl.md)
+Follow [mac.md](/install/mac/) / [linux.md](/install/linux/) / [wsl.md](/install/wsl/)
 end-to-end. After this you have `worthless` in your shell PATH and a
 proxy running on host's `127.0.0.1:8787`.
 
@@ -84,7 +84,7 @@ services:
 ### A.5 Verify
 
 From inside the container, use the SDK pattern from
-[README — Verify it works](./README.md#verify-it-works) (`docker compose exec app python /app/verify.py` etc.).
+[README — Verify it works](/install/#verify-it-works) (`docker compose exec app python /app/verify.py` etc.).
 
 (Auto-detection of Docker context — so the `.env` URL gets written as
 `host.docker.internal` directly without a manual edit — is on the v1.2
@@ -178,7 +178,7 @@ services:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `worthless` not found in shell | You ran `docker run worthless` thinking that's the CLI | Install natively per [mac.md](./mac.md) / [linux.md](./linux.md) |
+| `worthless` not found in shell | You ran `docker run worthless` thinking that's the CLI | Install natively per [mac.md](/install/mac/) / [linux.md](/install/linux/) |
 | App in container: "connection refused" on `127.0.0.1:8787` | `127.0.0.1` from container = container itself | Use `host.docker.internal` (§A.3) |
 | Linux: `host.docker.internal` doesn't resolve | No Docker Desktop = no auto host-gateway | Add `--add-host=host.docker.internal:host-gateway` to `docker run` |
 | Compose: `worthless:8787` doesn't resolve | Service not in same compose network | Check `docker compose ps` — both must be on the default network |
@@ -226,7 +226,7 @@ understand which scenario you're in.
 > Human readers can stop here — the YAML below is for AI agents
 > installing worthless on a user's behalf.
 
-Schema documented in [agent-schema.md](./agent-schema.md).
+Schema documented in [agent-schema.md](/install/agent-schema/).
 Docker has multiple scenarios — the YAML below covers the most common
 ("app in container, worthless on host"). Inspect the scenario sections
 above for compose-stack and team-server flows.

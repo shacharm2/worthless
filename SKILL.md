@@ -255,24 +255,55 @@ The registry maps known upstream URLs (e.g., `https://api.openai.com/v1`) to a w
 **Use case:** Lock keys from any OpenAI-protocol-compatible provider (OpenRouter, Groq, Together, Ollama, internal LLM gateways). The proxy uses each enrollment's stored URL at request time, so multiple providers coexist in one `.env`.
 
 #### `worthless doctor [OPTIONS]`
-**Diagnose and repair stuck DB/.env states.**
+**Diagnose and repair stuck states. Safe to run at any time.**
 
-Currently handles ONE shape: DB enrollment rows whose `.env` line was deleted by the user. Surfaces and (with `--fix`) purges them. Closes the dogfood-discovered stuck state where `worthless unlock` says "no enrolled keys" but `worthless status` lists them as PROTECTED.
+Runs three checks in sequence:
+
+1. **Recovery file imports** — if a sibling Mac ran `--fix` and wrote recovery files to `~/.worthless/recovery/`, import any missing keys into this Mac's local keychain automatically.
+2. **iCloud-synced keychain entries** — Worthless keys should stay on this Mac only. If any have been synced across your Apple devices via iCloud Keychain, doctor lists them and (`--fix`) migrates them to device-local storage. A one-time recovery copy is saved to `~/.worthless/recovery/` before migration so a second Mac can re-import. The migration prompts with an explicit multi-device warning before any changes.
+3. **Orphan DB rows** — DB enrollment rows whose `.env` line was deleted by the user. Surfaces and (`--fix`) purges them. Closes the dogfood-discovered stuck state where `worthless unlock` says "no enrolled keys" but `worthless status` lists them as PROTECTED.
 
 **Options:**
-- `--fix`: Repair (destructive). Prompts unless `--yes`.
-- `--yes, -y`: Skip the confirmation prompt for `--fix`.
-- `--dry-run`: Show planned actions without writing.
 
-**Behavior:**
-- No flags: read-only diagnose mode, lists broken rows, exit 0.
-- `--fix`: prompts; on Y, deletes broken DB rows + their shard files atomically (same path as `revoke`).
-- `--fix --dry-run`: prints planned deletions, leaves DB intact.
-- `--fix --yes`: skip prompt, perform purge.
+| Flag | Meaning |
+|---|---|
+| *(no flags)* | Read-only diagnose mode — lists all findings, exit 0, no writes |
+| `--fix` | Repair mode — prompts for confirmation before any changes |
+| `--fix --yes` / `-y` | Repair without prompt (CI / non-interactive) |
+| `--fix --dry-run` | Show planned actions, leave everything intact |
 
-**User-facing wording:** `"can't restore <alias>: .env line deleted"` — plain English, no engineer jargon. The fix command name is part of the canonical message so the user always sees the recovery path.
+**Example output (clean state):**
 
-**Use case:** user manually deleted a key line from `.env`; system is stuck. Run `worthless doctor --fix --dry-run` to preview, then `worthless doctor --fix` to clean up.
+```
+$ worthless doctor
+No issues found.
+```
+
+**Example output (iCloud finding):**
+
+```
+$ worthless doctor
+Found 2 Worthless key(s) stored in iCloud Keychain (syncs across your Apple devices).
+Worthless keys should stay on this Mac only.
+Run: worthless doctor --fix
+```
+
+**Example output (orphan finding):**
+
+```
+$ worthless doctor
+Can't restore openai-abc123: .env line deleted.
+Run: worthless doctor --fix
+```
+
+**User-facing wording:** plain English throughout — `"can't restore"`, `"stored in iCloud Keychain"`, `"this Mac only"`. No engineer jargon. The fix command name is always named so the user sees the recovery path.
+
+**Note:** Full check registry + `--json` output land in WOR-464. For now, all output is human-readable text.
+
+**Use cases:**
+- `.env` line manually deleted → `worthless doctor --fix` purges the orphan row.
+- Keys appearing in iCloud Keychain → `worthless doctor --fix` migrates to device-local storage (multi-device warning shown first).
+- Moved to a new Mac → `worthless doctor` auto-imports recovery files left by the originating Mac.
 
 #### `worthless mcp [OPTIONS]`
 **Start the MCP server (stdio transport).**

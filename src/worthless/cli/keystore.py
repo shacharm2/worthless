@@ -5,11 +5,24 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import sys
 from pathlib import Path
 
 import keyring
 
 from worthless.cli.errors import ErrorCode, WorthlessError
+
+# WOR-456: on macOS, route writes through our own ctypes wrapper that
+# explicitly pins ``kSecAttrSynchronizable=kCFBooleanFalse`` so Fernet keys
+# never leak into iCloud Keychain. The upstream ``keyring`` library omits
+# the attribute, leaving items eligible for sync. ``keystore_macos`` raises
+# ImportError on non-darwin (module-level platform guard), which is why
+# the import is gated. Reads stay on ``keyring.get_password`` because the
+# default ``SecItemCopyMatching`` scope already excludes synced entries.
+if sys.platform == "darwin":
+    from worthless.cli import keystore_macos
+else:
+    keystore_macos = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +51,24 @@ _REJECTED_BACKENDS = frozenset(
         "keyrings.alt.file.PlaintextKeyring",
     }
 )
+
+
+def _is_macos_keyring() -> bool:
+    """True iff macOS AND the active keyring backend is the OS keychain.
+
+    Routes WOR-456's synchronizable-False writes only when the upstream
+    ``keyring`` library would have actually used the macOS Keychain. On
+    Linux/Windows, on null/file fallback, or in pytest with the null
+    backend installed (WOR-469), this returns False and writes go through
+    the upstream library unchanged.
+    """
+    if sys.platform != "darwin" or keystore_macos is None:
+        return False
+    try:
+        backend = keyring.get_keyring()
+    except Exception:
+        return False
+    return type(backend).__module__.startswith("keyring.backends.macOS")
 
 
 def keyring_available() -> bool:
@@ -83,7 +114,12 @@ def store_fernet_key(key: bytes, home_dir: Path | None = None) -> None:
     """
     if keyring_available():
         try:
-            keyring.set_password(_SERVICE, _keyring_username(home_dir), key.decode())
+            username = _keyring_username(home_dir)
+            if _is_macos_keyring() and keystore_macos is not None:
+                # WOR-456: explicit synchronizable=False, no iCloud sync.
+                keystore_macos.set_password_local(_SERVICE, username, key.decode())
+            else:
+                keyring.set_password(_SERVICE, username, key.decode())
             logger.info("Fernet key stored in OS keyring")
             # Clean up stale fernet.key file left from pre-keyring installs
             try:
