@@ -298,10 +298,10 @@ def main() -> None:
     # Must be created here (still root) before the privilege drop below.
     # OSError is caught because /run/worthless/ only exists inside Docker
     # (created by the Dockerfile RUN); bare-metal and test environments skip.
-    _STABLE_HEALTH_SOCKET = Path("/run/worthless/sidecar.sock")
+    stable_socket = Path("/run/worthless/sidecar.sock")
     try:
-        _STABLE_HEALTH_SOCKET.unlink(missing_ok=True)
-        _STABLE_HEALTH_SOCKET.symlink_to(socket_path)
+        stable_socket.unlink(missing_ok=True)
+        stable_socket.symlink_to(socket_path)
     except OSError:
         pass
 

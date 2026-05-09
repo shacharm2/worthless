@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import os
 import secrets
 import socket
@@ -112,6 +113,16 @@ def _spawn_sidecar_subprocess(
     pytest.fail("sidecar did not become ready within 5s")
 
 
+def _terminate(proc: subprocess.Popen[str]) -> None:
+    """Graceful SIGTERM with SIGKILL fallback for sidecar subprocesses."""
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=2)
+
+
 @pytest.fixture
 def running_sidecar_at(short_tmpdir: Path) -> Iterator[Path]:
     """Real sidecar subprocess bound for the test uid. Tear down via SIGTERM."""
@@ -119,12 +130,7 @@ def running_sidecar_at(short_tmpdir: Path) -> Iterator[Path]:
     try:
         yield sock
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=2)
+        _terminate(proc)
 
 
 @pytest.fixture
@@ -135,12 +141,7 @@ def wrong_uid_sidecar(short_tmpdir: Path) -> Iterator[Path]:
     try:
         yield sock
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=2)
+        _terminate(proc)
 
 
 @pytest.fixture
@@ -309,9 +310,6 @@ def test_wrong_uid_auth_rejected(
 def test_main_is_callable_without_args() -> None:
     """``python -m worthless.sidecar.health`` MUST work with no argv."""
     assert callable(health.main)
-    # Signature: main() -> int
-    import inspect
-
     sig = inspect.signature(health.main)
     assert len(sig.parameters) == 0
 
@@ -321,9 +319,6 @@ def test_module_runs_via_python_dash_m(
 ) -> None:
     """Smoke: ``python -m worthless.sidecar.health`` exits non-zero when the
     socket is missing. Proves module loads and __main__ guard fires."""
-    import subprocess
-    import sys
-
     bogus = short_tmpdir / "nope.sock"
     env = {**os.environ, "WORTHLESS_SIDECAR_SOCKET": str(bogus)}
     result = subprocess.run(
@@ -354,11 +349,9 @@ def test_total_budget_under_2_seconds_on_failure(
     assert elapsed < 2.5, f"health probe blew Docker's 2s timeout budget: {elapsed:.3f}s"
 
 
-# Sanity: asyncio infra is wired (catches accidental sync-only impl).
-def test_asyncio_module_imported() -> None:
+def test_probe_is_async_coroutine() -> None:
+    """_probe must be a coroutine so main() can wrap it with asyncio.run/wait_for."""
     import worthless.sidecar.health as h
 
     assert hasattr(h, "main")
-    # Implementation detail: probe is async; main wraps with asyncio.run.
-    # We only assert asyncio is available — not how it's used.
-    assert asyncio is not None
+    assert asyncio.iscoroutinefunction(h._probe)

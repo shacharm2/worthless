@@ -62,7 +62,9 @@ async def _probe(socket_path: Path) -> int:
     except IPCAuthError:
         _emit("AUTH rejected")
         return 1
-    except IPCTimeoutError:
+    except (IPCTimeoutError, asyncio.TimeoutError):
+        # IPCTimeoutError: per-request HELLO deadline; asyncio.TimeoutError:
+        # leaked from IPCClient internals. Both mean the peer stopped responding.
         _emit("handshake timeout")
         return 1
     except IPCProtocolError:
@@ -71,9 +73,6 @@ async def _probe(socket_path: Path) -> int:
         return 1
     except (ConnectionRefusedError, FileNotFoundError):
         _emit("connect refused (sidecar dead?)")
-        return 1
-    except asyncio.TimeoutError:
-        _emit("handshake timeout")
         return 1
     except PermissionError:
         # errno == EACCES — proxy uid lacks group membership on the socket.
