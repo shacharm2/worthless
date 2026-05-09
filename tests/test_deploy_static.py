@@ -784,6 +784,11 @@ class TestDockerfile:
             "--cap-add=DAC_OVERRIDE",
             "--cap-add=CHOWN",
             "--cap-add=FOWNER",
+            # WOR-466: /run/worthless must be a tmpfs so start.py can create
+            # the stable sidecar.sock symlink at runtime. Without it, --read-only
+            # makes /run/worthless immutable → symlink silently skipped →
+            # HEALTHCHECK "socket missing" → container never healthy.
+            "--tmpfs /run/worthless",
         ):
             assert needed in flags, (
                 f"WOR-310: priv-drop / bootstrap requires {needed} in "

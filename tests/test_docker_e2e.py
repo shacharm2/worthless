@@ -128,6 +128,13 @@ def container(docker_image: str) -> tuple[str, int]:
             "--read-only",
             "--tmpfs",
             "/tmp:noexec,nosuid",
+            # WOR-466: sidecar stable-symlink lives at /run/worthless/sidecar.sock.
+            # The image creates /run/worthless/ at build time (root:worthless 0770)
+            # but --read-only makes it immutable at runtime.  A tmpfs overlay lets
+            # start.py write the symlink while root; the proxy/crypto uids only
+            # need to follow it (r-x on the directory is enough).
+            "--tmpfs",
+            "/run/worthless",
             "-v",
             f"{name}-data:/data",
             "-v",
