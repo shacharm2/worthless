@@ -11,8 +11,9 @@ This branch protects the first two user-flow lanes:
 - `WOR-445`: recovery, teammate handoff, rotation, and multi-project drift.
 
 It does not yet protect install/reinstall/uninstall, Docker clean distro
-journeys, OpenClaw, agent/MCP setup, or the CI user-flow lane. Those remain
-separate Linear child issues.
+journeys, OpenClaw, or agent/MCP setup. This branch now includes a first CI
+lane for Linux/macOS user-flow proof plus uploaded terminal trace artifacts;
+Windows native and WSL proof remain explicitly deferred.
 
 The suite now contains 12 user-flow tests:
 
@@ -49,6 +50,17 @@ Run the automated suite with:
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run pytest tests/user_flows -m user_flow -q
+```
+
+For literal terminal proof, see [`TERMINAL_TRACES.md`](TERMINAL_TRACES.md).
+It is generated from real `worthless` subprocess calls against isolated temp
+projects with fake key material and redacted `.env` snapshots.
+
+Refresh the traces with:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run python tests/user_flows/render_traces.py \
+  --output tests/user_flows/TERMINAL_TRACES.md
 ```
 
 ## UX promises now protected
@@ -175,7 +187,7 @@ These are intentionally not covered by this first branch:
 | `WOR-442` | Docker and clean distro matrix | Backlog |
 | `WOR-443` | OpenClaw install/config/protected request | Backlog |
 | `WOR-444` | Agent and MCP driven setup | Backlog |
-| `WOR-446` | CI user-flow lane | Backlog |
+| `WOR-446` | CI user-flow lane | First pass in this branch: Ubuntu/macOS user flows and trace artifacts; Windows/WSL deferred |
 
 Product-risk gaps still worth promoting into explicit journeys:
 

@@ -15,7 +15,16 @@ can start real subprocesses, and may require platform facilities such as a
 native keyring.
 
 For product review and manual UX traceability, see
-[`UX_PRODUCT_REPORT.md`](UX_PRODUCT_REPORT.md).
+[`UX_PRODUCT_REPORT.md`](UX_PRODUCT_REPORT.md). For literal command output,
+`.env` before/after snapshots, and redacted terminal proof, see
+[`TERMINAL_TRACES.md`](TERMINAL_TRACES.md).
+
+Refresh terminal traces with:
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run python tests/user_flows/render_traces.py \
+  --output tests/user_flows/TERMINAL_TRACES.md
+```
 
 Rules for new tests:
 
