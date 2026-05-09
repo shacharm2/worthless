@@ -52,7 +52,8 @@ ENV WORTHLESS_HOME=/data \
     WORTHLESS_SHARD_A_DIR=/data/shard_a \
     HOME=/data \
     PYTHONDONTWRITEBYTECODE=1 \
-    PORT=8787
+    PORT=8787 \
+    WORTHLESS_SIDECAR_SOCKET=/run/worthless/sidecar.sock
 
 EXPOSE 8787
 

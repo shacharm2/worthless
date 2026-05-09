@@ -95,8 +95,11 @@ def main() -> int:
     socket_path = Path(raw)
 
     # Stat first — fastest filter for the two cheapest failure modes.
+    # Use os.stat (not os.lstat) so the stable symlink at
+    # WORTHLESS_SIDECAR_SOCKET=/run/worthless/sidecar.sock is followed to the
+    # real AF_UNIX socket inode; lstat returns S_IFLNK → S_ISSOCK is False.
     try:
-        st = os.lstat(socket_path)
+        st = socket_path.stat()
     except FileNotFoundError:
         # Path comes from env; operator already knows it. No interpolation.
         _emit("socket missing")
