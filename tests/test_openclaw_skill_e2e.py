@@ -71,7 +71,7 @@ def _host_port(container: str, internal_port: int) -> int:
 def _write_env_to_container(
     container: str,
     env_content: str,
-    dest: str = "/tmp/.env.wor432",  # noqa: S108 (path is inside the container, not host)
+    dest: str = "/tmp/.env",  # noqa: S108 (path is inside the container, not host)
 ) -> None:
     result = subprocess.run(  # noqa: S603
         [  # noqa: S607
@@ -91,7 +91,7 @@ def _write_env_to_container(
 def _read_env_value(
     container: str,
     var_name: str,
-    path: str = "/tmp/.env.wor432",  # noqa: S108
+    path: str = "/tmp/.env",  # noqa: S108
 ) -> str:
     result = docker_exec(
         container,
@@ -214,7 +214,7 @@ def clawhub_stack():
             f"OPENAI_API_KEY={fake_key}\nOPENAI_BASE_URL=http://mock-upstream:9999/openai/v1\n"
         )
         _write_env_to_container(proxy_c, env_content)
-        lock = docker_exec(proxy_c, ["worthless", "lock", "--env", "/tmp/.env.wor432"])  # noqa: S108
+        lock = docker_exec(proxy_c, ["worthless", "lock", "--env", "/tmp/.env"])  # noqa: S108
         assert lock.returncode == 0, f"worthless lock failed: {lock.stderr}"
 
         shard_a = _read_env_value(proxy_c, "OPENAI_API_KEY")
@@ -320,6 +320,8 @@ class TestClawhubInstallProducesProtectedRequest:
                 "agent",
                 "--local",
                 "--json",
+                "--session-id",
+                "wor432-test",
                 "--model",
                 "worthless-test/gpt-4o",
                 "--message",
@@ -333,7 +335,11 @@ class TestClawhubInstallProducesProtectedRequest:
             f"openclaw agent failed.\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
         )
         payload = json.loads(result.stdout)
-        assert payload.get("ok"), f"agent returned non-ok payload: {payload}"
+        # openclaw agent --local --json returns {"payloads": [...], "meta": {...}}
+        # Success is indicated by non-empty payloads and meta.aborted == False.
+        assert payload.get("payloads") and not payload.get("meta", {}).get("aborted"), (
+            f"agent returned failure: {payload}"
+        )
 
         # Verify the mock upstream received the reconstructed key.
         captured = httpx.get(f"http://127.0.0.1:{mock_port}/captured-headers", timeout=5).json()
