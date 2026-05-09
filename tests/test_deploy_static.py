@@ -576,7 +576,7 @@ class TestDockerfile:
         checks; that is intentionally separate from the Docker HEALTHCHECK.
         """
         healthcheck_match = re.search(
-            r"HEALTHCHECK.*?(?=\n(?:FROM|RUN|COPY|ENV|EXPOSE|USER|ENTRYPOINT|CMD|\Z))",
+            r"HEALTHCHECK.*?(?=\n[A-Z]|\Z)",
             dockerfile_text,
             re.DOTALL | re.MULTILINE,
         )
