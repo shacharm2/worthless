@@ -14,6 +14,9 @@ The default test sweep excludes `user_flow` because these tests can be slower,
 can start real subprocesses, and may require platform facilities such as a
 native keyring.
 
+For product review and manual UX traceability, see
+[`UX_PRODUCT_REPORT.md`](UX_PRODUCT_REPORT.md).
+
 Rules for new tests:
 
 - Always isolate `WORTHLESS_HOME` under `tmp_path`; never touch the developer's

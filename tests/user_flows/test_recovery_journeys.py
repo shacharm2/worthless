@@ -92,6 +92,30 @@ def test_rotation_relock_restores_new_raw_key(tmp_path: Path) -> None:
 
 
 @pytest.mark.user_flow
+def test_rotation_relock_accepts_different_shape_raw_key(tmp_path: Path) -> None:
+    """Relock treats a different-shape raw key as a new key, not corrupt shard-A."""
+    home = tmp_path / ".worthless"
+    env_file = tmp_path / ".env"
+    old_key = fake_key("sk-proj-", seed="rotation-shape-old")
+    new_key = fake_key("sk-", seed="rotation-shape-new")
+    env_file.write_text(f"OPENAI_API_KEY={old_key}\n")
+
+    first_lock = _invoke(["lock", "--env", str(env_file)], home)
+    assert first_lock.exit_code == 0, _combined_output(first_lock)
+
+    env_file.write_text(f"OPENAI_API_KEY={new_key}\n")
+    second_lock = _invoke(["lock", "--env", str(env_file)], home)
+    assert second_lock.exit_code == 0, _combined_output(second_lock)
+    assert dotenv_values(env_file)["OPENAI_API_KEY"] != new_key
+
+    unlock = _invoke(["unlock", "--env", str(env_file)], home)
+    unlock_output = _combined_output(unlock)
+    assert unlock.exit_code == 0, unlock_output
+    assert "Traceback" not in unlock_output
+    assert dotenv_values(env_file)["OPENAI_API_KEY"] == new_key
+
+
+@pytest.mark.user_flow
 def test_multi_project_unlock_keeps_other_project_protected(tmp_path: Path) -> None:
     """Unlocking one project must not restore or corrupt another project."""
     home = tmp_path / ".worthless"

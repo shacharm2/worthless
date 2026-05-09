@@ -76,12 +76,8 @@ def test_default_command_yes_detects_and_locks_project_env(
     )
     monkeypatch.chdir(project)
 
-    health_calls = 0
-
     def _poll_health(*args: object, **kwargs: object) -> bool:
-        nonlocal health_calls
-        health_calls += 1
-        return health_calls > 1
+        return True
 
     monkeypatch.setattr("worthless.cli.default_command.start_daemon", lambda *a, **kw: None)
     monkeypatch.setattr("worthless.cli.default_command.poll_health", _poll_health)

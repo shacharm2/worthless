@@ -228,7 +228,7 @@ async def _filter_unprotected_candidates(
                 )
                 still_protected = True
                 break
-            except ShardTamperedError:
+            except (ShardTamperedError, ValueError, KeyError):
                 continue
             finally:
                 zero_buf(shard_a)
