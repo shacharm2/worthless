@@ -1,6 +1,6 @@
 """Length-prefix + msgpack framing for proxy↔sidecar IPC.
 
-Wire format (see ``docs/ipc-contract.md`` §Frame)::
+Wire format (see ``engineering/ipc-contract.md`` §Frame)::
 
     ┌─────────────┬──────────────────────────┐
     │ length (4B) │  msgpack-encoded envelope │

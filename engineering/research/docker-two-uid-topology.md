@@ -1,4 +1,6 @@
-# WOR-310 — Dockerfile, two-uid Fernet sidecar topology
+# Docker two-uid Fernet sidecar topology
+
+*Originally landed via WOR-310. Mission-driven name; ticket lineage in the footer.*
 
 > "API keys are protected against bulk/offline exfiltration even when the proxy is compromised."
 

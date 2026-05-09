@@ -1,7 +1,7 @@
 """Fernet-backed sidecar crypto backend (v1.1).
 
 Reconstructs a Fernet key from two equal-length XOR shares, then exposes
-``seal`` / ``open`` / ``attest`` per ``docs/ipc-contract.md`` \u00a7Ops.
+``seal`` / ``open`` / ``attest`` per ``engineering/ipc-contract.md`` \u00a7Ops.
 
 Security notes:
     * The reconstructed key lives on the instance but is never serialised

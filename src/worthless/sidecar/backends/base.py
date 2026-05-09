@@ -3,7 +3,7 @@
 The sidecar server speaks only to :class:`Backend`; concrete backends
 (Fernet today, KMS/MPC later) are swappable without touching server code.
 
-See ``docs/ipc-contract.md`` \u00a7Ops for the wire-level semantics of
+See ``engineering/ipc-contract.md`` \u00a7Ops for the wire-level semantics of
 ``seal`` / ``open`` / ``attest`` that every backend implementation must
 honour.
 """

@@ -4,7 +4,7 @@ Extracted from ``test_roundtrip.py`` so failure-matrix and future IPC
 tests can reuse them without duplication. Pytest autodiscovers every
 fixture in this file for any test in ``tests/ipc/``.
 
-See ``docs/ipc-contract.md`` for the surfaces these fixtures exercise.
+See ``engineering/ipc-contract.md`` for the surfaces these fixtures exercise.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Async proxy-side client for the Worthless sidecar IPC.
 
-Wire protocol: see ``docs/ipc-contract.md``. This module is the counterpart
+Wire protocol: see ``engineering/ipc-contract.md``. This module is the counterpart
 to :mod:`worthless.sidecar.server` — a dumb transport that speaks the
 framed msgpack envelope protocol. It performs NO crypto itself; every
 ``seal``/``open``/``attest`` call round-trips to the sidecar.

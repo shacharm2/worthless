@@ -1,6 +1,6 @@
 """End-to-end roundtrip tests for the Worthless sidecar IPC.
 
-Contract: ``docs/ipc-contract.md``.
+Contract: ``engineering/ipc-contract.md``.
 
 These are RED-phase tests landed BEFORE implementation — they pin the
 module/API surface that backend-developer will implement against
