@@ -296,9 +296,14 @@ def main() -> None:
     # WORTHLESS_SIDECAR_SOCKET=/run/worthless/sidecar.sock (stable); this
     # symlink points it at the real per-PID socket that the sidecar bound.
     # Must be created here (still root) before the privilege drop below.
+    # OSError is caught because /run/worthless/ only exists inside Docker
+    # (created by the Dockerfile RUN); bare-metal and test environments skip.
     _STABLE_HEALTH_SOCKET = Path("/run/worthless/sidecar.sock")
-    _STABLE_HEALTH_SOCKET.unlink(missing_ok=True)
-    _STABLE_HEALTH_SOCKET.symlink_to(socket_path)
+    try:
+        _STABLE_HEALTH_SOCKET.unlink(missing_ok=True)
+        _STABLE_HEALTH_SOCKET.symlink_to(socket_path)
+    except OSError:
+        pass
 
     # WOR-310 C3: drop self to worthless-proxy before exec uvicorn. Mirrors
     # the preexec_fn dance in the sidecar's forked child:
