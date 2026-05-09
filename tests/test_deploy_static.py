@@ -490,14 +490,24 @@ class TestEntrypoint:
             "WOR-465 Phase A1: entrypoint.sh must reference "
             "WORTHLESS_FERNET_IPC_ONLY to gate the fernet.key chmod path."
         )
-        assert "worthless-crypto" in entrypoint_text, (
+        # Owner MUST be worthless-crypto (the sidecar uid), not root.
+        # With mode 0400, the owner is the only reader — if owner is
+        # root, the sidecar can't read the key it's supposed to manage,
+        # and the flag silently DOSes the system. Initial implementation
+        # of A1 had this exact bug (chown root:worthless-crypto 0400);
+        # static-text grep for the group name passed but the system
+        # broke at runtime. Anchor the regex to the full owner:group
+        # pair so the regression cannot recur.
+        assert re.search(r"chown\s+worthless-crypto:worthless-crypto", entrypoint_text), (
             "WOR-465 Phase A1: gated branch must chown fernet.key to "
-            "the worthless-crypto group (root:worthless-crypto 0400)."
+            "worthless-crypto:worthless-crypto (sidecar owns and reads "
+            "via owner bit). chown root:worthless-crypto with mode 0400 "
+            "locks the sidecar out of its own key — caught by "
+            "task-completion-validator on PR #158."
         )
         assert "chmod 0400" in entrypoint_text, (
             "WOR-465 Phase A1: gated branch must chmod fernet.key to 0400 "
-            "(owner-only) so a proxy uid not in worthless-crypto group "
-            "cannot open() it even via shared-gid traversal."
+            "(owner-only). Proxy uid is not the owner; kernel rejects open()."
         )
         # Default branch stays — docker-e2e ships unchanged in A1.
         assert "chmod 0440" in entrypoint_text, (
