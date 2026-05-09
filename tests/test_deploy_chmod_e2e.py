@@ -153,17 +153,26 @@ def _run_entrypoint(
     volume: str,
     container: str,
     env: dict[str, str],
+    *,
+    caps: list[str] | None = None,
+    wait_for_exit: bool = False,
     timeout: float = 10.0,
-) -> None:
-    """Boot the image and wait for the chmod block to mutate fernet.key.
+) -> int | None:
+    """Boot the image; either poll until chmod block runs, or wait for exit.
 
-    Polls ``stat`` every 100ms until the file mode/owner differs from the
-    seed value (``root:root 644``), or ``timeout`` seconds elapse — whichever
-    comes first. Avoids the dead-reckoning ``sleep 3`` that dominated wall
-    time when the chmod completes in ~50ms.
+    Two modes:
 
-    The proxy may crash post-chmod (A1 doesn't ship the IPC verbs A3 needs),
-    but we only care that the chmod block ran.
+    - ``wait_for_exit=False`` (default): poll ``stat`` every 100ms until
+      ``fernet.key`` mode/owner differs from the seed (``root:root 644``),
+      or ``timeout`` elapses. Returns ``None``. Use when the proxy is
+      expected to live (or crash later — we only care the chmod ran).
+    - ``wait_for_exit=True``: wait for the container to exit via
+      ``docker wait``, return the integer exit code. Use when the
+      entrypoint is expected to fail-closed before the proxy starts.
+
+    ``caps`` defaults to ``_CAPS`` (the production cap set). Pass a
+    custom list to simulate misconfigurations like a host filesystem
+    that drops chown (drop ``--cap-add=CHOWN``).
     """
     cmd = [
         "docker",
@@ -179,16 +188,28 @@ def _run_entrypoint(
     ]
     for k, v in env.items():
         cmd.extend(["-e", f"{k}={v}"])
-    cmd.extend(_CAPS)
+    cmd.extend(caps if caps is not None else _CAPS)
     cmd.append(image)
     subprocess.run(cmd, check=True, capture_output=True)
+
+    if wait_for_exit:
+        wait = subprocess.run(
+            ["docker", "wait", container],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=timeout,
+        )
+        return int(wait.stdout.strip())
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if _stat(image, volume, "fernet.key") != _SEED_STATE:
-            return
+            return None
         time.sleep(0.1)
     # Fall through if mode never changed — let the test's stat assertion
     # report the actual final state with full context.
+    return None
 
 
 def _cleanup(container: str, volume: str) -> None:
@@ -243,58 +264,41 @@ def test_default_off_keeps_legacy_root_worthless_0440(image: str) -> None:
 
 
 def test_flag_on_fails_closed_when_chown_is_silently_dropped(image: str) -> None:
-    """If chown silently no-ops, entrypoint must exit 78 — no false security claim.
+    """If chown silently no-ops, entrypoint exits 78 — no false security claim.
 
     Simulates a misconfigured host bind-mount (macOS Docker Desktop / WSL
-    /mnt/c/...) by dropping ``CAP_CHOWN``. ``chown`` then fails inside the
-    container; the ``2>/dev/null || true`` swallows the error so the
-    chmod block's stat verification is the last line of defense. Without
-    fail-closed the container would boot with fernet.key still
-    ``root:root 0644`` (the seed) while claiming IPC-only mode.
+    ``/mnt/c/...``) by dropping ``CAP_CHOWN``. With the cap removed,
+    ``chown`` returns EPERM inside the container; ``2>/dev/null || true``
+    swallows the error. ``chmod`` still succeeds (root chmod'ing a
+    root-owned file needs no caps), so without the post-chmod stat check
+    the file would settle at ``root:root 0400`` while the container
+    claimed ``worthless-crypto:worthless-crypto 0400``. The owner
+    mismatch trips the fail-closed check; container exits 78.
     """
     vol = f"chmod-failclosed-{uuid.uuid4().hex[:8]}"
     cnt = f"chmod-failclosed-{uuid.uuid4().hex[:8]}"
     try:
         _seed_fernet_key(image, vol)
-        # Identical to _CAPS but with CAP_CHOWN intentionally omitted —
-        # this is the kernel-equivalent of "host filesystem ignored chown".
+        # Kernel-equivalent of "host filesystem ignored chown".
         caps_no_chown = [c for c in _CAPS if c != "--cap-add=CHOWN"]
-        cmd = [
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            cnt,
-            "-v",
-            f"{vol}:/secrets",
-            "--read-only",
-            "--tmpfs",
-            "/tmp:noexec,nosuid",
-            "-e",
-            "WORTHLESS_FERNET_IPC_ONLY=1",
-            "-e",
-            "WORTHLESS_FERNET_KEY_PATH=/secrets/fernet.key",
-            "-e",
-            "WORTHLESS_DEPLOY_MODE=lan",
-            "-e",
-            "WORTHLESS_ALLOW_INSECURE=true",
-            "-e",
-            "WORTHLESS_HOST=0.0.0.0",
-            *caps_no_chown,
+        exit_code = _run_entrypoint(
             image,
-        ]
-        subprocess.run(cmd, check=True, capture_output=True)
-        wait = subprocess.run(
-            ["docker", "wait", cnt],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
+            vol,
+            cnt,
+            env={
+                "WORTHLESS_FERNET_IPC_ONLY": "1",
+                "WORTHLESS_FERNET_KEY_PATH": "/secrets/fernet.key",
+                "WORTHLESS_DEPLOY_MODE": "lan",
+                "WORTHLESS_ALLOW_INSECURE": "true",
+                "WORTHLESS_HOST": "0.0.0.0",
+            },
+            caps=caps_no_chown,
+            wait_for_exit=True,
+            timeout=30.0,
         )
-        exit_code = wait.stdout.strip()
-        assert exit_code == "78", (
+        assert exit_code == 78, (
             "WOR-465 Phase A1 fail-closed: entrypoint must exit 78 "
-            f"(EX_CONFIG) when fernet.key chmod silently no-ops. Got {exit_code!r}. "
+            f"(EX_CONFIG) when fernet.key chown silently no-ops. Got {exit_code}. "
             "Without this check, an operator on a misconfigured host "
             "bind-mount would boot a container claiming IPC-only mode "
             "while the proxy can still read the key."
@@ -306,9 +310,9 @@ def test_flag_on_fails_closed_when_chown_is_silently_dropped(image: str) -> None
             check=False,
         )
         combined = logs.stdout + logs.stderr
-        assert "FATAL" in combined and "expected 10002:10002 400" in combined, (
-            "Fail-closed FATAL message must mention the expected mode so "
-            f"operators can debug. Got logs: {combined!r}"
+        assert "FATAL" in combined and "worthless-crypto:worthless-crypto 400" in combined, (
+            "Fail-closed FATAL message must name the expected owner:group mode "
+            f"so operators can debug. Got logs: {combined!r}"
         )
     finally:
         _cleanup(cnt, vol)

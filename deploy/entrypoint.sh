@@ -104,11 +104,15 @@ if [ "$(id -u)" = "0" ]; then
       # at its prior loose mode while the container claims IPC-only
       # mode. Verify the kernel actually applied our changes — if not,
       # exit 78 (EX_CONFIG) so an operator sees the failure instead
-      # of booting with a false security claim.
-      actual="$(stat -c '%u:%g %a' "$FERNET_PATH" 2>/dev/null || echo unknown)"
-      if [ "$actual" != "10002:10002 400" ]; then
-        echo "FATAL: $FERNET_PATH is $actual, expected 10002:10002 400" >&2
-        echo "Hint: use a Docker named volume; host bind-mounts on macOS/WSL drop POSIX ops." >&2
+      # of booting with a false security claim. By-name format reads
+      # as the security claim ("only the crypto user can open it");
+      # falls back to numeric uid/gid if name resolution breaks, in
+      # which case the check trips anyway and FATAL still names the
+      # actual state.
+      actual="$(stat -c '%U:%G %a' "$FERNET_PATH" 2>/dev/null || echo unknown)"
+      if [ "$actual" != "worthless-crypto:worthless-crypto 400" ]; then
+        echo "FATAL: $FERNET_PATH permissions were not enforced (got $actual, expected worthless-crypto:worthless-crypto 400)" >&2
+        echo "Hint: storage backend silently dropped chown or chmod — common on macOS Docker Desktop bind-mounts and WSL /mnt/c paths. Use a Docker named volume." >&2
         exit 78
       fi
     else
