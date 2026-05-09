@@ -368,3 +368,68 @@ def test_detect_does_not_create_files(fake_home: Path) -> None:
     integration.detect()
     after = sorted(p.relative_to(fake_home) for p in fake_home.rglob("*"))
     assert before == after
+
+
+# ---------------------------------------------------------------------------
+# F-XS-47: sudo -E HOME mismatch detection
+# ---------------------------------------------------------------------------
+
+
+def test_fxs47_home_mismatch_sets_flag_and_adds_note(
+    fake_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-XS-47: when ``$HOME`` != effective-uid home, ``home_mismatch=True``.
+
+    Simulates a ``sudo -E`` invocation by patching the ``pwd``-based helper
+    to always report a mismatch. Verifies that:
+
+    - ``IntegrationState.home_mismatch`` is True
+    - A descriptive note is appended (so ``doctor --json`` can surface it)
+    - The mismatch is advisory only — ``present`` still reflects reality
+    """
+    from worthless.openclaw import integration
+
+    # Seed the workspace so detect() returns present=True.
+    openclaw_dir = fake_home / ".openclaw"
+    workspace = openclaw_dir / "workspace"
+    workspace.mkdir(parents=True)
+    (openclaw_dir / "openclaw.json").write_text('{"models": {"providers": {}}}\n', encoding="utf-8")
+
+    # Force _detect_home_mismatch() to return True regardless of real uid.
+    monkeypatch.setattr(integration, "_detect_home_mismatch", lambda _home: True)
+
+    state = integration.detect()
+
+    assert state.home_mismatch is True, "home_mismatch flag must be set on sudo -E pattern"
+    assert any("mismatch" in n.lower() for n in state.notes), (
+        f"expected a home-mismatch note, got: {state.notes}"
+    )
+    # Mismatch does NOT change the presence verdict.
+    assert state.present is True
+
+
+def test_fxs47_no_mismatch_by_default(fake_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F-XS-47 negative: when helper returns False, ``home_mismatch=False``.
+
+    The test patches ``_detect_home_mismatch`` to return False (simulating a
+    normal invocation where $HOME matches the effective-uid home) and verifies
+    that ``detect()`` correctly propagates that into the ``IntegrationState``.
+
+    We cannot rely on the real ``pwd`` lookup in the test sandbox because
+    $HOME is monkeypatched to a tmp path but ``pwd.getpwuid(geteuid())``
+    still returns the real user's home — producing a mismatch from the OS's
+    perspective even though the test is "clean". Patching the helper isolates
+    the unit under test.
+    """
+    from worthless.openclaw import integration
+
+    # Stage minimal OpenClaw for present=True.
+    workspace = fake_home / ".openclaw" / "workspace"
+    workspace.mkdir(parents=True)
+
+    monkeypatch.setattr(integration, "_detect_home_mismatch", lambda _home: False)
+
+    state = integration.detect()
+
+    assert state.home_mismatch is False
+    assert not any("mismatch" in n.lower() for n in state.notes)

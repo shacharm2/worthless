@@ -26,8 +26,16 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# pwd is POSIX-only. worthless refuses native Windows (WRTLS-110) but the
+# module must still be *importable* on Windows so the CLI can print the error.
+if sys.platform != "win32":
+    import pwd as _pwd
+else:
+    _pwd = None  # type: ignore[assignment]
 
 from worthless.openclaw import config as _config_mod
 from worthless.openclaw import skill as _skill_mod
@@ -63,6 +71,10 @@ class IntegrationState:
     spec predicate). ``notes`` collects human-readable reasons we
     arrived at the verdict — useful for ``--json`` debug output and for
     ``doctor``'s diagnostic surface in Phase 2.d.
+
+    ``home_mismatch`` is True when $HOME differs from the effective
+    user's home directory (F-XS-47: ``sudo -E`` pattern). ``apply_lock``
+    emits a ``HOME_MISMATCH`` warn event when this flag is set.
     """
 
     present: bool
@@ -71,6 +83,27 @@ class IntegrationState:
     skill_path: Path | None
     home_dir: Path | None
     notes: tuple[str, ...]
+    home_mismatch: bool = False
+
+
+def _detect_home_mismatch(home: Path) -> bool:
+    """F-XS-47: True when $HOME differs from the effective user's home dir.
+
+    On ``sudo -E``, $HOME keeps the invoking user's path while
+    ``os.geteuid()`` returns 0 (root). Wiring OpenClaw to the wrong home
+    directory silently installs into root's ``~/.openclaw/`` while the user
+    expected their own. We detect and warn; we do not refuse (the user may
+    have intentionally privileged the invocation).
+
+    Returns False on Windows (no pwd) or when the lookup fails.
+    """
+    if _pwd is None:
+        return False
+    try:
+        uid_home = Path(_pwd.getpwuid(os.geteuid()).pw_dir)
+        return uid_home.resolve() != home.resolve()
+    except (KeyError, OSError):
+        return False
 
 
 def _resolve_home() -> tuple[Path | None, list[str]]:
@@ -258,6 +291,13 @@ def detect() -> IntegrationState:
     # Spec: openclaw_present = config_present OR workspace_dir_present.
     present = config is not None or workspace is not None
 
+    # F-XS-47: sudo -E HOME mismatch detection.
+    home_mismatch = _detect_home_mismatch(home)
+    if home_mismatch:
+        notes.append(
+            "home mismatch: $HOME differs from effective-uid home (F-XS-47) — check sudo -E usage"
+        )
+
     return IntegrationState(
         present=present,
         config_path=config,
@@ -265,6 +305,7 @@ def detect() -> IntegrationState:
         skill_path=skill_path,
         home_dir=home,
         notes=tuple(notes),
+        home_mismatch=home_mismatch,
     )
 
 
@@ -423,6 +464,22 @@ def apply_lock(
     events: list[OpenclawIntegrationEvent] = []
     providers_set: list[str] = []
     providers_skipped: list[tuple[str, str]] = []
+
+    # F-XS-47: warn if $HOME differs from the effective-uid home dir.
+    # We still proceed — the write goes to $HOME, which may be intentional
+    # (e.g. a privileged installer). Doctor surfaces this for the user.
+    if state.home_mismatch:
+        events.append(
+            OpenclawIntegrationEvent(
+                code=OpenclawErrorCode.HOME_MISMATCH,
+                level="warn",
+                detail=(
+                    "HOME mismatch (F-XS-47): $HOME differs from the effective "
+                    "user's home directory. OpenClaw wiring targets $HOME — "
+                    "check sudo -E usage."
+                ),
+            )
+        )
 
     config_path = _resolve_active_config_path(state, state.home_dir)
     _check_world_writable(config_path, events)
@@ -743,10 +800,13 @@ def apply_unlock(
             providers_skipped.append((provider_name, "write_failed"))
             continue
 
-        # ``unset_provider`` returns ``{}`` when the entry was already
-        # absent — that's the idempotent case (IDEM). We still emit a
-        # CONFIG_UPDATED event so doctor / --json can confirm the no-op.
-        providers_removed.append(provider_name)
+        # ``unset_provider`` returns the removed entry dict when it found
+        # something to remove, or ``{}`` when the entry was already absent
+        # (idempotent no-op). Count the provider as "removed" only when
+        # something was actually there — callers rely on ``providers_set``
+        # being empty for a genuine no-op to avoid false-positive exits.
+        if removed:
+            providers_removed.append(provider_name)
         events.append(
             OpenclawIntegrationEvent(
                 code=OpenclawErrorCode.CONFIG_UPDATED,
@@ -793,4 +853,102 @@ def apply_unlock(
         providers_skipped=tuple(providers_skipped),
         skill_installed=skill_uninstalled,
         events=tuple(events),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.d — health_check()
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OpenclawHealthReport:
+    """Provider-wiring health snapshot from :func:`health_check`.
+
+    ``providers_ok`` — names correctly wired to the proxy.
+    ``providers_missing`` — names absent from ``openclaw.json``.
+    ``providers_drifted`` — ``(name, actual_url, expected_url)`` triples
+        where the entry exists but ``baseUrl`` points somewhere else.
+    ``config_unreadable`` — True when ``openclaw.json`` could not be parsed;
+        the other lists may be incomplete in that case.
+
+    ``healthy`` is True only when all three trouble lists are empty.
+    Consumers (``doctor``, CI scripts) should test ``healthy`` before
+    showing a "✓ OpenClaw wired correctly" badge.
+    """
+
+    providers_ok: tuple[str, ...] = ()
+    providers_missing: tuple[str, ...] = ()
+    providers_drifted: tuple[tuple[str, str, str], ...] = ()
+    config_unreadable: bool = False
+
+    @property
+    def healthy(self) -> bool:
+        return (
+            not self.providers_missing and not self.providers_drifted and not self.config_unreadable
+        )
+
+
+def health_check(
+    state: IntegrationState,
+    *,
+    expected_providers: list[tuple[str, str]],
+    proxy_port: int,
+) -> OpenclawHealthReport:
+    """Check provider-wiring health against the live ``openclaw.json``.
+
+    Reads ``openclaw.json`` once per provider (inside Phase 1's flock) and
+    compares each ``worthless-<provider>`` entry's ``baseUrl`` against the
+    expected ``http://127.0.0.1:<port>/<alias>/v1`` URL.
+
+    Used by ``worthless doctor`` (Phase 2.d) to surface drift without
+    modifying any files. Pure read path — no writes, no network.
+
+    Args:
+        state: detection snapshot from :func:`detect`.
+        expected_providers: list of ``(provider, alias)`` pairs drawn from
+            the enrollment DB. Example: ``[("openai", "openai-aaaa1111")]``.
+        proxy_port: proxy port to build the expected ``baseUrl``.
+
+    Returns:
+        :class:`OpenclawHealthReport` with per-provider verdicts.
+    """
+    if state.config_path is None:
+        return OpenclawHealthReport(
+            providers_missing=tuple(
+                f"worthless-{provider}" for provider, _alias in expected_providers
+            ),
+        )
+
+    config_path = state.config_path
+    providers_ok: list[str] = []
+    providers_missing: list[str] = []
+    providers_drifted: list[tuple[str, str, str]] = []
+
+    for provider, alias in expected_providers:
+        provider_name = f"worthless-{provider}"
+        expected_url = f"http://127.0.0.1:{proxy_port}/{alias}/v1"
+        try:
+            entry = _config_mod.get_provider(config_path, provider_name)
+        except (OpenclawConfigError, OSError):
+            # Bail early — further reads will hit the same error.
+            return OpenclawHealthReport(
+                providers_ok=tuple(providers_ok),
+                providers_missing=tuple(providers_missing),
+                providers_drifted=tuple(providers_drifted),
+                config_unreadable=True,
+            )
+        if entry is None:
+            providers_missing.append(provider_name)
+        else:
+            actual_url = entry.get("baseUrl", "")
+            if actual_url == expected_url:
+                providers_ok.append(provider_name)
+            else:
+                providers_drifted.append((provider_name, actual_url, expected_url))
+
+    return OpenclawHealthReport(
+        providers_ok=tuple(providers_ok),
+        providers_missing=tuple(providers_missing),
+        providers_drifted=tuple(providers_drifted),
     )

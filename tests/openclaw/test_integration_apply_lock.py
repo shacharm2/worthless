@@ -569,3 +569,140 @@ def test_apply_lock_refuses_symlinked_openclaw_json(openclaw_present: dict[str, 
     ), f"expected a symlink-refusal event, got: {[e.detail for e in result.events]}"
     # The link target MUST be untouched (the actual security property).
     assert target.read_text(encoding="utf-8") == "DO NOT TOUCH ME\n", "symlink target was clobbered"
+
+
+# ---------------------------------------------------------------------------
+# U-CFG-10/11/12: malformed JSON / wrong-type models / wrong-type providers
+# ---------------------------------------------------------------------------
+
+
+def test_ucfg10_malformed_json_emits_config_unreadable(
+    openclaw_present: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """U-CFG-10 (F10): malformed JSON in openclaw.json → CONFIG_UNREADABLE event.
+
+    When the config file contains invalid JSON, ``get_provider`` raises
+    ``OpenclawConfigError`` which ``apply_lock`` catches and converts to a
+    structured ``CONFIG_UNREADABLE`` event. Lock-core must not raise.
+    """
+    from worthless.openclaw import integration
+    from worthless.openclaw.errors import OpenclawErrorCode
+
+    monkeypatch.chdir(openclaw_present["home"])
+    config_path = openclaw_present["config_path"]
+    config_path.write_text("not-valid-json\n", encoding="utf-8")
+
+    result = integration.apply_lock(
+        planned_updates=[("openai", "openai-aaaa1111", "sk-shard-a")],
+    )
+
+    assert result.detected is True
+    assert "worthless-openai" not in result.providers_set
+    assert any(e.code == OpenclawErrorCode.CONFIG_UNREADABLE for e in result.events), [
+        e.code for e in result.events
+    ]
+
+
+def test_ucfg11_models_is_array_emits_config_unreadable(
+    openclaw_present: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """U-CFG-11 (F11): ``models`` is a list instead of a dict → CONFIG_UNREADABLE.
+
+    ``set_provider`` calls ``_ensure_providers(strict=True)`` which raises
+    ``OpenclawConfigError`` when ``models`` is the wrong type. The exception
+    propagates up through ``apply_lock`` as a CONFIG_UNREADABLE event.
+    Lock-core must not raise.
+    """
+    import json
+
+    from worthless.openclaw import integration
+    from worthless.openclaw.errors import OpenclawErrorCode
+
+    monkeypatch.chdir(openclaw_present["home"])
+    config_path = openclaw_present["config_path"]
+    config_path.write_text(
+        json.dumps({"models": ["not", "a", "dict"]}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = integration.apply_lock(
+        planned_updates=[("openai", "openai-aaaa1111", "sk-shard-a")],
+    )
+
+    assert result.detected is True
+    assert "worthless-openai" not in result.providers_set
+    assert any(e.code == OpenclawErrorCode.CONFIG_UNREADABLE for e in result.events), [
+        e.code for e in result.events
+    ]
+
+
+def test_ucfg12_providers_is_list_emits_config_unreadable(
+    openclaw_present: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """U-CFG-12 (F12): ``models.providers`` is a list → CONFIG_UNREADABLE.
+
+    Same code path as U-CFG-11: ``_ensure_providers(strict=True)`` raises
+    when ``providers`` has the wrong type. Lock-core must not raise.
+    """
+    import json
+
+    from worthless.openclaw import integration
+    from worthless.openclaw.errors import OpenclawErrorCode
+
+    monkeypatch.chdir(openclaw_present["home"])
+    config_path = openclaw_present["config_path"]
+    config_path.write_text(
+        json.dumps({"models": {"providers": ["list", "not", "dict"]}}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = integration.apply_lock(
+        planned_updates=[("openai", "openai-aaaa1111", "sk-shard-a")],
+    )
+
+    assert result.detected is True
+    assert "worthless-openai" not in result.providers_set
+    assert any(e.code == OpenclawErrorCode.CONFIG_UNREADABLE for e in result.events), [
+        e.code for e in result.events
+    ]
+
+
+# ---------------------------------------------------------------------------
+# F-XS-47: HOME_MISMATCH warn event in apply_lock
+# ---------------------------------------------------------------------------
+
+
+def test_fxs47_home_mismatch_emits_warn_event_and_still_writes(
+    openclaw_present: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-XS-47: sudo -E HOME mismatch → HOME_MISMATCH warn event; write proceeds.
+
+    When ``$HOME`` differs from the effective-uid home directory (e.g.
+    ``sudo -E`` invocation), ``apply_lock`` emits a warn-level
+    ``HOME_MISMATCH`` event but continues — the write targets $HOME which
+    may be intentional for a privileged install. Lock-core must not raise.
+    """
+    import json
+
+    from worthless.openclaw import integration
+    from worthless.openclaw.errors import OpenclawErrorCode
+
+    monkeypatch.chdir(openclaw_present["home"])
+
+    # Force _detect_home_mismatch() to return True by patching the helper.
+    monkeypatch.setattr(integration, "_detect_home_mismatch", lambda _home: True)
+
+    result = integration.apply_lock(
+        planned_updates=[("openai", "openai-aaaa1111", "sk-shard-a")],
+    )
+
+    assert result.detected is True
+    warn_events = [e for e in result.events if e.code == OpenclawErrorCode.HOME_MISMATCH]
+    assert len(warn_events) == 1, f"expected exactly one HOME_MISMATCH event, got: {result.events}"
+    assert warn_events[0].level == "warn", "HOME_MISMATCH must be warn, not error"
+
+    # Write must still proceed despite the mismatch.
+    data = json.loads(openclaw_present["config_path"].read_text(encoding="utf-8"))
+    assert "worthless-openai" in data["models"]["providers"], (
+        "HOME_MISMATCH should warn, not block the write"
+    )

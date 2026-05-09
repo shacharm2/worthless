@@ -547,3 +547,46 @@ def test_apply_unlock_refuses_symlinked_openclaw_json(
     # detected is True (host had OpenClaw); skill_installed stays False.
     assert result.detected is True
     assert result.skill_installed is False
+
+
+# ---------------------------------------------------------------------------
+# No-op over-reporting fix regression (WOR-477 gap 5)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_unlock_no_op_does_not_count_in_providers_set(
+    openclaw_present: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WOR-477 gap 5: idempotent no-op must NOT add to providers_set.
+
+    When ``unset_provider`` returns ``{}`` (the entry was already absent),
+    ``providers_set`` (the "actually-removed" list) must stay empty. Before
+    the fix, ``providers_removed.append(provider_name)`` ran unconditionally,
+    making a no-op look like a successful removal to callers inspecting
+    ``result.providers_set``.
+
+    This matters for the trust-fix gate in lock/unlock commands: a non-empty
+    ``providers_set`` means "something changed", which can influence exit-code
+    and sentinel-write logic. A false positive here masks idempotency.
+    """
+    from worthless.openclaw import integration
+
+    monkeypatch.chdir(openclaw_present["home"])
+
+    # No-op: the provider entry was never written, so unset_provider returns {}.
+    result = integration.apply_unlock(
+        aliases=[("openai", "openai-aaaa1111")],
+        remove_skill=False,
+    )
+
+    assert result.detected is True
+    # Entry was absent → providers_set must be empty (nothing was removed).
+    assert result.providers_set == (), (
+        f"no-op unlock must not populate providers_set, got: {result.providers_set}"
+    )
+    # A CONFIG_UPDATED event is still emitted (idempotent confirmation).
+    from worthless.openclaw.errors import OpenclawErrorCode
+
+    assert any(e.code == OpenclawErrorCode.CONFIG_UPDATED for e in result.events), (
+        f"expected CONFIG_UPDATED event even for no-op, got: {[e.code for e in result.events]}"
+    )
