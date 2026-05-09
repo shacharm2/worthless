@@ -185,28 +185,46 @@ surface is affected.
 
 ### 3.4 — Production smoke (manual, until WOR-457)
 
-OPERATOR — within 60 s of `deploy` job success:
+OPERATOR — within 60 s of `deploy` job success. Snippet is
+copy-paste executable: `set -euo pipefail` plus `exit 1` on each
+failure shape, so a passing run prints `OK: smoke passed` and
+returns 0; any failure prints the cause and returns non-zero.
 
 ```bash
+set -euo pipefail
 URL="https://wless.io/"
+# Single GET captures body + headers; matches the deploy-marketing.yml
+# preview smoke (avoids HEAD-vs-GET workerd quirks).
+tmp_headers=$(mktemp); tmp_body=$(mktemp)
+trap 'rm -f "$tmp_headers" "$tmp_body"' EXIT
+curl -fsSL -D "$tmp_headers" -o "$tmp_body" "$URL"
 # 1. body contains canonical install command
-curl -fsSL "$URL" | grep -qE 'pipx install worthless|curl.*worthless\.sh|docker run.*worthless' \
-  && echo "OK: install command present" || echo "FAIL: install command missing"
-# 2. each of 6 headers fires EXACTLY once (catches Worker+Transform Rule
-#    double-fire — this is the bug Phase 3.5 disables the rule to avoid)
+grep -qE 'pipx install worthless|curl.*worthless\.sh|docker run.*worthless' "$tmp_body" \
+  || { echo "FAIL: install command missing on $URL"; exit 1; }
+# 2. each of 6 headers fires EXACTLY once.
+#    Between Phase 3.3 (deploy) and Phase 3.5 (rule disable), HSTS may
+#    show count=2 briefly while the Transform Rule still fires — see
+#    note below. AFTER Phase 3.5 completes and propagation settles,
+#    re-run this snippet; any count!=1 is a failure.
 for h in strict-transport-security content-security-policy \
          x-frame-options x-content-type-options \
          referrer-policy permissions-policy; do
-  count=$(curl -fsI "$URL" | grep -ic "^${h}:" || true)
-  [ "$count" = "1" ] && echo "OK: $h count=1" \
-                     || echo "ALERT: $h count=$count (rule + Worker double-fire)"
+  count=$(grep -ic "^${h}:" "$tmp_headers" || true)
+  if [ "$count" != "1" ]; then
+    echo "FAIL: $h count=$count (expected 1; double-fire if pre-3.5)"
+    exit 1
+  fi
 done
+echo "OK: smoke passed"
 ```
 
-After cutover but **before** rule disable, several headers will
-likely show `count=2`. That's expected for the next ~5 min until
-step 3.5 completes. Do not roll back on `count=2` unless step 3.5
-also fails.
+**Pre-3.5 vs post-3.5 expectation.** Between cutover (Phase 3.3) and
+rule disable (Phase 3.5), several headers will likely show `count=2`
+for ~5 min — that's the Worker and the Transform Rule both firing.
+The snippet above will exit non-zero in that window by design; that's
+how you confirm the overlap exists and step 3.5 is necessary. Re-run
+after step 3.5 lands and propagation settles; the same snippet must
+return 0 then. If it still fails, see § Rollback paths.
 
 ### 3.5 — Disable zone Transform Rule
 

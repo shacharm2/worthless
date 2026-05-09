@@ -121,7 +121,7 @@ jobs:
               echo "::error file=${f},line=${l}::wrangler invocation missing --config"
               fail=1
             fi
-          done < <(grep -RIEn 'wrangler (deploy|publish|dev)\b' .github/workflows/ || true)
+          done < <(grep -RIEn 'wrangler(@[^[:space:]]+)?[[:space:]]+(deploy|publish|dev)\b' .github/workflows/ || true)
           [ "$fail" -eq 0 ] || exit 1
 
   deploy:
@@ -171,12 +171,23 @@ jobs:
         # `--config` it would deploy the wrong Worker (docs, not
         # marketing). lint-marketing.yml asserts this flag is always
         # present in any wrangler invocation under .github/workflows/.
+        #
+        # Wrangler version pin: `WRANGLER_VERSION` is the single source
+        # of truth for the deploy-time tooling version. Caret ranges
+        # (`@^4`) and unqualified `npx wrangler` both fetch mutable
+        # tooling at deploy time — a wrangler minor or patch with a
+        # behavior regression would silently land in production. Pin
+        # exact, bump deliberately via PR. Upgrade procedure: bump
+        # WRANGLER_VERSION below, run `npx wrangler@<new> deploy
+        # --dry-run --config wrangler-marketing.toml --env preview`
+        # locally to validate, open PR, merge.
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN_MARKETING }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           DEPLOY_TARGET: ${{ needs.verify.outputs.target }}
+          WRANGLER_VERSION: "4.90.0"
         run: |
-          npx --yes wrangler@^4 deploy \
+          npx --yes "wrangler@${WRANGLER_VERSION}" deploy \
             --config wrangler-marketing.toml \
             --env "${DEPLOY_TARGET}"
 
@@ -192,20 +203,32 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Placeholder smoke (until WOR-457 ships marketing-url-smoke.yml)
-        # Five-line smoke — replaced by `uses:` of the WOR-457 reusable
-        # workflow once it lands. Asserts: 200 on root, install command
-        # in body, six security headers each appearing exactly once.
+        # Replaced by `uses:` of the WOR-457 reusable workflow once it
+        # lands. Asserts: 200 on root, install command in body, six
+        # security headers each appearing exactly once.
+        #
+        # Header check uses GET with header dump (-D -) rather than
+        # HEAD (-I): mirrors the deploy-worker.yml pattern (line ~288)
+        # where workerd quirks and intermediate caches occasionally
+        # strip headers from HEAD responses. GET is the request shape
+        # real visitors make — we want to assert the bytes they get.
         env:
           ACCOUNT_SUBDOMAIN: ${{ secrets.CLOUDFLARE_ACCOUNT_SUBDOMAIN }}
         run: |
           set -euo pipefail
           URL="https://wless-marketing-preview.${ACCOUNT_SUBDOMAIN}.workers.dev/"
-          curl -fsSL "${URL}" | grep -qE 'pipx install worthless|curl.*worthless\.sh|docker run.*worthless' \
+          # Single GET captures both body and headers — avoids two
+          # separate round-trips that could land on different edges.
+          tmp_headers=$(mktemp)
+          tmp_body=$(mktemp)
+          trap 'rm -f "$tmp_headers" "$tmp_body"' EXIT
+          curl -fsSL -D "$tmp_headers" -o "$tmp_body" "${URL}"
+          grep -qE 'pipx install worthless|curl.*worthless\.sh|docker run.*worthless' "$tmp_body" \
             || { echo "::error::install command missing on ${URL}"; exit 1; }
           for h in strict-transport-security content-security-policy \
                    x-frame-options x-content-type-options \
                    referrer-policy permissions-policy ; do
-            count=$(curl -fsI "${URL}" | grep -ic "^${h}:" || true)
+            count=$(grep -ic "^${h}:" "$tmp_headers" || true)
             if [ "${count}" -ne 1 ]; then
               echo "::error::header ${h} count=${count} (expected 1)"
               exit 1

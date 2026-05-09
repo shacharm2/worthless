@@ -2,20 +2,26 @@ name: Lint marketing
 
 # WOR-455 — guards on the marketing/ tree and its deploy plumbing.
 # Runs on every PR that touches marketing/, wrangler-marketing.toml,
-# or any deploy workflow. Cheap, fast, fail-fast.
+# or ANY workflow under .github/workflows/. Cheap, fast, fail-fast.
+#
+# Path scope is deliberately broader than just marketing-* workflows:
+# the wrangler --config guard polices every wrangler invocation in any
+# workflow (not just deploy-marketing.yml), so a change to e.g.
+# deploy-worker.yml that drops --config must trigger this lint. Codex
+# review on PR #160 caught the prior, narrower path list.
 
 on:
   pull_request:
     paths:
       - 'marketing/**'
       - 'wrangler-marketing.toml'
-      - '.github/workflows/lint-marketing.yml'
-      - '.github/workflows/deploy-marketing.yml'
+      - '.github/workflows/**'
   push:
     branches: [main]
     paths:
       - 'marketing/**'
       - 'wrangler-marketing.toml'
+      - '.github/workflows/**'
 
 permissions:
   contents: read
@@ -81,6 +87,14 @@ jobs:
         # the verb. If a future invocation legitimately needs a longer
         # window, bump the constant in both this guard AND the mirror
         # in deploy-marketing.yml verify job.
+        #
+        # **Match shape:** the regex catches both `npx wrangler deploy`
+        # (unversioned) and `npx --yes wrangler@^4 deploy` /
+        # `wrangler@4.10.5 deploy` (npm version-tagged). The optional
+        # `@<version>` group exists because `npx wrangler@<tag>` is a
+        # supported invocation form and a naive `wrangler ` (literal
+        # space) match misses every version-tagged call — that was the
+        # bug Codex/Antigravity flagged on PR #160.
         run: |
           set -e
           fail=0
@@ -92,7 +106,7 @@ jobs:
               echo "::error file=${file},line=${ln}::wrangler invocation missing --config"
               fail=1
             fi
-          done < <(grep -RIEn 'wrangler (deploy|publish|dev)\b' .github/workflows/ || true)
+          done < <(grep -RIEn 'wrangler(@[^[:space:]]+)?[[:space:]]+(deploy|publish|dev)\b' .github/workflows/ || true)
           if [ "$fail" -ne 0 ]; then
             exit 1
           fi
