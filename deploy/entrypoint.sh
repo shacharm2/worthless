@@ -96,16 +96,7 @@ if [ "$(id -u)" = "0" ]; then
   # uses instead; A4 makes the flag default-on and drops this branch.
   if [ -f "$FERNET_PATH" ]; then
     if [ "${WORTHLESS_FERNET_IPC_ONLY:-0}" = "1" ]; then
-      # Owner is the sidecar uid (worthless-crypto), not root. With
-      # mode 0400 the sidecar reads via the OWNER bit; group bits are
-      # zero so the proxy uid is denied even if some future bug puts
-      # it in the worthless-crypto gid. Pre-merge review caught an
-      # earlier draft that used root:worthless-crypto 0400 — only root
-      # can read at 0400, so the sidecar was locked out of its own
-      # key and the flag silently DOSed the system. The static text
-      # grep test passed because the strings 0400 and worthless-crypto
-      # both appeared; only an integration test that exec'd as the
-      # sidecar caught the bug. See tests/test_deploy_chmod_e2e.py.
+      # Sidecar owns and reads via owner bit; proxy uid lacks gid 10002.
       chown worthless-crypto:worthless-crypto "$FERNET_PATH" 2>/dev/null || true
       chmod 0400 "$FERNET_PATH" 2>/dev/null || true
     else

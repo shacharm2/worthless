@@ -1,37 +1,14 @@
 # ruff: noqa: S104, S108, S603, S607
-# S603/S607: docker is invoked by partial path on purpose — the test runner
-# must find the docker binary on $PATH; pinning a path makes the test
-# brittle across OS/CI environments. S104: binding 0.0.0.0 inside an
-# isolated docker container with --read-only is intentional. S108: the
-# /tmp tmpfs string is a docker mount spec, not a host path.
-"""WOR-465 Phase A1: kernel-level integration test for the fernet.key chmod path.
+"""Kernel-level integration test for the fernet.key chmod path (WOR-465 A1).
 
-This test is the answer to a sharp question raised on PR #158:
-"how did we not have a test finding this out?"
+Static text-grep can confirm strings are present in entrypoint.sh; only a
+real container can confirm the kernel actually denies the proxy uid and
+allows the sidecar uid. Strategy: pre-seed fernet.key, run entrypoint
+(its chmod block runs synchronously before start.py exec's the proxy
+that may later crash), then inspect via ephemeral ``docker run --user``
+containers.
 
-The original A1 implementation chowned fernet.key to ``root:worthless-crypto
-0400``. Static-text grep (``test_deploy_static.py``) saw the magic strings
-and approved. But ``0400`` with owner ``root`` means **only root** can read —
-the worthless-crypto sidecar (the very identity the file is supposed to
-belong to) was locked out. task-completion-validator caught it by actually
-exec'ing as worthless-crypto. This test enforces that finding at CI time.
-
-Layered with ``test_deploy_static.py`` (string-pattern checks) + this module
-(real container, real kernel) we now cover both regression classes:
-- the pattern is in the file (static)
-- the pattern produces the correct kernel-enforced behavior (this file)
-
-Strategy: A1 alone cannot boot the proxy with ``WORTHLESS_FERNET_IPC_ONLY=1``
-because the proxy still reads fernet.key directly until A3 lands. So we
-pre-seed ``fernet.key`` in a volume, start the container, let the
-entrypoint's synchronous chmod block run (it executes BEFORE start.py
-exec's the proxy, so the chmod completes regardless of whether the proxy
-later crashes), then inspect the volume via short-lived ephemeral
-containers using ``docker run --rm --user``. The proxy's eventual death
-is irrelevant — we only care about the post-chmod file state.
-
-Run with:
-    uv run pytest tests/test_deploy_chmod_e2e.py -x -v -m docker
+Run: ``uv run pytest tests/test_deploy_chmod_e2e.py -v -m docker``
 """
 
 from __future__ import annotations
@@ -168,12 +145,25 @@ def _read_as(image: str, volume: str, user: str, path: str) -> tuple[int, str]:
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
-def _run_entrypoint(image: str, volume: str, container: str, env: dict[str, str]) -> None:
-    """Boot the image in detached mode, let entrypoint's chmod block run.
+_SEED_STATE = "root:root 644"
 
-    The proxy may crash later (A1 doesn't ship the IPC verbs A3 needs),
-    but the chmod runs synchronously BEFORE start.py exec's the proxy,
-    so the volume is in its final state within ~3 seconds regardless.
+
+def _run_entrypoint(
+    image: str,
+    volume: str,
+    container: str,
+    env: dict[str, str],
+    timeout: float = 10.0,
+) -> None:
+    """Boot the image and wait for the chmod block to mutate fernet.key.
+
+    Polls ``stat`` every 100ms until the file mode/owner differs from the
+    seed value (``root:root 644``), or ``timeout`` seconds elapse — whichever
+    comes first. Avoids the dead-reckoning ``sleep 3`` that dominated wall
+    time when the chmod completes in ~50ms.
+
+    The proxy may crash post-chmod (A1 doesn't ship the IPC verbs A3 needs),
+    but we only care that the chmod block ran.
     """
     cmd = [
         "docker",
@@ -191,11 +181,14 @@ def _run_entrypoint(image: str, volume: str, container: str, env: dict[str, str]
         cmd.extend(["-e", f"{k}={v}"])
     cmd.extend(_CAPS)
     cmd.append(image)
-    subprocess.run(cmd, check=True, capture_output=True)  # noqa: S603
-    # Give entrypoint's chmod block time to execute. It's synchronous
-    # (4 lines of bash) so 3s is generous; we don't need the proxy to
-    # finish booting — we only need the chown/chmod to have completed.
-    time.sleep(3)
+    subprocess.run(cmd, check=True, capture_output=True)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _stat(image, volume, "fernet.key") != _SEED_STATE:
+            return
+        time.sleep(0.1)
+    # Fall through if mode never changed — let the test's stat assertion
+    # report the actual final state with full context.
 
 
 def _cleanup(container: str, volume: str) -> None:
