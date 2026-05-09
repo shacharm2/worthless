@@ -236,6 +236,21 @@ class IPCClient:
             )
         return bytes(evidence)
 
+    async def mac(self, value: bytes) -> bytes:
+        """Request raw HMAC-SHA256(key, value) from the sidecar.
+
+        Returns the unwrapped MAC tag as bytes. Distinct from
+        :meth:`attest` — see ``Backend.mac`` docstring for semantics.
+        """
+        if not isinstance(value, bytes | bytearray):
+            raise TypeError(f"mac value must be bytes, got {type(value).__name__}")
+        body: dict[str, Any] = {"value": bytes(value)}
+        resp_body = await self._request("mac", body)
+        tag = resp_body.get("mac")
+        if not isinstance(tag, bytes | bytearray):
+            raise IPCProtocolError(f"mac response missing bytes mac, got {type(tag).__name__}")
+        return bytes(tag)
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

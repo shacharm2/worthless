@@ -17,6 +17,7 @@ from __future__ import annotations
 import hmac
 import logging
 from hashlib import sha256
+from typing import ClassVar
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -36,7 +37,11 @@ _ATTEST_SECRET_LEN = 32
 class FernetBackend(Backend):
     """Fernet backend reconstructed from two XOR shares."""
 
-    __slots__ = ("_fernet", "_attest_secret")
+    # ``mac`` is the WOR-465 A3a verb — raw HMAC-SHA256 over (key, value).
+    # See backends/base.py docstring for why caps gates dispatch.
+    caps: ClassVar[tuple[str, ...]] = ("seal", "open", "attest", "mac")
+
+    __slots__ = ("_fernet", "_attest_secret", "_raw_key")
 
     def __init__(self, shares: tuple[bytes, bytes]) -> None:
         share_a, share_b = shares
@@ -53,6 +58,15 @@ class FernetBackend(Backend):
             # Do NOT chain the underlying exception — its message may echo
             # key bytes. Use `from None` to suppress the cause entirely.
             raise ValueError("FernetBackend: reconstructed key is not a valid Fernet key") from None
+
+        # Retain the reconstructed key for the ``mac`` verb. ShardRepository's
+        # legacy in-process ``_compute_decoy_hash`` keys HMAC-SHA256 with the
+        # 44-byte urlsafe-b64 form of the Fernet key — exactly what ``key`` is
+        # here — so ``mac(value)`` produces byte-identical output across the
+        # WORTHLESS_FERNET_IPC_ONLY flag flip. Storing the key on the instance
+        # does not widen the attack surface beyond what Fernet already keeps
+        # internally; ``__repr__`` is redacted.
+        self._raw_key = key
 
         # Derive a dedicated attest secret so ``attest`` output cannot be
         # used to recover or probe the Fernet key directly.
@@ -98,6 +112,20 @@ class FernetBackend(Backend):
         except (TypeError, ValueError):
             # Malformed input (non-bytes, wrong shape) — same safe message.
             raise BackendError("BACKEND: decryption failed") from None
+
+    async def mac(self, value: bytes) -> bytes:
+        """Return raw HMAC-SHA256(self._raw_key, value).
+
+        Distinct from :meth:`attest`: ``attest`` keys an HKDF-derived
+        subkey and length-prefixes (nonce, purpose) — domain separation
+        across cross-purpose replays. ``mac`` is the unwrapped tag with
+        the Fernet key as the MAC key, matching the bytes produced by
+        ``hmac.new(fernet_key, value, sha256).digest()`` in
+        ``ShardRepository._compute_decoy_hash``. Byte-identity across
+        the WORTHLESS_FERNET_IPC_ONLY flag flip is the load-bearing
+        property — see ``tests/ipc/test_mac_verb.py``.
+        """
+        return hmac.new(self._raw_key, value, sha256).digest()
 
     async def attest(self, nonce: bytes, purpose: str | None = None) -> bytes:
         purpose_bytes = purpose.encode("utf-8") if purpose is not None else b""
