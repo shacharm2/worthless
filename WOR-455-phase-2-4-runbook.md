@@ -92,8 +92,16 @@ for h in strict-transport-security content-security-policy \
 done
 ```
 
-**Exit gate:** zero `DRIFT:` lines. If any drift, fix `marketing/_headers`
-on a PR — **do not** loosen the Transform Rule to match.
+**Exit gate:** zero `DRIFT:` lines on five of the six headers. **HSTS
+is the one expected drift:** the Worker advertises
+`max-age=31536000` (1 year, preload-eligible) while the current zone
+Transform Rule still emits `max-age=15552000` (180 days). That bump
+is intentional — preload-list eligibility requires `max-age >=
+31536000`, and the Worker is now the source of truth. Phase 3.5
+disables the rule, after which the only HSTS value visitors see is
+the Worker's. Treat HSTS drift as expected; treat any other header
+drift as a blocker and fix `marketing/_headers` on a PR — **do not**
+loosen the Transform Rule to match.
 
 ### 2.4 — Phase 2 done
 
@@ -271,28 +279,19 @@ GC.
 
 ### 4.3 — Submit HSTS preload (gates rollback)
 
-`marketing/_headers` already advertises `preload`. Verify:
+`marketing/_headers` advertises `max-age=31536000; includeSubDomains;
+preload` (set in WOR-455 Phase 1; the previous 180-day value would
+have failed the preload-list 1-year minimum). Verify the deployed
+header before submitting:
 
 ```bash
 curl -fsI https://wless.io/ | grep -i strict-transport-security
-# expected: max-age=15552000; includeSubDomains; preload
+# expected: max-age=31536000; includeSubDomains; preload
 ```
 
 Then OPERATOR submits `wless.io` at https://hstspreload.org/ . The
-form will run its own checks (HTTPS-only, valid cert, includeSubDomains,
-preload directive, max-age >= 31536000 — **this is the catch**).
-
-`max-age=15552000` is **180 days**, which is **below the 1-year
-preload requirement (31536000 s)**. Bump `marketing/_headers` to
-`max-age=31536000` on a separate PR before submitting:
-
-```diff
-- Strict-Transport-Security: max-age=15552000; includeSubDomains; preload
-+ Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
-```
-
-Tag the bump as `marketing-v0.2.0` and deploy via the same Phase 3
-pipeline. Re-curl, then submit.
+form runs its own checks (HTTPS-only, valid cert, includeSubDomains,
+preload directive, max-age >= 31536000) — all should already pass.
 
 Once submitted, Chrome/Firefox/Safari pull the list on their own
 schedule (typically 4-12 weeks). Until removal (and removal takes
