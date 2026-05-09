@@ -115,7 +115,7 @@ def store_fernet_key(key: bytes, home_dir: Path | None = None) -> None:
     if keyring_available():
         try:
             username = _keyring_username(home_dir)
-            if _is_macos_keyring():
+            if _is_macos_keyring() and keystore_macos is not None:
                 # WOR-456: explicit synchronizable=False, no iCloud sync.
                 keystore_macos.set_password_local(_SERVICE, username, key.decode())
             else:

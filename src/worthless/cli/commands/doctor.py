@@ -37,7 +37,7 @@ import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.commands.revoke import _revoke_async
-from worthless.cli.console import get_console
+from worthless.cli.console import WorthlessConsole, get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.keystore import _SERVICE
 from worthless.cli.orphans import FIX_PHRASE, PROBLEM_PHRASE, find_orphans
@@ -350,6 +350,64 @@ def _print_synced_lines(usernames: list[str], *, dry_run: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Fix-mode helpers (extracted to keep _doctor_run under xenon max-absolute C)
+# ---------------------------------------------------------------------------
+
+
+def _doctor_confirm(
+    orphans: list[EnrollmentRecord],
+    synced: list[str],
+    yes: bool,
+    console: WorthlessConsole,
+) -> bool:
+    """Build and display the combined confirmation prompt. Returns True if the
+    user wants to proceed (or --yes was given). False means abort."""
+    if yes:
+        return True
+    prompt_lines = []
+    if orphans:
+        prompt_lines.append(f"Delete {len(orphans)} orphan DB row(s) and their shard files.")
+    if synced:
+        n = len(synced)
+        prompt_lines.append(
+            f"Migrate {n} keychain entr{'y' if n == 1 else 'ies'} to this-Mac-only."
+        )
+        prompt_lines.append("")
+        prompt_lines.append(_MULTI_DEVICE_WARNING)
+    prompt = "\n".join(prompt_lines) + "\nProceed?"
+    proceed = typer.confirm(prompt, default=False)
+    if not proceed:
+        console.print_hint("Cancelled. No changes made.")
+    return proceed
+
+
+def _doctor_apply(
+    orphans: list[EnrollmentRecord],
+    synced: list[str],
+    repo: ShardRepository,
+    home: WorthlessHome,
+    console: WorthlessConsole,
+) -> None:
+    """Execute the fix actions (purge orphans + migrate synced keys)."""
+    if orphans:
+        purged = asyncio.run(_purge_all(orphans, repo, home.shard_a_dir))
+        console.print_success(f"Cleaned up {purged} broken record(s).")
+
+    if synced:
+        migrated = _migrate_synced_keys(synced, home)
+        if migrated:
+            console.print_success(
+                f"Migrated {migrated} keychain entr"
+                f"{'y' if migrated == 1 else 'ies'} to this-Mac-only. "
+                f"Recovery files saved in {home.recovery_dir}."
+            )
+        else:
+            console.print_warning(
+                "No entries migrated — keychain access was denied or cancelled. Re-run when ready."
+            )
+
+
+# ---------------------------------------------------------------------------
 # Doctor entrypoint
 # ---------------------------------------------------------------------------
 
@@ -420,45 +478,10 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
             )
             return
 
-        if not yes:
-            # Single combined prompt covering both fixes the user is about to run.
-            prompt_lines = []
-            if orphans:
-                prompt_lines.append(
-                    f"Delete {len(orphans)} orphan DB row(s) and their shard files."
-                )
-            if synced:
-                prompt_lines.append(
-                    f"Migrate {len(synced)} keychain entr{'y' if len(synced) == 1 else 'ies'} "
-                    "to this-Mac-only."
-                )
-                prompt_lines.append("")
-                prompt_lines.append(_MULTI_DEVICE_WARNING)
-            prompt = "\n".join(prompt_lines) + "\nProceed?"
-            proceed = typer.confirm(prompt, default=False)
-            if not proceed:
-                console.print_hint("Cancelled. No changes made.")
-                return
+        if not _doctor_confirm(orphans, synced, yes, console):
+            return
 
-        purged = 0
-        if orphans:
-            purged = asyncio.run(_purge_all(orphans, repo, home.shard_a_dir))
-            console.print_success(f"Cleaned up {purged} broken record(s).")
-
-        migrated = 0
-        if synced:
-            migrated = _migrate_synced_keys(synced, home)
-            if migrated:
-                console.print_success(
-                    f"Migrated {migrated} keychain entr"
-                    f"{'y' if migrated == 1 else 'ies'} to this-Mac-only. "
-                    f"Recovery files saved in {home.recovery_dir}."
-                )
-            elif synced:
-                console.print_warning(
-                    "No entries migrated — keychain access was denied or cancelled. "
-                    "Re-run when ready."
-                )
+        _doctor_apply(orphans, synced, repo, home, console)
 
 
 def register_doctor_commands(app: typer.Typer) -> None:
