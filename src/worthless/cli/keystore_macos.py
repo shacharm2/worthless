@@ -233,8 +233,8 @@ def _cfstr_to_str(s_ptr: int | c_void_p) -> str:
             ptr = CFDataGetBytePtr(s_ptr)
             if ptr:
                 return ctypes.string_at(ptr, length).decode("utf-8", errors="replace")
-    except Exception:  # pragma: no cover - defensive  # noqa: S110
-        pass
+    except Exception as exc:  # pragma: no cover - defensive ctypes fallback
+        logger.debug("_cfstr_from_ptr: CFData read failed (%s)", type(exc).__name__)
     return ""
 
 
