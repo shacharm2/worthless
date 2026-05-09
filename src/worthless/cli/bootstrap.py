@@ -71,6 +71,16 @@ class WorthlessHome:
         return self.base_dir / "shard_a"
 
     @property
+    def recovery_dir(self) -> Path:
+        """Directory holding ``<account>.recover`` files for sibling-Mac
+        recovery (WOR-456). Only populated when ``worthless doctor --fix``
+        migrates a synced keychain entry — the value is exported here so
+        a user with a second Mac can copy the file across before iCloud's
+        tombstone propagates and removes the local copy on the sibling.
+        """
+        return self.base_dir / "recovery"
+
+    @property
     def lock_file(self) -> Path:
         return self.base_dir / ".lock-in-progress"
 
