@@ -60,7 +60,13 @@ def current_version() -> str:
     Parses the first ``Version: <token>`` line. Phase 3 will replace the
     body with the real skill content; the parsing contract stays.
     """
-    body = _read_skill_asset()
+    try:
+        body = _read_skill_asset()
+    except OSError as exc:
+        raise OpenclawIntegrationError(
+            OpenclawErrorCode.SKILL_INSTALL_FAILED,
+            f"embedded SKILL.md unreadable: {exc}",
+        ) from exc
     match = _VERSION_LINE.search(body)
     if not match:
         # Defensive: a future SKILL.md without a Version line is a bug we
@@ -98,10 +104,15 @@ def install(target_dir: Path) -> Path:
     over any existing folder. Cleans up the staging dir on any failure.
 
     Returns the resolved final path. Raises :class:`OpenclawIntegrationError`
-    on hard refusals (e.g. symlink at the destination, missing version).
+    on hard refusals (e.g. symlink at the destination or parent, missing version).
     """
     target_dir.mkdir(parents=True, exist_ok=True)
 
+    # F34: refuse symlinks on BOTH the parent skills/ dir AND the final
+    # worthless/ entry. A symlinked parent would redirect the entire install
+    # tree outside the OpenClaw workspace just as effectively as a symlinked
+    # destination — the single-level check was insufficient.
+    _refuse_if_symlink(target_dir)
     final = target_dir / _SKILL_DIR_NAME
     _refuse_if_symlink(final)
 

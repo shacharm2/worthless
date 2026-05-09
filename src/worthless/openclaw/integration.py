@@ -31,7 +31,10 @@ from pathlib import Path
 
 from worthless.openclaw import config as _config_mod
 from worthless.openclaw import skill as _skill_mod
-from worthless.openclaw.config import OpenclawConfigError, locate_config_path
+from worthless.openclaw.config import (
+    OpenclawConfigError,
+    _global_config_candidates,
+)
 from worthless.openclaw.errors import (
     OpenclawErrorCode,
     OpenclawIntegrationError,
@@ -191,13 +194,20 @@ def _probe_workspace(home: Path) -> tuple[Path | None, list[str]]:
 def _probe_config() -> tuple[Path | None, list[str]]:
     """Return ``(openclaw.json path or None, notes)`` — symmetric with siblings.
 
-    Delegates to Phase 1's ``locate_config_path`` (project-local + global +
-    XDG fallback). Resolves the result so case-insensitive FS paths (F35)
-    compare equal downstream.
+    Probes only **global** OpenClaw paths (``~/.openclaw/openclaw.json`` and
+    the XDG fallback). The project-local ``./openclaw.json`` is intentionally
+    skipped here: ``detect()`` answers "is OpenClaw installed on this machine?"
+    and a repo that happens to contain a local ``openclaw.json`` must not be
+    treated as an OpenClaw host. ``apply_lock()``/``apply_unlock()`` use
+    ``locate_config_path()`` directly for the actual read-modify-write path,
+    where the project-local file is the correct write target.
     """
     notes: list[str] = []
     try:
-        candidate = locate_config_path()
+        candidate = next(
+            (p for p in _global_config_candidates() if p.exists()),
+            None,
+        )
     except OSError as exc:
         notes.append(f"config probe failed: {exc}")
         return None, notes

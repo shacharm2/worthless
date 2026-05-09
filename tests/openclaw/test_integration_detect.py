@@ -316,10 +316,15 @@ def test_detect_with_locate_config_oserror_swallowed(
     """
     from worthless.openclaw import integration
 
-    def boom() -> Path | None:
+    def boom() -> list:
         raise OSError("simulated stat failure")
 
-    monkeypatch.setattr("worthless.openclaw.integration.locate_config_path", boom)
+    # _probe_config() now iterates _global_config_candidates() instead of calling
+    # locate_config_path() directly (fix for CWD-local config false-positive).
+    monkeypatch.setattr(
+        "worthless.openclaw.integration._global_config_candidates",
+        boom,
+    )
 
     state = integration.detect()
     assert state.present is False

@@ -46,6 +46,7 @@ if sys.platform != "win32":
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
+from worthless.cli.process import resolve_port
 from worthless.cli.commands.revoke import _revoke_async
 from worthless.cli.console import WorthlessConsole, get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
@@ -225,8 +226,13 @@ def _check_skill(
 def _check_providers(
     state: IntegrationState,
     healthy: list,
+    *,
+    port: int,
 ) -> list[str]:
     """Check openclaw.json provider entries for each healthy enrollment.
+
+    ``port`` must come from ``resolve_port(None)`` so non-default deployments
+    (``WORTHLESS_PORT`` env or ``--port``) are not falsely reported as drift.
 
     Returns a list of issue strings (empty = all wired correctly).
     """
@@ -245,7 +251,7 @@ def _check_providers(
             issues.append(f"{provider_name} not wired in openclaw.json — re-run `worthless lock`")
         else:
             actual_url = entry.get("baseUrl", "")
-            expected_url = f"http://127.0.0.1:8787/{e.key_alias}/v1"
+            expected_url = f"http://127.0.0.1:{port}/{e.key_alias}/v1"
             if actual_url != expected_url:
                 issues.append(
                     f"{provider_name} baseUrl mismatch "
@@ -282,7 +288,8 @@ def _check_openclaw_section(
         skill_issues.append("could not read enrollment DB — provider check skipped")
 
     healthy = [e for e in enrollments if not is_orphan(e)]
-    provider_issues = _check_providers(state, healthy)
+    port = resolve_port(None)
+    provider_issues = _check_providers(state, healthy, port=port)
 
     all_issues = skill_issues + provider_issues
     if not all_issues and not fixed_items:

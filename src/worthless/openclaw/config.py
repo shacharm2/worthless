@@ -305,8 +305,10 @@ def set_provider(
         data = read_config(path)
         providers = _ensure_providers(data)
 
-        existing = providers.get(provider) or {}
-        entry: dict[str, Any] = dict(existing)
+        existing = providers.get(provider)
+        if existing is not None and not isinstance(existing, dict):
+            raise OpenclawConfigError(f"provider '{provider}' entry in {path} is not a JSON object")
+        entry: dict[str, Any] = dict(existing) if existing else {}
         entry["baseUrl"] = base_url
         if api_key is not None:
             entry["apiKey"] = api_key

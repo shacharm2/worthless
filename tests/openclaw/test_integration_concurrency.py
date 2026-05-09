@@ -37,19 +37,22 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def _worker_apply_lock(args: tuple[str, str]) -> dict[str, list]:
+def _worker_apply_lock(args: tuple[str, str, str]) -> dict[str, list]:
     """Spawned-child worker for parallel ``apply_lock`` invocations.
 
     Args:
-        args: ``(home_str, alias_suffix)``. Each child writes ONE
-            distinct ``worthless-conc45-<NN>`` provider entry into the
-            shared ``openclaw.json``.
+        args: ``(home_str, alias_suffix, prefix)``. Each child writes ONE
+            distinct ``worthless-<prefix>-<alias_suffix>`` provider entry
+            into the shared ``openclaw.json``.  The ``prefix`` parameter
+            lets CONC-45 and CONC-46 use different prefixes — CONC-45 uses
+            ``"conc45"`` (unique per iteration) while CONC-46 uses ``"conc46"``
+            so lock and unlock race on the SAME provider entry.
 
     Returns:
         Dict with ``providers_set`` and ``providers_skipped`` for the
         parent to verify.
     """
-    home_str, alias_suffix = args
+    home_str, alias_suffix, prefix = args
     os.environ["HOME"] = home_str
     os.environ["USERPROFILE"] = home_str
     os.chdir(home_str)
@@ -60,8 +63,8 @@ def _worker_apply_lock(args: tuple[str, str]) -> dict[str, list]:
     # Synthetic provider IDs (not in _PROVIDER_API map). The flock
     # contract is what we're testing, not provider validation —
     # set_provider's api/models defaults handle unknown providers fine.
-    provider_id = f"conc45-{alias_suffix}"
-    alias = f"conc45-alias-{alias_suffix}"
+    provider_id = f"{prefix}-{alias_suffix}"
+    alias = f"{prefix}-alias-{alias_suffix}"
     shard_a = f"sk-shard-{alias_suffix}"
 
     result = integration.apply_lock(
@@ -206,7 +209,9 @@ def test_conc22_held_flock_blocks_contender_until_release(
         assert ready.exists(), "holder never acquired the lock"
 
         # Now attempt apply_lock from a SECOND process. It must block.
-        contender = contender_pool.apply_async(_worker_apply_lock, [(str(fake_home), "22")])
+        contender = contender_pool.apply_async(
+            _worker_apply_lock, [(str(fake_home), "22", "conc45")]
+        )
 
         # Pin: contender does NOT return within 0.5s while holder still holds.
         time.sleep(0.5)
@@ -252,7 +257,7 @@ def test_conc45_fifty_parallel_apply_lock_produces_coherent_state(
     config_path = fake_home / ".openclaw" / "openclaw.json"
 
     n_children = 50
-    args = [(str(fake_home), f"{i:02d}") for i in range(n_children)]
+    args = [(str(fake_home), f"{i:02d}", "conc45") for i in range(n_children)]
 
     # Use a Pool with a smaller-than-n_children worker count to also
     # exercise the queue-and-recycle path; on macOS spawn this also
@@ -322,12 +327,14 @@ def test_conc46_lock_racing_unlock_serializes_via_flock(
         suffix = f"{i:02d}"
         # Spawn both at once.
         with mp_spawn.Pool(processes=2) as pool:
-            r_lock = pool.apply_async(_worker_apply_lock, [(str(fake_home), f"46iter{suffix}")])
-            # Note: the unlock alias-suffix differs to use a different
-            # provider/alias pair — so unlock is a no-op for this
-            # alias unless lock landed first. The race we're testing is
-            # the inter-process flock on the SAME openclaw.json file, not
-            # the same provider entry semantics.
+            r_lock = pool.apply_async(
+                _worker_apply_lock, [(str(fake_home), f"46iter{suffix}", "conc46")]
+            )
+            # Both workers operate on the SAME provider entry (conc46-46iter<N>).
+            # One of two valid outcomes: lock-then-unlock (entry absent) or
+            # unlock-then-lock (entry present — unlock was a no-op because
+            # the entry didn't exist when unlock ran). What must NEVER happen
+            # is torn JSON or a partially written entry.
             r_unlock = pool.apply_async(_worker_apply_unlock, [(str(fake_home), f"46iter{suffix}")])
             r_lock.get(timeout=10.0)
             r_unlock.get(timeout=10.0)
