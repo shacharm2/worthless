@@ -25,13 +25,15 @@ Design seams (foreseen extensions, NOT in this PR):
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import logging
 import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 from collections.abc import Iterator
+
+if sys.platform != "win32":
+    import fcntl
 
 import typer
 
@@ -313,12 +315,19 @@ def _doctor_lock(home: WorthlessHome) -> Iterator[None]:
     state-machine — the second sees the synced entry as still-present after
     the first's read (step 1) but before delete (step 5), then proceeds to
     overlap. flock serializes them: the second exits with LOCK_IN_PROGRESS.
+
+    On Windows, flock is unavailable (no iCloud sync either), so the lock
+    is a no-op — concurrent runs are harmless there.
     """
+    if sys.platform == "win32":
+        yield
+        return
+
     lock_path = home.base_dir / ".doctor.lock"
     fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[possibly-undefined]
         except BlockingIOError:
             os.close(fd)
             raise WorthlessError(
@@ -329,7 +338,7 @@ def _doctor_lock(home: WorthlessHome) -> Iterator[None]:
             yield
         finally:
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                fcntl.flock(fd, fcntl.LOCK_UN)  # type: ignore[possibly-undefined]
             except OSError:
                 pass
     finally:
