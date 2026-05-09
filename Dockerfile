@@ -14,8 +14,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -g 10001 worthless \
+    # gid 10002 is the sidecar's exclusive group — proxy uid is not a
+    # member, so when fernet.key chowns to worthless-crypto:worthless-crypto
+    # 0400 (under WORTHLESS_FERNET_IPC_ONLY=1) the kernel rejects open()
+    # from the proxy. See deploy/entrypoint.sh.
+    && groupadd -r -g 10002 worthless-crypto \
     && useradd -r -u 10001 -g worthless -d /data -s /sbin/nologin worthless-proxy \
-    && useradd -r -u 10002 -g worthless -d /nonexistent -s /sbin/nologin worthless-crypto \
+    && useradd -r -u 10002 -g worthless -G worthless-crypto -d /nonexistent -s /sbin/nologin worthless-crypto \
     && mkdir -p /data /secrets /run/worthless \
     && chown worthless-proxy:worthless /data \
     # CR-3204010091 (MAJOR): /secrets must NOT be proxy-writable.  A

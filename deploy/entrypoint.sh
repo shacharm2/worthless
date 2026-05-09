@@ -86,9 +86,39 @@ if [ "$(id -u)" = "0" ]; then
   # The proxy can READ but cannot WRITE — preserves the two-uid
   # isolation goal CR-3204010079 raised while still letting bootstrap
   # work.
+  # WOR-465 Phase A1: gate the fernet.key chmod path on
+  # WORTHLESS_FERNET_IPC_ONLY. Default off (env unset or "0") keeps
+  # root:worthless 0440 so docker-e2e + bootstrap-validation +
+  # `lock --env` continue to work via shared-gid read. When the flag
+  # is set, fernet.key flips to root:worthless-crypto 0400 — the
+  # proxy uid is not in the worthless-crypto gid (10002) so the
+  # kernel rejects open(). Phases A2-A3 add the IPC verbs the proxy
+  # uses instead; A4 makes the flag default-on and drops this branch.
   if [ -f "$FERNET_PATH" ]; then
-    chown root:worthless "$FERNET_PATH" 2>/dev/null || true
-    chmod 0440 "$FERNET_PATH" 2>/dev/null || true
+    if [ "${WORTHLESS_FERNET_IPC_ONLY:-0}" = "1" ]; then
+      # Sidecar owns and reads via owner bit; proxy uid lacks gid 10002.
+      chown worthless-crypto:worthless-crypto "$FERNET_PATH" 2>/dev/null || true
+      chmod 0400 "$FERNET_PATH" 2>/dev/null || true
+      # Fail closed: a host bind-mount on macOS Docker Desktop or WSL
+      # /mnt/c/... can silently swallow chown/chmod, leaving the file
+      # at its prior loose mode while the container claims IPC-only
+      # mode. Verify the kernel actually applied our changes — if not,
+      # exit 78 (EX_CONFIG) so an operator sees the failure instead
+      # of booting with a false security claim. By-name format reads
+      # as the security claim ("only the crypto user can open it");
+      # falls back to numeric uid/gid if name resolution breaks, in
+      # which case the check trips anyway and FATAL still names the
+      # actual state.
+      actual="$(stat -c '%U:%G %a' "$FERNET_PATH" 2>/dev/null || echo unknown)"
+      if [ "$actual" != "worthless-crypto:worthless-crypto 400" ]; then
+        echo "FATAL: $FERNET_PATH permissions were not enforced (got $actual, expected worthless-crypto:worthless-crypto 400)" >&2
+        echo "Hint: storage backend silently dropped chown or chmod — common on macOS Docker Desktop bind-mounts and WSL /mnt/c paths. Use a Docker named volume." >&2
+        exit 78
+      fi
+    else
+      chown root:worthless "$FERNET_PATH" 2>/dev/null || true
+      chmod 0440 "$FERNET_PATH" 2>/dev/null || true
+    fi
   fi
   # bootstrap.ensure_home pinned $HOME_DIR to mode 0o700 — that's
   # owner-only.  After we chowned to worthless-proxy:worthless, the
