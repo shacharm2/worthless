@@ -46,6 +46,7 @@ from worthless.openclaw import config as _oc_config
 from worthless.openclaw import integration as _oc_integration
 from worthless.openclaw import skill as _oc_skill
 from worthless.openclaw.errors import OpenclawIntegrationError
+from worthless.openclaw.integration import IntegrationState
 from worthless.storage.repository import EnrollmentRecord, ShardRepository
 
 
@@ -140,99 +141,66 @@ def _skill_installed_version(skill_dir: Path) -> str | None:
     return match.group(1) if match else None
 
 
-def _check_openclaw_section(
-    repo: ShardRepository,
+def _check_skill(
+    state: IntegrationState,
     *,
     fix: bool,
     dry_run: bool,
-) -> bool:
-    """Check OpenClaw integration health. Print diagnostics; optionally repair.
-
-    Returns True when any issue was found (even if ``--fix`` repaired it).
-    Returns False and prints nothing when OpenClaw is absent OR all checks
-    pass — so the caller can show "Nothing to fix" in that case.
-
-    Two check groups:
-
-    1. **Skill**: is the embedded SKILL.md installed under
-       ``~/.openclaw/workspace/skills/worthless/``?  Is the installed
-       version current?  ``--fix`` reinstalls when stale or missing.
-
-    2. **Providers**: for every healthy enrolled alias, is there a
-       ``worthless-{provider}`` entry in ``openclaw.json`` with the
-       correct ``baseUrl``?  Doctor surfaces drift but cannot repair
-       missing entries (shard_a is not accessible here) — it directs
-       the user to re-run ``worthless lock``.
-
-    Spec: ``.claude/plans/graceful-dreaming-reef.md`` §"Phase 2.d" /
-    test matrix rows U-DOC-01..07.
-
-    Args:
-        repo: Already-initialized :class:`ShardRepository` from the
-            outer ``_doctor_run`` lock context.  ``list_enrollments()``
-            is called directly (no second ``initialize()`` needed).
-        fix: When True, attempt to repair skill issues in place.
-        dry_run: When True (with ``fix``), report planned actions without
-            making any changes.
-    """
-    state = _oc_integration.detect()
-    if not state.present:
-        return False
-
+) -> tuple[list[str], list[str]]:
+    """Check skill install health. Returns ``(issues, fixed_items)``."""
     issues: list[str] = []
     fixed_items: list[str] = []
 
-    # ---- Skill check -------------------------------------------------------
-    skill_needs_repair = False
     if state.workspace_path is None:
-        issues.append("workspace not found — skill check skipped")
-    else:
-        skill_dir = state.workspace_path / "skills" / "worthless"
-        installed_ver = _skill_installed_version(skill_dir)
-        try:
-            bundled_ver = _oc_skill.current_version()
-        except OpenclawIntegrationError:
-            bundled_ver = None
+        return ["workspace not found — skill check skipped"], []
 
-        if installed_ver is None:
-            issues.append("skill not installed")
-            skill_needs_repair = True
-        elif bundled_ver is not None and installed_ver != bundled_ver:
-            issues.append(f"skill stale (installed {installed_ver}, bundled {bundled_ver})")
-            skill_needs_repair = True
-
-        if fix and skill_needs_repair:
-            if dry_run:
-                fixed_items.append("[dry-run] would reinstall skill")
-            else:
-                try:
-                    _oc_skill.install(state.workspace_path / "skills")
-                    fixed_items.append("skill reinstalled")
-                except (OpenclawIntegrationError, OSError) as exc:
-                    issues.append(f"skill repair failed: {exc}")
-
-    # ---- Provider check ----------------------------------------------------
+    skill_dir = state.workspace_path / "skills" / "worthless"
+    installed_ver = _skill_installed_version(skill_dir)
     try:
-        enrollments = asyncio.run(repo.list_enrollments())
-    except Exception:
-        issues.append("could not read enrollment DB — provider check skipped")
-        enrollments = []
+        bundled_ver = _oc_skill.current_version()
+    except OpenclawIntegrationError:
+        bundled_ver = None
 
-    healthy = [e for e in enrollments if not is_orphan(e)]
+    skill_needs_repair = installed_ver is None or (
+        bundled_ver is not None and installed_ver != bundled_ver
+    )
+    if installed_ver is None:
+        issues.append("skill not installed")
+    elif skill_needs_repair:
+        issues.append(f"skill stale (installed {installed_ver}, bundled {bundled_ver})")
 
+    if fix and skill_needs_repair:
+        if dry_run:
+            fixed_items.append("[dry-run] would reinstall skill")
+        else:
+            try:
+                _oc_skill.install(state.workspace_path / "skills")
+                fixed_items.append("skill reinstalled")
+            except (OpenclawIntegrationError, OSError) as exc:
+                issues.append(f"skill repair failed: {exc}")
+
+    return issues, fixed_items
+
+
+def _check_providers(
+    state: IntegrationState,
+    healthy: list,
+) -> list[str]:
+    """Check openclaw.json provider entries for each healthy enrollment.
+
+    Returns a list of issue strings (empty = all wired correctly).
+    """
+    issues: list[str] = []
     for e in healthy:
         provider_name = f"worthless-{e.provider}"
-
         if state.config_path is None:
             issues.append(f"{provider_name} not wired (no openclaw.json) — re-run `worthless lock`")
             continue
-
         try:
             entry = _oc_config.get_provider(state.config_path, provider_name)
         except Exception:
             issues.append(f"{provider_name} config unreadable — re-run `worthless lock`")
             continue
-
         if entry is None:
             issues.append(f"{provider_name} not wired in openclaw.json — re-run `worthless lock`")
         else:
@@ -243,17 +211,48 @@ def _check_openclaw_section(
                     f"{provider_name} baseUrl mismatch "
                     f"(got {actual_url!r}, expected {expected_url!r}) — re-run `worthless lock`"
                 )
+    return issues
 
-    if not issues and not fixed_items:
+
+def _check_openclaw_section(
+    repo: ShardRepository,
+    *,
+    fix: bool,
+    dry_run: bool,
+) -> bool:
+    """Check OpenClaw health. Print diagnostics; optionally repair skill.
+
+    Returns True when any issue was found (even if ``--fix`` repaired it).
+    Returns False and prints nothing when OpenClaw is absent OR all checks
+    pass — caller shows "Nothing to fix" in that case.
+
+    Spec: ``.claude/plans/graceful-dreaming-reef.md`` §"Phase 2.d" /
+    test matrix rows U-DOC-01..07.
+    """
+    state = _oc_integration.detect()
+    if not state.present:
+        return False
+
+    skill_issues, fixed_items = _check_skill(state, fix=fix, dry_run=dry_run)
+
+    try:
+        enrollments = asyncio.run(repo.list_enrollments())
+    except Exception:
+        enrollments = []
+        skill_issues.append("could not read enrollment DB — provider check skipped")
+
+    healthy = [e for e in enrollments if not is_orphan(e)]
+    provider_issues = _check_providers(state, healthy)
+
+    all_issues = skill_issues + provider_issues
+    if not all_issues and not fixed_items:
         return False  # all checks passed, stay silent
 
-    # ---- Print results -----------------------------------------------------
     typer.echo("\nOpenClaw:")
-    for issue in issues:
+    for issue in all_issues:
         typer.echo(f"  ✗ {issue}")
     for item in fixed_items:
         typer.echo(f"  ✓ {item}")
-
     return True
 
 
