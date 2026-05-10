@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
+import secrets
 import sqlite3
 import threading
 import time
@@ -21,11 +23,71 @@ from worthless.cli.keystore import (
     store_fernet_key,
 )
 from worthless.cli.platform import IS_WINDOWS
+from worthless.ipc.client import IPCClient, IPCError
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE = Path.home() / ".worthless"
 _STALE_LOCK_SECONDS = 300  # 5 minutes
+
+# WOR-465 A3b: flag and bootstrap-attest constants. The flag is set
+# exclusively by the proxy container's entrypoint; bare-metal installs
+# leave it unset and the existing keystore cascade runs unchanged.
+_FERNET_IPC_ONLY_ENV = "WORTHLESS_FERNET_IPC_ONLY"
+_SIDECAR_SOCKET_ENV = "WORTHLESS_SIDECAR_SOCKET"
+_DEFAULT_SIDECAR_SOCKET = "/run/worthless/sidecar.sock"
+_BOOTSTRAP_ATTEST_PURPOSE = "bootstrap-validate"
+# HMAC-SHA256 output length. The sidecar's ``mac``/``attest`` verbs both
+# return 32 bytes; structural validation rejects stub replies that return
+# anything shorter even though the CLI cannot verify the MAC itself on
+# the flag-on proxy-container path.
+_ATTEST_EVIDENCE_LEN = 32
+
+
+def _fernet_ipc_only() -> bool:
+    """Return ``True`` when WORTHLESS_FERNET_IPC_ONLY is a truthy string."""
+    return os.environ.get(_FERNET_IPC_ONLY_ENV, "").lower() in ("1", "true", "yes")
+
+
+def _validate_via_sidecar(socket_path: Path) -> None:
+    """Round-trip an ``attest`` call to confirm the sidecar is alive AND
+    holds a real key. Raises :class:`WorthlessError(SIDECAR_NOT_READY)` on
+    any failure — never falls back to reading ``home.fernet_key``.
+
+    The CLI uid does NOT verify the MAC locally; on the flag-on path it
+    has no access to the key material. Structural validation (correct
+    bytes type, exact HMAC-SHA256 length) is the minimum bar — a stub
+    sidecar returning empty bytes or the wrong length must not be
+    accepted as a successful attestation.
+    """
+    nonce = secrets.token_bytes(32)
+
+    async def _go() -> bytes:
+        async with IPCClient(socket_path) as client:
+            return await client.attest(nonce, purpose=_BOOTSTRAP_ATTEST_PURPOSE)
+
+    try:
+        evidence = asyncio.run(_go())
+    except IPCError as exc:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            "Sidecar is not reachable for bootstrap attestation. "
+            "Start the sidecar before invoking the CLI inside the proxy "
+            "container, or unset WORTHLESS_FERNET_IPC_ONLY for bare-metal use.",
+        ) from exc
+    except OSError as exc:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            sanitize_exception(exc, generic="sidecar attestation failed"),
+        ) from exc
+
+    if not isinstance(evidence, bytes | bytearray) or len(evidence) != _ATTEST_EVIDENCE_LEN:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"Sidecar returned malformed attestation evidence "
+            f"(expected {_ATTEST_EVIDENCE_LEN} bytes, got "
+            f"{len(evidence) if isinstance(evidence, bytes | bytearray) else 'non-bytes'}).",
+        )
 
 
 @dataclass
@@ -167,6 +229,21 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
         if not IS_WINDOWS:
             home.base_dir.chmod(0o700)
             home.shard_a_dir.chmod(0o700)
+
+        # WOR-465 A3b: flag-on path bypasses the keystore cascade entirely.
+        # The proxy container's worthless-proxy uid CANNOT read fernet.key;
+        # bootstrap must therefore prove key-presence via the sidecar's
+        # attestation instead of by touching the keystore. Failure mode is
+        # hard SIDECAR_NOT_READY — never a silent fallback that would
+        # defeat the flag.
+        if _fernet_ipc_only():
+            socket_path = Path(os.environ.get(_SIDECAR_SOCKET_ENV, _DEFAULT_SIDECAR_SOCKET))
+            _validate_via_sidecar(socket_path)
+            # No marker write: the proxy container's image bake already
+            # placed the marker, and we deliberately avoid mutating
+            # base_dir mtime on every CLI invocation.
+            _init_db(home)
+            return home
 
         # Validate custom fernet key path if set via env var
         fernet_path = home.fernet_key_path
