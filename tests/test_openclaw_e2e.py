@@ -14,6 +14,7 @@ Run with:
 from __future__ import annotations
 
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -476,6 +477,29 @@ def _spend_log_sum(proxy_container: str, alias: str) -> int:
     return int(result.stdout.strip() or "0")
 
 
+def _spend_log_sum_eventually(
+    proxy_container: str,
+    alias: str,
+    *,
+    timeout: float = 5.0,
+    interval: float = 0.1,
+) -> int:
+    """Poll spend_log until tokens > 0 or timeout, then return whatever is there.
+
+    ``record_spend`` is fired as a FastAPI ``BackgroundTask`` — it runs after
+    the response is sent, so querying immediately after ``list(stream)`` returns
+    races against the async write. A bounded poll bridges the gap without
+    hardcoding a fixed sleep.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        total = _spend_log_sum(proxy_container, alias)
+        if total > 0:
+            return total
+        time.sleep(interval)
+    return _spend_log_sum(proxy_container, alias)
+
+
 def _spend_log_clear(proxy_container: str, alias: str) -> None:
     """Reset spend_log for an alias so assertions start from zero."""
     result = docker_exec(
@@ -515,7 +539,7 @@ class TestMeteringStreamingOpenAI:
         )
         list(stream)
 
-        total_tokens = _spend_log_sum(proxy_container, alias)
+        total_tokens = _spend_log_sum_eventually(proxy_container, alias)
         assert total_tokens > 0, (
             f"proxy metered {total_tokens} tokens on streaming without include_usage — "
             f"spend cap would silently never fire"
@@ -540,7 +564,7 @@ class TestMeteringStreamingOpenAI:
         )
         list(stream)
 
-        total_tokens = _spend_log_sum(proxy_container, alias)
+        total_tokens = _spend_log_sum_eventually(proxy_container, alias)
         assert total_tokens > 0, (
             "proxy did not meter a streaming request that explicitly set "
             "stream_options.include_usage=true — fix regression"
@@ -562,7 +586,7 @@ class TestMeteringStreamingOpenAI:
             messages=[{"role": "user", "content": "hi"}],
         )
 
-        total_tokens = _spend_log_sum(proxy_container, alias)
+        total_tokens = _spend_log_sum_eventually(proxy_container, alias)
         assert total_tokens > 0, "non-streaming metering regressed"
 
 
