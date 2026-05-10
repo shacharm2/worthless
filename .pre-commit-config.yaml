@@ -56,7 +56,7 @@ repos:
     rev: v2.4.2
     hooks:
       - id: codespell
-        args: ["--skip=*.lock,*.json", "--ignore-words-list=shard,shards,te,fpr"]
+        args: ["--skip=*.lock,*.json", "--ignore-words-list=shard,shards,te,fpr,OT,padd"]
 
   # Pyright: static type checking (basic mode src/, strict on crypto/)
   - repo: local
@@ -139,7 +139,7 @@ repos:
         language: pygrep
         entry: 'worthless-cloud'
         files: '\.(py|md|toml|yaml|yml|json|txt)$'
-        exclude: '(\.pre-commit-config\.yaml|\.planning/)'
+        exclude: '(\.pre-commit-config\.yaml|\.planning/|website/research/README\.md)'
         types_or: [python, markdown, toml, yaml, json, text]
 
       # SR-01: bytearray for secrets, not bare bytes literals in crypto code

@@ -41,5 +41,9 @@ paths = [
     '''\.planning/research/.*\.md$''',
     '''\.planning/snapshots/.*\.json$''',
     '''\.planning/ROADMAP\.md$''',
+    # Imported from the current public GitHub Pages site in WOR-455.
+    # These are design/security research examples already published at wless.io.
+    '''website/adversarial/.*\.md$''',
+    '''website/research/.*\.md$''',
     '''tests/.*\.py$''',
 ]
