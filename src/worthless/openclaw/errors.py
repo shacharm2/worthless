@@ -1,4 +1,4 @@
-"""Stable error codes + event objects for the OpenClaw integration.
+"""Stable error codes and event objects for the OpenClaw integration.
 
 The string values of :class:`OpenclawErrorCode` are wire-format: they
 appear in ``worthless lock --json`` / ``worthless doctor --json`` output

@@ -52,7 +52,6 @@ from worthless.cli.console import WorthlessConsole, get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.keystore import _SERVICE
 from worthless.cli.orphans import FIX_PHRASE, PROBLEM_PHRASE, find_orphans, is_orphan
-from worthless.openclaw import config as _oc_config
 from worthless.openclaw import integration as _oc_integration
 from worthless.openclaw import skill as _oc_skill
 from worthless.openclaw.errors import OpenclawIntegrationError
@@ -231,32 +230,33 @@ def _check_providers(
 ) -> list[str]:
     """Check openclaw.json provider entries for each healthy enrollment.
 
+    Delegates to :func:`worthless.openclaw.integration.health_check` for
+    the read logic so the verification rules live in one place (Phase 2.d).
+
     ``port`` must come from ``resolve_port(None)`` so non-default deployments
     (``WORTHLESS_PORT`` env or ``--port``) are not falsely reported as drift.
 
     Returns a list of issue strings (empty = all wired correctly).
     """
-    issues: list[str] = []
-    for e in healthy:
-        provider_name = f"worthless-{e.provider}"
-        if state.config_path is None:
-            issues.append(f"{provider_name} not wired (no openclaw.json) — re-run `worthless lock`")
-            continue
-        try:
-            entry = _oc_config.get_provider(state.config_path, provider_name)
-        except Exception:
-            issues.append(f"{provider_name} config unreadable — re-run `worthless lock`")
-            continue
-        if entry is None:
-            issues.append(f"{provider_name} not wired in openclaw.json — re-run `worthless lock`")
-        else:
-            actual_url = entry.get("baseUrl", "")
-            expected_url = f"http://127.0.0.1:{port}/{e.key_alias}/v1"
-            if actual_url != expected_url:
-                issues.append(
-                    f"{provider_name} baseUrl mismatch "
-                    f"(got {actual_url!r}, expected {expected_url!r}) — re-run `worthless lock`"
-                )
+    expected = [(e.provider, e.key_alias) for e in healthy]
+    report = _oc_integration.health_check(state, expected_providers=expected, proxy_port=port)
+
+    fix_hint = "re-run `worthless lock`"
+    if report.config_unreadable:
+        return [
+            f"worthless-{provider} config unreadable — {fix_hint}" for provider, _alias in expected
+        ]
+
+    missing_where = (
+        "not wired (no openclaw.json)"
+        if state.config_path is None
+        else "not wired in openclaw.json"
+    )
+    issues = [f"{name} {missing_where} — {fix_hint}" for name in report.providers_missing]
+    issues.extend(
+        f"{name} baseUrl mismatch (got {actual!r}, expected {expected_url!r}) — {fix_hint}"
+        for name, actual, expected_url in report.providers_drifted
+    )
     return issues
 
 
