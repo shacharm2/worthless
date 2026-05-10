@@ -17,7 +17,7 @@ It is the canonical place to answer:
 ## Structure
 
 - [architecture.md](architecture.md): current system shape and runtime boundaries
-- [modules.md](modules.md): module ownership and file-level map
+- [modules.md](modules.md): module ownership, security invariants, and edit rules per module — read before touching a module
 - [flows.md](flows.md): the main end-to-end flows through the system
 - [operations.md](operations.md): operator and maintainer runtime notes
 - [tooling.md](tooling.md): generated-docs workflow, verification, and helper tooling
