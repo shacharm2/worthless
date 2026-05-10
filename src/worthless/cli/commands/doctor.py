@@ -241,24 +241,22 @@ def _check_providers(
     expected = [(e.provider, e.key_alias) for e in healthy]
     report = _oc_integration.health_check(state, expected_providers=expected, proxy_port=port)
 
-    issues: list[str] = []
+    fix_hint = "re-run `worthless lock`"
     if report.config_unreadable:
-        for provider, _alias in expected:
-            issues.append(f"worthless-{provider} config unreadable — re-run `worthless lock`")
-        return issues
+        return [
+            f"worthless-{provider} config unreadable — {fix_hint}" for provider, _alias in expected
+        ]
 
-    for provider_name in report.providers_missing:
-        if state.config_path is None:
-            issues.append(f"{provider_name} not wired (no openclaw.json) — re-run `worthless lock`")
-        else:
-            issues.append(f"{provider_name} not wired in openclaw.json — re-run `worthless lock`")
-
-    for provider_name, actual_url, expected_url in report.providers_drifted:
-        issues.append(
-            f"{provider_name} baseUrl mismatch "
-            f"(got {actual_url!r}, expected {expected_url!r}) — re-run `worthless lock`"
-        )
-
+    missing_where = (
+        "not wired (no openclaw.json)"
+        if state.config_path is None
+        else "not wired in openclaw.json"
+    )
+    issues = [f"{name} {missing_where} — {fix_hint}" for name in report.providers_missing]
+    issues.extend(
+        f"{name} baseUrl mismatch (got {actual!r}, expected {expected_url!r}) — {fix_hint}"
+        for name, actual, expected_url in report.providers_drifted
+    )
     return issues
 
 

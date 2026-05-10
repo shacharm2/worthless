@@ -151,8 +151,6 @@ def _classify(path: Path) -> tuple[str, str | None]:
     syscalls per path into one — material on slow filesystems
     (``/mnt/c`` WSL targets per project_target_users.md).
     """
-    import stat as _stat
-
     try:
         st = path.lstat()
     except FileNotFoundError:
@@ -160,23 +158,20 @@ def _classify(path: Path) -> tuple[str, str | None]:
     except OSError as exc:
         return "missing", str(exc)
 
-    if _stat.S_ISLNK(st.st_mode):
+    if stat.S_ISLNK(st.st_mode):
         try:
             target = path.stat()
         except FileNotFoundError:
             return "dangling", None
         except OSError as exc:
             return "missing", str(exc)
-        return (
-            ("symlink-to-dir", None)
-            if _stat.S_ISDIR(target.st_mode)
-            else (
-                "symlink-to-file",
-                None,
-            )
-        )
+        if stat.S_ISDIR(target.st_mode):
+            return "symlink-to-dir", None
+        return "symlink-to-file", None
 
-    return ("dir", None) if _stat.S_ISDIR(st.st_mode) else ("file", None)
+    if stat.S_ISDIR(st.st_mode):
+        return "dir", None
+    return "file", None
 
 
 def _probe_workspace(home: Path) -> tuple[Path | None, list[str]]:
@@ -192,7 +187,7 @@ def _probe_workspace(home: Path) -> tuple[Path | None, list[str]]:
     if kind == "dangling":
         notes.append(f"~/.openclaw is a dangling symlink: {openclaw_dir}")
         return None, notes
-    if kind == "file" or kind == "symlink-to-file":
+    if kind in {"file", "symlink-to-file"}:
         notes.append(f"~/.openclaw is a file, not a dir: {openclaw_dir}")
         return None, notes
     if kind == "missing":
@@ -205,7 +200,7 @@ def _probe_workspace(home: Path) -> tuple[Path | None, list[str]]:
     if kind == "dangling":
         notes.append(f"workspace is a dangling symlink: {workspace}")
         return None, notes
-    if kind == "file" or kind == "symlink-to-file":
+    if kind in {"file", "symlink-to-file"}:
         notes.append(f"workspace is not a directory: {workspace}")
         return None, notes
     if kind == "missing":
@@ -493,41 +488,40 @@ def apply_lock(
     # we short-circuit here so the event is correctly tagged
     # SYMLINK_REFUSED instead of CONFIG_UNREADABLE (which would fire
     # when get_provider tried to JSON-parse the link target).
-    if config_path is not None:
-        try:
-            is_link = config_path.is_symlink()
-        except OSError:
-            is_link = False
-        if is_link:
-            events.append(
-                OpenclawIntegrationEvent(
-                    code=OpenclawErrorCode.SYMLINK_REFUSED,
-                    level="error",
-                    detail=(
-                        f"refusing to follow symlink at {config_path} (F-CFG-15) — "
-                        "symlinked openclaw.json is a known attack vector"
-                    ),
-                    extra={"path": str(config_path)},
-                )
-            )
-            # Refuse the whole transaction. Stage B (skill install) is
-            # technically independent (writes to workspace/skills/), but a
-            # symlinked config means the user's home is in an unsafe state
-            # and we don't want to half-install. doctor --fix can recover
-            # once the user removes the symlink.
-            return OpenclawApplyResult(
-                detected=True,
-                config_path=config_path,
-                workspace_path=state.workspace_path,
-                skill_path=None,
-                providers_set=(),
-                providers_skipped=tuple(
-                    (f"worthless-{provider}", "symlink_refused")
-                    for provider, _alias, _shard in planned_updates
+    try:
+        is_link = config_path.is_symlink()
+    except OSError:
+        is_link = False
+    if is_link:
+        events.append(
+            OpenclawIntegrationEvent(
+                code=OpenclawErrorCode.SYMLINK_REFUSED,
+                level="error",
+                detail=(
+                    f"refusing to follow symlink at {config_path} (F-CFG-15) — "
+                    "symlinked openclaw.json is a known attack vector"
                 ),
-                skill_installed=False,
-                events=tuple(events),
+                extra={"path": str(config_path)},
             )
+        )
+        # Refuse the whole transaction. Stage B (skill install) is
+        # technically independent (writes to workspace/skills/), but a
+        # symlinked config means the user's home is in an unsafe state
+        # and we don't want to half-install. doctor --fix can recover
+        # once the user removes the symlink.
+        return OpenclawApplyResult(
+            detected=True,
+            config_path=config_path,
+            workspace_path=state.workspace_path,
+            skill_path=None,
+            providers_set=(),
+            providers_skipped=tuple(
+                (f"worthless-{provider}", "symlink_refused")
+                for provider, _alias, _shard in planned_updates
+            ),
+            skill_installed=False,
+            events=tuple(events),
+        )
 
     # ---- Stage A: write providers ----------------------------------------
     for provider, alias, shard_a in planned_updates:
@@ -718,7 +712,6 @@ def apply_unlock(
     # CONFIG_UNREADABLE — wrong code, wrong story. Short-circuit here so
     # the event is correctly tagged SYMLINK_REFUSED and Stage A doesn't
     # iterate uselessly through every alias hitting the same flock check.
-    is_link = False
     try:
         is_link = config_path.is_symlink()
     except OSError:
@@ -870,7 +863,8 @@ class OpenclawHealthReport:
     ``providers_drifted`` — ``(name, actual_url, expected_url)`` triples
         where the entry exists but ``baseUrl`` points somewhere else.
     ``config_unreadable`` — True when ``openclaw.json`` could not be parsed;
-        the other lists may be incomplete in that case.
+        all three verdict lists are empty in that case (callers must not
+        interpret an empty ``providers_ok`` as "all good").
 
     ``healthy`` is True only when all three trouble lists are empty.
     Consumers (``doctor``, CI scripts) should test ``healthy`` before
@@ -921,6 +915,12 @@ def health_check(
         )
 
     config_path = state.config_path
+
+    # Refuse symlinks — same defence as apply_lock/apply_unlock (read-only, but
+    # a symlink pointing at /etc/passwd would parse as config_unreadable silently).
+    if config_path.is_symlink():
+        return OpenclawHealthReport(config_unreadable=True)
+
     providers_ok: list[str] = []
     providers_missing: list[str] = []
     providers_drifted: list[tuple[str, str, str]] = []
@@ -932,12 +932,9 @@ def health_check(
             entry = _config_mod.get_provider(config_path, provider_name)
         except (OpenclawConfigError, OSError):
             # Bail early — further reads will hit the same error.
-            return OpenclawHealthReport(
-                providers_ok=tuple(providers_ok),
-                providers_missing=tuple(providers_missing),
-                providers_drifted=tuple(providers_drifted),
-                config_unreadable=True,
-            )
+            # Zero out partial verdicts: config_unreadable means "don't trust
+            # any list in this report."
+            return OpenclawHealthReport(config_unreadable=True)
         if entry is None:
             providers_missing.append(provider_name)
         else:

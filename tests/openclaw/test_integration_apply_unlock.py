@@ -571,7 +571,7 @@ def test_apply_unlock_no_op_does_not_count_in_providers_set(
     """
     from worthless.openclaw import integration
 
-    monkeypatch.chdir(openclaw_present["home"])
+    monkeypatch.chdir(openclaw_present["home"])  # avoid project-local openclaw.json pickup
 
     # No-op: the provider entry was never written, so unset_provider returns {}.
     result = integration.apply_unlock(
