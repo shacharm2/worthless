@@ -259,7 +259,7 @@ async def _pass1_db_writes(
                     f"Alias {alias!r} predates format-preserving split. "
                     "Run `worthless unlock --all` then re-lock this .env.",
                 )
-            stored_decrypted = repo.decrypt_shard(db_shard)
+            stored_decrypted = await repo.decrypt_shard(db_shard)
             verify_payload = bytearray(value.encode("utf-8"))
             try:
                 try:

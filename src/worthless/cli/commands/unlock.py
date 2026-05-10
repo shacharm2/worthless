@@ -176,7 +176,7 @@ async def _pass1_reconstruct(
                 f"Shard B not found in DB for alias: {alias}",
             )
 
-        stored = repo.decrypt_shard(encrypted)
+        stored = await repo.decrypt_shard(encrypted)
         shard_a: bytearray | None = None
         try:
             enrollment = await _resolve_enrollment(alias, repo, env_path)
