@@ -25,7 +25,9 @@ Predicate" and §"Failure modes" rows F01–F04, F36.
 from __future__ import annotations
 
 import os
+import shutil
 import stat
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,6 +53,63 @@ from worthless.openclaw.errors import (
 
 _SKILL_SUBPATH = ("skills", "worthless")
 _DEFAULT_PROXY_BASE_URL = "http://127.0.0.1:8787"
+_DEFAULT_PROXY_PORT = 8787
+
+
+def _resolve_proxy_base_url() -> str:
+    """Return the proxy base URL reachable from OpenClaw's network context.
+
+    OpenClaw typically runs as a Docker container.  Inside a Docker bridge
+    network, ``127.0.0.1`` is the container's own loopback — not the host.
+    We detect Docker availability at lock-time and emit the right address:
+
+    * macOS / Windows (Docker Desktop): ``host.docker.internal`` — Docker
+      Desktop adds this name to ``/etc/hosts`` on both the host *and* inside
+      every container, so it resolves correctly in both contexts.
+    * Linux with Docker: the ``docker0`` bridge gateway IP (default
+      ``172.17.0.1``).  We ask Docker itself to avoid hard-coding.
+    * Docker unavailable or detection fails: ``127.0.0.1`` (native install).
+
+    Called once per ``apply_lock`` invocation — not at import time — so the
+    ``docker info`` subprocess never adds startup latency.
+    """
+    docker_bin = shutil.which("docker")
+    if docker_bin is None:
+        return _DEFAULT_PROXY_BASE_URL
+    try:
+        probe = subprocess.run(
+            [docker_bin, "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if probe.returncode != 0 or not probe.stdout.strip():
+            return _DEFAULT_PROXY_BASE_URL
+        # Docker is reachable.
+        if sys.platform in ("darwin", "win32"):
+            # Docker Desktop exposes host.docker.internal on macOS + Windows.
+            return f"http://host.docker.internal:{_DEFAULT_PROXY_PORT}"
+        # Linux: read the docker0 bridge gateway so we're not guessing.
+        bridge = subprocess.run(
+            [
+                docker_bin,
+                "network",
+                "inspect",
+                "bridge",
+                "--format",
+                "{{(index .IPAM.Config 0).Gateway}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        ip = bridge.stdout.strip()
+        if bridge.returncode == 0 and ip:
+            return f"http://{ip}:{_DEFAULT_PROXY_PORT}"
+        return f"http://172.17.0.1:{_DEFAULT_PROXY_PORT}"
+    except (subprocess.TimeoutExpired, OSError):
+        return _DEFAULT_PROXY_BASE_URL
+
 
 # OpenClaw daemon requires the `api` field to identify the wire protocol
 # of each provider. Without it, skills may be visible but tool calls go
@@ -426,7 +485,7 @@ def _is_proxy_url(url: str, proxy_base_url: str) -> bool:
 def apply_lock(
     planned_updates: list[tuple[str, str, str]],
     *,
-    proxy_base_url: str = _DEFAULT_PROXY_BASE_URL,
+    proxy_base_url: str | None = None,
 ) -> OpenclawApplyResult:
     """Wire OpenClaw to route through worthless. Idempotent. Best-effort.
 
@@ -447,6 +506,13 @@ def apply_lock(
     Spec: ``engineering/research/openclaw-WOR-431-phase-2-spec.md``
     §"Phase 2.b" / §"`apply_lock()` contract".
     """
+    # Resolve the proxy base URL here (not at import time) so the Docker
+    # probe runs only when apply_lock is actually called.  Callers may
+    # override for tests or custom proxy ports.
+    resolved_proxy_base_url = (
+        proxy_base_url if proxy_base_url is not None else _resolve_proxy_base_url()
+    )
+
     state = detect()
     if not state.present:
         return OpenclawApplyResult(
@@ -526,7 +592,7 @@ def apply_lock(
     # ---- Stage A: write providers ----------------------------------------
     for provider, alias, shard_a in planned_updates:
         provider_name = f"worthless-{provider}"
-        base_url = f"{proxy_base_url.rstrip('/')}/{alias}/v1"
+        base_url = f"{resolved_proxy_base_url.rstrip('/')}/{alias}/v1"
 
         # F-CFG-13: pre-existing entry pointing somewhere that isn't our
         # proxy is a manual override. Skip + emit conflict event.
@@ -555,7 +621,7 @@ def apply_lock(
 
         if existing is not None:
             existing_url = existing.get("baseUrl", "")
-            if existing_url and not _is_proxy_url(existing_url, proxy_base_url):
+            if existing_url and not _is_proxy_url(existing_url, resolved_proxy_base_url):
                 events.append(
                     OpenclawIntegrationEvent(
                         code=OpenclawErrorCode.PROVIDER_CONFLICT,
