@@ -20,7 +20,7 @@ import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.commands.lock import _lock_keys
-from worthless.storage.repository import ShardRepository
+from worthless.cli._repo_factory import open_repo
 from worthless.cli.commands.up import start_daemon, _resolve_port
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import build_enrolled_locations, scan_env_keys
@@ -181,11 +181,11 @@ def run_default(
             if not home.db_path.exists():
                 return scan_env_keys(env_path)
             try:
-                repo = ShardRepository(str(home.db_path), home.fernet_key)
-                await repo.initialize()
-                enrollments = await repo.list_enrollments()
-                enrolled_locations = build_enrolled_locations(enrollments)
-                return scan_env_keys(env_path, enrolled_locations=enrolled_locations)
+                async with open_repo(home) as repo:
+                    await repo.initialize()
+                    enrollments = await repo.list_enrollments()
+                    enrolled_locations = build_enrolled_locations(enrollments)
+                    return scan_env_keys(env_path, enrolled_locations=enrolled_locations)
             except Exception:
                 return scan_env_keys(env_path)
 

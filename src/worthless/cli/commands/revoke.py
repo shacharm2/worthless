@@ -9,10 +9,11 @@ from pathlib import Path
 
 import typer
 
+from worthless.cli._repo_factory import open_repo
 from worthless.cli.bootstrap import acquire_lock, get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
-from worthless.storage.repository import ShardRepository
+from worthless.storage.repository import ShardRepository  # noqa: F401  # still re-exported for typing
 
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -62,11 +63,11 @@ def _revoke_key(alias: str) -> None:
     home = get_home()
 
     with acquire_lock(home):
-        repo = ShardRepository(str(home.db_path), home.fernet_key)
 
         async def _run() -> bool:
-            await repo.initialize()
-            return await _revoke_async(alias, repo, home.shard_a_dir)
+            async with open_repo(home) as repo:
+                await repo.initialize()
+                return await _revoke_async(alias, repo, home.shard_a_dir)
 
         revoked = asyncio.run(_run())
 

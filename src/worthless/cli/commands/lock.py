@@ -13,6 +13,7 @@ from pathlib import Path
 
 import typer
 
+from worthless.cli._repo_factory import open_repo
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.commands.up import _resolve_port
 from worthless.cli.console import get_console
@@ -428,57 +429,57 @@ def _lock_keys(
     async def _lock_async() -> int:
         from dotenv import dotenv_values  # noqa: PLC0415 — local import keeps test surface tight
 
-        repo = ShardRepository(str(home.db_path), home.fernet_key)
-        await repo.initialize()
+        async with open_repo(home) as repo:
+            await repo.initialize()
 
-        env_str = str(env_path.resolve())
-        all_enrollments = await repo.list_enrollments()
-        enrolled_locations = build_enrolled_locations(all_enrollments)
+            env_str = str(env_path.resolve())
+            all_enrollments = await repo.list_enrollments()
+            enrolled_locations = build_enrolled_locations(all_enrollments)
 
-        scanned = scan_env_keys(env_path, enrolled_locations=enrolled_locations)
-        if not scanned:
-            console.print_warning("No unprotected API keys found.")
-            return 0
-
-        # 8rqs Phase 7: snapshot the full .env so _pass1 can read existing
-        # *_BASE_URL values and pull them into the DB row.
-        env_values = dict(dotenv_values(env_path))
-
-        candidates = [
-            (var_name, value, provider_override or detected_provider)
-            for var_name, value, detected_provider in scanned
-        ]
-        existing_env_keys = set(env_values.keys())
-
-        planned: list[_PlannedUpdate] = []
-        try:
-            if not quiet:
-                # HF2 UX: name the keys so the user knows exactly which env
-                # vars are being touched — prior "Protecting N key(s)..."
-                # was opaque about which secrets just changed.
-                key_names = ", ".join(var_name for var_name, _, _ in candidates)
-                console.print_hint(f"  Protecting {key_names}...")
-            # 8rqs Phase 7: env_values flows through so _pass1_db_writes can
-            # read each key's matching *_BASE_URL from .env at lock time.
-            await _pass1_db_writes(
-                repo, candidates, env_str, token_budget_daily, planned, env_values
-            )
-            if not planned:
+            scanned = scan_env_keys(env_path, enrolled_locations=enrolled_locations)
+            if not scanned:
+                console.print_warning("No unprotected API keys found.")
                 return 0
-            _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
-            return len(planned)
-        except Exception:
-            if planned:
-                unwind_errors = await _compensating_unwind(repo, planned)
-                if unwind_errors:
-                    console.print_warning(
-                        f"Database may contain {len(unwind_errors)} stale row(s); "
-                        "run `worthless unlock --all` to reconcile."
-                    )
-            raise
-        finally:
-            for p in planned:
-                p.zero()
+
+            # 8rqs Phase 7: snapshot the full .env so _pass1 can read existing
+            # *_BASE_URL values and pull them into the DB row.
+            env_values = dict(dotenv_values(env_path))
+
+            candidates = [
+                (var_name, value, provider_override or detected_provider)
+                for var_name, value, detected_provider in scanned
+            ]
+            existing_env_keys = set(env_values.keys())
+
+            planned: list[_PlannedUpdate] = []
+            try:
+                if not quiet:
+                    # HF2 UX: name the keys so the user knows exactly which env
+                    # vars are being touched — prior "Protecting N key(s)..."
+                    # was opaque about which secrets just changed.
+                    key_names = ", ".join(var_name for var_name, _, _ in candidates)
+                    console.print_hint(f"  Protecting {key_names}...")
+                # 8rqs Phase 7: env_values flows through so _pass1_db_writes can
+                # read each key's matching *_BASE_URL from .env at lock time.
+                await _pass1_db_writes(
+                    repo, candidates, env_str, token_budget_daily, planned, env_values
+                )
+                if not planned:
+                    return 0
+                _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
+                return len(planned)
+            except Exception:
+                if planned:
+                    unwind_errors = await _compensating_unwind(repo, planned)
+                    if unwind_errors:
+                        console.print_warning(
+                            f"Database may contain {len(unwind_errors)} stale row(s); "
+                            "run `worthless unlock --all` to reconcile."
+                        )
+                raise
+            finally:
+                for p in planned:
+                    p.zero()
 
     count = asyncio.run(_lock_async())
 
@@ -528,35 +529,35 @@ def _enroll_single(
     sr = split_key_fp(key, prefix, provider)
 
     async def _enroll_async():
-        repo = ShardRepository(str(home.db_path), home.fernet_key)
-        await repo.initialize()
+        async with open_repo(home) as repo:
+            await repo.initialize()
 
-        existing = await repo.fetch_encrypted(alias)
-        if existing is not None:
-            raise WorthlessError(
-                ErrorCode.SCAN_ERROR,
-                f"Alias {alias!r} is already enrolled",
+            existing = await repo.fetch_encrypted(alias)
+            if existing is not None:
+                raise WorthlessError(
+                    ErrorCode.SCAN_ERROR,
+                    f"Alias {alias!r} is already enrolled",
+                )
+
+            stored = StoredShard(
+                shard_b=sr.shard_b,
+                commitment=sr.commitment,
+                nonce=sr.nonce,
+                provider=provider,
             )
-
-        stored = StoredShard(
-            shard_b=sr.shard_b,
-            commitment=sr.commitment,
-            nonce=sr.nonce,
-            provider=provider,
-        )
-        # 8rqs: enroll falls back to the registry default URL — _enroll_single
-        # is the no-.env path so there's no user var to read.
-        registry_default = lookup_by_name(provider)
-        base_url = registry_default.url if registry_default else None
-        await repo.store_enrolled(
-            alias,
-            stored,
-            var_name=alias,
-            env_path=None,
-            prefix=sr.prefix,
-            charset=sr.charset,
-            base_url=base_url,
-        )
+            # 8rqs: enroll falls back to the registry default URL — _enroll_single
+            # is the no-.env path so there's no user var to read.
+            registry_default = lookup_by_name(provider)
+            base_url = registry_default.url if registry_default else None
+            await repo.store_enrolled(
+                alias,
+                stored,
+                var_name=alias,
+                env_path=None,
+                prefix=sr.prefix,
+                charset=sr.charset,
+                base_url=base_url,
+            )
 
     try:
         asyncio.run(_enroll_async())

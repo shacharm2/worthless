@@ -90,7 +90,19 @@ def _read_default_host(mode: DeployMode) -> str:
 
 
 def _read_fernet_key() -> bytearray:
-    """Read Fernet key: fd (secure pipe) -> keystore (env/keyring/file)."""
+    """Read Fernet key: fd (secure pipe) -> keystore (env/keyring/file).
+
+    WOR-465 A3b 3/3: under ``WORTHLESS_FERNET_IPC_ONLY=1`` this returns
+    an empty bytearray WITHOUT ever calling ``read_fernet_key``. The
+    proxy uid then never holds key material in memory; every crypto
+    op routes through the sidecar over IPC instead.
+    """
+    if _env_bool("WORTHLESS_FERNET_IPC_ONLY"):
+        # WOR-465 invariant: proxy uid MUST NOT touch the keystore on
+        # the flag-on path. Returning empty here is the contract — the
+        # sidecar holds the key, the proxy delegates over IPC.
+        return bytearray()
+
     fd_str = os.environ.get("WORTHLESS_FERNET_FD")
     if fd_str:
         try:

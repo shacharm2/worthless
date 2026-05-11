@@ -19,6 +19,7 @@ import threading
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, get_home
+from worthless.cli._repo_factory import open_repo
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
 from worthless.cli.platform import fail_if_windows, popen_platform_kwargs
 from worthless.cli.process import (
@@ -35,7 +36,6 @@ from worthless.cli.sidecar_lifecycle import (
     spawn_sidecar,
     split_to_tmpfs,
 )
-from worthless.storage.repository import ShardRepository
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +51,10 @@ def _list_enrolled_aliases(home: WorthlessHome) -> list[tuple[str, str]]:
         return []
 
     async def _query():
-        repo = ShardRepository(str(home.db_path), home.fernet_key)
-        await repo.initialize()
-        rows = await repo.list_aliases_with_routing()
-        return [(alias, protocol) for alias, _var, _url, protocol in rows]
+        async with open_repo(home) as repo:
+            await repo.initialize()
+            rows = await repo.list_aliases_with_routing()
+            return [(alias, protocol) for alias, _var, _url, protocol in rows]
 
     try:
         return asyncio.run(_query())

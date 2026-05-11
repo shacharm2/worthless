@@ -15,6 +15,7 @@ from pathlib import Path
 import typer
 from dotenv import dotenv_values
 
+from worthless.cli._repo_factory import open_repo
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.console import get_console
 
@@ -326,7 +327,6 @@ def register_unlock_commands(app: typer.Typer) -> None:
         """
         console = get_console()
         home = get_home()
-        repo = ShardRepository(str(home.db_path), home.fernet_key)
 
         # Detect whether the user passed --env explicitly. The HF4
         # discriminator (raise on shard-shape values without DB rows)
@@ -363,34 +363,35 @@ def register_unlock_commands(app: typer.Typer) -> None:
             )
 
         async def _unlock_async():
-            await repo.initialize()
-            if alias:
-                planned = await _unlock_batch([alias], home, repo, env)
-                if planned:
-                    console.print_success(_format_restored_line(planned[0]))
+            async with open_repo(home) as repo:
+                await repo.initialize()
+                if alias:
+                    planned = await _unlock_batch([alias], home, repo, env)
+                    if planned:
+                        console.print_success(_format_restored_line(planned[0]))
+                        return
+                    # If a typo'd --alias points at a .env full of shard-shape
+                    # values, silent success is the worst possible feedback.
+                    _raise_unrecognised_shards()
+                    console.print_warning(f"Alias not found or no keys restored: {alias}.")
                     return
-                # If a typo'd --alias points at a .env full of shard-shape
-                # values, silent success is the worst possible feedback.
-                _raise_unrecognised_shards()
-                console.print_warning(f"Alias not found or no keys restored: {alias}.")
-                return
 
-            env_str = str(env.resolve())
-            all_enrollments = await repo.list_enrollments()
-            aliases = sorted({e.key_alias for e in all_enrollments if e.env_path == env_str})
-            if not aliases:
-                _raise_unrecognised_shards()
-                console.print_warning("No enrolled keys found.")
-                return
+                env_str = str(env.resolve())
+                all_enrollments = await repo.list_enrollments()
+                aliases = sorted({e.key_alias for e in all_enrollments if e.env_path == env_str})
+                if not aliases:
+                    _raise_unrecognised_shards()
+                    console.print_warning("No enrolled keys found.")
+                    return
 
-            planned = await _unlock_batch(aliases, home, repo, env)
-            for p in planned:
-                console.print_success(_format_restored_line(p))
-            n = len(planned)
-            if n > 1:
-                # Per-key lines already covered N=1; only emit the summary
-                # when there's something to count.
-                console.print_success(f"{n} key(s) restored.")
+                planned = await _unlock_batch(aliases, home, repo, env)
+                for p in planned:
+                    console.print_success(_format_restored_line(p))
+                n = len(planned)
+                if n > 1:
+                    # Per-key lines already covered N=1; only emit the summary
+                    # when there's something to count.
+                    console.print_success(f"{n} key(s) restored.")
 
         with acquire_lock(home):
             asyncio.run(_unlock_async())
