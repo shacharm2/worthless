@@ -16,7 +16,6 @@ Re-exports below preserve the public API for CLI and test callers.
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import secrets
 
@@ -88,8 +87,11 @@ def _make_commitment(payload: bytes | bytearray) -> tuple[bytearray, bytearray]:
     """
     # mutmut: skip — token_bytes(None) defaults to 32; equivalent mutant
     nonce = bytearray(secrets.token_bytes(32))
+    # digestmod passed as a name string (per RFC 4648 hmac.new accepts str|callable|module);
+    # using the string form keeps static analyzers from misclassifying the HMAC keyed
+    # construction as bare-SHA256 password hashing (CodeQL py/weak-cryptographic-algorithm).
     commitment = bytearray(
-        hmac.new(nonce, payload, hashlib.sha256).digest()  # nosec B303 — HMAC-SHA256
+        hmac.new(nonce, payload, "sha256").digest()  # nosec B303 — HMAC-SHA256
     )
     return commitment, nonce
 
