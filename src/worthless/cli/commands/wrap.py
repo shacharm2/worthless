@@ -9,7 +9,6 @@ spawn child, wait, clean up.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import subprocess  # nosec B404
@@ -19,6 +18,7 @@ import threading
 import aiosqlite
 import typer
 
+from worthless._async import run_sync
 from worthless.cli.bootstrap import WorthlessHome, get_home
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary, sanitize_exception
 from worthless.cli.platform import fail_if_windows, popen_platform_kwargs
@@ -64,10 +64,10 @@ def _list_enrolled_aliases(home: WorthlessHome) -> list[tuple[str, str]]:
                 "ORDER BY s.key_alias"
             )
             rows = await cursor.fetchall()
-            return [(r[0], r[1]) for r in rows if r[0] and r[1]]
+            return [(str(r[0]), str(r[1])) for r in rows if r[0] and r[1]]
 
     try:
-        return asyncio.run(_query())
+        return run_sync(_query())
     except (OSError, aiosqlite.Error) as exc:
         logger.debug("alias list failed: %s", exc, exc_info=True)
         return []
