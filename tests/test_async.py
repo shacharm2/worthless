@@ -77,3 +77,29 @@ class TestRunSyncAdversarial:
 
         result = run_sync(_outer())
         assert result == 42
+
+    @pytest.mark.asyncio
+    async def test_exception_propagates_through_threaded_path(self) -> None:
+        """When the wrapped coroutine raises, run_sync must re-raise the
+        ORIGINAL exception (not wrap it, not swallow it). This validates
+        the error path of the new pool.shutdown(wait=False) wiring — the
+        shutdown must not mask the failure."""
+
+        async def _raiser() -> None:
+            raise ValueError("intentional failure under test")
+
+        with pytest.raises(ValueError, match="intentional failure under test"):
+            run_sync(_raiser())
+
+    @pytest.mark.asyncio
+    async def test_negative_timeout_raises_immediately(self) -> None:
+        """A negative timeout cannot ever be satisfied — Future.result(-1)
+        raises TimeoutError before the worker has any chance to complete.
+        This pins the contract for sentinel/misuse values rather than
+        leaving the behaviour ambiguous."""
+
+        async def _trivial() -> int:
+            return 1
+
+        with pytest.raises(concurrent.futures.TimeoutError):
+            run_sync(_trivial(), timeout=-1.0)

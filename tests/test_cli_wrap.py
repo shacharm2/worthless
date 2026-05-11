@@ -298,6 +298,34 @@ class TestListEnrolledAliasesAdversarial:
         aliases = _list_enrolled_aliases(home_dir)
         assert aliases == []
 
+    def test_busy_lock_returns_empty(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When another process holds an exclusive lock on the DB, SQLite
+        raises SQLITE_BUSY which aiosqlite surfaces as OperationalError
+        (subclass of aiosqlite.Error). The narrowed handler must catch it
+        and return [] — concurrent CLI commands (wrap + doctor) must not
+        crash each other."""
+        import aiosqlite
+
+        def _busy(*_args, **_kwargs):
+            raise aiosqlite.OperationalError("database is locked")
+
+        monkeypatch.setattr(aiosqlite, "connect", _busy)
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert aliases == []
+
+    def test_permission_denied_returns_empty(self, home_with_key) -> None:
+        """DB file readable to the user at exists()-time but unreadable
+        at connect()-time (chmod 000, ownership flip, mount remount)
+        surfaces as PermissionError (subclass of OSError). Must be caught
+        by the narrowed handler."""
+        original_mode = home_with_key.db_path.stat().st_mode
+        home_with_key.db_path.chmod(0o000)
+        try:
+            aliases = _list_enrolled_aliases(home_with_key)
+            assert aliases == []
+        finally:
+            home_with_key.db_path.chmod(original_mode)
+
     def test_large_alias_set_does_not_hang(self, home_with_key, tmp_path: Path) -> None:
         """A DB with 10k enrolled aliases must complete the pre-flight
         check quickly — startup cannot become O(seconds) on legit-shaped

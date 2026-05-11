@@ -550,3 +550,22 @@ class TestCloseAdversarial:
         assert not t1.is_alive() and not t2.is_alive(), "close() deadlocked"
         assert errors == [], f"concurrent close raised: {errors}"
         assert repo._ipc is None
+
+    @pytest.mark.asyncio
+    async def test_method_call_after_close_fails_cleanly_in_fernet_mode(
+        self,
+        tmp_db_path: str,
+        fernet_key_44b: bytes,
+    ) -> None:
+        """The IPC-mode after-close test exercises self._ipc=None; this is
+        the legacy Fernet-mode counterpart. After close(), self._fernet is
+        None and self._fernet_key_bytes is zeroed — a subsequent seal/open
+        must fail observably, not silently encrypt against zeroed key
+        bytes (which would produce a recoverable-looking ciphertext that
+        nothing else in the system can decrypt)."""
+        repo = ShardRepository(tmp_db_path, fernet_key_44b)
+        await repo.initialize()
+        repo.close()
+
+        with pytest.raises(Exception):
+            await repo._seal(b"plaintext-after-close")
