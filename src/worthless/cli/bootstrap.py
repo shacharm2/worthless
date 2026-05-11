@@ -45,8 +45,12 @@ _ATTEST_EVIDENCE_LEN = 32
 
 
 def _fernet_ipc_only() -> bool:
-    """Return ``True`` when WORTHLESS_FERNET_IPC_ONLY is a truthy string."""
-    return os.environ.get(_FERNET_IPC_ONLY_ENV, "").lower() in ("1", "true", "yes")
+    """Return ``True`` when WORTHLESS_FERNET_IPC_ONLY is a truthy string.
+
+    Strip-then-match so ``"1 "`` (trailing whitespace from copy-paste)
+    cannot silently turn a security flag OFF.
+    """
+    return os.environ.get(_FERNET_IPC_ONLY_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 def _validate_via_sidecar(socket_path: Path) -> None:
@@ -79,6 +83,15 @@ def _validate_via_sidecar(socket_path: Path) -> None:
         raise WorthlessError(
             ErrorCode.SIDECAR_NOT_READY,
             sanitize_exception(exc, generic="sidecar attestation failed"),
+        ) from exc
+    except ValueError as exc:
+        # ``os.fspath`` rejects embedded NUL bytes (abstract-namespace
+        # AF_UNIX paths) with ValueError BEFORE asyncio.open_unix_connection
+        # ever runs. Surface as the same clean SIDECAR_NOT_READY rather
+        # than letting it propagate as an unrelated-looking exception.
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            sanitize_exception(exc, generic="sidecar socket path is invalid"),
         ) from exc
 
     if not isinstance(evidence, bytes | bytearray) or len(evidence) != _ATTEST_EVIDENCE_LEN:

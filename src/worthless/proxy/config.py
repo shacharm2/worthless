@@ -57,8 +57,13 @@ def _default_db_path() -> str:
 
 
 def _env_bool(name: str) -> bool:
-    """Return ``True`` when the environment variable *name* is a truthy string."""
-    return os.environ.get(name, "").lower() in ("1", "true", "yes")
+    """Return ``True`` when the environment variable *name* is a truthy string.
+
+    Whitespace is stripped so ``"1 "`` (trailing space from copy-paste in
+    operator manifests) parses the same as ``"1"`` — silently flipping a
+    security flag OFF on a typo is the wrong default.
+    """
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 
 
 def _read_deploy_mode() -> DeployMode:

@@ -110,3 +110,100 @@ def test_proxy_uid_DOES_call_read_fernet_key_without_flag(
         "is not wired correctly. Either way, fix BEFORE trusting the "
         "negative-direction test."
     )
+
+
+# ---------------------------------------------------------------------------
+# Adversarial: flag interaction with WORTHLESS_FERNET_FD
+# ---------------------------------------------------------------------------
+
+
+def test_flag_on_wins_even_when_fernet_fd_also_set(
+    read_fernet_key_recorder: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag MUST short-circuit BEFORE the FD-pass cascade.
+
+    Confused-deputy scenario: an operator forgets to remove
+    WORTHLESS_FERNET_FD from the proxy container's env after enabling
+    the flag. The legacy FD path would happily ``os.read(fd, 4096)``
+    and the proxy uid would end up holding key bytes in memory —
+    silently defeating the flag. Pin: flag wins, FD is never touched.
+    """
+    monkeypatch.setenv("WORTHLESS_FERNET_IPC_ONLY", "1")
+    # Set FD to a clearly invalid value; if the flag short-circuit fails,
+    # the legacy path would ``os.read(99999, ...)`` and raise OSError.
+    # That would still fail loudly, but the more dangerous case is a
+    # valid FD pointing at a key blob. We assert the recorder stays
+    # empty and the result is empty regardless.
+    monkeypatch.setenv("WORTHLESS_FERNET_FD", "99999")
+
+    result = proxy_config._read_fernet_key()
+
+    assert result == bytearray(), (
+        "Flag-on path MUST return empty bytearray even when "
+        "WORTHLESS_FERNET_FD is also set — flag short-circuit must "
+        "happen before the FD branch runs."
+    )
+    assert read_fernet_key_recorder == [], (
+        "Flag-on path must NOT cascade to read_fernet_key even with WORTHLESS_FERNET_FD set."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Adversarial: flag value parsing — what counts as truthy?
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_flag_on"),
+    [
+        # Truthy
+        ("1", True),
+        ("true", True),
+        ("TRUE", True),
+        ("True", True),
+        ("yes", True),
+        ("YES", True),
+        ("1 ", True),  # trailing whitespace — strip-then-match
+        (" 1", True),  # leading whitespace
+        ("\t1\n", True),  # surrounding whitespace
+        # Falsy
+        ("0", False),
+        ("false", False),
+        ("FALSE", False),
+        ("no", False),
+        ("", False),
+        ("2", False),  # non-canonical truthy — explicit allow-list
+        ("on", False),  # not in our allowlist (matches _env_bool intent)
+    ],
+)
+def test_flag_parsing(
+    value: str,
+    expected_flag_on: bool,
+    read_fernet_key_recorder: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``WORTHLESS_FERNET_IPC_ONLY`` MUST parse defensively.
+
+    Whitespace-bracketed truthy values (``"1 "``, ``"\\t1\\n"``) MUST
+    turn the flag on — accidentally turning OFF a security flag on a
+    typo is the wrong default. Non-truthy values (including ``"0"``,
+    ``"2"``, empty) MUST turn it off so bare-metal stays bare-metal
+    when the env is misconfigured.
+    """
+    monkeypatch.setenv("WORTHLESS_FERNET_IPC_ONLY", value)
+    monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
+
+    result = proxy_config._read_fernet_key()
+
+    if expected_flag_on:
+        assert read_fernet_key_recorder == [], (
+            f"Value {value!r} should be parsed as truthy; flag must be ON "
+            f"and read_fernet_key must NOT be called."
+        )
+        assert result == bytearray()
+    else:
+        assert len(read_fernet_key_recorder) >= 1, (
+            f"Value {value!r} should be parsed as falsy; flag must be OFF "
+            f"and read_fernet_key MUST be called."
+        )

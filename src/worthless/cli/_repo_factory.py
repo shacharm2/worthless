@@ -37,7 +37,8 @@ _DEFAULT_SIDECAR_SOCKET = "/run/worthless/sidecar.sock"
 
 
 def _flag_on() -> bool:
-    return os.environ.get(_FERNET_IPC_ONLY_ENV, "").lower() in ("1", "true", "yes")
+    """Whitespace-tolerant truthy check; see ``_env_bool`` in proxy.config."""
+    return os.environ.get(_FERNET_IPC_ONLY_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 @asynccontextmanager

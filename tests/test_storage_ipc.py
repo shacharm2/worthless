@@ -287,3 +287,178 @@ def test_close_is_noop_under_ipc_path(
     repo = ShardRepository(tmp_db_path, backend_backed_client)
     repo.close()  # must not raise
     repo.close()  # idempotent
+
+
+# ---------------------------------------------------------------------------
+# Adversarial: constructor type validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [None, 42, 3.14, [1, 2, 3], {"k": "v"}, object()])
+def test_constructor_rejects_None_and_other_garbage(tmp_db_path: str, bad: Any) -> None:
+    """``None`` / ints / floats / lists / dicts / arbitrary objects
+    MUST raise TypeError.
+
+    Defends against a caller passing whatever sloppy thing they have
+    rather than a key or an IPCClient. The duck-typed IPCClient check
+    (``hasattr seal/open/mac``) MUST NOT accidentally match on common
+    junk types.
+    """
+    with pytest.raises(TypeError):
+        ShardRepository(tmp_db_path, bad)
+
+
+# ---------------------------------------------------------------------------
+# Adversarial: empty-bytes mac value
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decoy_hash_empty_string_via_ipc(
+    tmp_db_path: str,
+    backend_backed_client: _BackendBackedIPCClient,
+) -> None:
+    """``_compute_decoy_hash("")`` MUST return a valid 64-char hex string.
+
+    ``hmac.new(key, b"", sha256).digest()`` is well-defined; the IPC
+    path must produce byte-identical output. Edge case for empty-string
+    decoy values that could plausibly show up in malformed enrollments.
+    """
+    repo = ShardRepository(tmp_db_path, backend_backed_client)
+    result = await repo._compute_decoy_hash("")
+
+    assert isinstance(result, str)
+    assert len(result) == 64, f"hex of HMAC-SHA256 must be 64 chars, got {len(result)}"
+    # Recompute via the underlying backend; bytes must match.
+    expected = (await backend_backed_client.mac(b"")).hex()
+    assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: serialized round-trips through one IPC client
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_decoy_hash_through_one_ipc_client_is_consistent(
+    tmp_db_path: str,
+    backend_backed_client: _BackendBackedIPCClient,
+) -> None:
+    """N concurrent ``_compute_decoy_hash`` calls on one repo MUST each
+    return the correct hex for their input — no cross-talk, no torn reads.
+
+    The real ``IPCClient`` serializes IO through an ``asyncio.Lock``;
+    the test fixture mirrors the async surface. This test pins that
+    ``await asyncio.gather(*[_compute_decoy_hash(v_i) ...])`` returns
+    results in stable per-input correspondence rather than racing
+    request/response pairs.
+    """
+    repo = ShardRepository(tmp_db_path, backend_backed_client)
+    inputs = [f"value-{i}-{secrets.token_hex(4)}" for i in range(16)]
+
+    results = await asyncio.gather(*(repo._compute_decoy_hash(v) for v in inputs))
+
+    # Each result must equal a fresh single-shot computation for the
+    # corresponding input — proves no cross-talk.
+    for v, observed in zip(inputs, results, strict=True):
+        expected = await repo._compute_decoy_hash(v)
+        assert observed == expected, (
+            f"concurrency cross-talk: input {v!r} expected {expected!r} got {observed!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Chaos: sidecar dies mid-decrypt — error propagates cleanly
+# ---------------------------------------------------------------------------
+
+
+class _DyingIPCClient:
+    """Drop-in IPC client whose ``open`` raises after the first call.
+
+    Simulates a sidecar that disconnects between request and reply.
+    """
+
+    def __init__(self, exc_factory) -> None:
+        self._exc_factory = exc_factory
+        self.open_calls = 0
+
+    async def seal(self, plaintext: bytes, context: bytes | None = None) -> bytes:
+        return b"fake-ciphertext"
+
+    async def open(
+        self, ciphertext: bytes, context: bytes | None = None, key_id: bytes | None = None
+    ) -> bytes:
+        self.open_calls += 1
+        raise self._exc_factory()
+
+    async def mac(self, value: bytes) -> bytes:
+        return b"\x00" * 32
+
+
+@pytest.mark.asyncio
+async def test_decrypt_shard_propagates_ipc_error_when_sidecar_dies(
+    tmp_db_path: str,
+) -> None:
+    """``decrypt_shard`` MUST propagate ``IPCError`` (or subclass) when
+    the sidecar fails mid-op — NEVER fall back to in-process decryption.
+
+    Falling back would defeat the WOR-465 invariant. The exception type
+    must survive the ShardRepository wrapper so the caller can map it
+    to HTTP 503 / WRTLS-114.
+    """
+    from worthless.ipc.client import IPCProtocolError
+    from worthless.storage.models import EncryptedShard
+
+    client = _DyingIPCClient(lambda: IPCProtocolError("sidecar gone"))
+    repo = ShardRepository(tmp_db_path, client)
+
+    fake_enc = EncryptedShard(
+        shard_b_enc=b"opaque-ciphertext-bytes",
+        commitment=b"\x00" * 32,
+        nonce=b"\x00" * 12,
+        provider="openai",
+        prefix=None,
+        charset=None,
+        base_url=None,
+    )
+
+    with pytest.raises(IPCProtocolError):
+        await repo.decrypt_shard(fake_enc)
+
+
+# ---------------------------------------------------------------------------
+# Chaos: close() while an op is mid-flight on the same repo
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_close_while_decoy_hash_in_flight_does_not_corrupt(
+    tmp_db_path: str,
+    backend_backed_client: _BackendBackedIPCClient,
+) -> None:
+    """Calling ``repo.close()`` while a ``_compute_decoy_hash`` is awaiting
+    the IPC roundtrip MUST NOT corrupt the in-flight call.
+
+    Under IPC mode, ``close()`` is a no-op (no key bytes to zero) so the
+    in-flight HMAC MUST complete and return the correct value. Under
+    legacy mode, close() nulls the Fernet handle but a check-then-use
+    race could surface a confusing error — we pin the cleaner IPC-mode
+    contract here.
+    """
+    repo = ShardRepository(tmp_db_path, backend_backed_client)
+
+    async def _slow_path() -> str:
+        # Tiny sleep so close() lands while we are mid-roundtrip.
+        await asyncio.sleep(0)
+        return await repo._compute_decoy_hash("racing-decoy")
+
+    async def _closer() -> None:
+        await asyncio.sleep(0)
+        repo.close()
+
+    hash_result, _ = await asyncio.gather(_slow_path(), _closer())
+    expected = (await backend_backed_client.mac(b"racing-decoy")).hex()
+    assert hash_result == expected, (
+        "close() racing with in-flight _compute_decoy_hash must not corrupt "
+        "the result on the IPC path"
+    )

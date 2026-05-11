@@ -256,3 +256,113 @@ def test_ensure_home_without_flag_does_not_call_attest(
     assert fake.attest_calls == [], (
         f"attest must not be called on the bare-metal path; got {fake.attest_calls!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Adversarial: socket env edge cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bogus_length", [0, 1, 8, 16, 31, 33, 48, 64])
+def test_ensure_home_with_flag_rejects_non_32_byte_evidence(
+    flag_on: None,
+    fake_socket_path: Path,
+    tmp_path: Path,
+    bogus_length: int,
+) -> None:
+    """Evidence of ANY length other than 32 MUST be rejected.
+
+    Off-by-one cases (31, 33) are the most likely real failure mode if a
+    backend swaps HMAC algorithms. Both must surface as SIDECAR_NOT_READY
+    rather than be accepted as a valid attestation.
+    """
+    base = tmp_path / ".worthless"
+    base.mkdir(mode=0o700)
+    (base / ".bootstrapped").touch(mode=0o600)
+
+    fake = _FakeIPCClient(evidence=b"\xab" * bogus_length)
+
+    with patch("worthless.cli.bootstrap.IPCClient", return_value=fake):
+        with pytest.raises(WorthlessError) as excinfo:
+            ensure_home(base_dir=base)
+
+    assert excinfo.value.code is ErrorCode.SIDECAR_NOT_READY, (
+        f"evidence length={bogus_length} must be rejected with SIDECAR_NOT_READY"
+    )
+
+
+def test_ensure_home_with_flag_rejects_non_bytes_evidence(
+    flag_on: None,
+    fake_socket_path: Path,
+    tmp_path: Path,
+) -> None:
+    """Non-bytes evidence (str, int, None) MUST raise SIDECAR_NOT_READY.
+
+    A bug in a future backend could plausibly return ``str`` if it
+    forgets to call ``.encode()``. Type-check must catch it cleanly
+    instead of crashing with AttributeError or producing a confusing
+    inner exception.
+    """
+    base = tmp_path / ".worthless"
+    base.mkdir(mode=0o700)
+    (base / ".bootstrapped").touch(mode=0o600)
+
+    fake = _FakeIPCClient(evidence="this-is-a-string-not-bytes")  # type: ignore[arg-type]
+
+    with patch("worthless.cli.bootstrap.IPCClient", return_value=fake):
+        with pytest.raises(WorthlessError) as excinfo:
+            ensure_home(base_dir=base)
+
+    assert excinfo.value.code is ErrorCode.SIDECAR_NOT_READY
+
+
+def test_ensure_home_with_flag_socket_is_regular_file_raises_cleanly(
+    flag_on: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WORTHLESS_SIDECAR_SOCKET pointing at a regular file MUST raise
+    SIDECAR_NOT_READY cleanly — not crash with a confusing inner error.
+
+    Real misconfig: operator mounts a config file at the socket path by
+    mistake. asyncio.open_unix_connection refuses to connect with ENOTSOCK
+    or similar; the wrapper must surface that as our friendly error code.
+    """
+    base = tmp_path / ".worthless"
+    base.mkdir(mode=0o700)
+    (base / ".bootstrapped").touch(mode=0o600)
+
+    bogus_socket = tmp_path / "not-a-socket.txt"
+    bogus_socket.write_bytes(b"i am a regular file")
+    monkeypatch.setenv("WORTHLESS_SIDECAR_SOCKET", str(bogus_socket))
+
+    # Use the REAL IPCClient — we want to exercise the connect-failure
+    # path, not a mocked __aenter__. The real client should fail with
+    # IPCProtocolError when opening a regular file as a UDS, which
+    # _validate_via_sidecar maps to WorthlessError(SIDECAR_NOT_READY).
+    with pytest.raises(WorthlessError) as excinfo:
+        ensure_home(base_dir=base)
+
+    assert excinfo.value.code is ErrorCode.SIDECAR_NOT_READY
+
+
+def test_validate_via_sidecar_with_embedded_null_path_raises_cleanly(
+    tmp_path: Path,
+) -> None:
+    """Calling the validator with a NUL-bearing socket path MUST raise
+    SIDECAR_NOT_READY — not propagate the raw ValueError.
+
+    OS env vars cannot actually hold a NUL byte (the kernel rejects it
+    at setenv) so this path is only reachable when the validator is
+    invoked programmatically — e.g. a future configuration loader that
+    builds the Path from a config file rather than the environment.
+    Abstract-namespace AF_UNIX paths are explicitly unsupported by the
+    sidecar (see ``start_sidecar``); the client side must mirror that
+    refusal with our friendly error code.
+    """
+    from worthless.cli.bootstrap import _validate_via_sidecar
+
+    with pytest.raises(WorthlessError) as excinfo:
+        _validate_via_sidecar(Path("\x00abstract"))
+
+    assert excinfo.value.code is ErrorCode.SIDECAR_NOT_READY

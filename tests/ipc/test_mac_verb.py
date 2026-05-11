@@ -101,6 +101,25 @@ async def test_mac_is_deterministic() -> None:
     assert a == b
 
 
+async def test_mac_empty_value_is_well_defined() -> None:
+    """``mac(b"")`` MUST return HMAC-SHA256 of empty bytes, not crash.
+
+    Edge case: ``hmac.new(key, b"", sha256).digest()`` is a well-defined
+    32-byte value. Empty decoy values could plausibly appear in malformed
+    enrollments; the verb must handle them without raising or returning
+    a sentinel.
+    """
+    raw_key_32 = b"\xee" * 32
+    share_a, share_b, fernet_key = _shares_for_known_key(raw_key_32)
+    backend = FernetBackend(shares=(share_a, share_b))
+
+    expected = hmac.new(fernet_key, b"", sha256).digest()
+    actual = await backend.mac(b"")
+    assert isinstance(actual, bytes)
+    assert len(actual) == 32
+    assert actual == expected
+
+
 async def test_mac_differs_across_values() -> None:
     """Different values MUST produce different bytes (HMAC is a function of value)."""
     raw_key_32 = b"\x22" * 32
