@@ -237,7 +237,7 @@ async def _dispatch_op(
         evidence = await backend.attest(bytes(nonce), purpose)
         return {"evidence": evidence}
 
-    if op == "mac":
+    if op == "mac":  # nosemgrep: sr07-timing-safe-compare-rhs — op-name dispatch, not a MAC byte-compare
         value = body.get("value")
         if not isinstance(value, bytes | bytearray):
             raise ValueError(f"mac.value must be bytes, got {type(value).__name__}")
