@@ -25,6 +25,7 @@ Predicate" and §"Failure modes" rows F01–F04, F36.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -54,6 +55,13 @@ from worthless.openclaw.errors import (
 _SKILL_SUBPATH = ("skills", "worthless")
 _DEFAULT_PROXY_BASE_URL = "http://127.0.0.1:8787"
 _DEFAULT_PROXY_PORT = 8787
+
+# Matches any URL that is rooted at the canonical worthless proxy port
+# (8787) regardless of host.  Used by ``_is_proxy_url`` to recognise
+# entries written by a *previous* ``lock`` run that resolved to a
+# different hostname (e.g. localhost on bare-metal vs 172.17.0.1 via
+# Docker bridge vs host.docker.internal on Docker Desktop).
+_WORTHLESS_PORT_RE = re.compile(r"^https?://[^/]*:" + re.escape(str(_DEFAULT_PROXY_PORT)) + r"/")
 
 
 def _resolve_proxy_base_url() -> str:
@@ -474,12 +482,33 @@ def _check_world_writable(config_path: Path, events: list[OpenclawIntegrationEve
 
 
 def _is_proxy_url(url: str, proxy_base_url: str) -> bool:
-    """Return True if ``url`` is rooted at our proxy.
+    """Return True if ``url`` was written by a previous ``worthless lock``.
 
-    Used by F-CFG-13 to distinguish a previous worthless-managed entry
-    (safe to overwrite) from a user's manual override (must not stomp).
+    Used by F-CFG-13 to distinguish a worthless-managed entry (safe to
+    overwrite / update) from a user's manual override (must not stomp).
+
+    We match on **two** criteria to survive cross-environment re-locks:
+
+    1. Primary: the URL starts with the *current* resolved proxy base URL.
+       This is the exact match and the common fast path.
+
+    2. Secondary: the URL is on port 8787 (``_DEFAULT_PROXY_PORT``).  This
+       handles the scenario where a previous ``lock`` wrote the entry with a
+       different host alias — e.g. ``http://127.0.0.1:8787/…`` when Docker
+       was absent, and the current run resolves to ``http://172.17.0.1:8787``
+       via the Docker bridge.  Without this fallback the existing entry
+       would be misclassified as a third-party conflict and silently skipped,
+       leaving the ``apiKey`` stale.
+
+    Port 8787 is the canonical worthless proxy port; no legitimate
+    third-party provider would share both the ``worthless-<name>`` entry
+    name and this port.
     """
-    return isinstance(url, str) and url.startswith(proxy_base_url.rstrip("/") + "/")
+    if not isinstance(url, str):
+        return False
+    if url.startswith(proxy_base_url.rstrip("/") + "/"):
+        return True
+    return bool(_WORTHLESS_PORT_RE.match(url))
 
 
 def apply_lock(
@@ -954,12 +983,13 @@ def health_check(
     *,
     expected_providers: list[tuple[str, str]],
     proxy_port: int,
+    proxy_base_url: str | None = None,
 ) -> OpenclawHealthReport:
     """Check provider-wiring health against the live ``openclaw.json``.
 
     Reads ``openclaw.json`` once per provider (inside Phase 1's flock) and
     compares each ``worthless-<provider>`` entry's ``baseUrl`` against the
-    expected ``http://127.0.0.1:<port>/<alias>/v1`` URL.
+    expected URL for the current proxy host.
 
     Used by ``worthless doctor`` (Phase 2.d) to surface drift without
     modifying any files. Pure read path — no writes, no network.
@@ -968,7 +998,12 @@ def health_check(
         state: detection snapshot from :func:`detect`.
         expected_providers: list of ``(provider, alias)`` pairs drawn from
             the enrollment DB. Example: ``[("openai", "openai-aaaa1111")]``.
-        proxy_port: proxy port to build the expected ``baseUrl``.
+        proxy_port: proxy port to build the expected ``baseUrl`` when
+            ``proxy_base_url`` is not provided.
+        proxy_base_url: override for the proxy host.  Defaults to
+            :func:`_resolve_proxy_base_url` — the same host that
+            :func:`apply_lock` would write — so Docker hosts report correct
+            health instead of false drift against loopback.
 
     Returns:
         :class:`OpenclawHealthReport` with per-provider verdicts.
@@ -987,13 +1022,21 @@ def health_check(
     if config_path.is_symlink():
         return OpenclawHealthReport(config_unreadable=True)
 
+    # Resolve the proxy host once — same logic as apply_lock so the expected
+    # URL matches what was actually written (avoids false drift on Docker hosts).
+    resolved_base = (
+        proxy_base_url.rstrip("/")
+        if proxy_base_url is not None
+        else _resolve_proxy_base_url().rstrip("/")
+    )
+
     providers_ok: list[str] = []
     providers_missing: list[str] = []
     providers_drifted: list[tuple[str, str, str]] = []
 
     for provider, alias in expected_providers:
         provider_name = f"worthless-{provider}"
-        expected_url = f"http://127.0.0.1:{proxy_port}/{alias}/v1"
+        expected_url = f"{resolved_base}/{alias}/v1"
         try:
             entry = _config_mod.get_provider(config_path, provider_name)
         except (OpenclawConfigError, OSError):

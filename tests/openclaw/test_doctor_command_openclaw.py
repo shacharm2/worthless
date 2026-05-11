@@ -131,6 +131,12 @@ class TestUDoc02AllHealthy:
                 "worthless.openclaw.config.get_provider",
                 return_value={"baseUrl": "http://127.0.0.1:8787/my-key/v1"},
             ),
+            # Pin Docker detection to localhost so the expected URL matches the
+            # mocked baseUrl on any runner (macOS Docker, Linux CI, etc.)
+            patch(
+                "worthless.openclaw.integration._resolve_proxy_base_url",
+                return_value="http://127.0.0.1:8787",
+            ),
         ):
             result = _check_openclaw_section(repo, fix=False, dry_run=False)
 
