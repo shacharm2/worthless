@@ -160,6 +160,54 @@ class TestListEnrolledAliasesWithDB:
         )
         assert all(isinstance(a, str) and isinstance(p, str) for a, p in aliases)
 
+    @pytest.mark.asyncio
+    async def test_returns_aliases_from_running_loop(self, home_with_key) -> None:
+        """_list_enrolled_aliases is a sync function but is invoked from CLI
+        commands that may already be inside an event loop (MCP server,
+        pytest-asyncio auto mode). The implementation must route through
+        worthless._async.run_sync, not raw asyncio.run, otherwise asyncio.run
+        raises RuntimeError("This event loop is already running") and the
+        bare-except guard swallows it as []."""
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert len(aliases) >= 1
+
+    def test_corrupt_db_returns_empty(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
+        """OSError from aiosqlite.connect (e.g. unreadable file, permission
+        denied) must be caught by the narrowed handler and produce []."""
+        import aiosqlite
+
+        def _raise_oserror(*_args, **_kwargs):
+            raise OSError("simulated unreadable DB")
+
+        monkeypatch.setattr(aiosqlite, "connect", _raise_oserror)
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert aliases == []
+
+    def test_aiosqlite_error_returns_empty(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """aiosqlite.Error (malformed DB, locked file, etc.) must be caught
+        by the narrowed handler and produce []."""
+        import aiosqlite
+
+        def _raise_aiosqlite_error(*_args, **_kwargs):
+            raise aiosqlite.Error("simulated query failure")
+
+        monkeypatch.setattr(aiosqlite, "connect", _raise_aiosqlite_error)
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert aliases == []
+
+    def test_returned_values_are_str(self, home_with_key) -> None:
+        """sqlite3.Row indexes return Any at the type level. The implementation
+        must coerce both fields to str() so the declared return type
+        list[tuple[str, str]] holds even if a column ever returns a non-text
+        value (defensive, pyright-strict compliance)."""
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert len(aliases) >= 1
+        for alias, provider in aliases:
+            assert type(alias) is str, f"alias is {type(alias).__name__}, not str"
+            assert type(provider) is str, f"provider is {type(provider).__name__}, not str"
+
 
 class TestWrapExitCode:
     """wrap mirrors child exit code."""

@@ -466,3 +466,33 @@ async def test_close_while_decoy_hash_in_flight_does_not_corrupt(
         "close() racing with in-flight _compute_decoy_hash must not corrupt "
         "the result on the IPC path"
     )
+
+
+class TestCloseClearsIPC:
+    """ShardRepository.close() must drop its IPCClient reference so the
+    object cannot accidentally be reused after teardown and so the GC can
+    reclaim the client immediately."""
+
+    def test_close_clears_ipc(
+        self,
+        tmp_db_path: str,
+        backend_backed_client: _BackendBackedIPCClient,
+    ) -> None:
+        """After close(), self._ipc must be None even if the repo was
+        constructed with an IPCClient."""
+        repo = ShardRepository(tmp_db_path, backend_backed_client)
+        assert repo._ipc is not None, "precondition: IPCClient mode active"
+        repo.close()
+        assert repo._ipc is None
+
+    def test_close_is_idempotent(
+        self,
+        tmp_db_path: str,
+        backend_backed_client: _BackendBackedIPCClient,
+    ) -> None:
+        """close() called twice must not raise — the cleanup is best-effort
+        and must tolerate already-closed state."""
+        repo = ShardRepository(tmp_db_path, backend_backed_client)
+        repo.close()
+        repo.close()
+        assert repo._ipc is None
