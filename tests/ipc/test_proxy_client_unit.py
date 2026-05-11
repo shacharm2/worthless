@@ -35,8 +35,6 @@ from worthless.proxy.ipc_supervisor import (
 )
 
 
-pytestmark = pytest.mark.asyncio
-
 _EXPECTED_CAPS = frozenset({"seal", "open", "attest"})
 
 
