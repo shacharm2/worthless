@@ -466,3 +466,106 @@ async def test_close_while_decoy_hash_in_flight_does_not_corrupt(
         "close() racing with in-flight _compute_decoy_hash must not corrupt "
         "the result on the IPC path"
     )
+
+
+class TestCloseClearsIPC:
+    """ShardRepository.close() must drop its IPCClient reference so the
+    object cannot accidentally be reused after teardown and so the GC can
+    reclaim the client immediately."""
+
+    def test_close_clears_ipc(
+        self,
+        tmp_db_path: str,
+        backend_backed_client: _BackendBackedIPCClient,
+    ) -> None:
+        """After close(), self._ipc must be None even if the repo was
+        constructed with an IPCClient."""
+        repo = ShardRepository(tmp_db_path, backend_backed_client)
+        assert repo._ipc is not None, "precondition: IPCClient mode active"
+        repo.close()
+        assert repo._ipc is None
+
+    def test_close_is_idempotent(
+        self,
+        tmp_db_path: str,
+        backend_backed_client: _BackendBackedIPCClient,
+    ) -> None:
+        """close() called twice must not raise — the cleanup is best-effort
+        and must tolerate already-closed state."""
+        repo = ShardRepository(tmp_db_path, backend_backed_client)
+        repo.close()
+        repo.close()
+        assert repo._ipc is None
+
+
+class TestCloseAdversarial:
+    """Use-after-close and concurrent-close probes. ShardRepository.close()
+    is part of SR-02 (key zeroing) and is called from teardown paths in
+    error_boundary. The contract: methods called after close() must fail
+    cleanly (not segfault, not silently succeed against zeroed state), and
+    concurrent close() calls from teardown races must not crash."""
+
+    @pytest.mark.asyncio
+    async def test_method_call_after_close_fails_cleanly_in_ipc_mode(
+        self,
+        tmp_db_path: str,
+        backend_backed_client: _BackendBackedIPCClient,
+    ) -> None:
+        """After close() in IPC mode, self._ipc is None. A subsequent
+        decrypt/seal call must raise a Python exception (not segfault,
+        not return stale data). The exact exception type isn't pinned —
+        the contract is "fails fast and observably." """
+        repo = ShardRepository(tmp_db_path, backend_backed_client)
+        await repo.initialize()
+        repo.close()
+
+        with pytest.raises(Exception):
+            await repo._seal(b"plaintext-after-close")
+
+    def test_concurrent_close_from_two_threads_does_not_raise(
+        self,
+        tmp_db_path: str,
+        backend_backed_client: _BackendBackedIPCClient,
+    ) -> None:
+        """close() called from two threads simultaneously must not
+        double-free, double-zero, or raise. This mirrors a teardown race
+        where error_boundary and a finally-block both reach close()."""
+        import threading
+
+        repo = ShardRepository(tmp_db_path, backend_backed_client)
+        errors: list[BaseException] = []
+
+        def _close() -> None:
+            try:
+                repo.close()
+            except BaseException as exc:  # noqa: BLE001 — capture for assertion
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_close)
+        t2 = threading.Thread(target=_close)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5.0)
+        t2.join(timeout=5.0)
+        assert not t1.is_alive() and not t2.is_alive(), "close() deadlocked"
+        assert errors == [], f"concurrent close raised: {errors}"
+        assert repo._ipc is None
+
+    @pytest.mark.asyncio
+    async def test_method_call_after_close_fails_cleanly_in_fernet_mode(
+        self,
+        tmp_db_path: str,
+        fernet_key_44b: bytes,
+    ) -> None:
+        """The IPC-mode after-close test exercises self._ipc=None; this is
+        the legacy Fernet-mode counterpart. After close(), self._fernet is
+        None and self._fernet_key_bytes is zeroed — a subsequent seal/open
+        must fail observably, not silently encrypt against zeroed key
+        bytes (which would produce a recoverable-looking ciphertext that
+        nothing else in the system can decrypt)."""
+        repo = ShardRepository(tmp_db_path, fernet_key_44b)
+        await repo.initialize()
+        repo.close()
+
+        with pytest.raises(Exception):
+            await repo._seal(b"plaintext-after-close")
