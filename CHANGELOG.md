@@ -4,6 +4,45 @@ All notable changes to Worthless are documented here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-05-12
+
+The "OpenClaw integration actually works for Docker users" release. v0.3.5 shipped the WOR-431 OpenClaw magic-integration (Phase 2), but Brutus review caught 3 release blockers and CodeRabbit caught 2 more before the developer-facing flow was sound. Headline: `worthless lock` on a host with a Dockerised OpenClaw now writes a `baseUrl` that OpenClaw can actually reach (loopback → docker0 bridge / `host.docker.internal`), SKILL.md ships the YAML frontmatter ClawHub needs for auto-install discovery, and cross-environment re-locks on non-default ports correctly refresh the apiKey instead of misclassifying our own entries as third-party conflicts.
+
+### Fixed
+- **`worthless lock` now writes a Docker-reachable proxy URL** (PR #168). `apply_lock` resolves the proxy host at lock-time via `_resolve_proxy_base_url()` — bare-metal returns `127.0.0.1:8787`, Docker Desktop returns `host.docker.internal:8787`, Docker on Linux reads the `docker0` bridge gateway (default `172.17.0.1`). Pre-fix every OpenClaw-in-Docker user hit a silent connection-refused; `127.0.0.1` from inside the container points back at the container, not the host. The probe uses `shutil.which("docker")` + a 3 s `docker info` timeout, so when Docker is absent there's zero startup latency cost.
+- **`_is_proxy_url` cross-host fallback handles non-default ports** (PR #168, CodeRabbit catch). The original fallback hardcoded `:8787`. A user on `--port 9090` who locked without Docker then re-locked with Docker on would have the existing entry's `apiKey` silently skip refresh — primary prefix check fails on host mismatch, fallback regex fails on port mismatch, entry misclassified as third-party conflict. Now the fallback derives the port from `proxy_base_url` via `urlsplit()`, so `WORTHLESS_PORT`/`--port` deployments work end-to-end. Regression test pins port 9090 with host mismatch.
+- **`health_check()` uses the same resolved host as `apply_lock`** (PR #168, CodeRabbit catch). Pre-fix, doctor compared the `openclaw.json` entry against a hardcoded `http://127.0.0.1:<port>/<alias>/v1`. On Docker hosts every healthy config got reported as drifted. Optional `proxy_base_url` parameter defaults to `_resolve_proxy_base_url()`; `proxy_port` is preserved so non-default deployments don't false-flag.
+- **urllib3 bumped to 2.7.0** (PR #168). Closes GHSA-qccp and GHSA-mf9v via lockfile bump (no direct dependency added).
+
+### Added
+- **SKILL.md `metadata.openclaw` frontmatter** (PR #168). `requires.bins: [worthless]` enforces the worthless CLI is installed before the skill activates; `install` array gives ClawHub two recipes (`uv tool install` + `pip install`) for one-click bootstrap. Pre-fix ClawHub had no way to auto-install; the developer had to know they needed worthless on the host before the skill made sense.
+- **WOR-432 e2e Docker test runs in CI** (PR #168). `tests/test_openclaw_skill_e2e.py` was already implemented but had been gated on a Docker daemon — confirmed it runs locally end-to-end (mock upstream receives the reconstructed key, shard-A absent from outbound traffic).
+- **+8 unit tests covering all `_resolve_proxy_base_url()` branches** (PR #168). Linux/macOS/Windows + Docker present/absent + bridge inspection failure.
+
+### Changed
+- **`_is_proxy_url` rewrite** (PR #168). Architecturally the cleanest fix is an explicit `managedBy` marker on each entry; v0.3.6 ships the heuristic and tracks the proper fix as [WOR-487](https://linear.app/plumbusai/issue/WOR-487). Outstanding research: does OpenClaw's daemon preserve unknown fields on rewrite?
+
+### Notes
+- The end-to-end developer flow (clean machine → OpenClaw + worthless → first protected request) still leans on the developer reading docs to install worthless first. Real ClawHub publish (WOR-94 + WOR-478) is a separate ticket.
+
+## [0.3.5] — 2026-05-08
+
+The "WOR-431 Phase 2 lands + install front-door drift fixed" release. Ships the OpenClaw magic-integration that `worthless lock` had been promising — automatic detection + `openclaw.json` rewrite + SKILL.md install — plus a daily CI check that every install front door (`worthless.sh`, `docs.wless.io/install/`, `install.sh` digests) stays in sync.
+
+### Added
+- **`worthless lock` detects OpenClaw and rewires its config automatically** (WOR-431 Phase 2, #152). On any host where `~/.openclaw/` exists, `lock` injects `worthless-<provider>` entries into `openclaw.json` and installs the worthless SKILL.md into the skill workspace. Best-effort + idempotent — failures here surface as structured events in `--json` and never roll back the `.env`/DB writes. Symmetric undo on `unlock`. New `worthless doctor` rows surface drift between the proxy and `openclaw.json`.
+- **Install front-door daily-drift CI** (WOR-452, #149). Cron check pulls `worthless.sh`, `docs.wless.io/install/`, and the `install.sh` digest from each surface — flags divergence as a Linear issue automatically.
+- **`scripts/bump-version.sh`** (#145). Atomic version bumper that writes to `pyproject.toml`, `SKILL.md`, and the lockfile in one shot — prevents SKILL.md drift that previously slipped through.
+
+### Fixed
+- **`install.sh` surfaces uv's actual stderr instead of a generic banner** (#148). Previously a uv install failure showed only "installation failed" with no clue why; now the user sees uv's real error message.
+- **xdist-isolated default-command tests don't collide with a real port-8787 daemon** (#147).
+- **Worker-concurrency tests stop flaking the merge gate** (WOR-448, #142).
+- **`DOCS_URL` points at live `docs.wless.io`** instead of stale staging (worthless-1lfi, #144).
+
+### Removed
+- **Dead `_build_child_env` helper in `wrap.py`** (#146).
+
 ## [0.3.4] — 2026-05-06
 
 The "make `worthless wrap` actually work end-to-end" hotfix. v0.3.3's HF10 fresh-install verification surfaced that `worthless wrap python main.py` on a clean machine left the child unable to reach the proxy: `lock` writes port 8787 to `.env` but `wrap` was binding a random port the child had no way to discover. The earlier "wrap works" verdict was contaminated by a stale `worthless up` daemon hogging 8787 across sessions. Fix: `wrap` now binds the same port `lock` wrote.
@@ -76,6 +115,7 @@ First release published to PyPI. `pip install worthless` now works.
 - Gate evaluation strictly precedes shard reconstruction (SR-03).
 - Published artifacts built via PyPI trusted publishing (OIDC, no long-lived tokens).
 
+[0.3.6]: https://github.com/shacharm2/worthless/releases/tag/v0.3.6
 [0.3.5]: https://github.com/shacharm2/worthless/releases/tag/v0.3.5
 [0.3.4]: https://github.com/shacharm2/worthless/releases/tag/v0.3.4
 [0.3.3]: https://github.com/shacharm2/worthless/releases/tag/v0.3.3
