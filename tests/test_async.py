@@ -5,10 +5,28 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import threading
+import time
 
 import pytest
 
 from worthless._async import run_sync
+
+
+@pytest.fixture(autouse=True)
+def _drain_run_sync_workers():
+    """Wait for any daemon ``worthless-run_sync`` worker threads to die
+    before pytest moves to the next test. Timed-out workers from this
+    module leak briefly until their (short) coroutines complete; without
+    this drain, unrelated tests like ``test_deploy_start`` see >1 alive
+    threads and trip the BPO-34394 single-threaded-entry safety check."""
+    yield
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        alive = [t for t in threading.enumerate() if t.name == "worthless-run_sync"]
+        if not alive:
+            return
+        time.sleep(0.02)
 
 
 class TestRunSyncTimeout:
@@ -25,7 +43,7 @@ class TestRunSyncTimeout:
         ``concurrent.futures.TimeoutError``."""
 
         async def _sleeper() -> None:
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(0.3)
 
         with pytest.raises(concurrent.futures.TimeoutError):
             run_sync(_sleeper(), timeout=0.1)
@@ -44,13 +62,12 @@ class TestRunSyncAdversarial:
         caller as ``concurrent.futures.TimeoutError``. The dangling work
         is the coroutine's problem, not the caller's — what matters is the
         caller does not block forever past the declared timeout."""
-        import time
 
         async def _stubborn() -> str:
             try:
-                await asyncio.sleep(5.0)
+                await asyncio.sleep(0.3)
             except asyncio.CancelledError:
-                await asyncio.sleep(5.0)
+                await asyncio.sleep(0.3)
             return "done"
 
         start = time.monotonic()
