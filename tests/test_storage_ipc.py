@@ -496,3 +496,57 @@ class TestCloseClearsIPC:
         repo.close()
         repo.close()
         assert repo._ipc is None
+
+
+class TestCloseAdversarial:
+    """Use-after-close and concurrent-close probes. ShardRepository.close()
+    is part of SR-02 (key zeroing) and is called from teardown paths in
+    error_boundary. The contract: methods called after close() must fail
+    cleanly (not segfault, not silently succeed against zeroed state), and
+    concurrent close() calls from teardown races must not crash."""
+
+    @pytest.mark.asyncio
+    async def test_method_call_after_close_fails_cleanly_in_ipc_mode(
+        self,
+        tmp_db_path: str,
+        backend_backed_client: _BackendBackedIPCClient,
+    ) -> None:
+        """After close() in IPC mode, self._ipc is None. A subsequent
+        decrypt/seal call must raise a Python exception (not segfault,
+        not return stale data). The exact exception type isn't pinned —
+        the contract is "fails fast and observably." """
+        repo = ShardRepository(tmp_db_path, backend_backed_client)
+        await repo.initialize()
+        repo.close()
+
+        with pytest.raises(Exception):
+            await repo._seal(b"plaintext-after-close")
+
+    def test_concurrent_close_from_two_threads_does_not_raise(
+        self,
+        tmp_db_path: str,
+        backend_backed_client: _BackendBackedIPCClient,
+    ) -> None:
+        """close() called from two threads simultaneously must not
+        double-free, double-zero, or raise. This mirrors a teardown race
+        where error_boundary and a finally-block both reach close()."""
+        import threading
+
+        repo = ShardRepository(tmp_db_path, backend_backed_client)
+        errors: list[BaseException] = []
+
+        def _close() -> None:
+            try:
+                repo.close()
+            except BaseException as exc:  # noqa: BLE001 — capture for assertion
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_close)
+        t2 = threading.Thread(target=_close)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5.0)
+        t2.join(timeout=5.0)
+        assert not t1.is_alive() and not t2.is_alive(), "close() deadlocked"
+        assert errors == [], f"concurrent close raised: {errors}"
+        assert repo._ipc is None

@@ -32,7 +32,11 @@ def run_sync(coro: Awaitable[T], timeout: float | None = None) -> T:
     ``timeout`` is forwarded to ``Future.result()`` in the threaded path;
     it has no effect in the direct path (use ``asyncio.wait_for`` inside
     the coroutine for that case). Raises ``concurrent.futures.TimeoutError``
-    if exceeded.
+    if exceeded — the caller returns immediately; the worker thread continues
+    running until the coroutine finishes naturally (Python cannot kill
+    threads). For CLI callers this is fine because the process is about to
+    exit; long-running services should not rely on ``timeout`` to reclaim
+    resources from runaway coroutines.
 
     Exceptions propagate to the caller unchanged.
     """
@@ -41,5 +45,8 @@ def run_sync(coro: Awaitable[T], timeout: float | None = None) -> T:
     except RuntimeError:
         return asyncio.run(coro)  # type: ignore[arg-type]
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
         return pool.submit(asyncio.run, coro).result(timeout=timeout)  # type: ignore[arg-type]
+    finally:
+        pool.shutdown(wait=False)
