@@ -16,6 +16,7 @@ import subprocess  # nosec B404
 import sys
 import threading
 
+import aiosqlite
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, get_home
@@ -35,7 +36,6 @@ from worthless.cli.sidecar_lifecycle import (
     spawn_sidecar,
     split_to_tmpfs,
 )
-from worthless.storage.repository import ShardRepository
 
 logger = logging.getLogger(__name__)
 
@@ -46,19 +46,30 @@ def _list_enrolled_aliases(home: WorthlessHome) -> list[tuple[str, str]]:
     Kept for the empty-DB guard in ``wrap`` (no enrolled keys → friendly
     error). The protocol field isn't used anymore but is preserved in the
     return shape so existing tests stay green.
+
+    Uses a direct SQLite read — no Fernet key, no IPC socket required. This
+    keeps the pre-flight enrollment check independent of sidecar readiness,
+    which matters under WORTHLESS_FERNET_IPC_ONLY=1 where the sidecar has not
+    yet started when this guard runs.
     """
     if not home.db_path.exists():
         return []
 
-    async def _query():
-        repo = ShardRepository(str(home.db_path), home.fernet_key)
-        await repo.initialize()
-        rows = await repo.list_aliases_with_routing()
-        return [(alias, protocol) for alias, _var, _url, protocol in rows]
+    async def _query() -> list[tuple[str, str]]:
+        async with aiosqlite.connect(str(home.db_path)) as db:
+            cursor = await db.execute(
+                "SELECT s.key_alias, s.provider "
+                "FROM shards s "
+                "JOIN enrollments e ON s.key_alias = e.key_alias "
+                "ORDER BY s.key_alias"
+            )
+            rows = await cursor.fetchall()
+            return [(r[0], r[1]) for r in rows if r[0] and r[1]]
 
     try:
         return asyncio.run(_query())
-    except Exception:
+    except (OSError, aiosqlite.Error) as exc:
+        logger.debug("alias list failed: %s", exc, exc_info=True)
         return []
 
 

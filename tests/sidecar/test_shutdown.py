@@ -188,6 +188,8 @@ class _DelegatingBackend(Backend):
     stalling seal) instead of re-implementing the open/attest pass-throughs.
     """
 
+    caps = ("seal", "open", "attest")
+
     def __init__(self, inner: FernetBackend) -> None:
         self._inner = inner
 

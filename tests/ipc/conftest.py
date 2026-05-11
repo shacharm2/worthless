@@ -116,6 +116,11 @@ class StallingBackend(Backend):
     any non-seal paths still work — only the operation under test stalls.
     """
 
+    # Match the surface tests assert against. ``mac`` is omitted: stalling
+    # tests only exercise seal/open/attest, and per the WOR-465 A3a
+    # caps-driven dispatch the server simply won't route ``mac`` here.
+    caps = ("seal", "open", "attest")
+
     def __init__(self, inner: FernetBackend) -> None:
         self._inner = inner
 

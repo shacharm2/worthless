@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from worthless._flags import fernet_ipc_only_enabled
 from worthless.cli.keystore import read_fernet_key
 
 #: Capabilities the proxy expects from the sidecar HELLO frame (WOR-309).
@@ -57,7 +58,14 @@ def _default_db_path() -> str:
 
 
 def _env_bool(name: str) -> bool:
-    """Return ``True`` when the environment variable *name* is a truthy string."""
+    """Return ``True`` when the environment variable *name* is a truthy string.
+
+    DELIBERATELY does NOT strip — flipping ``WORTHLESS_ALLOW_INSECURE`` from
+    secure to insecure on a copy-paste typo is the wrong direction. The
+    IPC-only flag has a stricter parser inlined at its call site that DOES
+    strip (because its fail-secure direction is the opposite — see
+    ``_read_fernet_key`` below).
+    """
     return os.environ.get(name, "").lower() in ("1", "true", "yes")
 
 
@@ -90,7 +98,19 @@ def _read_default_host(mode: DeployMode) -> str:
 
 
 def _read_fernet_key() -> bytearray:
-    """Read Fernet key: fd (secure pipe) -> keystore (env/keyring/file)."""
+    """Read Fernet key: fd (secure pipe) -> keystore (env/keyring/file).
+
+    WOR-465 A3b 3/3: under ``WORTHLESS_FERNET_IPC_ONLY=1`` this returns
+    an empty bytearray WITHOUT ever calling ``read_fernet_key``. The
+    proxy uid then never holds key material in memory; every crypto
+    op routes through the sidecar over IPC instead.
+    """
+    if fernet_ipc_only_enabled():
+        # WOR-465 invariant: proxy uid MUST NOT touch the keystore on
+        # the flag-on path. Returning empty here is the contract — the
+        # sidecar holds the key, the proxy delegates over IPC.
+        return bytearray()
+
     fd_str = os.environ.get("WORTHLESS_FERNET_FD")
     if fd_str:
         try:
