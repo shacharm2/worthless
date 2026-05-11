@@ -107,6 +107,7 @@ class ShardRepository:
             for i in range(len(self._fernet_key_bytes)):
                 self._fernet_key_bytes[i] = 0
         self._fernet = None
+        self._ipc = None
 
     @asynccontextmanager
     async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:

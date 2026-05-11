@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 import sys
 from pathlib import Path
@@ -33,6 +34,8 @@ from worthless.cli.process import (
     poll_health,
     read_pid,
 )
+
+logger = logging.getLogger(__name__)
 
 # Maximum keys to show before collapsing with "(+ N more)"
 _MAX_DISPLAY_KEYS = 5
@@ -187,6 +190,7 @@ def run_default(
                     enrolled_locations = build_enrolled_locations(enrollments)
                     return scan_env_keys(env_path, enrolled_locations=enrolled_locations)
             except Exception:
+                logger.debug("enrollment query failed, scanning without enrollments", exc_info=True)
                 return scan_env_keys(env_path)
 
         keys = asyncio.run(_scan_with_enrollments())

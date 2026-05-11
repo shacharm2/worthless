@@ -256,8 +256,7 @@ async def test_decoy_hash_byte_identical_across_flag_flip(
     )
 
 
-@pytest.mark.asyncio
-async def test_compute_decoy_hash_is_async() -> None:
+def test_compute_decoy_hash_is_async() -> None:
     """``_compute_decoy_hash`` MUST become a coroutine function.
 
     Cascade: ``set_decoy_hash`` / ``is_known_decoy`` already async

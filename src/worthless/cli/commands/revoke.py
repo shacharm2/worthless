@@ -9,11 +9,15 @@ from pathlib import Path
 
 import typer
 
+from typing import TYPE_CHECKING
+
 from worthless.cli._repo_factory import open_repo
 from worthless.cli.bootstrap import acquire_lock, get_home
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
-from worthless.storage.repository import ShardRepository  # noqa: F401  # still re-exported for typing
+
+if TYPE_CHECKING:
+    from worthless.storage.repository import ShardRepository
 
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 

@@ -145,6 +145,21 @@ class TestListEnrolledAliasesWithDB:
         assert len(aliases) >= 1
         assert all(isinstance(a, str) and isinstance(p, str) for a, p in aliases)
 
+    def test_returns_aliases_under_ipc_only_flag_without_sidecar(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Under WORTHLESS_FERNET_IPC_ONLY=1, alias listing must NOT depend on a
+        running sidecar. The pre-flight enrollment check is a pure DB read —
+        no Fernet key, no IPC socket needed. A missing socket must not cause
+        _list_enrolled_aliases to silently return [] and mislead the user."""
+        monkeypatch.setenv("WORTHLESS_FERNET_IPC_ONLY", "1")
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert len(aliases) >= 1, (
+            "Expected enrolled aliases but got []. "
+            "Likely open_repo tried to connect IPC before sidecar started."
+        )
+        assert all(isinstance(a, str) and isinstance(p, str) for a, p in aliases)
+
 
 class TestWrapExitCode:
     """wrap mirrors child exit code."""
