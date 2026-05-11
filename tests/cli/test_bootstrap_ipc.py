@@ -161,8 +161,6 @@ def test_ensure_home_with_flag_no_sidecar_raises_WRTLS_114(
     base.mkdir(mode=0o700)
     (base / ".bootstrapped").touch(mode=0o600)
 
-    fake = _FakeIPCClient(raise_on_attest=IPCProtocolError("sidecar unavailable"))
-
     class _ConnectRefused:
         async def __aenter__(self):
             raise IPCProtocolError("sidecar connect refused")
