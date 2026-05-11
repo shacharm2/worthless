@@ -15,6 +15,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from worthless._async import run_sync
+from worthless._flags import (
+    WORTHLESS_SIDECAR_SOCKET_ENV,
+    fernet_ipc_only_enabled,
+)
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.cli.keystore import (
     migrate_file_to_keyring,
@@ -30,27 +35,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_BASE = Path.home() / ".worthless"
 _STALE_LOCK_SECONDS = 300  # 5 minutes
 
-# WOR-465 A3b: flag and bootstrap-attest constants. The flag is set
-# exclusively by the proxy container's entrypoint; bare-metal installs
-# leave it unset and the existing keystore cascade runs unchanged.
-_FERNET_IPC_ONLY_ENV = "WORTHLESS_FERNET_IPC_ONLY"
-_SIDECAR_SOCKET_ENV = "WORTHLESS_SIDECAR_SOCKET"
 _DEFAULT_SIDECAR_SOCKET = "/run/worthless/sidecar.sock"
 _BOOTSTRAP_ATTEST_PURPOSE = "bootstrap-validate"
-# HMAC-SHA256 output length. The sidecar's ``mac``/``attest`` verbs both
-# return 32 bytes; structural validation rejects stub replies that return
-# anything shorter even though the CLI cannot verify the MAC itself on
-# the flag-on proxy-container path.
-_ATTEST_EVIDENCE_LEN = 32
-
-
-def _fernet_ipc_only() -> bool:
-    """Return ``True`` when WORTHLESS_FERNET_IPC_ONLY is a truthy string.
-
-    Strip-then-match so ``"1 "`` (trailing whitespace from copy-paste)
-    cannot silently turn a security flag OFF.
-    """
-    return os.environ.get(_FERNET_IPC_ONLY_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 def _validate_via_sidecar(socket_path: Path) -> None:
@@ -58,73 +44,54 @@ def _validate_via_sidecar(socket_path: Path) -> None:
     holds a real key. Raises :class:`WorthlessError(SIDECAR_NOT_READY)` on
     any failure — never falls back to reading ``home.fernet_key``.
 
-    The CLI uid does NOT verify the MAC locally; on the flag-on path it
-    has no access to the key material. Structural validation (correct
-    bytes type, exact HMAC-SHA256 length) is the minimum bar — a stub
-    sidecar returning empty bytes or the wrong length must not be
-    accepted as a successful attestation.
+    Structural validation (bytes type, exact HMAC-SHA256 length) is the
+    minimum bar; the CLI uid cannot verify the MAC because it has no
+    access to the key on the flag-on proxy-container path. A stub
+    sidecar returning empty bytes or wrong length is refused here.
     """
+    from worthless.sidecar.backends.base import HMAC_SHA256_LEN
+
     nonce = secrets.token_bytes(32)
 
     async def _go() -> bytes:
         async with IPCClient(socket_path) as client:
             return await client.attest(nonce, purpose=_BOOTSTRAP_ATTEST_PURPOSE)
 
-    def _run() -> bytes:
-        """Drive ``_go`` to completion with a loop-aware strategy.
-
-        Plain ``asyncio.run`` raises ``RuntimeError`` when invoked from a
-        context that already has a running event loop (MCP server lazy
-        bootstrap, pytest-asyncio embeddings, etc). Mirrors ``_init_db``'s
-        pattern at the end of this module so the SIDECAR_NOT_READY contract
-        holds in every caller. ``concurrent.futures`` is imported lazily —
-        the cost only lands on the rare flag-on-with-live-loop path.
-        """
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(_go())
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, _go()).result()
+    def _fail(generic: str, cause: BaseException) -> WorthlessError:
+        return WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            sanitize_exception(cause, generic=generic)
+            if isinstance(cause, OSError | ValueError)
+            else generic,
+        )
 
     try:
-        evidence = _run()
+        evidence = run_sync(_go())
     except IPCError as exc:
-        raise WorthlessError(
-            ErrorCode.SIDECAR_NOT_READY,
+        raise _fail(
             "Sidecar is not reachable for bootstrap attestation. "
             "Start the sidecar before invoking the CLI inside the proxy "
             "container, or unset WORTHLESS_FERNET_IPC_ONLY for bare-metal use.",
+            exc,
         ) from exc
     except OSError as exc:
-        raise WorthlessError(
-            ErrorCode.SIDECAR_NOT_READY,
-            sanitize_exception(exc, generic="sidecar attestation failed"),
-        ) from exc
+        raise _fail("sidecar attestation failed", exc) from exc
     except ValueError as exc:
         # ``os.fspath`` rejects embedded NUL bytes (abstract-namespace
         # AF_UNIX paths) BEFORE asyncio.open_unix_connection ever runs.
-        raise WorthlessError(
-            ErrorCode.SIDECAR_NOT_READY,
-            sanitize_exception(exc, generic="sidecar socket path is invalid"),
-        ) from exc
+        raise _fail("sidecar socket path is invalid", exc) from exc
     except asyncio.CancelledError as exc:
         # SIGINT during bootstrap surfaces as CancelledError under the
-        # asyncio.run scope. Map to SIDECAR_NOT_READY so the operator
-        # sees a coded error instead of an opaque crash.
-        raise WorthlessError(
-            ErrorCode.SIDECAR_NOT_READY,
-            "Bootstrap attestation cancelled before completion.",
-        ) from exc
+        # asyncio.run scope.
+        raise _fail("Bootstrap attestation cancelled before completion.", exc) from exc
 
-    if not isinstance(evidence, bytes | bytearray) or len(evidence) != _ATTEST_EVIDENCE_LEN:
+    bad_type = not isinstance(evidence, bytes | bytearray)
+    if bad_type or len(evidence) != HMAC_SHA256_LEN:
+        observed = "non-bytes" if bad_type else str(len(evidence))
         raise WorthlessError(
             ErrorCode.SIDECAR_NOT_READY,
             f"Sidecar returned malformed attestation evidence "
-            f"(expected {_ATTEST_EVIDENCE_LEN} bytes, got "
-            f"{len(evidence) if isinstance(evidence, bytes | bytearray) else 'non-bytes'}).",
+            f"(expected {HMAC_SHA256_LEN} bytes, got {observed}).",
         )
 
 
@@ -274,8 +241,10 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
         # attestation instead of by touching the keystore. Failure mode is
         # hard SIDECAR_NOT_READY — never a silent fallback that would
         # defeat the flag.
-        if _fernet_ipc_only():
-            socket_path = Path(os.environ.get(_SIDECAR_SOCKET_ENV, _DEFAULT_SIDECAR_SOCKET))
+        if fernet_ipc_only_enabled():
+            socket_path = Path(
+                os.environ.get(WORTHLESS_SIDECAR_SOCKET_ENV, _DEFAULT_SIDECAR_SOCKET)
+            )
             _validate_via_sidecar(socket_path)
             # No marker write: the proxy container's image bake already
             # placed the marker, and we deliberately avoid mutating

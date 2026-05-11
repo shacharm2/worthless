@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from worthless._flags import fernet_ipc_only_enabled
 from worthless.cli.keystore import read_fernet_key
 
 #: Capabilities the proxy expects from the sidecar HELLO frame (WOR-309).
@@ -104,12 +105,7 @@ def _read_fernet_key() -> bytearray:
     proxy uid then never holds key material in memory; every crypto
     op routes through the sidecar over IPC instead.
     """
-    # Strip-then-match BEFORE the shared ``_env_bool`` helper: silently
-    # flipping a security flag OFF on a copy-paste typo (``"1 "``) is the
-    # wrong direction. ``_env_bool`` itself does not strip so it stays
-    # fail-secure for ``WORTHLESS_ALLOW_INSECURE`` (opposite direction).
-    _ipc_only_raw = os.environ.get("WORTHLESS_FERNET_IPC_ONLY", "").strip().lower()
-    if _ipc_only_raw in ("1", "true", "yes"):
+    if fernet_ipc_only_enabled():
         # WOR-465 invariant: proxy uid MUST NOT touch the keystore on
         # the flag-on path. Returning empty here is the contract — the
         # sidecar holds the key, the proxy delegates over IPC.

@@ -25,23 +25,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from worthless._flags import WORTHLESS_SIDECAR_SOCKET_ENV, fernet_ipc_only_enabled
 from worthless.ipc.client import IPCClient
 from worthless.proxy.config import DEFAULT_SIDECAR_SOCKET_PATH
 from worthless.storage.repository import ShardRepository
 
 if TYPE_CHECKING:
     from worthless.cli.bootstrap import WorthlessHome
-
-_FERNET_IPC_ONLY_ENV = "WORTHLESS_FERNET_IPC_ONLY"
-_SIDECAR_SOCKET_ENV = "WORTHLESS_SIDECAR_SOCKET"
-# Shared with proxy.config so CLI and proxy talk to the same socket; drift
-# between two duplicate constants would leave them on different paths.
-_DEFAULT_SIDECAR_SOCKET = DEFAULT_SIDECAR_SOCKET_PATH
-
-
-def _flag_on() -> bool:
-    """Whitespace-tolerant truthy check; see ``_env_bool`` in proxy.config."""
-    return os.environ.get(_FERNET_IPC_ONLY_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 @asynccontextmanager
@@ -58,8 +48,10 @@ async def open_repo(home: WorthlessHome) -> AsyncIterator[ShardRepository]:
     In both modes ``close()`` runs on exit so SR-02 key-zeroing still
     fires for the bare-metal path.
     """
-    if _flag_on():
-        socket_path = Path(os.environ.get(_SIDECAR_SOCKET_ENV, _DEFAULT_SIDECAR_SOCKET))
+    if fernet_ipc_only_enabled():
+        socket_path = Path(
+            os.environ.get(WORTHLESS_SIDECAR_SOCKET_ENV, DEFAULT_SIDECAR_SOCKET_PATH)
+        )
         async with IPCClient(socket_path) as client:
             repo = ShardRepository(str(home.db_path), client)
             try:

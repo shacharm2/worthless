@@ -13,6 +13,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
+#: Wire-level length of HMAC-SHA256 output. Re-exported here because both
+#: ``mac`` and ``attest`` produce this length and callers (e.g. bootstrap
+#: attestation validation) need the constant alongside the verbs.
+HMAC_SHA256_LEN: int = 32
+
 
 class BackendError(Exception):
     """Raised by backend implementations on crypto / key failures.
