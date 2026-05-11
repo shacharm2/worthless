@@ -32,6 +32,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # pwd is POSIX-only. worthless refuses native Windows (WRTLS-110) but the
 # module must still be *importable* on Windows so the CLI can print the error.
@@ -55,13 +56,6 @@ from worthless.openclaw.errors import (
 _SKILL_SUBPATH = ("skills", "worthless")
 _DEFAULT_PROXY_BASE_URL = "http://127.0.0.1:8787"
 _DEFAULT_PROXY_PORT = 8787
-
-# Matches any URL that is rooted at the canonical worthless proxy port
-# (8787) regardless of host.  Used by ``_is_proxy_url`` to recognise
-# entries written by a *previous* ``lock`` run that resolved to a
-# different hostname (e.g. localhost on bare-metal vs 172.17.0.1 via
-# Docker bridge vs host.docker.internal on Docker Desktop).
-_WORTHLESS_PORT_RE = re.compile(r"^https?://[^/]*:" + re.escape(str(_DEFAULT_PROXY_PORT)) + r"/")
 
 
 def _resolve_proxy_base_url() -> str:
@@ -492,23 +486,31 @@ def _is_proxy_url(url: str, proxy_base_url: str) -> bool:
     1. Primary: the URL starts with the *current* resolved proxy base URL.
        This is the exact match and the common fast path.
 
-    2. Secondary: the URL is on port 8787 (``_DEFAULT_PROXY_PORT``).  This
-       handles the scenario where a previous ``lock`` wrote the entry with a
-       different host alias — e.g. ``http://127.0.0.1:8787/…`` when Docker
-       was absent, and the current run resolves to ``http://172.17.0.1:8787``
-       via the Docker bridge.  Without this fallback the existing entry
-       would be misclassified as a third-party conflict and silently skipped,
-       leaving the ``apiKey`` stale.
+    2. Secondary: the URL is on the same port as ``proxy_base_url`` (regardless
+       of host).  This handles the scenario where a previous ``lock`` wrote
+       the entry with a different host alias — e.g. ``http://127.0.0.1:<port>/…``
+       when Docker was absent, and the current run resolves to
+       ``http://172.17.0.1:<port>`` via the Docker bridge.  The port is derived
+       from ``proxy_base_url`` so non-default deployments (``--port`` /
+       ``WORTHLESS_PORT``) are recognised too — without this, a user running
+       on port 9090 would have their re-lock silently skip the apiKey refresh.
 
-    Port 8787 is the canonical worthless proxy port; no legitimate
-    third-party provider would share both the ``worthless-<name>`` entry
-    name and this port.
+    Without the secondary check the existing entry would be misclassified as
+    a third-party conflict and silently skipped, leaving the ``apiKey`` stale.
+
+    Architectural follow-up tracked in WOR-487 — replace the port-based
+    heuristic with an explicit ``managedBy`` marker on each entry.
     """
     if not isinstance(url, str):
         return False
     if url.startswith(proxy_base_url.rstrip("/") + "/"):
         return True
-    return bool(_WORTHLESS_PORT_RE.match(url))
+    # Derive the fallback port from proxy_base_url so non-default deployments
+    # (--port / WORTHLESS_PORT) work too.
+    port = urlsplit(proxy_base_url).port
+    if port is None:
+        return False
+    return re.match(rf"^https?://[^/]*:{port}/", url) is not None
 
 
 def apply_lock(

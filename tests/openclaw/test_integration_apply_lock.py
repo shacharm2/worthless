@@ -541,6 +541,61 @@ def test_apply_lock_preserves_existing_models_array(openclaw_present: dict[str, 
     assert entry["apiKey"] == "sk-shard-new", "apiKey not refreshed"
 
 
+def test_apply_lock_cross_host_refresh_on_non_default_port(
+    openclaw_present: dict[str, Path],
+) -> None:
+    """Regression: cross-host re-lock works on non-default ports (WOR-487 / PR #168).
+
+    Scenario: user runs ``worthless lock`` with ``WORTHLESS_PORT=9090`` and Docker
+    off → entry written with ``http://127.0.0.1:9090/...``.  Then Docker starts
+    and lock re-runs → resolved URL becomes ``http://172.17.0.1:9090``.  The
+    existing entry's host differs, so the primary prefix match fails.  The
+    fallback must derive port 9090 from ``proxy_base_url`` (not hardcoded
+    8787) for the entry to be recognised as ours and the apiKey refreshed.
+
+    Before the fix this test would fail because the regex hardcoded port 8787.
+    """
+    from worthless.openclaw import integration
+
+    config_path = openclaw_present["config_path"]
+    config_path.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "providers": {
+                        "worthless-openai": {
+                            "baseUrl": "http://127.0.0.1:9090/openai-aaaa1111/v1",
+                            "apiKey": "sk-shard-old",
+                            "api": "openai-completions",
+                            "models": [],
+                        }
+                    }
+                }
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    # Simulate the cross-host re-lock: proxy_base_url has a different host
+    # than the existing entry, but the same non-default port.
+    integration.apply_lock(
+        planned_updates=[("openai", "openai-aaaa1111", "sk-shard-new")],
+        proxy_base_url="http://172.17.0.1:9090",
+    )
+
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    entry = data["models"]["providers"]["worthless-openai"]
+    assert entry["apiKey"] == "sk-shard-new", (
+        "apiKey not refreshed — port-based fallback must derive port from proxy_base_url, "
+        "not hardcode 8787"
+    )
+    # New baseUrl should reflect the new host on the same port
+    assert entry["baseUrl"] == "http://172.17.0.1:9090/openai-aaaa1111/v1"
+
+
 def test_apply_lock_refuses_symlinked_openclaw_json(openclaw_present: dict[str, Path]) -> None:
     """F-CFG-15 production gap — set_provider must refuse symlinks.
 
