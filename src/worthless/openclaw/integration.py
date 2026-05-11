@@ -1024,11 +1024,17 @@ def health_check(
 
     # Resolve the proxy host once — same logic as apply_lock so the expected
     # URL matches what was actually written (avoids false drift on Docker hosts).
-    resolved_base = (
-        proxy_base_url.rstrip("/")
-        if proxy_base_url is not None
-        else _resolve_proxy_base_url().rstrip("/")
-    )
+    if proxy_base_url is not None:
+        resolved_base = proxy_base_url.rstrip("/")
+    else:
+        # Detect the right host for this environment (localhost vs Docker bridge
+        # vs host.docker.internal), then apply the caller-specified port.
+        # ``_resolve_proxy_base_url()`` always embeds the *default* port; we
+        # strip it and replace with ``proxy_port`` so non-default deployments
+        # (``WORTHLESS_PORT`` env or ``--port``) are not falsely flagged.
+        _detected = _resolve_proxy_base_url()  # e.g. "http://172.17.0.1:8787"
+        _scheme_host = _detected.rsplit(":", 1)[0]  # "http://172.17.0.1"
+        resolved_base = f"{_scheme_host}:{proxy_port}"
 
     providers_ok: list[str] = []
     providers_missing: list[str] = []
