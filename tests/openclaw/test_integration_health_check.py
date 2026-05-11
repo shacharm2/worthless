@@ -131,6 +131,7 @@ class TestHealthCheckProviderOk:
             state,
             expected_providers=[("openai", "openai-aaaa1111")],
             proxy_port=8787,
+            proxy_base_url="http://127.0.0.1:8787",  # pin host; skip Docker detection
         )
 
         assert report.providers_ok == ("worthless-openai",)
@@ -158,6 +159,7 @@ class TestHealthCheckProviderOk:
             state,
             expected_providers=[("openai", "openai-abc")],
             proxy_port=9090,
+            proxy_base_url="http://127.0.0.1:9090",  # pin host; skip Docker detection
         )
 
         assert report.healthy is True
@@ -210,6 +212,7 @@ class TestHealthCheckProviderMissing:
                 ("anthropic", "anthropic-bbbb2222"),
             ],
             proxy_port=8787,
+            proxy_base_url="http://127.0.0.1:8787",  # pin host; skip Docker detection
         )
 
         assert "worthless-openai" in report.providers_ok
@@ -246,6 +249,7 @@ class TestHealthCheckProviderDrifted:
             state,
             expected_providers=[("openai", "openai-aaaa1111")],
             proxy_port=8787,
+            proxy_base_url="http://127.0.0.1:8787",  # pin host; skip Docker detection
         )
 
         assert len(report.providers_drifted) == 1

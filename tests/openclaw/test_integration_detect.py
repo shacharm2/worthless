@@ -433,3 +433,172 @@ def test_fxs47_no_mismatch_by_default(fake_home: Path, monkeypatch: pytest.Monke
 
     assert state.home_mismatch is False
     assert not any("mismatch" in n.lower() for n in state.notes)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_proxy_base_url — Docker host detection (unit, no real subprocess)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveProxyBaseUrl:
+    """Unit tests for _resolve_proxy_base_url() Docker host detection.
+
+    All tests patch subprocess.run and shutil.which so no real Docker daemon
+    is required.  These cover the three platform branches and all fallbacks.
+    """
+
+    def test_no_docker_binary_falls_back_to_localhost(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If docker is not on PATH, return 127.0.0.1 (native install path)."""
+        from worthless.openclaw import integration
+
+        monkeypatch.setattr(integration.shutil, "which", lambda _name: None)
+        url = integration._resolve_proxy_base_url()
+        assert url == "http://127.0.0.1:8787"
+
+    def test_docker_info_fails_falls_back_to_localhost(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """docker info non-zero exit → treat as no Docker, return 127.0.0.1."""
+        from unittest.mock import MagicMock
+        from worthless.openclaw import integration
+
+        monkeypatch.setattr(integration.shutil, "which", lambda _name: "/usr/local/bin/docker")
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = ""
+        monkeypatch.setattr(integration.subprocess, "run", lambda *a, **kw: result)
+        url = integration._resolve_proxy_base_url()
+        assert url == "http://127.0.0.1:8787"
+
+    def test_docker_timeout_falls_back_to_localhost(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """subprocess.TimeoutExpired on docker info → return 127.0.0.1."""
+        from worthless.openclaw import integration
+
+        monkeypatch.setattr(integration.shutil, "which", lambda _name: "/usr/local/bin/docker")
+        monkeypatch.setattr(
+            integration.subprocess,
+            "run",
+            lambda *a, **kw: (_ for _ in ()).throw(
+                integration.subprocess.TimeoutExpired(cmd="docker", timeout=3)
+            ),
+        )
+        url = integration._resolve_proxy_base_url()
+        assert url == "http://127.0.0.1:8787"
+
+    def test_macos_docker_returns_host_docker_internal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """macOS + Docker available → host.docker.internal (Docker Desktop)."""
+        from unittest.mock import MagicMock
+        from worthless.openclaw import integration
+
+        monkeypatch.setattr(integration.shutil, "which", lambda _name: "/usr/local/bin/docker")
+        monkeypatch.setattr(integration.sys, "platform", "darwin")
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = "27.0.3\n"
+        monkeypatch.setattr(integration.subprocess, "run", lambda *a, **kw: result)
+        url = integration._resolve_proxy_base_url()
+        assert url == "http://host.docker.internal:8787"
+
+    def test_windows_docker_returns_host_docker_internal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows + Docker available → host.docker.internal (Docker Desktop)."""
+        from unittest.mock import MagicMock
+        from worthless.openclaw import integration
+
+        monkeypatch.setattr(
+            integration.shutil, "which", lambda _name: r"C:\Program Files\Docker\docker.exe"
+        )
+        monkeypatch.setattr(integration.sys, "platform", "win32")
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = "27.0.3\n"
+        monkeypatch.setattr(integration.subprocess, "run", lambda *a, **kw: result)
+        url = integration._resolve_proxy_base_url()
+        assert url == "http://host.docker.internal:8787"
+
+    def test_linux_docker_uses_bridge_gateway(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Linux + Docker available → docker0 bridge gateway IP."""
+        from unittest.mock import MagicMock
+        from worthless.openclaw import integration
+
+        monkeypatch.setattr(integration.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(integration.sys, "platform", "linux")
+
+        call_count = 0
+
+        def fake_run(args: list[str], **kw: object) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            r = MagicMock()
+            if "info" in args:
+                r.returncode = 0
+                r.stdout = "27.0.3\n"
+            else:
+                # docker network inspect bridge
+                r.returncode = 0
+                r.stdout = "172.17.0.1\n"
+            return r
+
+        monkeypatch.setattr(integration.subprocess, "run", fake_run)
+        url = integration._resolve_proxy_base_url()
+        assert url == "http://172.17.0.1:8787"
+        assert call_count == 2  # info + network inspect
+
+    def test_linux_bridge_inspect_fails_uses_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Linux: docker0 inspect fails → fall back to 172.17.0.1 constant."""
+        from unittest.mock import MagicMock
+        from worthless.openclaw import integration
+
+        monkeypatch.setattr(integration.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(integration.sys, "platform", "linux")
+
+        def fake_run(args: list[str], **kw: object) -> MagicMock:
+            r = MagicMock()
+            if "info" in args:
+                r.returncode = 0
+                r.stdout = "27.0.3\n"
+            else:
+                r.returncode = 1
+                r.stdout = ""
+            return r
+
+        monkeypatch.setattr(integration.subprocess, "run", fake_run)
+        url = integration._resolve_proxy_base_url()
+        assert url == "http://172.17.0.1:8787"
+
+    def test_apply_lock_passes_resolved_url_to_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """apply_lock with no proxy_base_url arg uses _resolve_proxy_base_url().
+
+        Verifies the resolver is called (not the hardcoded default) by
+        patching it to return a sentinel URL and asserting the config write
+        used that URL.
+        """
+        from worthless.openclaw import integration
+
+        sentinel = "http://test-sentinel:9999"
+        monkeypatch.setattr(integration, "_resolve_proxy_base_url", lambda: sentinel)
+
+        # Stage minimal OpenClaw home so detect() returns present=True.
+        openclaw_home = tmp_path / ".openclaw"
+        (openclaw_home / "workspace").mkdir(parents=True)
+        cfg = openclaw_home / "openclaw.json"
+        cfg.write_text('{"models":{"providers":{}}}')
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        result = integration.apply_lock([("openai", "openai-abc123", "sk-proj-fake")])
+        # The provider entry in the config should use the sentinel URL.
+        import json
+
+        data = json.loads(cfg.read_text())
+        providers = data.get("models", {}).get("providers", {})
+        assert "worthless-openai" in providers
+        base = providers["worthless-openai"]["baseUrl"]
+        assert base.startswith(sentinel), f"expected sentinel prefix, got {base!r}"
+        assert result.detected is True

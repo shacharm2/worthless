@@ -38,11 +38,24 @@ def registered_commands() -> dict[str, click.Command]:
 
 @pytest.fixture(scope="module")
 def skill_commands(skill_content: str) -> list[str]:
-    """Extract all `worthless <cmd>` references from SKILL.md."""
+    """Extract all `worthless <cmd>` references from SKILL.md.
+
+    YAML frontmatter (content between the opening ``---`` and closing ``---``)
+    is stripped first so YAML keys that follow ``worthless`` (e.g.
+    ``name: worthless\\ndescription:`` or ``install worthless\\n  bins:``)
+    are not misidentified as CLI commands.
+    """
+    # Strip YAML frontmatter (lines between leading --- delimiters)
+    body = skill_content
+    if skill_content.startswith("---"):
+        end = skill_content.find("\n---", 3)
+        if end != -1:
+            body = skill_content[end + 4 :]
+
     # Match patterns like `worthless lock`, `worthless up`, etc.
     # Exclude things inside URLs, code comments, or variable names
     pattern = r"(?:^|\s)`?worthless\s+([a-z][\w-]*)`?"
-    matches = re.findall(pattern, skill_content)
+    matches = re.findall(pattern, body)
     # Deduplicate preserving order
     seen: set[str] = set()
     cmds: list[str] = []
