@@ -70,8 +70,27 @@ def _validate_via_sidecar(socket_path: Path) -> None:
         async with IPCClient(socket_path) as client:
             return await client.attest(nonce, purpose=_BOOTSTRAP_ATTEST_PURPOSE)
 
+    def _run() -> bytes:
+        """Drive ``_go`` to completion with a loop-aware strategy.
+
+        Plain ``asyncio.run`` raises ``RuntimeError`` when invoked from a
+        context that already has a running event loop (MCP server lazy
+        bootstrap, pytest-asyncio embeddings, etc). Mirrors ``_init_db``'s
+        pattern at the end of this module so the SIDECAR_NOT_READY contract
+        holds in every caller. ``concurrent.futures`` is imported lazily —
+        the cost only lands on the rare flag-on-with-live-loop path.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_go())
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, _go()).result()
+
     try:
-        evidence = asyncio.run(_go())
+        evidence = _run()
     except IPCError as exc:
         raise WorthlessError(
             ErrorCode.SIDECAR_NOT_READY,
@@ -86,12 +105,18 @@ def _validate_via_sidecar(socket_path: Path) -> None:
         ) from exc
     except ValueError as exc:
         # ``os.fspath`` rejects embedded NUL bytes (abstract-namespace
-        # AF_UNIX paths) with ValueError BEFORE asyncio.open_unix_connection
-        # ever runs. Surface as the same clean SIDECAR_NOT_READY rather
-        # than letting it propagate as an unrelated-looking exception.
+        # AF_UNIX paths) BEFORE asyncio.open_unix_connection ever runs.
         raise WorthlessError(
             ErrorCode.SIDECAR_NOT_READY,
             sanitize_exception(exc, generic="sidecar socket path is invalid"),
+        ) from exc
+    except asyncio.CancelledError as exc:
+        # SIGINT during bootstrap surfaces as CancelledError under the
+        # asyncio.run scope. Map to SIDECAR_NOT_READY so the operator
+        # sees a coded error instead of an opaque crash.
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            "Bootstrap attestation cancelled before completion.",
         ) from exc
 
     if not isinstance(evidence, bytes | bytearray) or len(evidence) != _ATTEST_EVIDENCE_LEN:

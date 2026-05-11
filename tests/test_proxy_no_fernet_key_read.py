@@ -117,6 +117,36 @@ def test_proxy_uid_DOES_call_read_fernet_key_without_flag(
 # ---------------------------------------------------------------------------
 
 
+def test_proxy_settings_instantiation_under_flag_does_not_call_read_fernet_key(
+    read_fernet_key_recorder: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ProxySettings()`` construction MUST honour the flag too.
+
+    ``_read_fernet_key`` is exposed on the class as
+    ``_fernet_reader = staticmethod(_read_fernet_key)`` and called from a
+    default_factory in the ``fernet_key`` field. A future refactor that
+    rebinds ``_fernet_reader`` to a different function MUST still respect
+    the flag. We pin via instantiation, not via direct ``_read_fernet_key``
+    call.
+    """
+    monkeypatch.setenv("WORTHLESS_FERNET_IPC_ONLY", "1")
+    monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
+    # PaaS detection guards demand a deploy mode; pick the simplest.
+    monkeypatch.setenv("WORTHLESS_DEPLOY_MODE", "loopback")
+
+    settings = proxy_config.ProxySettings()
+
+    assert settings.fernet_key == bytearray(), (
+        "ProxySettings().fernet_key MUST be empty under WORTHLESS_FERNET_IPC_ONLY=1; "
+        f"got {len(settings.fernet_key)} bytes — the proxy is holding key material."
+    )
+    assert read_fernet_key_recorder == [], (
+        "ProxySettings() instantiation must NOT call read_fernet_key under the flag. "
+        f"Recorder saw {read_fernet_key_recorder!r}."
+    )
+
+
 def test_flag_on_wins_even_when_fernet_fd_also_set(
     read_fernet_key_recorder: list[Any],
     monkeypatch: pytest.MonkeyPatch,

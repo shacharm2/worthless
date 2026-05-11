@@ -59,11 +59,13 @@ def _default_db_path() -> str:
 def _env_bool(name: str) -> bool:
     """Return ``True`` when the environment variable *name* is a truthy string.
 
-    Whitespace is stripped so ``"1 "`` (trailing space from copy-paste in
-    operator manifests) parses the same as ``"1"`` — silently flipping a
-    security flag OFF on a typo is the wrong default.
+    DELIBERATELY does NOT strip — flipping ``WORTHLESS_ALLOW_INSECURE`` from
+    secure to insecure on a copy-paste typo is the wrong direction. The
+    IPC-only flag has a stricter parser inlined at its call site that DOES
+    strip (because its fail-secure direction is the opposite — see
+    ``_read_fernet_key`` below).
     """
-    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+    return os.environ.get(name, "").lower() in ("1", "true", "yes")
 
 
 def _read_deploy_mode() -> DeployMode:
@@ -102,7 +104,12 @@ def _read_fernet_key() -> bytearray:
     proxy uid then never holds key material in memory; every crypto
     op routes through the sidecar over IPC instead.
     """
-    if _env_bool("WORTHLESS_FERNET_IPC_ONLY"):
+    # Strip-then-match BEFORE the shared ``_env_bool`` helper: silently
+    # flipping a security flag OFF on a copy-paste typo (``"1 "``) is the
+    # wrong direction. ``_env_bool`` itself does not strip so it stays
+    # fail-secure for ``WORTHLESS_ALLOW_INSECURE`` (opposite direction).
+    _ipc_only_raw = os.environ.get("WORTHLESS_FERNET_IPC_ONLY", "").strip().lower()
+    if _ipc_only_raw in ("1", "true", "yes"):
         # WOR-465 invariant: proxy uid MUST NOT touch the keystore on
         # the flag-on path. Returning empty here is the contract — the
         # sidecar holds the key, the proxy delegates over IPC.

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from worthless.ipc.client import IPCClient
+from worthless.proxy.config import DEFAULT_SIDECAR_SOCKET_PATH
 from worthless.storage.repository import ShardRepository
 
 if TYPE_CHECKING:
@@ -33,7 +34,9 @@ if TYPE_CHECKING:
 
 _FERNET_IPC_ONLY_ENV = "WORTHLESS_FERNET_IPC_ONLY"
 _SIDECAR_SOCKET_ENV = "WORTHLESS_SIDECAR_SOCKET"
-_DEFAULT_SIDECAR_SOCKET = "/run/worthless/sidecar.sock"
+# Shared with proxy.config so CLI and proxy talk to the same socket; drift
+# between two duplicate constants would leave them on different paths.
+_DEFAULT_SIDECAR_SOCKET = DEFAULT_SIDECAR_SOCKET_PATH
 
 
 def _flag_on() -> bool:

@@ -25,6 +25,7 @@ Design seams (foreseen extensions, NOT in this PR):
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import typer
@@ -32,7 +33,7 @@ import typer
 from worthless.cli.bootstrap import acquire_lock, get_home
 from worthless.cli.commands.revoke import _revoke_async
 from worthless.cli.console import get_console
-from worthless.cli.errors import error_boundary
+from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.orphans import FIX_PHRASE, PROBLEM_PHRASE, find_orphans
 from worthless.storage.repository import EnrollmentRecord, ShardRepository
 
@@ -105,6 +106,19 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
     """Core doctor logic. Always reports a positive ``no orphan`` line on
     a clean state so callers can grep for it without false negatives.
     """
+    # WOR-465 A3b 3/3 follow-up: doctor's interleaved asyncio.run+sync
+    # interactive prompts cannot be bracketed by a single async-with
+    # against an IPCClient. Refuse early under the flag rather than
+    # silently materialise ``home.fernet_key`` and break the proxy-uid
+    # invariant. Operators run doctor on bare metal; inside a flag-on
+    # proxy container, this command has no use case.
+    if os.environ.get("WORTHLESS_FERNET_IPC_ONLY", "").strip().lower() in ("1", "true", "yes"):
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            "`worthless doctor` is not available under WORTHLESS_FERNET_IPC_ONLY=1. "
+            "Run doctor on bare metal (operator workstation) instead.",
+        )
+
     console = get_console()
     home = get_home()
 

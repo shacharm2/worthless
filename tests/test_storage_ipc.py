@@ -394,6 +394,11 @@ class _DyingIPCClient:
     async def mac(self, value: bytes) -> bytes:
         return b"\x00" * 32
 
+    async def attest(self, nonce: bytes, purpose: str | None = None) -> bytes:
+        # Future-proof: if ShardRepository ever probes ``attest`` at
+        # construction time, this no-op keeps the fixture compatible.
+        return b"\x00" * 32
+
 
 @pytest.mark.asyncio
 async def test_decrypt_shard_propagates_ipc_error_when_sidecar_dies(
