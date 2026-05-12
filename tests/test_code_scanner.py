@@ -326,3 +326,105 @@ class TestCodeScanAdversarialFlow:
         elapsed = time.monotonic() - start
         assert findings == []
         assert elapsed < 5.0, f"scan took {elapsed:.2f}s"
+
+
+# ---------------------------------------------------------------------------
+# 5. API surface — public-API params + degraded-environment paths
+# ---------------------------------------------------------------------------
+
+
+class TestCodeScanApiSurface:
+    """Branch-coverage gaps from the manual audit, plugged.
+
+    These exercise public-API parameters and defensive paths that the four
+    flow categories above don't naturally hit.
+    """
+
+    def test_extra_excludes_parameter_adds_to_dir_excludelist(self, tmp_path: Path) -> None:
+        # Public API: callers can extend the exclude list. Verify it actually
+        # excludes. Future lock-side coupling (WOR-493) may use this.
+        write(tmp_path / "src" / "ok.py", '"https://api.openai.com/v1"\n')
+        write(tmp_path / "docs" / "demo.py", '"https://api.openai.com/v1"\n')
+
+        findings = scan_for_hardcoded_provider_urls([tmp_path], extra_excludes=("docs",))
+
+        files = {Path(f.file).name for f in findings}
+        assert "ok.py" in files
+        assert "demo.py" not in files
+
+    def test_empty_registry_returns_empty_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Docstring claims graceful degradation when no providers are
+        # registered. Pin the behavior.
+        write(tmp_path / "app.py", '"https://api.openai.com/v1"\n')
+        monkeypatch.setattr("worthless.cli.code_scanner.load_registry", lambda: {})
+
+        assert scan_for_hardcoded_provider_urls([tmp_path]) == []
+
+    def test_git_binary_missing_falls_back_to_filesystem_walk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Windows users without git in PATH should still get a scan via
+        # the walk fallback. Simulate by forcing subprocess.run to raise
+        # FileNotFoundError (as if git binary were absent).
+        write(tmp_path / "app.py", '"https://api.openai.com/v1"\n')
+
+        real_run = subprocess.run
+
+        def fake_run(args, *a, **kw):  # noqa: ANN001 — test stub
+            if args and args[0] == "git":
+                raise FileNotFoundError("git not in PATH")
+            return real_run(args, *a, **kw)
+
+        monkeypatch.setattr("worthless.cli.code_scanner.subprocess.run", fake_run)
+
+        findings = scan_for_hardcoded_provider_urls([tmp_path])
+        assert len(findings) == 1
+        assert findings[0].file.endswith("app.py")
+
+    def test_git_subprocess_timeout_falls_back_to_walk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Pathological git invocations (huge repos, locked index) shouldn't
+        # hang the scan — we time-box the ls-files call and fall back.
+        write(tmp_path / "app.py", '"https://api.openai.com/v1"\n')
+
+        def fake_run(args, *a, **kw):  # noqa: ANN001
+            if args and args[0] == "git":
+                raise subprocess.TimeoutExpired(cmd=args, timeout=10)
+            return subprocess.run(args, *a, **kw)
+
+        monkeypatch.setattr("worthless.cli.code_scanner.subprocess.run", fake_run)
+
+        findings = scan_for_hardcoded_provider_urls([tmp_path])
+        assert len(findings) == 1
+
+    def test_single_file_root_scans_just_that_file(self, tmp_path: Path) -> None:
+        # Public API accepts a single file path, not just directories.
+        f = write(tmp_path / "app.py", '"https://api.openai.com/v1"\n')
+
+        findings = scan_for_hardcoded_provider_urls([f])
+        assert len(findings) == 1
+        assert findings[0].file.endswith("app.py")
+
+    def test_oserror_on_stat_skips_file_silently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Race: file disappears between walk and stat. Must not raise.
+        write(tmp_path / "racy.py", '"https://api.openai.com/v1"\n')
+        write(tmp_path / "ok.py", '"https://api.anthropic.com/v1"\n')
+
+        real_stat = Path.stat
+
+        def fake_stat(self, *a, **kw):  # noqa: ANN001
+            if self.name == "racy.py":
+                raise OSError("file vanished mid-scan")
+            return real_stat(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "stat", fake_stat)
+
+        findings = scan_for_hardcoded_provider_urls([tmp_path])
+        files = {Path(f.file).name for f in findings}
+        assert "racy.py" not in files
+        assert "ok.py" in files

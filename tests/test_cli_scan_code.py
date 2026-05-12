@@ -104,3 +104,45 @@ class TestScanCodeBadFlow:
         assert result.exit_code != 0
         # No raw Python traceback leaking to the user.
         assert "Traceback" not in result.stderr
+
+
+class TestScanCodeEdges:
+    """Edges from the manual coverage audit — AI prompt suppression on
+    zero-findings, and the documented SARIF-doesn't-include-code-findings
+    contract."""
+
+    def test_ai_prompt_block_not_emitted_when_zero_findings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Clean project + --code (with default --ai-prompt ON) should NOT
+        # emit the COPY-THIS-TO-YOUR-AI-AGENT block. The block is for
+        # actionable findings; on a clean run it would be noise.
+        (tmp_path / "ok.py").write_text(
+            'import os\nurl = os.environ.get("OPENAI_BASE_URL")\n', encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["scan", "--code"])
+        assert result.exit_code == 0
+        assert "COPY THIS TO YOUR AI AGENT" not in result.stderr
+
+    def test_sarif_format_does_not_include_code_findings_by_design(
+        self, project_with_hardcoded_url: Path
+    ) -> None:
+        # Documented limit: SARIF output is for .env key findings only.
+        # Code findings live in the text + JSON envelopes. If a future
+        # ticket wants code findings in SARIF, that's a deliberate
+        # additive change, not a silent bug.
+        import json
+
+        result = runner.invoke(app, ["scan", "--code", "--format", "sarif"])
+        assert result.exit_code == 0
+        sarif = json.loads(result.stdout)
+        # SARIF shape: {"runs": [{"results": [...]}]}; assert no
+        # result is the new hardcoded-provider-url rule.
+        all_rule_ids: set[str] = set()
+        for run in sarif.get("runs", []):
+            for r in run.get("results", []):
+                if r.get("ruleId"):
+                    all_rule_ids.add(r["ruleId"])
+        assert "hardcoded-provider-url" not in all_rule_ids

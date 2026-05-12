@@ -6,7 +6,14 @@ embedded in project source. The scan is opt-in via ``worthless scan
 a copy-pasteable AI-agent prompt block so the user can hand the fix
 to whatever agent they already have running (Claude Code, Cursor, etc.).
 
-Lock-side coupling is explicitly deferred (worthless-8a5d parked).
+Lock-side coupling is explicitly deferred (WOR-493 / worthless-8a5d).
+
+Output surfaces:
+- text (default) — human-readable; AI prompt block appended when findings exist
+- json (``--json``) — adds top-level ``code_findings`` array
+- sarif (``--format sarif``) — **omits code findings by design**; SARIF
+  output remains the .env-key surface only. Adding a hardcoded-provider-url
+  SARIF rule is an additive future change, not a current gap.
 """
 
 from __future__ import annotations
@@ -189,17 +196,22 @@ def _candidate_files(root: Path) -> list[Path]:
 
     candidates: list[Path] = []
     for f in files:
-        if not f.is_file():
-            continue
-        if _is_excluded_path(f.relative_to(root) if f.is_absolute() and root in f.parents else f):
-            continue
-        # Belt and braces: also check the absolute path components in case
-        # an exclude lives above ``root``.
-        if any(part in _EXCLUDED_DIRS for part in f.parts):
-            continue
-        if f.suffix.lower() not in _SCANNED_EXTENSIONS:
-            continue
+        # Wrap the whole per-file inspection: ``is_file()`` and ``stat()``
+        # both call the underlying stat(2), and either can raise OSError
+        # on a race (file vanishes mid-scan) or permission issue.
         try:
+            if not f.is_file():
+                continue
+            if _is_excluded_path(
+                f.relative_to(root) if f.is_absolute() and root in f.parents else f
+            ):
+                continue
+            # Belt and braces: also check the absolute path components in
+            # case an exclude lives above ``root``.
+            if any(part in _EXCLUDED_DIRS for part in f.parts):
+                continue
+            if f.suffix.lower() not in _SCANNED_EXTENSIONS:
+                continue
             if f.stat().st_size > _MAX_FILE_BYTES:
                 continue
         except OSError:
