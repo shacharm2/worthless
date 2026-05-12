@@ -39,6 +39,8 @@ class TestScanCodeHappyFlow:
         assert "https://api.openai.com/v1" in result.stderr
         assert "openai" in result.stderr.lower()
         assert "OPENAI_BASE_URL" in result.stderr
+        # Source line snippet must be present (→ prefix from _format_code_findings_human).
+        assert "→" in result.stderr
 
     def test_ai_prompt_block_emitted_by_default(self, project_with_hardcoded_url: Path) -> None:
         result = runner.invoke(app, ["scan", "--code"])
@@ -53,8 +55,10 @@ class TestScanCodeHappyFlow:
 
     def test_honesty_footer_present(self, project_with_hardcoded_url: Path) -> None:
         result = runner.invoke(app, ["scan", "--code", "--no-ai-prompt"])
-        # Honest framing per feedback_honest_framing_audit.md
-        assert "does NOT" in result.stderr or "does not" in result.stderr.lower()
+        # Honest framing per feedback_honest_framing_audit.md — check specific bypass classes.
+        assert "does NOT" in result.stderr
+        assert "runtime-composed" in result.stderr
+        assert "IP literals" in result.stderr
 
     def test_json_output_has_code_findings_key(self, project_with_hardcoded_url: Path) -> None:
         result = runner.invoke(app, ["scan", "--code", "--json"])
@@ -92,9 +96,7 @@ class TestScanCodeBadFlow:
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["scan", "--code", "--no-ai-prompt"])
         assert result.exit_code == 0
-        assert (
-            "No hardcoded provider URLs" in result.stderr or "0 hardcoded" in result.stderr.lower()
-        )
+        assert "No hardcoded provider URLs" in result.stderr
 
     def test_nonexistent_path_errors_cleanly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

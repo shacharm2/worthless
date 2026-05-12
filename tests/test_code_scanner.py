@@ -80,7 +80,7 @@ class TestCodeScanHappyFlow:
         assert isinstance(f, CodeFinding)
         assert f.file.endswith("app.py")
         assert f.line == 2
-        assert f.column >= 1
+        assert f.column == 27  # 'client = OpenAI(base_url="' is 26 chars, URL at col 27
         assert f.matched_url == "https://api.openai.com/v1"
         assert f.provider_name == "openai"
         assert f.suggested_env_var == "OPENAI_BASE_URL"
