@@ -14,7 +14,9 @@ from typer.testing import CliRunner
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 
-from tests.conftest import make_repo
+from worthless.crypto import split_key
+from tests.conftest import make_repo, stored_shard_from_split
+from tests.helpers import fake_openai_key
 
 runner = CliRunner()
 
@@ -212,3 +214,38 @@ class TestRevokeDebugMode:
         assert "Traceback" in output or "internal boom" in output, (
             f"Expected traceback in debug output, got:\n{output}"
         )
+
+
+class TestRevokeKeychainCleanup:
+    """Master Fernet key removed from keychain only after the last enrollment."""
+
+    def test_last_revoke_deletes_fernet_key(self, home_with_key: WorthlessHome) -> None:
+        """Revoking the only enrolled alias triggers delete_fernet_key."""
+        with patch("worthless.cli.commands.revoke.delete_fernet_key") as mock_delete:
+            result = _invoke_revoke("openai-a1b2c3d4", home_with_key)
+        assert result.exit_code == 0, result.output
+        mock_delete.assert_called_once_with(home_with_key.base_dir)
+
+    def test_non_last_revoke_keeps_fernet_key(self, home_with_key: WorthlessHome) -> None:
+        """Revoking one of several aliases must NOT delete the master key."""
+        # Enroll a second alias so revoking the first is not the last.
+        repo = make_repo(home_with_key)
+        asyncio.run(repo.initialize())
+        key2 = fake_openai_key()
+        sr2 = split_key(key2.encode())
+        try:
+            asyncio.run(
+                repo.store_enrolled(
+                    "openai-second",
+                    stored_shard_from_split(sr2, provider="openai"),
+                    var_name="OPENAI_API_KEY",
+                    env_path=None,
+                )
+            )
+        finally:
+            sr2.zero()
+
+        with patch("worthless.cli.commands.revoke.delete_fernet_key") as mock_delete:
+            result = _invoke_revoke("openai-a1b2c3d4", home_with_key)
+        assert result.exit_code == 0, result.output
+        mock_delete.assert_not_called()
