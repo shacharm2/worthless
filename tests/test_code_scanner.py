@@ -428,3 +428,29 @@ class TestCodeScanApiSurface:
         files = {Path(f.file).name for f in findings}
         assert "racy.py" not in files
         assert "ok.py" in files
+
+    def test_providers_toml_excluded(self, tmp_path: Path) -> None:
+        # providers.toml is the URL registry itself — scanning it always
+        # produces false positives. Pin that it is always excluded.
+        write(
+            tmp_path / "providers.toml",
+            '[openai]\nurl = "https://api.openai.com/v1"\n',
+        )
+        write(tmp_path / "app.py", '"https://api.openai.com/v1"\n')
+
+        findings = scan_for_hardcoded_provider_urls([tmp_path])
+        assert all(not f.file.endswith("providers.toml") for f in findings)
+        assert any(f.file.endswith("app.py") for f in findings)
+
+    def test_line_text_redacts_colocated_api_key(self, tmp_path: Path) -> None:
+        # If the offending line also contains an API key, line_text must
+        # not expose it in output (stderr, JSON, AI prompt block).
+        write(
+            tmp_path / "app.py",
+            'client = OpenAI(api_key="sk-proj-abc123defgh", base_url="https://api.openai.com/v1")\n',
+        )
+        findings = scan_for_hardcoded_provider_urls([tmp_path])
+
+        assert len(findings) == 1
+        assert "[REDACTED]" in findings[0].line_text
+        assert "sk-proj-abc123defgh" not in findings[0].line_text

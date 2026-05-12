@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Iterable
 
+from worthless.cli.key_patterns import KEY_PATTERN
 from worthless.cli.providers import ProviderEntry, load_registry
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,7 @@ _EXCLUDED_FILE_BASENAMES: frozenset[str] = frozenset(
         "Cargo.lock",
         "Gemfile.lock",
         "composer.lock",
+        "providers.toml",  # source-of-truth registry — scanning it is always a false positive
     }
 )
 
@@ -157,7 +159,10 @@ def _list_files_git(root: Path) -> list[Path] | None:
     for rel in result.stdout.splitlines():
         if not rel:
             continue
-        files.append(root / rel)
+        f = root / rel
+        if f.is_symlink():
+            continue
+        files.append(f)
     return files
 
 
@@ -240,7 +245,7 @@ def _scan_one_file(
                     matched_url=entry.url,
                     provider_name=entry.name,
                     suggested_env_var=f"{entry.name.upper()}_BASE_URL",
-                    line_text=line,
+                    line_text=KEY_PATTERN.sub("[REDACTED]", line),
                 )
             )
     return findings
