@@ -124,11 +124,11 @@ def _suggested_env_var(entry: ProviderEntry) -> str:
     return f"{entry.name.upper()}_BASE_URL"
 
 
-def _is_excluded_path(path: Path) -> bool:
+def _is_excluded_path(path: Path, excluded_dirs: frozenset[str] = _EXCLUDED_DIRS) -> bool:
     """True if any path component is in the directory excludelist or the
     basename matches an excluded file pattern."""
     parts = set(path.parts)
-    if parts & _EXCLUDED_DIRS:
+    if parts & excluded_dirs:
         return True
 
     name = path.name
@@ -169,19 +169,19 @@ def _list_files_git(root: Path) -> list[Path] | None:
     return files
 
 
-def _list_files_walk(root: Path) -> list[Path]:
+def _list_files_walk(root: Path, excluded_dirs: frozenset[str] = _EXCLUDED_DIRS) -> list[Path]:
     """Recursive filesystem walk that does not follow symlinks and prunes
     excluded directories in-place."""
     files: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         # In-place mutation prunes the descent — must be a list assignment.
-        dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+        dirnames[:] = [d for d in dirnames if d not in excluded_dirs]
         for name in filenames:
             files.append(Path(dirpath) / name)
     return files
 
 
-def _candidate_files(root: Path) -> list[Path]:
+def _candidate_files(root: Path, excluded_dirs: frozenset[str] = _EXCLUDED_DIRS) -> list[Path]:
     """All files under ``root`` that should be scanned. Honors .gitignore
     when ``root`` is a git working tree."""
     if not root.exists():
@@ -191,7 +191,7 @@ def _candidate_files(root: Path) -> list[Path]:
     files = (
         git_files
         if git_files is not None
-        else (_list_files_walk(root) if root.is_dir() else [root])
+        else (_list_files_walk(root, excluded_dirs) if root.is_dir() else [root])
     )
 
     candidates: list[Path] = []
@@ -203,12 +203,13 @@ def _candidate_files(root: Path) -> list[Path]:
             if not f.is_file():
                 continue
             if _is_excluded_path(
-                f.relative_to(root) if f.is_absolute() and root in f.parents else f
+                f.relative_to(root) if f.is_absolute() and root in f.parents else f,
+                excluded_dirs,
             ):
                 continue
             # Belt and braces: also check the absolute path components in
             # case an exclude lives above ``root``.
-            if any(part in _EXCLUDED_DIRS for part in f.parts):
+            if any(part in excluded_dirs for part in f.parts):
                 continue
             if f.suffix.lower() not in _SCANNED_EXTENSIONS:
                 continue
@@ -289,9 +290,7 @@ def scan_for_hardcoded_provider_urls(
     for root in roots:
         # Resolve to absolute so part-based exclude checks are stable.
         root_path = Path(root).resolve()
-        for candidate in _candidate_files(root_path):
-            if extras and any(part in excluded_dirs for part in candidate.parts):
-                continue
+        for candidate in _candidate_files(root_path, excluded_dirs):
             findings.extend(_scan_one_file(candidate, registry_lower))
 
     # Stable ordering: by file, then line, then column.
