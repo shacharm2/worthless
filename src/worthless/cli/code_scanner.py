@@ -119,24 +119,16 @@ class CodeFinding:
     line_text: str
 
 
-def _suggested_env_var(entry: ProviderEntry) -> str:
-    """Derive the env-var name a user should switch to for a given provider."""
-    return f"{entry.name.upper()}_BASE_URL"
-
-
-def _is_excluded_path(path: Path, excluded_dirs: frozenset[str] = _EXCLUDED_DIRS) -> bool:
+def _is_excluded_path(path: Path, excluded_dirs: frozenset[str]) -> bool:
     """True if any path component is in the directory excludelist or the
     basename matches an excluded file pattern."""
-    parts = set(path.parts)
-    if parts & excluded_dirs:
+    if not excluded_dirs.isdisjoint(path.parts):
         return True
 
     name = path.name
     if name in _EXCLUDED_FILE_BASENAMES:
         return True
-    if any(name.endswith(suffix) for suffix in _EXCLUDED_FILE_SUFFIXES):
-        return True
-    return False
+    return name.endswith(_EXCLUDED_FILE_SUFFIXES)
 
 
 def _list_files_git(root: Path) -> list[Path] | None:
@@ -202,14 +194,11 @@ def _candidate_files(root: Path, excluded_dirs: frozenset[str] = _EXCLUDED_DIRS)
         try:
             if not f.is_file():
                 continue
-            if _is_excluded_path(
-                f.relative_to(root) if f.is_absolute() and root in f.parents else f,
-                excluded_dirs,
-            ):
-                continue
-            # Belt and braces: also check the absolute path components in
-            # case an exclude lives above ``root``.
-            if any(part in excluded_dirs for part in f.parts):
+            # Check absolute parts so excludes living above ``root`` (e.g.
+            # scanning a project inside node_modules/) still prune. The
+            # full-parts check subsumes a relative-path check, so we don't
+            # also rebuild the relative path here.
+            if _is_excluded_path(f, excluded_dirs):
                 continue
             if f.suffix.lower() not in _SCANNED_EXTENSIONS:
                 continue
@@ -232,6 +221,10 @@ def _scan_one_file(
         logger.debug("code_scanner: skipping %s (%s)", path, exc)
         return []
 
+    text_lower = text.casefold()
+    if not any(url in text_lower for url in registry_lower):
+        return []
+
     findings: list[CodeFinding] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
         line_lower = line.casefold()
@@ -246,7 +239,7 @@ def _scan_one_file(
                     column=idx + 1,
                     matched_url=entry.url,
                     provider_name=entry.name,
-                    suggested_env_var=_suggested_env_var(entry),
+                    suggested_env_var=f"{entry.name.upper()}_BASE_URL",
                     line_text=line,
                 )
             )
