@@ -125,13 +125,12 @@ class CodeFinding:
 def _is_excluded_path(path: Path, excluded_dirs: frozenset[str]) -> bool:
     """True if any path component is in the directory excludelist or the
     basename matches an excluded file pattern."""
-    if not excluded_dirs.isdisjoint(path.parts):
-        return True
-
     name = path.name
-    if name in _EXCLUDED_FILE_BASENAMES:
-        return True
-    return name.endswith(_EXCLUDED_FILE_SUFFIXES)
+    return (
+        not excluded_dirs.isdisjoint(path.parts)
+        or name in _EXCLUDED_FILE_BASENAMES
+        or name.endswith(_EXCLUDED_FILE_SUFFIXES)
+    )
 
 
 def _list_files_git(root: Path) -> list[Path] | None:
@@ -169,7 +168,11 @@ def _list_files_git(root: Path) -> list[Path] | None:
     for raw in result.stdout.split(b"\0"):
         if not raw:
             continue
-        f = root / os.fsdecode(raw)
+        try:
+            f = root / os.fsdecode(raw)
+        except (UnicodeDecodeError, ValueError):
+            logger.debug("code_scanner: skipping non-decodable git path %r", raw)
+            continue
         if f.is_symlink():
             continue
         files.append(f)
@@ -183,8 +186,7 @@ def _list_files_walk(root: Path, excluded_dirs: frozenset[str] = _EXCLUDED_DIRS)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         # In-place mutation prunes the descent — must be a list assignment.
         dirnames[:] = [d for d in dirnames if d not in excluded_dirs]
-        for name in filenames:
-            files.append(Path(dirpath) / name)
+        files.extend(Path(dirpath) / name for name in filenames)
     return files
 
 
@@ -210,20 +212,18 @@ def _candidate_files(root: Path, excluded_dirs: frozenset[str] = _EXCLUDED_DIRS)
             # Use the path *relative* to root so parent directories above the
             # scan root (e.g. /home/user/dist/myproject → "dist" in root's
             # ancestors) don't incorrectly match the excludelist.
-            try:
-                f_rel = f.relative_to(root)
-            except ValueError:
-                continue  # f is not under root — shouldn't happen, skip
+            f_rel = f.relative_to(root)
             if _is_excluded_path(f_rel, excluded_dirs):
                 continue
             if f.suffix.lower() not in _SCANNED_EXTENSIONS:
                 continue
-            st = f.stat()
+            # lstat: skip symlinks in walk-mode without following them.
+            st = f.lstat()
             if not _stat.S_ISREG(st.st_mode):
                 continue
             if st.st_size > _MAX_FILE_BYTES:
                 continue
-        except OSError:
+        except (OSError, ValueError):
             continue
         candidates.append(f)
     return candidates
@@ -259,6 +259,9 @@ def _scan_one_file(
                     matched_url=entry.url,
                     provider_name=entry.name,
                     suggested_env_var=f"{entry.name.upper()}_BASE_URL",
+                    # KEY_PATTERN covers OpenAI/Anthropic/Google/xAI prefixes;
+                    # keys from other providers (AWS, GitHub, HF, Groq) appear
+                    # unredacted. Known gap — not a security boundary.
                     line_text=KEY_PATTERN.sub("[REDACTED]", line),
                 )
             )
@@ -284,7 +287,13 @@ def scan_for_hardcoded_provider_urls(
         Findings in (file, line) order across all roots. Empty when no
         provider registry is configured or no candidates match.
     """
-    registry = load_registry()
+    try:
+        registry = load_registry()
+    except Exception as exc:
+        logger.warning(
+            "code_scanner: failed to load provider registry (%s); skipping code scan", exc
+        )
+        return []
     if not registry:
         return []
 

@@ -158,6 +158,22 @@ class TestCodeScanBadFlow:
     def test_empty_repo_zero_findings(self, tmp_path: Path) -> None:
         assert scan_for_hardcoded_provider_urls([tmp_path]) == []
 
+    def test_registry_load_failure_degrades_gracefully(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # When load_registry() raises (corrupt providers.toml, I/O error,
+        # etc.) the scanner must return [] rather than propagating the
+        # exception to the caller.
+        write(tmp_path / "app.py", '"https://api.openai.com/v1"\n')
+
+        def boom():
+            raise RuntimeError("providers.toml is corrupt")
+
+        monkeypatch.setattr("worthless.cli.code_scanner.load_registry", boom)
+
+        findings = scan_for_hardcoded_provider_urls([tmp_path])
+        assert findings == []
+
     def test_huge_file_skipped(self, tmp_path: Path) -> None:
         huge = tmp_path / "huge.py"
         huge.write_text("x = 1\n" * (220_000), encoding="utf-8")
@@ -262,6 +278,23 @@ class TestCodeScanConvolutedFlow:
         write(tmp_path / "app.min.js", '"https://api.openai.com/v1"\n')
         findings = scan_for_hardcoded_provider_urls([tmp_path])
         assert findings == []
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="symlink creation requires elevated permissions on Windows"
+    )
+    def test_symlink_cycle_doesnt_hang(self, tmp_path: Path) -> None:
+        # a → b → a directory symlink cycle; os.walk(followlinks=False) must
+        # not follow symlink directories, so the scan completes without hanging.
+        a = tmp_path / "cycle_a"
+        b = tmp_path / "cycle_b"
+        a.mkdir()
+        b.mkdir()
+        (a / "link_to_b").symlink_to(b)
+        (b / "link_to_a").symlink_to(a)
+        write(tmp_path / "safe.py", '"https://api.openai.com/v1"\n')
+
+        findings = scan_for_hardcoded_provider_urls([tmp_path])
+        assert any(f.file.endswith("safe.py") for f in findings)
 
     def test_md_doc_with_url_in_code_fence_is_flagged(self, tmp_path: Path) -> None:
         write(

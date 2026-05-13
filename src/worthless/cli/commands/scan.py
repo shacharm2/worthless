@@ -455,10 +455,14 @@ def register_scan_commands(app: typer.Typer) -> None:
                 # stat(2) runs at 5-15 ms each instead of ~5 µs on native
                 # filesystems. Warn early so a multi-second scan doesn't
                 # look like a hang.
+                # WSL_DISTRO_NAME (WSL2) or WSL_INTEROP (WSL1) are the
+                # canonical env vars set by Windows Subsystem for Linux.
+                # Checking /mnt/ prefix would false-positive on any Linux
+                # mount (NFS, USB, EFS), so we use the env vars instead.
                 if not console.quiet and fmt not in ("json", "sarif"):
-                    if any(str(p.resolve()).startswith("/mnt/") for p in code_roots):
+                    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
                         sys.stderr.write(
-                            "Note: scanning on WSL /mnt/ — stat(2) crosses the "
+                            "Note: running on WSL — stat(2) crosses the "
                             "Windows filesystem boundary; large repos may take "
                             "several seconds.\n"
                         )

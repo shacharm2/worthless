@@ -128,44 +128,21 @@ class TestScanCodeEdges:
         assert result.exit_code == 0
         assert "COPY THIS TO YOUR AI AGENT" not in result.stderr
 
-    def test_wsl_mnt_path_emits_performance_warning(
+    def test_wsl_env_var_emits_performance_warning(
         self, project_with_hardcoded_url: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Simulate a WSL /mnt/c path by patching resolve() on the cwd.
-        # The warning fires before the scan so the user knows a slow scan
-        # is expected, not a hang.
-        from pathlib import Path as _Path
-
-        original_resolve = _Path.resolve
-
-        def fake_resolve(self, strict=False):
-            result = original_resolve(self, strict=strict)
-            if result == project_with_hardcoded_url:
-                return _Path("/mnt/c/myproject")
-            return result
-
-        monkeypatch.setattr(_Path, "resolve", fake_resolve)
-
+        # Simulate WSL by setting the canonical env var (WSL_DISTRO_NAME for
+        # WSL2). The warning fires before the scan so the user knows a slow
+        # scan is expected, not a hang.
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
         result = runner.invoke(app, ["scan", "--code", "--no-ai-prompt"])
         assert result.exit_code == 0
         assert "WSL" in result.stderr
-        assert "/mnt/" in result.stderr
 
     def test_wsl_warning_suppressed_in_json_mode(
         self, project_with_hardcoded_url: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from pathlib import Path as _Path
-
-        original_resolve = _Path.resolve
-
-        def fake_resolve(self, strict=False):
-            result = original_resolve(self, strict=strict)
-            if result == project_with_hardcoded_url:
-                return _Path("/mnt/c/myproject")
-            return result
-
-        monkeypatch.setattr(_Path, "resolve", fake_resolve)
-
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
         result = runner.invoke(app, ["scan", "--code", "--json"])
         assert result.exit_code == 0
         assert "WSL" not in result.stdout
