@@ -21,6 +21,21 @@ from tests.helpers import fake_openai_key
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _patch_delete_fernet_key(request):
+    """Suppress real keychain calls in all tests except TestRevokeKeychainCleanup.
+
+    My changes make delete_fernet_key fire on every last-enrollment revoke.
+    Tests that don't specifically assert on keychain behaviour should not hit
+    the real OS keyring — that causes macOS Keychain dialogs during local runs.
+    """
+    if "TestRevokeKeychainCleanup" in request.node.nodeid:
+        yield
+        return
+    with patch("worthless.cli.commands.revoke.delete_fernet_key"):
+        yield
+
+
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
