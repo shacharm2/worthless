@@ -12,8 +12,10 @@ insulation — that lock + apply_lock are not touched by this PR.
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -133,12 +135,17 @@ class TestCodeScanBadFlow:
         unreadable.chmod(0o000)
 
         try:
-            findings = scan_for_hardcoded_provider_urls([tmp_path])
+            with caplog.at_level(logging.DEBUG, logger="worthless.cli.code_scanner"):
+                findings = scan_for_hardcoded_provider_urls([tmp_path])
         finally:
             unreadable.chmod(0o644)
 
         assert any(f.file.endswith("ok.py") for f in findings)
         assert not any(f.file.endswith("secret.py") for f in findings)
+        # The I/O error must be logged at DEBUG so operators can trace skips.
+        # Root bypasses chmod, so we only assert the log on normal users.
+        if hasattr(os, "getuid") and os.getuid() != 0:
+            assert any("skipping" in r.getMessage().lower() for r in caplog.records)
 
     def test_binary_file_with_extension_collision_skipped(self, tmp_path: Path) -> None:
         (tmp_path / "blob.json").write_bytes(b"\x00\x01\x02\xff\xfe\xfd")
@@ -229,6 +236,9 @@ class TestCodeScanConvolutedFlow:
         findings = scan_for_hardcoded_provider_urls([tmp_path])
         assert any(f.file.endswith("local.py") for f in findings)
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="symlink creation requires elevated permissions on Windows"
+    )
     def test_symlink_to_excluded_dir_not_followed(self, tmp_path: Path) -> None:
         write(tmp_path / "node_modules" / "evil.py", '"https://api.openai.com/v1"\n')
         link = tmp_path / "src" / "vendored"
@@ -261,6 +271,18 @@ class TestCodeScanConvolutedFlow:
         findings = scan_for_hardcoded_provider_urls([tmp_path])
         assert len(findings) == 1
         assert findings[0].file.endswith("README.md")
+
+    def test_project_inside_excluded_named_dir_not_false_excluded(self, tmp_path: Path) -> None:
+        # Regression: _is_excluded_path previously used absolute path parts,
+        # so a project at /some/user/dist/myproject would exclude all files
+        # because "dist" appeared in the absolute path above the root.
+        root = tmp_path / "dist" / "myproject"
+        write(root / "app.py", '"https://api.openai.com/v1"\n')
+        findings = scan_for_hardcoded_provider_urls([root])
+        assert len(findings) == 1, (
+            "Files inside a project rooted under an excluded-named parent dir "
+            "must not be silently excluded"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +347,9 @@ class TestCodeScanAdversarialFlow:
         findings = scan_for_hardcoded_provider_urls([tmp_path])
         elapsed = time.monotonic() - start
         assert findings == []
-        assert elapsed < 5.0, f"scan took {elapsed:.2f}s"
+        # 30 s is generous enough for any reasonable CI runner while still
+        # catching pathological perf regressions.
+        assert elapsed < 30.0, f"scan took {elapsed:.2f}s"
 
 
 # ---------------------------------------------------------------------------

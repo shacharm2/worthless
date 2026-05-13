@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import os
 import stat as _stat
-import subprocess
+import subprocess  # nosec B404
 from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Iterable
@@ -143,10 +143,19 @@ def _list_files_git(root: Path) -> list[Path] | None:
     try:
         # ``git`` from PATH is intentional — pinning to /usr/bin/git breaks
         # Windows/WSL (the target-user happy path per project_target_users).
-        result = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard"],  # noqa: S607
+        result = subprocess.run(  # nosec B603,B607
+            [  # noqa: S607
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ],
             capture_output=True,
-            text=True,
+            text=False,  # bytes; -z gives NUL-delimited output → handles non-ASCII filenames
             check=False,
             timeout=10,
         )
@@ -157,10 +166,10 @@ def _list_files_git(root: Path) -> list[Path] | None:
         return None
 
     files: list[Path] = []
-    for rel in result.stdout.splitlines():
-        if not rel:
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
             continue
-        f = root / rel
+        f = root / os.fsdecode(raw)
         if f.is_symlink():
             continue
         files.append(f)
@@ -198,9 +207,14 @@ def _candidate_files(root: Path, excluded_dirs: frozenset[str] = _EXCLUDED_DIRS)
         # that covers both the is-regular-file and size guard. OSError on
         # any of these means the file vanished or is unreadable — skip it.
         try:
-            # Check absolute parts so excludes living above ``root`` (e.g.
-            # scanning a project inside node_modules/) still prune.
-            if _is_excluded_path(f, excluded_dirs):
+            # Use the path *relative* to root so parent directories above the
+            # scan root (e.g. /home/user/dist/myproject → "dist" in root's
+            # ancestors) don't incorrectly match the excludelist.
+            try:
+                f_rel = f.relative_to(root)
+            except ValueError:
+                continue  # f is not under root — shouldn't happen, skip
+            if _is_excluded_path(f_rel, excluded_dirs):
                 continue
             if f.suffix.lower() not in _SCANNED_EXTENSIONS:
                 continue
