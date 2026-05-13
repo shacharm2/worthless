@@ -451,6 +451,18 @@ def register_scan_commands(app: typer.Typer) -> None:
                             f"Path not found: {p}",
                             exit_code=2,
                         )
+                # WSL /mnt/ paths cross the Windows filesystem boundary;
+                # stat(2) runs at 5-15 ms each instead of ~5 µs on native
+                # filesystems. Warn early so a multi-second scan doesn't
+                # look like a hang.
+                if not console.quiet and fmt not in ("json", "sarif"):
+                    if any(str(p.resolve()).startswith("/mnt/") for p in code_roots):
+                        sys.stderr.write(
+                            "Note: scanning on WSL /mnt/ — stat(2) crosses the "
+                            "Windows filesystem boundary; large repos may take "
+                            "several seconds.\n"
+                        )
+                        sys.stderr.flush()
                 code_findings = scan_for_hardcoded_provider_urls(code_roots)
 
             # Output
