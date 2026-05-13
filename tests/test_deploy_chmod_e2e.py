@@ -382,3 +382,84 @@ def test_flag_on_chowns_to_crypto_owner_and_locks_proxy_out(image: str) -> None:
         )
     finally:
         _cleanup(cnt, vol)
+
+
+def test_default_locks_proxy_out_without_explicit_flag(image: str) -> None:
+    """WOR-465 A4: Dockerfile ENV default=1 makes locked state the default.
+
+    Without any WORTHLESS_FERNET_IPC_ONLY in the operator's env, the Docker
+    image must still enforce worthless-crypto:worthless-crypto 0400 — the
+    security claim must be opt-out (hard to weaken), not opt-in (easy to miss).
+
+    RED before A4: Dockerfile ENV block lacks WORTHLESS_FERNET_IPC_ONLY=1,
+    so the entrypoint defaults to root:worthless 0440 (proxy-readable).
+    GREEN after A4: Dockerfile adds ENV WORTHLESS_FERNET_IPC_ONLY=1 and
+    entrypoint removes the conditional.
+    """
+    vol = f"chmod-default-locked-{uuid.uuid4().hex[:8]}"
+    cnt = f"chmod-default-locked-{uuid.uuid4().hex[:8]}"
+    try:
+        _seed_fernet_key(image, vol)
+        # Deliberately do NOT set WORTHLESS_FERNET_IPC_ONLY — the Dockerfile
+        # ENV default must carry the security claim without operator action.
+        _run_entrypoint(
+            image,
+            vol,
+            cnt,
+            env={
+                "WORTHLESS_FERNET_KEY_PATH": "/secrets/fernet.key",
+                "WORTHLESS_DEPLOY_MODE": "lan",
+                "WORTHLESS_ALLOW_INSECURE": "true",
+                "WORTHLESS_HOST": "0.0.0.0",
+            },
+        )
+
+        owner_mode = _stat(image, vol, "fernet.key")
+        assert owner_mode == "worthless-crypto:worthless-crypto 400", (
+            "WOR-465 A4: without explicit WORTHLESS_FERNET_IPC_ONLY, the "
+            "Dockerfile ENV default must enforce worthless-crypto:worthless-crypto 0400. "
+            f"Got {owner_mode!r}. The security claim must be the default, "
+            "not opt-in — an operator who doesn't read the docs must still "
+            "get the locked-down state."
+        )
+
+        # Kernel confirms: proxy uid has no read path (not in gid 10002).
+        proxy_rc, proxy_out = _read_as(image, vol, "worthless-proxy", "fernet.key")
+        assert proxy_rc != 0, (
+            "WOR-465 A4: worthless-proxy uid MUST NOT be able to read "
+            "fernet.key in the default Docker configuration (no explicit flag). "
+            f"Got rc={proxy_rc}. This is the load-bearing claim: a Docker "
+            "deployment without extra configuration is not vulnerable to "
+            "offline key theft via proxy RCE."
+        )
+    finally:
+        _cleanup(cnt, vol)
+
+
+def test_fernet_fd_not_in_entrypoint() -> None:
+    """WOR-465 A4: entrypoint.sh must not open or export WORTHLESS_FERNET_FD.
+
+    Adversarial review identified this as the BLOCKER: even without the
+    export, 'exec 3< fernet.key' leaves an open fd that uvicorn inherits
+    (POSIX exec preserves fds without O_CLOEXEC). A proxy-RCE attacker
+    can enumerate /proc/self/fd/ and read fd 3 regardless of file
+    permissions. Both lines must be absent from the shipped entrypoint.
+
+    RED before A4: entrypoint.sh still has both lines.
+    GREEN after A4: both lines are removed.
+    """
+    entrypoint = REPO_ROOT / "deploy" / "entrypoint.sh"
+    text = entrypoint.read_text()
+
+    assert "exec 3< " not in text, (
+        "WOR-465 A4: 'exec 3< fernet.key' must be removed from entrypoint.sh. "
+        "Without removal, fd 3 is inherited by uvicorn (POSIX exec does not "
+        "close fds without O_CLOEXEC) and readable by a proxy-RCE attacker "
+        "via /proc/self/fd/3, bypassing the worthless-crypto:worthless-crypto "
+        "0400 permission entirely."
+    )
+    assert "WORTHLESS_FERNET_FD" not in text, (
+        "WOR-465 A4: 'WORTHLESS_FERNET_FD' export must be removed from "
+        "entrypoint.sh. The proxy no longer reads fernet.key directly; "
+        "the sidecar holds it and the proxy uses IPC verbs."
+    )
