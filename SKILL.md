@@ -1,3 +1,25 @@
+---
+name: worthless
+description: Split-key proxy that makes leaked API keys worthless. Run `worthless lock` to protect LLM API keys with an enforced spend cap — if the cap is hit, the key never reconstructs.
+homepage: https://wless.io
+metadata:
+  openclaw:
+    emoji: 🛡️
+    requires:
+      bins: [worthless]
+    install:
+      - id: uv
+        kind: shell
+        command: uv tool install worthless
+        bins: [worthless]
+        label: Install worthless (uv — recommended)
+      - id: pip
+        kind: shell
+        command: pip install worthless
+        bins: [worthless]
+        label: Install worthless (pip)
+---
+
 # Worthless Agent Discovery File (SKILL.md)
 
 **Worthless** is a split-key reverse proxy that makes leaked API keys worthless. API keys are split into two information-theoretically secure shards: one stays on the user's machine, one is encrypted on the proxy. The real key only reconstructs in memory for a single API call, then is zeroed. If spending limits are hit, the key never forms at all.
@@ -20,7 +42,7 @@ Worthless scans for **LLM provider API key prefixes only** — currently `openai
 
 ### Package Info
 - **Package name**: `worthless`
-- **Version**: 0.3.5
+- **Version**: 0.3.6
 - **Entry point**: `worthless` (CLI command)
 - **Python**: 3.10+
 - **License**: AGPL-3.0
