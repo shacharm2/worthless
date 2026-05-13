@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,40 @@ from tests.conftest import make_repo as _repo
 from tests.helpers import fake_anthropic_key, fake_key, fake_openai_key
 
 runner = CliRunner()
+
+
+# ---------------------------------------------------------------------------
+# Live test helpers — one per provider type.
+# Add a new function here when worthless supports a non-LLM provider.
+# ---------------------------------------------------------------------------
+
+
+def _verify_upstream_response_openai(data: dict) -> None:
+    """Layer-2 for OpenAI-protocol providers (OpenAI, OpenRouter, Gemini-OpenAI-compat).
+
+    200 = success; 429 = quota/rate-limit — both prove the key reached upstream.
+    """
+    status = data["status"]
+    body = data.get("body", {})
+    assert status in (200, 429), (
+        f"Expected 200 or 429 from OpenAI-protocol upstream, got {status}. body: {body}"
+    )
+    if status == 200:
+        assert "choices" in body, f"Missing 'choices' in 200 response: {body}"
+
+
+def _verify_upstream_response_anthropic(data: dict) -> None:
+    """Layer-2 for Anthropic-protocol providers.
+
+    200 = success; 529 = overloaded; 429 = rate-limit — all prove the key reached upstream.
+    """
+    status = data["status"]
+    body = data.get("body", {})
+    assert status in (200, 429, 529), (
+        f"Expected 200/429/529 from Anthropic upstream, got {status}. body: {body}"
+    )
+    if status == 200:
+        assert "content" in body, f"Missing 'content' in 200 response: {body}"
 
 
 # ---------------------------------------------------------------------------
@@ -1273,3 +1308,188 @@ class TestEnrollCommand:
         repo = _repo(home_dir)
         aliases = asyncio.run(repo.list_keys())
         assert aliases == []
+
+
+class TestLockBaseUrlSlotPriority:
+    """worthless-sb8v: canonical <PROVIDER>_API_KEY wins OPENAI_BASE_URL slot."""
+
+    def test_canonical_key_wins_base_url_slot_over_noncanonical(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """When .env has both OPENAI_API_KEY and a non-canonical OpenAI key,
+        OPENAI_BASE_URL must point to OPENAI_API_KEY's alias — not API_KEY's.
+
+        Before the fix: file-order determined the winner. API_KEY's alias
+        claimed OPENAI_BASE_URL, so sending OPENAI_API_KEY's shard-A to
+        that route produced a 401 (commitment mismatch). (worthless-sb8v)
+        """
+        from dotenv import dotenv_values
+
+        canonical_key = fake_openai_key()
+        noncanonical_key = fake_openai_key()
+        env = tmp_path / ".env"
+        # Non-canonical key appears FIRST — before the fix it would win the slot.
+        env.write_text(f"API_KEY={noncanonical_key}\nOPENAI_API_KEY={canonical_key}\n")
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        parsed = dotenv_values(env)
+        base_url = parsed.get("OPENAI_BASE_URL", "")
+        assert base_url, "OPENAI_BASE_URL should have been added by lock"
+
+        # The alias in OPENAI_BASE_URL must belong to OPENAI_API_KEY, not API_KEY.
+        alias_in_url = base_url.rstrip("/").rsplit("/", 2)[-2]
+
+        repo = _repo(home_dir)
+        enrollments = asyncio.run(repo.list_enrollments())
+        canonical_enrollment = next(
+            (e for e in enrollments if e.var_name == "OPENAI_API_KEY"), None
+        )
+        assert canonical_enrollment is not None, "OPENAI_API_KEY should be enrolled"
+        assert canonical_enrollment.key_alias == alias_in_url, (
+            f"OPENAI_BASE_URL points to alias {alias_in_url!r} but "
+            f"OPENAI_API_KEY enrolled as {canonical_enrollment.key_alias!r} — "
+            "non-canonical key claimed the slot (worthless-sb8v regression)"
+        )
+
+    @pytest.mark.live
+    @pytest.mark.timeout(120)
+    def test_canonical_key_routes_correctly_live(self, tmp_path: Path) -> None:
+        """Live round-trip: OPENAI_API_KEY's shard-A must authenticate through
+        the proxy when a non-canonical key appears first in .env.
+
+        Skipped unless OPENAI_API_KEY is set in the environment.
+        Proves the DB alias check above actually maps to a working proxy route.
+
+        Two-layer verification:
+          1. Proxy auth layer (provider-agnostic): status must not be 401.
+             A proxy 401 means alias mismatch — wrong key claimed the slot.
+          2. LLM response layer (OpenAI-specific): 200/429 and choices present.
+             Extend _verify_upstream_response() below for other provider types.
+        """
+        import os
+        import subprocess
+        import sys
+        import json
+
+        real_key = os.environ.get("OPENAI_API_KEY")
+        if not real_key:
+            pytest.skip("OPENAI_API_KEY not set")
+
+        worthless_home = tmp_path / ".worthless"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        env_file = project_dir / ".env"
+        # Non-canonical key first — this is the exact bug scenario
+        env_file.write_text(f"API_KEY=sk-fake-noncanonical-key\nOPENAI_API_KEY={real_key}\n")
+
+        cli_env = {
+            **os.environ,
+            "WORTHLESS_HOME": str(worthless_home),
+            "WORTHLESS_KEYRING_BACKEND": "null",
+        }
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(worthless_home), "WORTHLESS_KEYRING_BACKEND": "null"},
+        )
+        assert result.exit_code == 0, f"lock failed: {result.output}"
+
+        # Child script: provider-agnostic probe — reads base_url + key from
+        # .env, fires a minimal request, reports status + optional body.
+        # Add entries to the PROVIDER_PROBES dict to support non-LLM providers.
+        child = textwrap.dedent("""\
+            import os, json, httpx, textwrap
+            from dotenv import dotenv_values
+
+            env = dotenv_values(os.environ["WORTHLESS_TEST_ENV_PATH"])
+
+            PROVIDER_PROBES = {
+                "openai": {
+                    "base_url_var": "OPENAI_BASE_URL",
+                    "key_var": "OPENAI_API_KEY",
+                    "auth_header": lambda k: {"Authorization": f"Bearer {k}"},
+                    "path": "/chat/completions",
+                    "body": {"model": "gpt-4o-mini", "max_tokens": 1,
+                             "messages": [{"role": "user", "content": "hi"}]},
+                },
+                "anthropic": {
+                    "base_url_var": "ANTHROPIC_BASE_URL",
+                    "key_var": "ANTHROPIC_API_KEY",
+                    "auth_header": lambda k: {"x-api-key": k,
+                                              "anthropic-version": "2023-06-01"},
+                    "path": "/messages",
+                    "body": {"model": "claude-haiku-4-5-20251001", "max_tokens": 1,
+                             "messages": [{"role": "user", "content": "hi"}]},
+                },
+                "openrouter": {
+                    "base_url_var": "OPENROUTER_BASE_URL",
+                    "key_var": "OPENROUTER_API_KEY",
+                    "auth_header": lambda k: {"Authorization": f"Bearer {k}"},
+                    "path": "/chat/completions",
+                    "body": {"model": "openai/gpt-4o-mini", "max_tokens": 1,
+                             "messages": [{"role": "user", "content": "hi"}]},
+                },
+            }
+
+            provider = os.environ.get("WORTHLESS_TEST_PROVIDER", "openai")
+            probe = PROVIDER_PROBES[provider]
+            base = env.get(probe["base_url_var"], "")
+            key  = env.get(probe["key_var"], "")
+            r = httpx.post(
+                base.rstrip("/") + probe["path"],
+                json=probe["body"],
+                headers=probe["auth_header"](key),
+                timeout=60.0,
+            )
+            try:
+                body = r.json()
+            except Exception:
+                body = r.text
+            print(json.dumps({"status": r.status_code, "body": body}))
+        """)
+
+        proc = subprocess.run(
+            [
+                str(Path(sys.executable).parent / "worthless"),
+                "wrap",
+                "--",
+                sys.executable,
+                "-c",
+                child,
+            ],
+            env={
+                **cli_env,
+                "WORTHLESS_TEST_ENV_PATH": str(env_file),
+                "WORTHLESS_TEST_PROVIDER": "openai",
+            },
+            timeout=90,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, (
+            f"wrap failed (rc={proc.returncode}):\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
+        )
+
+        data = json.loads(proc.stdout.strip())
+
+        # Layer 1 — proxy auth (provider-agnostic).
+        # 401 here = proxy rejected shard-A = alias mismatch = bug still present.
+        assert data["status"] != 401, (
+            f"Proxy returned 401 — shard-A routed to wrong alias (worthless-sb8v). "
+            f"body: {data.get('body')}"
+        )
+
+        # Layer 2 — provider-specific response validation.
+        _RESPONSE_VERIFIERS = {
+            "openai": _verify_upstream_response_openai,
+            "anthropic": _verify_upstream_response_anthropic,
+            "openrouter": _verify_upstream_response_openai,  # same wire protocol
+        }
+        _RESPONSE_VERIFIERS["openai"](data)

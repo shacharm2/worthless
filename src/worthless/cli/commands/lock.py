@@ -453,21 +453,36 @@ def _batch_rewrite(
     updates: dict[str, str] = {p.var_name: p.shard_a.decode("utf-8") for p in planned}
     additions: dict[str, str] = {}
     if not keys_only:
+        # When multiple keys share the same base_url_var slot (e.g. both
+        # OPENAI_API_KEY and API_KEY derive OPENAI_BASE_URL), the canonical
+        # <PREFIX>_API_KEY name wins regardless of file order. Without this,
+        # a non-canonical key's alias can claim the slot and the canonical
+        # key's shard-A gets routed to the wrong alias → 401. (worthless-sb8v)
+        slot_winner: dict[str, _PlannedUpdate] = {}
         for p in planned:
+            if not p.base_url_var:
+                continue
+            existing_winner = slot_winner.get(p.base_url_var)
+            if existing_winner is None:
+                slot_winner[p.base_url_var] = p
+                continue
+            canonical_var = p.base_url_var[: -len("_BASE_URL")] + "_API_KEY"
+            if p.var_name == canonical_var:
+                slot_winner[p.base_url_var] = p
+
+        for slot, p in slot_winner.items():
             local_proxy = _proxy_base_url(p.alias)
-            if p.base_url_var in existing_env_keys:
+            if slot in existing_env_keys:
                 # User already has e.g. OPENROUTER_BASE_URL=<upstream>;
                 # rewrite the value to the local proxy URL (the upstream
                 # value was already captured into the DB at pass-1 time).
-                updates[p.base_url_var] = local_proxy
-            elif (
-                p.base_url_var and p.base_url_var not in updates and p.base_url_var not in additions
-            ):
+                updates[slot] = local_proxy
+            elif slot not in updates:
                 # Fresh: lock auto-creates the BASE_URL var with a one-line
                 # stderr notice so the user knows something was added.
-                additions[p.base_url_var] = local_proxy
+                additions[slot] = local_proxy
                 sys.stderr.write(
-                    f"worthless: added {p.base_url_var}={local_proxy} to {env_path} (was missing)\n"
+                    f"worthless: added {slot}={local_proxy} to {env_path} (was missing)\n"
                 )
                 sys.stderr.flush()
 
