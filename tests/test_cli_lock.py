@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import os
 import sqlite3
+import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -15,43 +19,14 @@ from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 
 from tests.conftest import make_repo as _repo
-from tests.helpers import fake_anthropic_key, fake_key, fake_openai_key
+from tests.helpers import (
+    fake_anthropic_key,
+    fake_key,
+    fake_openai_key,
+    verify_upstream_response_openai,
+)
 
 runner = CliRunner()
-
-
-# ---------------------------------------------------------------------------
-# Live test helpers — one per provider type.
-# Add a new function here when worthless supports a non-LLM provider.
-# ---------------------------------------------------------------------------
-
-
-def _verify_upstream_response_openai(data: dict) -> None:
-    """Layer-2 for OpenAI-protocol providers (OpenAI, OpenRouter, Gemini-OpenAI-compat).
-
-    200 = success; 429 = quota/rate-limit — both prove the key reached upstream.
-    """
-    status = data["status"]
-    body = data.get("body", {})
-    assert status in (200, 429), (
-        f"Expected 200 or 429 from OpenAI-protocol upstream, got {status}. body: {body}"
-    )
-    if status == 200:
-        assert "choices" in body, f"Missing 'choices' in 200 response: {body}"
-
-
-def _verify_upstream_response_anthropic(data: dict) -> None:
-    """Layer-2 for Anthropic-protocol providers.
-
-    200 = success; 529 = overloaded; 429 = rate-limit — all prove the key reached upstream.
-    """
-    status = data["status"]
-    body = data.get("body", {})
-    assert status in (200, 429, 529), (
-        f"Expected 200/429/529 from Anthropic upstream, got {status}. body: {body}"
-    )
-    if status == 200:
-        assert "content" in body, f"Missing 'content' in 200 response: {body}"
 
 
 # ---------------------------------------------------------------------------
@@ -1310,6 +1285,61 @@ class TestEnrollCommand:
         assert aliases == []
 
 
+# Child script for TestLockBaseUrlSlotPriority live tests.
+# Reads base_url + key from .env, fires a minimal LLM request, prints JSON result.
+# Add entries to PROVIDER_PROBES to support additional providers.
+_LIVE_PROBE_CHILD = textwrap.dedent("""\
+    import os, json, httpx
+    from dotenv import dotenv_values
+
+    env = dotenv_values(os.environ["WORTHLESS_TEST_ENV_PATH"])
+
+    PROVIDER_PROBES = {
+        "openai": {
+            "base_url_var": "OPENAI_BASE_URL",
+            "key_var": "OPENAI_API_KEY",
+            "auth_header": lambda k: {"Authorization": f"Bearer {k}"},
+            "path": "/chat/completions",
+            "body": {"model": "gpt-4o-mini", "max_tokens": 1,
+                     "messages": [{"role": "user", "content": "hi"}]},
+        },
+        "anthropic": {
+            "base_url_var": "ANTHROPIC_BASE_URL",
+            "key_var": "ANTHROPIC_API_KEY",
+            "auth_header": lambda k: {"x-api-key": k,
+                                      "anthropic-version": "2023-06-01"},
+            "path": "/messages",
+            "body": {"model": "claude-haiku-4-5-20251001", "max_tokens": 1,
+                     "messages": [{"role": "user", "content": "hi"}]},
+        },
+        "openrouter": {
+            "base_url_var": "OPENROUTER_BASE_URL",
+            "key_var": "OPENROUTER_API_KEY",
+            "auth_header": lambda k: {"Authorization": f"Bearer {k}"},
+            "path": "/chat/completions",
+            "body": {"model": "openai/gpt-4o-mini", "max_tokens": 1,
+                     "messages": [{"role": "user", "content": "hi"}]},
+        },
+    }
+
+    provider = os.environ.get("WORTHLESS_TEST_PROVIDER", "openai")
+    probe = PROVIDER_PROBES[provider]
+    base = env.get(probe["base_url_var"], "")
+    key  = env.get(probe["key_var"], "")
+    r = httpx.post(
+        base.rstrip("/") + probe["path"],
+        json=probe["body"],
+        headers=probe["auth_header"](key),
+        timeout=60.0,
+    )
+    try:
+        body = r.json()
+    except Exception:
+        body = r.text
+    print(json.dumps({"status": r.status_code, "body": body}))
+""")
+
+
 class TestLockBaseUrlSlotPriority:
     """worthless-sb8v: canonical <PROVIDER>_API_KEY wins OPENAI_BASE_URL slot."""
 
@@ -1360,23 +1390,7 @@ class TestLockBaseUrlSlotPriority:
     @pytest.mark.live
     @pytest.mark.timeout(120)
     def test_canonical_key_routes_correctly_live(self, tmp_path: Path) -> None:
-        """Live round-trip: OPENAI_API_KEY's shard-A must authenticate through
-        the proxy when a non-canonical key appears first in .env.
-
-        Skipped unless OPENAI_API_KEY is set in the environment.
-        Proves the DB alias check above actually maps to a working proxy route.
-
-        Two-layer verification:
-          1. Proxy auth layer (provider-agnostic): status must not be 401.
-             A proxy 401 means alias mismatch — wrong key claimed the slot.
-          2. LLM response layer (OpenAI-specific): 200/429 and choices present.
-             Extend _verify_upstream_response() below for other provider types.
-        """
-        import os
-        import subprocess
-        import sys
-        import json
-
+        """Live: shard-A authenticates via proxy when non-canonical key appears first in .env."""
         real_key = os.environ.get("OPENAI_API_KEY")
         if not real_key:
             pytest.skip("OPENAI_API_KEY not set")
@@ -1401,60 +1415,6 @@ class TestLockBaseUrlSlotPriority:
         )
         assert result.exit_code == 0, f"lock failed: {result.output}"
 
-        # Child script: provider-agnostic probe — reads base_url + key from
-        # .env, fires a minimal request, reports status + optional body.
-        # Add entries to the PROVIDER_PROBES dict to support non-LLM providers.
-        child = textwrap.dedent("""\
-            import os, json, httpx, textwrap
-            from dotenv import dotenv_values
-
-            env = dotenv_values(os.environ["WORTHLESS_TEST_ENV_PATH"])
-
-            PROVIDER_PROBES = {
-                "openai": {
-                    "base_url_var": "OPENAI_BASE_URL",
-                    "key_var": "OPENAI_API_KEY",
-                    "auth_header": lambda k: {"Authorization": f"Bearer {k}"},
-                    "path": "/chat/completions",
-                    "body": {"model": "gpt-4o-mini", "max_tokens": 1,
-                             "messages": [{"role": "user", "content": "hi"}]},
-                },
-                "anthropic": {
-                    "base_url_var": "ANTHROPIC_BASE_URL",
-                    "key_var": "ANTHROPIC_API_KEY",
-                    "auth_header": lambda k: {"x-api-key": k,
-                                              "anthropic-version": "2023-06-01"},
-                    "path": "/messages",
-                    "body": {"model": "claude-haiku-4-5-20251001", "max_tokens": 1,
-                             "messages": [{"role": "user", "content": "hi"}]},
-                },
-                "openrouter": {
-                    "base_url_var": "OPENROUTER_BASE_URL",
-                    "key_var": "OPENROUTER_API_KEY",
-                    "auth_header": lambda k: {"Authorization": f"Bearer {k}"},
-                    "path": "/chat/completions",
-                    "body": {"model": "openai/gpt-4o-mini", "max_tokens": 1,
-                             "messages": [{"role": "user", "content": "hi"}]},
-                },
-            }
-
-            provider = os.environ.get("WORTHLESS_TEST_PROVIDER", "openai")
-            probe = PROVIDER_PROBES[provider]
-            base = env.get(probe["base_url_var"], "")
-            key  = env.get(probe["key_var"], "")
-            r = httpx.post(
-                base.rstrip("/") + probe["path"],
-                json=probe["body"],
-                headers=probe["auth_header"](key),
-                timeout=60.0,
-            )
-            try:
-                body = r.json()
-            except Exception:
-                body = r.text
-            print(json.dumps({"status": r.status_code, "body": body}))
-        """)
-
         proc = subprocess.run(
             [
                 str(Path(sys.executable).parent / "worthless"),
@@ -1462,7 +1422,7 @@ class TestLockBaseUrlSlotPriority:
                 "--",
                 sys.executable,
                 "-c",
-                child,
+                _LIVE_PROBE_CHILD,
             ],
             env={
                 **cli_env,
@@ -1486,10 +1446,4 @@ class TestLockBaseUrlSlotPriority:
             f"body: {data.get('body')}"
         )
 
-        # Layer 2 — provider-specific response validation.
-        _RESPONSE_VERIFIERS = {
-            "openai": _verify_upstream_response_openai,
-            "anthropic": _verify_upstream_response_anthropic,
-            "openrouter": _verify_upstream_response_openai,  # same wire protocol
-        }
-        _RESPONSE_VERIFIERS["openai"](data)
+        verify_upstream_response_openai(data)

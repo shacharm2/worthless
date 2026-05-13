@@ -462,8 +462,7 @@ def _batch_rewrite(
         for p in planned:
             if not p.base_url_var:
                 continue
-            existing_winner = slot_winner.get(p.base_url_var)
-            if existing_winner is None:
+            if p.base_url_var not in slot_winner:
                 slot_winner[p.base_url_var] = p
                 continue
             canonical_var = p.base_url_var[: -len("_BASE_URL")] + "_API_KEY"
@@ -473,13 +472,8 @@ def _batch_rewrite(
         for slot, p in slot_winner.items():
             local_proxy = _proxy_base_url(p.alias)
             if slot in existing_env_keys:
-                # User already has e.g. OPENROUTER_BASE_URL=<upstream>;
-                # rewrite the value to the local proxy URL (the upstream
-                # value was already captured into the DB at pass-1 time).
                 updates[slot] = local_proxy
             elif slot not in updates:
-                # Fresh: lock auto-creates the BASE_URL var with a one-line
-                # stderr notice so the user knows something was added.
                 additions[slot] = local_proxy
                 sys.stderr.write(
                     f"worthless: added {slot}={local_proxy} to {env_path} (was missing)\n"
