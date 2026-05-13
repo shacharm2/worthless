@@ -33,12 +33,11 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=6628552e72>
 **stderr**
 
 ```text
-macOS may ask once to access your Keychain — click 'Always Allow' so we don't ask again.
 Scanning $TRACE_ROOT/lock-status-scan-unlock/project/.env
 for API keys...
   Protecting OPENAI_API_KEY...
 worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-6628552e/v1 to $TRACE_ROOT/lock-status-scan-unlock/project/.env (was missing)
-Done. 1 key(s) split between this machine and your system keystore — .env no longer contains a usable secret.
+[OK] 1 key(s) split between this machine and a local key file — .env no longer contains a usable secret.
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
@@ -152,7 +151,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-6628552e/v1
 **stderr**
 
 ```text
-Restored OPENAI_API_KEY (openai, alias openai-6628552e) →
+[OK] Restored OPENAI_API_KEY (openai, alias openai-6628552e) →
 $TRACE_ROOT/lock-status-scan-unlock/project/.env
 ```
 
@@ -228,13 +227,12 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=fe67659040>
 **stderr**
 
 ```text
-macOS may ask once to access your Keychain — click 'Always Allow' so we don't ask again.
 Scanning
 $TRACE_ROOT/teammate-handoff-failure/owner-project/.env
 for API keys...
   Protecting OPENAI_API_KEY...
 worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-fe676590/v1 to $TRACE_ROOT/teammate-handoff-failure/owner-project/.env (was missing)
-Done. 1 key(s) split between this machine and your system keystore — .env no longer contains a usable secret.
+[OK] 1 key(s) split between this machine and a local key file — .env no longer contains a usable secret.
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
@@ -315,12 +313,11 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=0122837f50>
 **stderr**
 
 ```text
-macOS may ask once to access your Keychain — click 'Always Allow' so we don't ask again.
 Scanning $TRACE_ROOT/rotation-relock/same-shape/.env for
 API keys...
   Protecting OPENAI_API_KEY...
 worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-0122837f/v1 to $TRACE_ROOT/rotation-relock/same-shape/.env (was missing)
-Done. 1 key(s) split between this machine and your system keystore — .env no longer contains a usable secret.
+[OK] 1 key(s) split between this machine and a local key file — .env no longer contains a usable secret.
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
@@ -356,12 +353,11 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=8190d0c36a>
 **stderr**
 
 ```text
-macOS may ask once to access your Keychain — click 'Always Allow' so we don't ask again.
 Scanning $TRACE_ROOT/rotation-relock/same-shape/.env for
 API keys...
   Protecting OPENAI_API_KEY...
 worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-8190d0c3/v1 to $TRACE_ROOT/rotation-relock/same-shape/.env (was missing)
-Done. 1 key(s) split between this machine and your system keystore — .env no longer contains a usable secret.
+[OK] 1 key(s) split between this machine and a local key file — .env no longer contains a usable secret.
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
@@ -398,7 +394,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-8190d0c3/v1
 **stderr**
 
 ```text
-Restored OPENAI_API_KEY (openai, alias openai-8190d0c3) →
+[OK] Restored OPENAI_API_KEY (openai, alias openai-8190d0c3) →
 $TRACE_ROOT/rotation-relock/same-shape/.env
 ```
 
@@ -433,12 +429,11 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=54ddf68f39>
 **stderr**
 
 ```text
-macOS may ask once to access your Keychain — click 'Always Allow' so we don't ask again.
 Scanning $TRACE_ROOT/rotation-relock/different-shape/.env
 for API keys...
   Protecting OPENAI_API_KEY...
 worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-54ddf68f/v1 to $TRACE_ROOT/rotation-relock/different-shape/.env (was missing)
-Done. 1 key(s) split between this machine and your system keystore — .env no longer contains a usable secret.
+[OK] 1 key(s) split between this machine and a local key file — .env no longer contains a usable secret.
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
@@ -474,12 +469,11 @@ OPENAI_API_KEY=sk-<redacted:fake-raw:len=46:sha256=21f0003478>
 **stderr**
 
 ```text
-macOS may ask once to access your Keychain — click 'Always Allow' so we don't ask again.
 Scanning $TRACE_ROOT/rotation-relock/different-shape/.env
 for API keys...
   Protecting OPENAI_API_KEY...
 worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-21f00034/v1 to $TRACE_ROOT/rotation-relock/different-shape/.env (was missing)
-Done. 1 key(s) split between this machine and your system keystore — .env no longer contains a usable secret.
+[OK] 1 key(s) split between this machine and a local key file — .env no longer contains a usable secret.
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
@@ -516,7 +510,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-21f00034/v1
 **stderr**
 
 ```text
-Restored OPENAI_API_KEY (openai, alias openai-21f00034) →
+[OK] Restored OPENAI_API_KEY (openai, alias openai-21f00034) →
 $TRACE_ROOT/rotation-relock/different-shape/.env
 ```
 
@@ -563,13 +557,12 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=b6e34dbee6>
 **stderr**
 
 ```text
-macOS may ask once to access your Keychain — click 'Always Allow' so we don't ask again.
 Scanning
 $TRACE_ROOT/multi-project-isolation/project-a/.env for
 API keys...
   Protecting OPENAI_API_KEY...
 worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-fd488525/v1 to $TRACE_ROOT/multi-project-isolation/project-a/.env (was missing)
-Done. 1 key(s) split between this machine and your system keystore — .env no longer contains a usable secret.
+[OK] 1 key(s) split between this machine and a local key file — .env no longer contains a usable secret.
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
@@ -618,13 +611,12 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=b6e34dbee6>
 **stderr**
 
 ```text
-macOS may ask once to access your Keychain — click 'Always Allow' so we don't ask again.
 Scanning
 $TRACE_ROOT/multi-project-isolation/project-b/.env for
 API keys...
   Protecting OPENAI_API_KEY...
 worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-b6e34dbe/v1 to $TRACE_ROOT/multi-project-isolation/project-b/.env (was missing)
-Done. 1 key(s) split between this machine and your system keystore — .env no longer contains a usable secret.
+[OK] 1 key(s) split between this machine and a local key file — .env no longer contains a usable secret.
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
@@ -675,7 +667,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-b6e34dbe/v1
 **stderr**
 
 ```text
-Restored OPENAI_API_KEY (openai, alias openai-fd488525) →
+[OK] Restored OPENAI_API_KEY (openai, alias openai-fd488525) →
 $TRACE_ROOT/multi-project-isolation/project-a/.env
 ```
 
@@ -775,7 +767,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-b6e34dbe/v1
 **stderr**
 
 ```text
-Restored OPENAI_API_KEY (openai, alias openai-b6e34dbe) →
+[OK] Restored OPENAI_API_KEY (openai, alias openai-b6e34dbe) →
 $TRACE_ROOT/multi-project-isolation/project-b/.env
 ```
 

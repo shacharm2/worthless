@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from tests.helpers import fake_openai_key
+from tests.user_flows.helpers import scrubbed_cli_env
 
 
 def _free_port() -> int:
@@ -59,11 +60,11 @@ def test_wrap_child_reaches_proxy_via_env_url(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
 
-    # Inherit parent env (PATH, HOME, TMPDIR, etc.) so lock + wrap can find
-    # the keychain backend. Override the worthless-specific bits and scrub
-    # any real provider keys so the test can't accidentally lock those.
+    # Inherit parent env so subprocesses can find Python/tooling, then overlay
+    # the user-flow isolation contract so host-level integrations do not see
+    # the developer machine's real home.
     cli_env = dict(os.environ)
-    cli_env["WORTHLESS_HOME"] = str(home)
+    cli_env.update({k: v for k, v in scrubbed_cli_env(home).items() if v is not None})
     cli_env["WORTHLESS_PORT"] = str(port)
     for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
         cli_env.pop(k, None)

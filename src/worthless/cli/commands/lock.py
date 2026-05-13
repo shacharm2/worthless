@@ -29,6 +29,7 @@ from worthless.cli.errors import (
     sanitize_exception,
 )
 from worthless.cli.key_patterns import CANONICAL_KEY_VAR_RE, detect_prefix
+from worthless.cli.keystore import keyring_available
 from worthless.cli.providers import lookup_by_name, lookup_by_url
 from worthless.crypto.splitter import (
     _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
@@ -63,6 +64,11 @@ _PROVIDER_ENV_MAP: dict[str, str] = {
 
 _SUPPORTED_PROTOCOLS = frozenset(_PROVIDER_ENV_MAP.keys())
 _ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _shard_b_storage_label() -> str:
+    """Human label for where the non-.env shard lives."""
+    return "your system keystore" if keyring_available() else "a local key file"
 
 
 def _make_alias(provider: str, api_key: str) -> str:
@@ -753,7 +759,7 @@ def _lock_keys(
             # (color/glyph reinforce but is never the carrier).
             console.print_success(
                 f"[OK] {count} key(s) split between this machine and "
-                f"your system keystore — {env_path.name} no longer contains "
+                f"{_shard_b_storage_label()} — {env_path.name} no longer contains "
                 f"a usable secret."
             )
             console.print_hint(
@@ -866,7 +872,7 @@ def register_lock_commands(app: typer.Typer) -> None:
         # "worthless"; without this hint, first-time users panic and click Deny.
         # Per HF2 (worthless-mnlp) the prompt fires at most once per invocation
         # (cache + lock + probe-via-property collapse 3+ → 1).
-        if sys.platform == "darwin":
+        if sys.platform == "darwin" and keyring_available():
             console = get_console()
             console.print_hint(
                 "macOS may ask once to access your Keychain — click 'Always Allow' "

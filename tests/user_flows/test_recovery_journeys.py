@@ -9,29 +9,15 @@ from dotenv import dotenv_values
 from typer.testing import CliRunner
 
 from tests.helpers import fake_key, fake_openai_key
+from tests.user_flows.helpers import scrubbed_cli_env
 from worthless.cli.app import app
 
 
 runner = CliRunner(mix_stderr=False)
 
 
-def _scrubbed_env(home: Path) -> dict[str, str | None]:
-    return {
-        "WORTHLESS_HOME": str(home),
-        "WORTHLESS_DB_PATH": None,
-        "WORTHLESS_FERNET_KEY": None,
-        "WORTHLESS_FERNET_KEY_PATH": None,
-        "WORTHLESS_FERNET_FD": None,
-        "WORTHLESS_PORT": None,
-        "OPENAI_API_KEY": None,
-        "ANTHROPIC_API_KEY": None,
-        "OPENAI_BASE_URL": None,
-        "ANTHROPIC_BASE_URL": None,
-    }
-
-
 def _invoke(args: list[str], home: Path, **kwargs: object):
-    return runner.invoke(app, args, env=_scrubbed_env(home), **kwargs)
+    return runner.invoke(app, args, env=scrubbed_cli_env(home), **kwargs)
 
 
 def _combined_output(result) -> str:

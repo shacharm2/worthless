@@ -132,7 +132,8 @@ def resolve_worthless() -> str:
 
 def scrubbed_env(home: Path) -> dict[str, str]:
     keep = {
-        "HOME": os.environ.get("HOME", ""),
+        "HOME": str(home.parent / "user-home"),
+        "USERPROFILE": str(home.parent / "user-home"),
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "LC_ALL": os.environ.get("LC_ALL", ""),
         "PATH": os.environ.get("PATH", ""),
@@ -142,6 +143,8 @@ def scrubbed_env(home: Path) -> dict[str, str]:
         "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR", ""),
         "VIRTUAL_ENV": os.environ.get("VIRTUAL_ENV", ""),
     }
+    user_home = home.parent / "user-home"
+    user_home.mkdir(parents=True, exist_ok=True)
     return {
         key: value
         for key, value in {
@@ -372,7 +375,8 @@ def render_snapshot(snapshot: EnvSnapshot) -> list[str]:
 
 
 def fenced(content: str) -> str:
-    return f"```text\n{content.rstrip()}\n```"
+    normalized = "\n".join(line.rstrip() for line in content.rstrip().splitlines())
+    return f"```text\n{normalized}\n```"
 
 
 def redact_env_content(content: str) -> str:
