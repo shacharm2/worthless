@@ -472,14 +472,15 @@ class TestCodeScanApiSurface:
         write(tmp_path / "racy.py", '"https://api.openai.com/v1"\n')
         write(tmp_path / "ok.py", '"https://api.anthropic.com/v1"\n')
 
-        real_stat = Path.stat
+        # Patch lstat — _candidate_files calls f.lstat(), not f.stat().
+        real_lstat = Path.lstat
 
-        def fake_stat(self, *a, **kw):  # noqa: ANN001
+        def fake_lstat(self, *a, **kw):  # noqa: ANN001
             if self.name == "racy.py":
                 raise OSError("file vanished mid-scan")
-            return real_stat(self, *a, **kw)
+            return real_lstat(self, *a, **kw)
 
-        monkeypatch.setattr(Path, "stat", fake_stat)
+        monkeypatch.setattr(Path, "lstat", fake_lstat)
 
         findings = scan_for_hardcoded_provider_urls([tmp_path])
         files = {Path(f.file).name for f in findings}

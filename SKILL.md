@@ -532,7 +532,7 @@ Agents (Claude Code, Cursor, OpenClaw) can invoke Worthless via:
    ```
 
 2. **MCP server** (when available):
-   ```
+   ```text
    Tool: worthless_status() -> {"keys": [...], "proxy": {...}}
    Tool: worthless_scan(paths, deep) -> "key exposures found"
    Tool: worthless_scan(paths, deep, code=True) -> includes code_findings
