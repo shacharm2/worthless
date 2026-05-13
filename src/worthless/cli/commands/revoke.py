@@ -75,10 +75,10 @@ def _revoke_key(alias: str) -> None:
 
         revoked, was_last = asyncio.run(_run())
 
-    if revoked and was_last:
-        # Last enrollment gone — remove the orphan master Fernet key from the
-        # OS keyring and file. No other enrollment can use it after this point.
-        delete_fernet_key(home.base_dir)
+        if revoked and was_last:
+            # Still inside the lock — prevents a concurrent enroll from slipping
+            # in between the count check and the keychain delete.
+            delete_fernet_key(home.base_dir)
 
     if revoked:
         console.print_success(
