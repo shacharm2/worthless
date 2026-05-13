@@ -14,6 +14,7 @@ These tests are the tripwire that proves it stays that way:
 from __future__ import annotations
 
 import inspect
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,6 +25,16 @@ from worthless.cli.code_scanner import scan_for_hardcoded_provider_urls
 from worthless.openclaw.integration import OpenclawApplyResult, apply_lock
 
 runner = CliRunner(mix_stderr=False)
+
+
+def _strip_ansi(s: str) -> str:
+    """Remove ANSI escape codes for plain-text assertions.
+
+    GitHub CI runners set FORCE_COLOR=1; Rich then wraps individual
+    hyphens (e.g. --code → \\x1b[..m-\\x1b[0m\\x1b[..m-code\\x1b[0m)
+    which breaks simple substring search.
+    """
+    return re.sub(r"\x1b\[[0-9;]*m", "", s)
 
 
 class TestOpenClawSignaturePinned:
@@ -51,12 +62,12 @@ class TestLockCliUntouched:
         result = runner.invoke(app, ["lock", "--help"])
         assert result.exit_code == 0
         # The --code flag belongs on scan, not lock.
-        assert "--code" not in result.stdout
+        assert "--code" not in _strip_ansi(result.stdout)
 
     def test_scan_help_documents_code_flag(self) -> None:
         result = runner.invoke(app, ["scan", "--help"])
         assert result.exit_code == 0
-        assert "--code" in result.stdout
+        assert "--code" in _strip_ansi(result.stdout)
 
 
 class TestLockDoesNotInvokeCodeScanner:
