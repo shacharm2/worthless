@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat as _stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -193,21 +194,20 @@ def _candidate_files(root: Path, excluded_dirs: frozenset[str] = _EXCLUDED_DIRS)
 
     candidates: list[Path] = []
     for f in files:
-        # Wrap the whole per-file inspection: ``is_file()`` and ``stat()``
-        # both call the underlying stat(2), and either can raise OSError
-        # on a race (file vanishes mid-scan) or permission issue.
+        # Cheap path-based checks first (no syscall), then a single stat(2)
+        # that covers both the is-regular-file and size guard. OSError on
+        # any of these means the file vanished or is unreadable — skip it.
         try:
-            if not f.is_file():
-                continue
             # Check absolute parts so excludes living above ``root`` (e.g.
-            # scanning a project inside node_modules/) still prune. The
-            # full-parts check subsumes a relative-path check, so we don't
-            # also rebuild the relative path here.
+            # scanning a project inside node_modules/) still prune.
             if _is_excluded_path(f, excluded_dirs):
                 continue
             if f.suffix.lower() not in _SCANNED_EXTENSIONS:
                 continue
-            if f.stat().st_size > _MAX_FILE_BYTES:
+            st = f.stat()
+            if not _stat.S_ISREG(st.st_mode):
+                continue
+            if st.st_size > _MAX_FILE_BYTES:
                 continue
         except OSError:
             continue
