@@ -19,6 +19,7 @@ from worthless.cli.code_scanner import scan_for_hardcoded_provider_urls
 from worthless.cli.commands.scan import _format_code_findings_human
 from worthless.cli.process import resolve_port
 from worthless.cli.console import get_console
+from worthless.cli.scanner import scan_source_for_hardcoded_provider_urls
 from worthless.cli.dotenv_rewriter import (
     rewrite_env_keys,
     scan_env_keys,
@@ -60,6 +61,8 @@ logger = logging.getLogger(__name__)
 # registry name to its protocol via ``lookup_by_name`` before checking
 # this map. ``worthless-9t74`` will promote that translation into a
 # structural ``provider name`` vs ``protocol`` separation post-merge.
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
 _PROVIDER_ENV_MAP: dict[str, str] = {
     "openai": "OPENAI_BASE_URL",
     "anthropic": "ANTHROPIC_BASE_URL",
@@ -456,21 +459,28 @@ def _batch_rewrite(
     updates: dict[str, str] = {p.var_name: p.shard_a.decode("utf-8") for p in planned}
     additions: dict[str, str] = {}
     if not keys_only:
+        # When multiple keys share the same base_url_var slot (e.g. both
+        # OPENAI_API_KEY and API_KEY derive OPENAI_BASE_URL), the canonical
+        # <PREFIX>_API_KEY name wins regardless of file order. Without this,
+        # a non-canonical key's alias can claim the slot and the canonical
+        # key's shard-A gets routed to the wrong alias → 401. (worthless-sb8v)
+        slot_winner: dict[str, _PlannedUpdate] = {}
         for p in planned:
+            if not p.base_url_var:
+                continue
+            existing = slot_winner.get(p.base_url_var)
+            canonical_var = p.base_url_var[: -len("_BASE_URL")] + "_API_KEY"
+            if existing is None or p.var_name == canonical_var:
+                slot_winner[p.base_url_var] = p
+
+        for slot, p in slot_winner.items():
             local_proxy = _proxy_base_url(p.alias)
-            if p.base_url_var in existing_env_keys:
-                # User already has e.g. OPENROUTER_BASE_URL=<upstream>;
-                # rewrite the value to the local proxy URL (the upstream
-                # value was already captured into the DB at pass-1 time).
-                updates[p.base_url_var] = local_proxy
-            elif (
-                p.base_url_var and p.base_url_var not in updates and p.base_url_var not in additions
-            ):
-                # Fresh: lock auto-creates the BASE_URL var with a one-line
-                # stderr notice so the user knows something was added.
-                additions[p.base_url_var] = local_proxy
+            if slot in existing_env_keys:
+                updates[slot] = local_proxy
+            elif slot not in updates:
+                additions[slot] = local_proxy
                 sys.stderr.write(
-                    f"worthless: added {p.base_url_var}={local_proxy} to {env_path} (was missing)\n"
+                    f"worthless: added {slot}={local_proxy} to {env_path} (was missing)\n"
                 )
                 sys.stderr.flush()
 
@@ -736,6 +746,7 @@ def _lock_keys(
     token_budget_daily: int | None = None,
     quiet: bool = False,
     keys_only: bool = False,
+    allow_hardcoded_urls: bool = False,
 ) -> int:
     """Transactional multi-key lock.
 
@@ -750,6 +761,38 @@ def _lock_keys(
         raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"File not found: {env_path}")
     if env_path.is_symlink():
         raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"Refusing to follow symlink: {env_path}")
+
+    bypass_findings = scan_source_for_hardcoded_provider_urls(env_path.parent)
+    if bypass_findings:
+        header = "worthless: hardcoded provider URLs detected — these bypass the proxy:"
+        detail_lines = [header]
+        for f in bypass_findings:
+            safe_file = _CTRL_RE.sub("", f.file)
+            safe_url = _CTRL_RE.sub("", f.url)
+            detail_lines.append(f"  {safe_file}:{f.line}  {safe_url}  ({f.provider})")
+        findings_text = "\n".join(detail_lines)
+
+        if allow_hardcoded_urls:
+            console.print_warning(findings_text)
+            console.print_warning(
+                "Proceeding with --allow-hardcoded-urls. Ensure these are not "
+                "active production code paths that bypass the proxy."
+            )
+        elif sys.stdin.isatty():
+            console.print_warning(findings_text)
+            if not typer.confirm(
+                "\nThese URLs will bypass the proxy. Are these intentional "
+                "(e.g. test fixtures or docs)? Proceed anyway?",
+                default=False,
+            ):
+                raise WorthlessError(ErrorCode.SCAN_ERROR, "Aborted.", exit_code=1)
+        else:
+            raise WorthlessError(
+                ErrorCode.SCAN_ERROR,
+                findings_text + "\nIf this is intentional (e.g. test fixtures), re-run with "
+                "--allow-hardcoded-urls to bypass this check.",
+                exit_code=1,
+            )
 
     if not quiet:
         console.print_hint(f"Scanning {env_path} for API keys...")
@@ -945,6 +988,15 @@ def register_lock_commands(app: typer.Typer) -> None:
         keys_only: bool = typer.Option(
             False, "--keys-only", help="Only rewrite API keys (skip BASE_URL)"
         ),
+        allow_hardcoded_urls: bool = typer.Option(
+            False,
+            "--allow-hardcoded-urls",
+            help=(
+                "Proceed even if source files contain hardcoded provider URLs. "
+                "Use when the URLs are intentional (e.g. test fixtures). "
+                "A warning is always printed."
+            ),
+        ),
     ) -> None:
         """Protect API keys in a .env file."""
         # Pre-announce the macOS Keychain dialog so users aren't surprised by a
@@ -966,6 +1018,7 @@ def register_lock_commands(app: typer.Typer) -> None:
                 provider_override=provider,
                 token_budget_daily=token_budget_daily,
                 keys_only=keys_only,
+                allow_hardcoded_urls=allow_hardcoded_urls,
             )
 
     @app.command()

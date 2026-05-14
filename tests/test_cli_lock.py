@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import os
+import re
 import sqlite3
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -14,7 +20,12 @@ from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 
 from tests.conftest import make_repo as _repo
-from tests.helpers import fake_anthropic_key, fake_key, fake_openai_key
+from tests.helpers import (
+    fake_anthropic_key,
+    fake_key,
+    fake_openai_key,
+    verify_upstream_response_openai,
+)
 
 runner = CliRunner()
 
@@ -1273,3 +1284,495 @@ class TestEnrollCommand:
         repo = _repo(home_dir)
         aliases = asyncio.run(repo.list_keys())
         assert aliases == []
+
+
+# Child script for TestLockBaseUrlSlotPriority live tests.
+# Reads base_url + key from .env, fires a minimal LLM request, prints JSON result.
+# Add entries to PROVIDER_PROBES to support additional providers.
+_LIVE_PROBE_CHILD = textwrap.dedent("""\
+    import os, json, httpx
+    from dotenv import dotenv_values
+
+    env = dotenv_values(os.environ["WORTHLESS_TEST_ENV_PATH"])
+
+    PROVIDER_PROBES = {
+        "openai": {
+            "base_url_var": "OPENAI_BASE_URL",
+            "key_var": "OPENAI_API_KEY",
+            "auth_header": lambda k: {"Authorization": f"Bearer {k}"},
+            "path": "/chat/completions",
+            "body": {"model": "gpt-4o-mini", "max_tokens": 1,
+                     "messages": [{"role": "user", "content": "hi"}]},
+        },
+        "anthropic": {
+            "base_url_var": "ANTHROPIC_BASE_URL",
+            "key_var": "ANTHROPIC_API_KEY",
+            "auth_header": lambda k: {"x-api-key": k,
+                                      "anthropic-version": "2023-06-01"},
+            "path": "/messages",
+            "body": {"model": "claude-haiku-4-5-20251001", "max_tokens": 1,
+                     "messages": [{"role": "user", "content": "hi"}]},
+        },
+        "openrouter": {
+            "base_url_var": "OPENROUTER_BASE_URL",
+            "key_var": "OPENROUTER_API_KEY",
+            "auth_header": lambda k: {"Authorization": f"Bearer {k}"},
+            "path": "/chat/completions",
+            "body": {"model": "openai/gpt-4o-mini", "max_tokens": 1,
+                     "messages": [{"role": "user", "content": "hi"}]},
+        },
+    }
+
+    provider = os.environ.get("WORTHLESS_TEST_PROVIDER", "openai")
+    probe = PROVIDER_PROBES[provider]
+    base = env.get(probe["base_url_var"], "")
+    key  = env.get(probe["key_var"], "")
+    r = httpx.post(
+        base.rstrip("/") + probe["path"],
+        json=probe["body"],
+        headers=probe["auth_header"](key),
+        timeout=60.0,
+    )
+    try:
+        body = r.json()
+    except Exception:
+        body = r.text
+    print(json.dumps({"status": r.status_code, "body": body}))
+""")
+
+
+class TestLockBaseUrlSlotPriority:
+    """worthless-sb8v: canonical <PROVIDER>_API_KEY wins OPENAI_BASE_URL slot."""
+
+    def test_canonical_key_wins_base_url_slot_over_noncanonical(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """When .env has both OPENAI_API_KEY and a non-canonical OpenAI key,
+        OPENAI_BASE_URL must point to OPENAI_API_KEY's alias — not API_KEY's.
+
+        Before the fix: file-order determined the winner. API_KEY's alias
+        claimed OPENAI_BASE_URL, so sending OPENAI_API_KEY's shard-A to
+        that route produced a 401 (commitment mismatch). (worthless-sb8v)
+        """
+        from dotenv import dotenv_values
+
+        canonical_key = fake_openai_key()
+        noncanonical_key = fake_openai_key()
+        env = tmp_path / ".env"
+        # Non-canonical key appears FIRST — before the fix it would win the slot.
+        env.write_text(f"API_KEY={noncanonical_key}\nOPENAI_API_KEY={canonical_key}\n")
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+        assert result.exit_code == 0, result.output
+
+        parsed = dotenv_values(env)
+        base_url = parsed.get("OPENAI_BASE_URL", "")
+        assert base_url, "OPENAI_BASE_URL should have been added by lock"
+
+        # The alias in OPENAI_BASE_URL must belong to OPENAI_API_KEY, not API_KEY.
+        alias_in_url = base_url.rstrip("/").rsplit("/", 2)[-2]
+
+        repo = _repo(home_dir)
+        enrollments = asyncio.run(repo.list_enrollments())
+        canonical_enrollment = next(
+            (e for e in enrollments if e.var_name == "OPENAI_API_KEY"), None
+        )
+        assert canonical_enrollment is not None, "OPENAI_API_KEY should be enrolled"
+        assert canonical_enrollment.key_alias == alias_in_url, (
+            f"OPENAI_BASE_URL points to alias {alias_in_url!r} but "
+            f"OPENAI_API_KEY enrolled as {canonical_enrollment.key_alias!r} — "
+            "non-canonical key claimed the slot (worthless-sb8v regression)"
+        )
+
+    @pytest.mark.live
+    @pytest.mark.timeout(120)
+    def test_canonical_key_routes_correctly_live(self, tmp_path: Path) -> None:
+        """Live: shard-A authenticates via proxy when non-canonical key appears first in .env."""
+        real_key = os.environ.get("OPENAI_API_KEY")
+        if not real_key:
+            pytest.skip("OPENAI_API_KEY not set")
+
+        worthless_home = tmp_path / ".worthless"
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        env_file = project_dir / ".env"
+        # Non-canonical key first — this is the exact bug scenario
+        env_file.write_text(f"API_KEY=sk-fake-noncanonical-key\nOPENAI_API_KEY={real_key}\n")
+
+        cli_env = {
+            **os.environ,
+            "WORTHLESS_HOME": str(worthless_home),
+            "WORTHLESS_KEYRING_BACKEND": "null",
+        }
+
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(worthless_home), "WORTHLESS_KEYRING_BACKEND": "null"},
+        )
+        assert result.exit_code == 0, f"lock failed: {result.output}"
+
+        proc = subprocess.run(
+            [
+                str(Path(sys.executable).parent / "worthless"),
+                "wrap",
+                "--",
+                sys.executable,
+                "-c",
+                _LIVE_PROBE_CHILD,
+            ],
+            env={
+                **cli_env,
+                "WORTHLESS_TEST_ENV_PATH": str(env_file),
+                "WORTHLESS_TEST_PROVIDER": "openai",
+            },
+            timeout=90,
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, (
+            f"wrap failed (rc={proc.returncode}):\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
+        )
+
+        data = json.loads(proc.stdout.strip())
+
+        # Layer 1 — proxy auth (provider-agnostic).
+        # 401 here = proxy rejected shard-A = alias mismatch = bug still present.
+        assert data["status"] != 401, (
+            f"Proxy returned 401 — shard-A routed to wrong alias (worthless-sb8v). "
+            f"body: {data.get('body')}"
+        )
+
+        verify_upstream_response_openai(data)
+
+
+# ---------------------------------------------------------------------------
+# worthless-8a5d: lock must refuse when source files bypass the proxy
+# ---------------------------------------------------------------------------
+
+
+class TestLockHardcodedBaseUrlDetection:
+    """Lock fails fast when source files contain hardcoded provider URLs.
+
+    If a hardcoded base_url reaches the LLM SDK, the proxy is bypassed even
+    though the key is enrolled. The check runs before any enrollment so the
+    user never ends up in a "protected but not really" state.
+    """
+
+    def _env(self, tmp_path: Path) -> Path:
+        env = tmp_path / ".env"
+        env.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
+        return env
+
+    def _run(self, home_dir: WorthlessHome, env: Path) -> object:
+        return runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={
+                "WORTHLESS_HOME": str(home_dir.base_dir),
+                "WORTHLESS_KEYRING_BACKEND": "null",
+            },
+        )
+
+    def test_passes_with_no_source_files(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock succeeds when project has no source files."""
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_fails_py_file_hardcoded_openai_url(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Lock fails when a Python file has a hardcoded OpenAI base URL."""
+        (tmp_path / "app.py").write_text('client = OpenAI(base_url="https://api.openai.com/v1")\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0, "Expected lock to fail with hardcoded base_url"
+        assert "(openai)" in result.output
+
+    def test_fails_ts_file_hardcoded_anthropic_url(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Lock fails when a TypeScript file has a hardcoded Anthropic base URL."""
+        (tmp_path / "client.ts").write_text(
+            'const ai = new Anthropic({ baseURL: "https://api.anthropic.com/v1" });\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "(anthropic)" in result.output
+
+    def test_fails_openrouter_url(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock fails when OpenRouter's base URL is hardcoded."""
+        (tmp_path / "llm.py").write_text(
+            'client = OpenAI(base_url="https://openrouter.ai/api/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "(openrouter)" in result.output
+
+    def test_error_includes_line_number(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Error output includes file:line so the user can find the bypass."""
+        (tmp_path / "llm.py").write_text(
+            "# LLM client setup\n"
+            "import openai\n"
+            'client = openai.OpenAI(base_url="https://api.openai.com/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        out = result.output
+        # Rich wraps long paths at terminal width — check format components separately
+        assert re.search(r":\d", out), "file:line format not in error output"
+        assert "(openai)" in out
+
+    def test_scans_subdirectory(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock scans recursively — catches bypasses in nested source files."""
+        nested = tmp_path / "src" / "providers"
+        nested.mkdir(parents=True)
+        (nested / "openai_client.py").write_text('BASE = "https://api.openai.com/v1"\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "(openai)" in result.output
+
+    def test_skips_node_modules(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock ignores node_modules — provider SDK source isn't user code."""
+        nm = tmp_path / "node_modules" / "openai" / "src"
+        nm.mkdir(parents=True)
+        (nm / "client.js").write_text('const DEFAULT_BASE_URL = "https://api.openai.com/v1";\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_skips_git_dir(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock ignores .git — internal git objects aren't user code."""
+        git_hooks = tmp_path / ".git" / "hooks"
+        git_hooks.mkdir(parents=True)
+        (git_hooks / "hook.py").write_text('BASE = "https://api.openai.com/v1"\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_skips_venv(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock ignores .venv — installed packages aren't user code."""
+        venv = tmp_path / ".venv" / "lib" / "python3.11" / "site-packages" / "openai"
+        venv.mkdir(parents=True)
+        (venv / "_client.py").write_text('DEFAULT_BASE_URL: str = "https://api.openai.com/v1"\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_skips_pycache(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock ignores __pycache__ — compiled bytecode isn't user code."""
+        cache = tmp_path / "__pycache__"
+        cache.mkdir()
+        (cache / "app.py").write_text('BASE = "https://api.openai.com/v1"\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_skips_localhost_provider(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Localhost providers (e.g. Ollama) are not flagged — already local."""
+        (tmp_path / "local.py").write_text(
+            'client = OpenAI(base_url="http://localhost:11434/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_js_and_go_files_also_scanned(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock scans .js and .go files, not just Python."""
+        (tmp_path / "api.js").write_text(
+            'const client = new OpenAI({ baseURL: "https://api.openai.com/v1" });\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "(openai)" in result.output
+
+    # ------------------------------------------------------------------
+    # Additional coverage — QA gap fills
+    # ------------------------------------------------------------------
+
+    def test_fails_groq_url(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Groq is in the bundled registry — hardcoded Groq URL must block lock."""
+        (tmp_path / "chat.py").write_text(
+            'client = Groq(base_url="https://api.groq.com/openai/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "(groq)" in result.output
+
+    def test_fails_together_url(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Together.ai is in the bundled registry — hardcoded Together URL must block lock."""
+        (tmp_path / "infer.py").write_text(
+            'llm = Together(base_url="https://api.together.xyz/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "(together)" in result.output
+
+    def test_no_db_enrollment_when_scan_blocks(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Scan gate fires pre-enrollment — DB must be empty when lock is blocked."""
+        import asyncio
+
+        from worthless.storage.repository import ShardRepository
+
+        (tmp_path / "app.py").write_text('client = OpenAI(base_url="https://api.openai.com/v1")\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+
+        async def _check():
+            repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+            await repo.initialize()
+            return await repo.list_keys()
+
+        aliases = asyncio.run(_check())
+        assert aliases == [], (
+            "DB has enrollments despite scan blocking lock — gate must run pre-enrollment"
+        )
+
+    def test_allow_hardcoded_urls_flag_bypasses_block(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """--allow-hardcoded-urls lets lock proceed with a warning, not an error."""
+        (tmp_path / "test_llm.py").write_text(
+            '    assert resp.url == "https://api.openai.com/v1/chat/completions"\n'
+        )
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(self._env(tmp_path)), "--allow-hardcoded-urls"],
+            env={
+                "WORTHLESS_HOME": str(home_dir.base_dir),
+                "WORTHLESS_KEYRING_BACKEND": "null",
+            },
+        )
+        assert result.exit_code == 0, result.output
+        assert "(openai)" in result.output
+
+    def test_url_in_python_comment_triggers_block(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """URL in a comment is inside a quoted string — scanner fires on it.
+
+        The scanner is syntax-unaware and treats quoted strings in comments as
+        findings. This test pins the current contract so any change is deliberate.
+        """
+        (tmp_path / "app.py").write_text(
+            '# Old default: "https://api.openai.com/v1" — do not use\n'
+            "client = OpenAI()  # uses env var\n"
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0, (
+            "Scanner fires on quoted URLs inside comments (syntax-unaware). "
+            "Use --allow-hardcoded-urls or # worthless: ignore (future) to suppress."
+        )
+
+    def test_js_template_literal_not_detected(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Template literals use backticks — _QUOTED_STR_RE does not match them.
+
+        This is a known false-negative gap. Pinned here so any future fix that
+        adds backtick support causes this test to fail loudly, prompting the
+        assertion to be flipped.
+        """
+        (tmp_path / "api.js").write_text(
+            "const client = new OpenAI({ baseURL: `https://api.openai.com/v1` });\n"
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, (
+            "Template literal backtick support was added — flip this assertion to != 0."
+        )
+
+    def test_multiple_findings_in_one_file_all_reported(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """All hardcoded URLs in a single file appear in the error output."""
+        (tmp_path / "multi.py").write_text(
+            'openai_client = OpenAI(base_url="https://api.openai.com/v1")\n'
+            'anthropic_client = Anthropic(base_url="https://api.anthropic.com/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "(openai)" in result.output
+        assert "(anthropic)" in result.output
+
+    def test_unreadable_source_file_does_not_crash(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """OSError on a source file is silently skipped — lock must not crash."""
+        restricted = tmp_path / "private.py"
+        restricted.write_text("client = OpenAI()\n")
+        restricted.chmod(0o000)
+        try:
+            result = self._run(home_dir, self._env(tmp_path))
+            assert result.exit_code == 0, f"Unreadable source file crashed lock: {result.output}"
+        finally:
+            restricted.chmod(0o644)
+
+    def test_unreadable_directory_does_not_crash(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """PermissionError on iterdir() is silently skipped — lock must not crash."""
+        restricted = tmp_path / "private_dir"
+        restricted.mkdir()
+        (restricted / "llm.py").write_text(
+            'client = OpenAI(base_url="https://api.openai.com/v1")\n'
+        )
+        restricted.chmod(0o000)
+        try:
+            result = self._run(home_dir, self._env(tmp_path))
+            assert result.exit_code == 0, f"Unreadable directory crashed lock: {result.output}"
+        finally:
+            restricted.chmod(0o755)
+
+    def test_skips_127_0_0_1_provider(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """127.0.0.1 is a loopback address — not flagged as a proxy bypass."""
+        (tmp_path / "local_model.py").write_text(
+            'client = OpenAI(base_url="http://127.0.0.1:8080/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_non_interactive_error_includes_flag_hint(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Non-interactive (no TTY) error output hints the user toward --allow-hardcoded-urls."""
+        (tmp_path / "app.py").write_text('client = OpenAI(base_url="https://api.openai.com/v1")\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "--allow-hardcoded-urls" in result.output
+
+    def test_no_false_positive_on_mismatched_quotes(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Mismatched quote delimiters ('url") do not produce false positives."""
+        (tmp_path / "weird.py").write_text("x = 'https://api.openai.com/v1\"\n")
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, "Mismatched quotes produced a false-positive finding"
+
+
+class TestScannerProperties:
+    """Property-based tests for scan_source_for_hardcoded_provider_urls."""
+
+    def test_every_registered_hostname_is_detected(self, tmp_path: Path) -> None:
+        """Every non-local hostname in the bundled registry triggers a finding."""
+        from urllib.parse import urlparse
+
+        from worthless.cli.providers import load_bundled
+        from worthless.cli.scanner import (
+            _LOCAL_HOSTNAMES,
+            scan_source_for_hardcoded_provider_urls,
+        )
+
+        registry = load_bundled()
+        for entry in registry.values():
+            hostname = urlparse(entry.url).hostname or ""
+            if not hostname or hostname in _LOCAL_HOSTNAMES:
+                continue
+
+            src = tmp_path / "probe.py"
+            src.write_text(f'url = "https://{hostname}/v1"\n')
+
+            findings = scan_source_for_hardcoded_provider_urls(tmp_path)
+            assert len(findings) >= 1, (
+                f"No finding for registered hostname {hostname!r} ({entry.name})"
+            )
+            src.unlink()
