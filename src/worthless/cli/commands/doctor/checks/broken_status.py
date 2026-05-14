@@ -96,7 +96,8 @@ def run(ctx: CheckContext) -> CheckResult:
     enrollments, err = load_enrollments(ctx, check_id)
     if err is not None:
         return err
-    assert enrollments is not None
+    if enrollments is None:  # pragma: no cover — unreachable: load_enrollments always pairs
+        raise RuntimeError("load_enrollments returned (None, None) — programming error")
 
     broken = _find_broken(enrollments, ctx.home.shard_a_dir)
 

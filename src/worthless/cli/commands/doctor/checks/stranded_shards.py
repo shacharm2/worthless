@@ -87,12 +87,14 @@ def run(ctx: CheckContext) -> CheckResult:
     on_disk, early = _list_shard_a_files(ctx)
     if early is not None:
         return early
-    assert on_disk is not None
+    if on_disk is None:  # pragma: no cover — unreachable: _list_shard_a_files always pairs
+        raise RuntimeError("_list_shard_a_files returned (None, None) — programming error")
 
     enrollments, err = load_enrollments(ctx, check_id)
     if err is not None:
         return err
-    assert enrollments is not None
+    if enrollments is None:  # pragma: no cover — unreachable: load_enrollments always pairs
+        raise RuntimeError("load_enrollments returned (None, None) — programming error")
 
     known_aliases = {e.key_alias for e in enrollments}
     stranded = sorted(name for name in on_disk if name not in known_aliases)
