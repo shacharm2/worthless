@@ -333,14 +333,23 @@ class TestEntrypoint:
             f"Last line must use exec to replace shell process, got: {last_line}"
         )
 
-    def test_fernet_key_passed_via_fd(self, entrypoint_text: str):
-        """Fernet key must be passed via file descriptor, not env var.
+    def test_fernet_key_not_passed_via_fd(self, entrypoint_text: str):
+        """WOR-465 A4: Fernet key must NOT be passed via open file descriptor.
 
-        Env vars are visible in /proc/*/environ to any process in the
-        container. File descriptors are private to the process.
+        A4 removes 'exec 3< fernet.key' and 'export WORTHLESS_FERNET_FD=3'
+        to close the POSIX fd-inheritance vector: an open fd survives exec
+        without O_CLOEXEC and is readable via /proc/self/fd/3 regardless of
+        file permissions. The sidecar reads fernet.key directly (it owns it
+        0400); the proxy never needs the raw key.
         """
-        assert "exec 3<" in entrypoint_text
-        assert "WORTHLESS_FERNET_FD=3" in entrypoint_text
+        assert "exec 3< " not in entrypoint_text, (
+            "WOR-465 A4: 'exec 3< fernet.key' must be absent from entrypoint.sh. "
+            "The open fd is inherited by uvicorn and bypasses the 0400 permission."
+        )
+        assert "WORTHLESS_FERNET_FD" not in entrypoint_text, (
+            "WOR-465 A4: WORTHLESS_FERNET_FD must not be exported. The proxy no "
+            "longer reads the key directly; all crypto routes through IPC verbs."
+        )
 
     def test_fernet_migration_uses_install_not_cp(self, entrypoint_text: str):
         """Migration must use 'install -m' instead of cp+chmod.
@@ -437,9 +446,8 @@ class TestEntrypoint:
             "Without it the priv-drop dance silently no-ops and the v1.1 "
             "security claim is broken with no log line."
         )
-        # Find the final exec line.  Multiple ``exec`` statements may
-        # appear (e.g. exec 3< for FD passing); the priv-drop guard
-        # must precede the LAST one (which replaces the process).
+        # Find the final exec line.  The priv-drop guard must precede
+        # the LAST exec (which replaces the process with start.py).
         exec_matches = list(re.finditer(r"^exec\s+\S", entrypoint_text, re.MULTILINE))
         assert exec_matches, "entrypoint.sh has no `exec` line"
         last_exec_pos = exec_matches[-1].start()
@@ -452,68 +460,52 @@ class TestEntrypoint:
         )
 
     def test_bootstrap_locks_fernet_key(self, entrypoint_text: str):
-        """Bootstrap must chmod fernet.key to 0440 root:worthless after creation.
+        """WOR-465 A4: fernet.key must be locked to worthless-crypto:worthless-crypto 0400.
 
-        Mode 0440 (not 0400): the worthless group needs READ access so
-        bootstrap-validation in the proxy uid + sidecar reconstruct in
-        the crypto uid both work.  Owner is root so neither service uid
-        can unlink/replace the key.  Cannot use umask 0337 during the
-        bootstrap python invocation because SQLite WAL/SHM files are
-        also created and must remain writable; the chmod is applied
-        explicitly post-bootstrap inside the priv-drop block.
+        A4 makes this unconditional — no flag required. The sidecar uid (10002,
+        gid 10002) reads via owner bit; the proxy uid (10001, not in gid 10002)
+        is kernel-denied. Fail-closed stat check exits 78 on permission mismatch.
         """
-        assert "chmod 0440" in entrypoint_text, (
-            "Bootstrap should chmod fernet.key to 0440 (root:worthless) after creation."
+        assert "chmod 0400" in entrypoint_text, (
+            "WOR-465 A4: entrypoint must chmod fernet.key to 0400 (owner-only) "
+            "after creation. The proxy uid is not in gid 10002; kernel rejects open()."
         )
-        assert 'chown root:worthless "$FERNET_PATH"' in entrypoint_text, (
-            "fernet.key must be chowned to root:worthless so the proxy uid cannot "
-            "unlink it but the worthless group can read."
-        )
-
-    def test_fernet_key_chmod_gated_by_ipc_only(self, entrypoint_text: str):
-        """WOR-465 Phase A1: the fernet.key chmod path must branch on
-        ``WORTHLESS_FERNET_IPC_ONLY``.
-
-        Default off (env unset or "0"): keep ``root:worthless 0440`` so
-        the proxy uid can still read the key for ``lock --env`` /
-        bootstrap-validation — docker-e2e stays green during migration.
-
-        Flag on (``WORTHLESS_FERNET_IPC_ONLY=1``): switch fernet.key to
-        ``root:worthless-crypto 0400``. The proxy uid is not in that
-        group; kernel rejects the open(). Phases A2-A3 add the IPC
-        verbs the proxy will call instead. Phase A4 makes the flag
-        default and removes the legacy 0440 path.
-
-        Rollback at any phase = unset the flag.
-        """
-        assert "WORTHLESS_FERNET_IPC_ONLY" in entrypoint_text, (
-            "WOR-465 Phase A1: entrypoint.sh must reference "
-            "WORTHLESS_FERNET_IPC_ONLY to gate the fernet.key chmod path."
-        )
-        # Owner MUST be worthless-crypto (the sidecar uid), not root.
-        # With mode 0400, the owner is the only reader — if owner is
-        # root, the sidecar can't read the key it's supposed to manage,
-        # and the flag silently DOSes the system. Initial implementation
-        # of A1 had this exact bug (chown root:worthless-crypto 0400);
-        # static-text grep for the group name passed but the system
-        # broke at runtime. Anchor the regex to the full owner:group
-        # pair so the regression cannot recur.
         assert re.search(r"chown\s+worthless-crypto:worthless-crypto", entrypoint_text), (
-            "WOR-465 Phase A1: gated branch must chown fernet.key to "
-            "worthless-crypto:worthless-crypto (sidecar owns and reads "
-            "via owner bit). chown root:worthless-crypto with mode 0400 "
-            "locks the sidecar out of its own key — caught by "
-            "task-completion-validator on PR #158."
+            "WOR-465 A4: fernet.key must be chowned to worthless-crypto:worthless-crypto "
+            "so the sidecar owns and reads via owner bit; proxy is denied."
+        )
+
+    def test_fernet_key_chmod_unconditional_crypto_owner(self, entrypoint_text: str):
+        """WOR-465 A4: fernet.key chmod must be unconditional — no flag gate.
+
+        A4 removes the 'if WORTHLESS_FERNET_IPC_ONLY=1' branch from A1 and
+        makes worthless-crypto:worthless-crypto 0400 the only state. The A1
+        conditional gate is gone; there is no fallback 0440 path. The
+        Dockerfile ENV WORTHLESS_FERNET_IPC_ONLY=1 ensures Python ProxySettings
+        sees the locked state without any operator action.
+
+        Owner MUST be worthless-crypto (not root) — with 0400, the owner is
+        the only reader. chown root:worthless-crypto 0400 locks the sidecar out
+        of its own key (the A1 bug caught by task-completion-validator on PR #158).
+        """
+        # No conditional gate — flag reference is gone from entrypoint.
+        assert "WORTHLESS_FERNET_IPC_ONLY" not in entrypoint_text, (
+            "WOR-465 A4: WORTHLESS_FERNET_IPC_ONLY conditional must be removed "
+            "from entrypoint.sh. A4 makes the chmod unconditional."
+        )
+        # Unconditional chown to sidecar uid — anchored to full owner:group pair.
+        assert re.search(r"chown\s+worthless-crypto:worthless-crypto", entrypoint_text), (
+            "WOR-465 A4: entrypoint must unconditionally chown fernet.key to "
+            "worthless-crypto:worthless-crypto (sidecar owns, proxy denied)."
         )
         assert "chmod 0400" in entrypoint_text, (
-            "WOR-465 Phase A1: gated branch must chmod fernet.key to 0400 "
-            "(owner-only). Proxy uid is not the owner; kernel rejects open()."
+            "WOR-465 A4: entrypoint must chmod fernet.key to 0400 (owner-only). "
+            "Proxy uid 10001 ∉ gid 10002; kernel rejects open()."
         )
-        # Default branch stays — docker-e2e ships unchanged in A1.
-        assert "chmod 0440" in entrypoint_text, (
-            "WOR-465 Phase A1: default (env unset) branch must keep "
-            "chmod 0440 so existing docker-e2e + bootstrap-validation "
-            "still work until Phase A4 flips the default."
+        # No legacy 0440 fallback — the proxy-readable path is gone.
+        assert "chmod 0440" not in entrypoint_text, (
+            "WOR-465 A4: legacy 'chmod 0440' (root:worthless, proxy-readable) "
+            "must not appear in entrypoint.sh. A4 removes the fallback path entirely."
         )
 
     def test_no_hardcoded_secrets(self, entrypoint_text: str):
