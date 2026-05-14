@@ -77,6 +77,15 @@ def _read_default_host(mode: DeployMode) -> str:
     return "127.0.0.1"
 
 
+def resolve_bind_host() -> str:
+    """Return the uvicorn bind host for the current deploy mode + env overrides.
+
+    Public entry-point so ``cli.process`` can populate ``WORTHLESS_HOST`` in
+    the subprocess env dict without calling private helpers cross-module.
+    """
+    return _read_default_host(_read_deploy_mode())
+
+
 def _read_fernet_key() -> bytearray:
     """Read Fernet key: fd (secure pipe) -> keystore (env/keyring/file)."""
     fd_str = os.environ.get("WORTHLESS_FERNET_FD")
