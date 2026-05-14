@@ -34,6 +34,7 @@ import pytest
 from typer.testing import CliRunner
 
 from tests.helpers import fake_openai_key
+from tests.user_flows.helpers import scrubbed_cli_env
 from worthless.cli.app import app
 
 
@@ -51,7 +52,7 @@ def test_full_dogfood_lock_break_doctor_recover(tmp_path: Path) -> None:
     env_file.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
 
     runner = CliRunner()
-    cli_env = {"WORTHLESS_HOME": str(home)}
+    cli_env = scrubbed_cli_env(home)
 
     # Step 1 — lock
     lock = runner.invoke(app, ["lock", "--env", str(env_file)], env=cli_env)

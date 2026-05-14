@@ -153,7 +153,7 @@ markers = [
     "docker: Docker container end-to-end tests (requires running Docker daemon)",
     "e2e: end-to-end smoke tests — full lifecycle (lock, proxy, healthz)",
     "openclaw: OpenClaw integration tests (requires Docker + network pull)",
-    "user_flow: end-to-end user-flow tests — real keyring, real CLI, real fs. Run with `pytest -m user_flow`. See worthless-bwu6 for the full suite scope.",
+    "user_flow: end-to-end user-flow tests — real keyring, real CLI, real fs. Run with `pytest -m user_flow`. See Linear WOR-439 for the full suite scope.",
 ]
 
 [tool.coverage.run]
