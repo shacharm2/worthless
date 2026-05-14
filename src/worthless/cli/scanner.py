@@ -61,7 +61,8 @@ _NOISE_DIRS: frozenset[str] = frozenset(
 # Provider hostnames that route to localhost are already local — not a bypass.
 _LOCAL_HOSTNAMES: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
 
-_QUOTED_STR_RE = re.compile(r"""["']([^"'\n]+)["']""")
+# Backreference ensures closing quote matches opening — prevents mismatched-quote false positives.
+_QUOTED_STR_RE = re.compile(r"""(['"])([^"'\n]+)\1""")
 
 
 @dataclass
@@ -102,7 +103,7 @@ def scan_source_for_hardcoded_provider_urls(
             with src_file.open(errors="replace") as fh:
                 for line_no, line in enumerate(fh, start=1):
                     for m in _QUOTED_STR_RE.finditer(line):
-                        value = m.group(1)
+                        value = m.group(2)  # group 1 is the quote char; group 2 is content
                         host_match = combined.search(value)
                         if host_match:
                             findings.append(
@@ -122,7 +123,11 @@ def _walk_source_files(root: Path) -> Iterator[Path]:
     """Yield source files under *root*, pruning noise directories without descending into them."""
     stack = [root]
     while stack:
-        for item in stack.pop().iterdir():
+        try:
+            entries = list(stack.pop().iterdir())
+        except OSError:
+            continue
+        for item in entries:
             if item.is_dir() and not item.is_symlink():
                 if item.name not in _NOISE_DIRS and not item.name.endswith(".egg-info"):
                     stack.append(item)

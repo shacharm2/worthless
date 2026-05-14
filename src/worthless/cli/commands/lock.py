@@ -675,6 +675,7 @@ def _lock_keys(
     token_budget_daily: int | None = None,
     quiet: bool = False,
     keys_only: bool = False,
+    allow_hardcoded_urls: bool = False,
 ) -> int:
     """Transactional multi-key lock.
 
@@ -692,20 +693,35 @@ def _lock_keys(
 
     bypass_findings = scan_source_for_hardcoded_provider_urls(env_path.parent)
     if bypass_findings:
-        lines = ["worthless: hardcoded provider URLs detected — these bypass the proxy:"]
+        header = "worthless: hardcoded provider URLs detected — these bypass the proxy:"
+        detail_lines = [header]
         for f in bypass_findings:
             safe_file = _CTRL_RE.sub("", f.file)
             safe_url = _CTRL_RE.sub("", f.url)
-            lines.append(f"  {safe_file}:{f.line}  {safe_url}  ({f.provider})")
-        lines.append(
-            "Remove the hardcoded URL and read the *_BASE_URL variable"
-            " from the environment instead."
-        )
-        raise WorthlessError(
-            ErrorCode.SCAN_ERROR,
-            "\n".join(lines),
-            exit_code=1,
-        )
+            detail_lines.append(f"  {safe_file}:{f.line}  {safe_url}  ({f.provider})")
+        findings_text = "\n".join(detail_lines)
+
+        if allow_hardcoded_urls:
+            console.print_warning(findings_text)
+            console.print_warning(
+                "Proceeding with --allow-hardcoded-urls. Ensure these are not "
+                "active production code paths that bypass the proxy."
+            )
+        elif sys.stdin.isatty():
+            console.print_warning(findings_text)
+            if not typer.confirm(
+                "\nThese URLs will bypass the proxy. Are these intentional "
+                "(e.g. test fixtures or docs)? Proceed anyway?",
+                default=False,
+            ):
+                raise WorthlessError(ErrorCode.SCAN_ERROR, "Aborted.", exit_code=1)
+        else:
+            raise WorthlessError(
+                ErrorCode.SCAN_ERROR,
+                findings_text + "\nIf this is intentional (e.g. test fixtures), re-run with "
+                "--allow-hardcoded-urls to bypass this check.",
+                exit_code=1,
+            )
 
     if not quiet:
         console.print_hint(f"Scanning {env_path} for API keys...")
@@ -900,6 +916,15 @@ def register_lock_commands(app: typer.Typer) -> None:
         keys_only: bool = typer.Option(
             False, "--keys-only", help="Only rewrite API keys (skip BASE_URL)"
         ),
+        allow_hardcoded_urls: bool = typer.Option(
+            False,
+            "--allow-hardcoded-urls",
+            help=(
+                "Proceed even if source files contain hardcoded provider URLs. "
+                "Use when the URLs are intentional (e.g. test fixtures). "
+                "A warning is always printed."
+            ),
+        ),
     ) -> None:
         """Protect API keys in a .env file."""
         # Pre-announce the macOS Keychain dialog so users aren't surprised by a
@@ -921,6 +946,7 @@ def register_lock_commands(app: typer.Typer) -> None:
                 provider_override=provider,
                 token_budget_daily=token_budget_daily,
                 keys_only=keys_only,
+                allow_hardcoded_urls=allow_hardcoded_urls,
             )
 
     @app.command()

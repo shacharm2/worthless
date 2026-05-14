@@ -1583,3 +1583,189 @@ class TestLockHardcodedBaseUrlDetection:
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0
         assert "api.js" in result.output
+
+    # ------------------------------------------------------------------
+    # Additional coverage — QA gap fills
+    # ------------------------------------------------------------------
+
+    def test_fails_groq_url(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Groq is in the bundled registry — hardcoded Groq URL must block lock."""
+        (tmp_path / "chat.py").write_text(
+            'client = Groq(base_url="https://api.groq.com/openai/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "api.groq.com" in result.output
+
+    def test_fails_together_url(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Together.ai is in the bundled registry — hardcoded Together URL must block lock."""
+        (tmp_path / "infer.py").write_text(
+            'llm = Together(base_url="https://api.together.xyz/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "api.together.xyz" in result.output
+
+    def test_no_db_enrollment_when_scan_blocks(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Scan gate fires pre-enrollment — DB must be empty when lock is blocked."""
+        import asyncio
+
+        from worthless.storage.repository import ShardRepository
+
+        (tmp_path / "app.py").write_text('client = OpenAI(base_url="https://api.openai.com/v1")\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+
+        async def _check():
+            repo = ShardRepository(str(home_dir.db_path), home_dir.fernet_key)
+            await repo.initialize()
+            return await repo.list_keys()
+
+        aliases = asyncio.run(_check())
+        assert aliases == [], (
+            "DB has enrollments despite scan blocking lock — gate must run pre-enrollment"
+        )
+
+    def test_allow_hardcoded_urls_flag_bypasses_block(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """--allow-hardcoded-urls lets lock proceed with a warning, not an error."""
+        (tmp_path / "test_llm.py").write_text(
+            '    assert resp.url == "https://api.openai.com/v1/chat/completions"\n'
+        )
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(self._env(tmp_path)), "--allow-hardcoded-urls"],
+            env={
+                "WORTHLESS_HOME": str(home_dir.base_dir),
+                "WORTHLESS_KEYRING_BACKEND": "null",
+            },
+        )
+        assert result.exit_code == 0, result.output
+        assert "api.openai.com" in result.output
+
+    def test_url_in_python_comment_triggers_block(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """URL in a comment is inside a quoted string — scanner fires on it.
+
+        The scanner is syntax-unaware and treats quoted strings in comments as
+        findings. This test pins the current contract so any change is deliberate.
+        """
+        (tmp_path / "app.py").write_text(
+            '# Old default: "https://api.openai.com/v1" — do not use\n'
+            "client = OpenAI()  # uses env var\n"
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0, (
+            "Scanner fires on quoted URLs inside comments (syntax-unaware). "
+            "Use --allow-hardcoded-urls or # worthless: ignore (future) to suppress."
+        )
+
+    def test_js_template_literal_not_detected(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Template literals use backticks — _QUOTED_STR_RE does not match them.
+
+        This is a known false-negative gap. Pinned here so any future fix that
+        adds backtick support causes this test to fail loudly, prompting the
+        assertion to be flipped.
+        """
+        (tmp_path / "api.js").write_text(
+            "const client = new OpenAI({ baseURL: `https://api.openai.com/v1` });\n"
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, (
+            "Template literal backtick support was added — flip this assertion to != 0."
+        )
+
+    def test_multiple_findings_in_one_file_all_reported(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """All hardcoded URLs in a single file appear in the error output."""
+        (tmp_path / "multi.py").write_text(
+            'openai_client = OpenAI(base_url="https://api.openai.com/v1")\n'
+            'anthropic_client = Anthropic(base_url="https://api.anthropic.com/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "api.openai.com" in result.output
+        assert "api.anthropic.com" in result.output
+        assert "multi.py:1" in result.output
+        assert "multi.py:2" in result.output
+
+    def test_unreadable_source_file_does_not_crash(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """OSError on a source file is silently skipped — lock must not crash."""
+        restricted = tmp_path / "private.py"
+        restricted.write_text("client = OpenAI()\n")
+        restricted.chmod(0o000)
+        try:
+            result = self._run(home_dir, self._env(tmp_path))
+            assert result.exit_code == 0, f"Unreadable source file crashed lock: {result.output}"
+        finally:
+            restricted.chmod(0o644)
+
+    def test_unreadable_directory_does_not_crash(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """PermissionError on iterdir() is silently skipped — lock must not crash."""
+        restricted = tmp_path / "private_dir"
+        restricted.mkdir()
+        (restricted / "llm.py").write_text(
+            'client = OpenAI(base_url="https://api.openai.com/v1")\n'
+        )
+        restricted.chmod(0o000)
+        try:
+            result = self._run(home_dir, self._env(tmp_path))
+            assert result.exit_code == 0, f"Unreadable directory crashed lock: {result.output}"
+        finally:
+            restricted.chmod(0o755)
+
+    def test_skips_127_0_0_1_provider(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """127.0.0.1 is a loopback address — not flagged as a proxy bypass."""
+        (tmp_path / "local_model.py").write_text(
+            'client = OpenAI(base_url="http://127.0.0.1:8080/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_no_false_positive_on_mismatched_quotes(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Mismatched quote delimiters ('url") do not produce false positives."""
+        (tmp_path / "weird.py").write_text("x = 'https://api.openai.com/v1\"\n")
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, "Mismatched quotes produced a false-positive finding"
+
+
+class TestScannerProperties:
+    """Property-based tests for scan_source_for_hardcoded_provider_urls."""
+
+    def test_every_registered_hostname_is_detected(self, tmp_path: Path) -> None:
+        """Every non-local hostname in the bundled registry triggers a finding."""
+        from urllib.parse import urlparse
+
+        from worthless.cli.providers import load_bundled
+        from worthless.cli.scanner import (
+            _LOCAL_HOSTNAMES,
+            scan_source_for_hardcoded_provider_urls,
+        )
+
+        registry = load_bundled()
+        for entry in registry.values():
+            hostname = urlparse(entry.url).hostname or ""
+            if not hostname or hostname in _LOCAL_HOSTNAMES:
+                continue
+
+            src = tmp_path / "probe.py"
+            src.write_text(f'url = "https://{hostname}/v1"\n')
+
+            findings = scan_source_for_hardcoded_provider_urls(tmp_path)
+            assert len(findings) >= 1, (
+                f"No finding for registered hostname {hostname!r} ({entry.name})"
+            )
+            src.unlink()
