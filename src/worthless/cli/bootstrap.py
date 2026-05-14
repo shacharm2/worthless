@@ -309,27 +309,28 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
             home.base_dir.chmod(0o700)
             home.shard_a_dir.chmod(0o700)
 
-        # WOR-465 A3b / A4: flag-on path bypasses the keystore cascade entirely.
-        # The proxy container's worthless-proxy uid CANNOT read fernet.key;
-        # bootstrap proves key-presence via the sidecar's attestation
-        # instead. Failure mode is hard SIDECAR_NOT_READY — never a silent
-        # fallback that would defeat the flag.
+        # WOR-465 A3b / A4: when the sidecar socket is live, bypass the keystore
+        # cascade and attest via IPC instead (the proxy container's
+        # worthless-proxy uid CANNOT read fernet.key after the entrypoint chmod).
+        # Failure mode is hard SIDECAR_NOT_READY — never a silent fallback.
         #
         # Socket-existence guard (WOR-465 A4): entrypoint.sh calls get_home()
         # on first boot *before* start.py spawns the sidecar, so the socket
-        # does not exist at that point.  Skip validation then — the sidecar
-        # will be started by start.py immediately after.  The proxy hard-fails
-        # without a live sidecar (WOR-309), so the security claim is preserved:
-        # validation is deferred to the first CLI invocation AFTER the sidecar
-        # is running, not silently skipped forever.
+        # does not exist at that point. When absent, fall through to
+        # _provision_keystore_path so the key is generated as root; start.py
+        # reads it (also as root, before priv-drop) to split_to_tmpfs. After
+        # entrypoint chmod the key is locked to worthless-crypto:worthless-crypto
+        # 0400, so the proxy uid can never open it again. The proxy hard-fails
+        # without a live sidecar (WOR-309), preserving the security claim.
         if fernet_ipc_only_enabled():
             socket_path = Path(
                 os.environ.get(WORTHLESS_SIDECAR_SOCKET_ENV, _DEFAULT_SIDECAR_SOCKET)
             )
             if socket_path.exists():
                 _validate_via_sidecar(socket_path)
-            _init_db(home)
-            return home
+                _init_db(home)
+                return home
+            # Socket absent → first-boot; fall through to key generation below.
 
         _provision_keystore_path(home)
     except WorthlessError:
