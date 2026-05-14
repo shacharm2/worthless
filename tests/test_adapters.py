@@ -78,6 +78,19 @@ class TestInjectIncludeUsage:
         assert parsed["stream_options"]["include_usage"] is True
         assert parsed["model"] == "gpt-4o"
 
+    def test_streaming_with_empty_tools_list_injects(self):
+        """Empty tools list is falsy — injection proceeds, not skipped.
+
+        ``tools=[]`` is not a tool-call request; it carries no schemas that
+        OpenAI might reject after re-serialisation. The bypass guard
+        (``if payload.get("tools")``) correctly treats an empty list as
+        "no tools" and allows include_usage injection.
+        """
+        body = self._body(model="gpt-4o", stream=True, messages=[], tools=[])
+        result = _inject_include_usage(body)
+        assert result is not body
+        assert json.loads(result)["stream_options"]["include_usage"] is True
+
     def test_existing_stream_options_preserved(self):
         """Other stream_options fields survive the injection."""
         body = self._body(
