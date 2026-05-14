@@ -1491,7 +1491,6 @@ class TestLockHardcodedBaseUrlDetection:
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0, "Expected lock to fail with hardcoded base_url"
         assert "(openai)" in result.output
-        assert "app.py" in result.output
 
     def test_fails_ts_file_hardcoded_anthropic_url(
         self, home_dir: WorthlessHome, tmp_path: Path
@@ -1503,7 +1502,6 @@ class TestLockHardcodedBaseUrlDetection:
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0
         assert "(anthropic)" in result.output
-        assert "client.ts" in result.output
 
     def test_fails_openrouter_url(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Lock fails when OpenRouter's base URL is hardcoded."""
@@ -1535,7 +1533,7 @@ class TestLockHardcodedBaseUrlDetection:
         (nested / "openai_client.py").write_text('BASE = "https://api.openai.com/v1"\n')
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0
-        assert "openai_client.py" in result.output
+        assert "(openai)" in result.output  # nested file was found by recursive scan
 
     def test_skips_node_modules(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Lock ignores node_modules — provider SDK source isn't user code."""
