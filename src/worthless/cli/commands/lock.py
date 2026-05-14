@@ -507,7 +507,19 @@ def _apply_openclaw(
     return True
 
 
-_CI_ENV_VARS = ("CI", "GITHUB_ACTIONS", "GITLAB_CI", "CI_SERVER")
+_CI_ENV_VARS = (
+    # Broadly adopted de-facto standard (GitHub Actions, CircleCI, Travis, etc.)
+    "CI",
+    # Platform-specific vars for systems that don't always set CI=true
+    "GITHUB_ACTIONS",  # GitHub Actions
+    "GITLAB_CI",  # GitLab CI/CD
+    "CI_SERVER",  # GitLab (alternative)
+    "TF_BUILD",  # Azure Pipelines
+    "CODEBUILD_BUILD_ID",  # AWS CodeBuild
+    "BITBUCKET_BUILD_NUMBER",  # Bitbucket Pipelines
+    "TEAMCITY_VERSION",  # TeamCity (attaches a real PTY — must be checked explicitly)
+    "CIRCLECI",  # CircleCI (sets CI=true too, belt-and-suspenders)
+)
 
 
 def _scan_prompt_is_tty() -> bool:
@@ -526,10 +538,13 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
 
     Contract:
     - Only called when count > 0 (keys were enrolled).
+    - Scans from Path.cwd() (consistent with ``worthless scan --code``) so
+      monorepos and non-default --env paths all get a full-project scan.
     - TTY  + findings → interactive "Scan now? [Y/n]"; Y prints findings.
     - non-TTY + findings → one-line warning to stderr (no prompt).
     - Zero findings → completely silent.
-    - Any exception → swallowed; lock exit code is never affected.
+    - User pressing Ctrl-C at the prompt → treated as "no", exits cleanly.
+    - Any other exception → swallowed; lock exit code is never affected.
     """
     try:
         findings = scan_for_hardcoded_provider_urls([cwd])
@@ -554,6 +569,10 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
                 " fix instructions.",
                 err=True,
             )
+    except typer.Abort:
+        # User pressed Ctrl-C at the "Scan now?" prompt — lock already succeeded,
+        # treat this as a polite "no thanks" rather than an error.
+        return
     except Exception:  # noqa: BLE001
         logger.debug("_maybe_prompt_code_scan raised, skipping", exc_info=True)
 
@@ -598,7 +617,7 @@ def _write_lock_sentinel(
 ) -> None:
     """Best-effort sentinel write. Failure is logged + swallowed."""
     try:
-        from worthless.cli.sentinel import write_sentinel
+        from worthless.cli.sentinel import write_sentinel  # noqa: PLC0415 — deferred import avoids circular dep at module load
 
         write_sentinel(
             home.base_dir,
@@ -724,7 +743,7 @@ def _lock_keys(
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
             )
-            _maybe_prompt_code_scan(env_path.parent)
+            _maybe_prompt_code_scan(Path.cwd())
         else:
             console.print_warning("No unprotected API keys found.")
 

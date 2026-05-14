@@ -144,9 +144,12 @@ class TestLockScanPromptHappyFlow:
             )
 
         assert result.exit_code == 0
+        # Both stdout and stderr must be completely clear of scan-related noise.
         assert "hardcoded" not in result.output.lower()
         assert "bypass" not in result.output.lower()
         assert "Scan now" not in result.output
+        assert "hardcoded" not in result.stderr.lower()
+        assert "bypass" not in result.stderr.lower()
         assert "Scan now" not in result.stderr
 
     def test_no_keys_enrolled_skips_scan_entirely(
@@ -317,6 +320,31 @@ class TestLockScanPromptInsulation:
         assert "ok" in call_order, "lock success message must be emitted"
         assert "scan" in call_order, "scanner must have been called"
         assert call_order.index("ok") < call_order.index("scan")
+
+    def test_scanner_called_with_cwd_not_env_parent(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Scanner must receive Path.cwd(), not env_path.parent.
+
+        Using env_path.parent would silently miss files outside the .env's
+        directory (e.g. frontend/ in a monorepo when --env backend/.env is
+        passed).  Path.cwd() keeps the scan root consistent with
+        ``worthless scan --code``.
+        """
+        env_file = _make_env_file(tmp_path)
+
+        with patch(_SCAN_FN, return_value=[]) as mock_scan:
+            runner.invoke(
+                app,
+                ["lock", "--env", str(env_file)],
+                env=_env(home_dir),
+            )
+
+        mock_scan.assert_called_once()
+        (roots,), _ = mock_scan.call_args
+        assert roots == [Path.cwd()], (
+            f"scanner received {roots!r} — expected [Path.cwd()] == [{Path.cwd()!r}]"
+        )
 
     def test_existing_lock_tests_not_broken(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Smoke: scanner patched out → existing lock behaviour fully preserved."""
