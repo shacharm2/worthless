@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import stat
 import sys
@@ -14,6 +15,8 @@ from pathlib import Path
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
+from worthless.cli.code_scanner import scan_for_hardcoded_provider_urls
+from worthless.cli.commands.scan import _format_code_findings_human
 from worthless.cli.process import resolve_port
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import (
@@ -601,6 +604,76 @@ def _apply_openclaw(
     return True
 
 
+_CI_ENV_VARS = (
+    # Broadly adopted de-facto standard (GitHub Actions, CircleCI, Travis, etc.)
+    "CI",
+    # Platform-specific vars for systems that don't always set CI=true
+    "GITHUB_ACTIONS",  # GitHub Actions
+    "GITLAB_CI",  # GitLab CI/CD
+    "CI_SERVER",  # GitLab (alternative)
+    "TF_BUILD",  # Azure Pipelines
+    "CODEBUILD_BUILD_ID",  # AWS CodeBuild
+    "BITBUCKET_BUILD_NUMBER",  # Bitbucket Pipelines
+    "TEAMCITY_VERSION",  # TeamCity (attaches a real PTY — must be checked explicitly)
+    "CIRCLECI",  # CircleCI (sets CI=true too, belt-and-suspenders)
+)
+
+
+def _scan_prompt_is_tty() -> bool:
+    """Patchable TTY check — extracted so tests can override without touching sys.stdin.
+
+    Returns False in known CI environments even when stdin appears to be a TTY
+    (some CI systems attach a pseudo-TTY), ensuring prompts are never shown there.
+    """
+    if any(os.environ.get(v) for v in _CI_ENV_VARS):
+        return False
+    return hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
+
+
+def _maybe_prompt_code_scan(cwd: Path) -> None:
+    """After successful enrollment, offer to scan source for hardcoded URLs.
+
+    Contract:
+    - Only called when count > 0 (keys were enrolled).
+    - Scans from Path.cwd() (consistent with ``worthless scan --code``) so
+      monorepos and non-default --env paths all get a full-project scan.
+    - TTY  + findings → interactive "Scan now? [Y/n]"; Y prints findings.
+    - non-TTY + findings → one-line warning to stderr (no prompt).
+    - Zero findings → completely silent.
+    - User pressing Ctrl-C at the prompt → treated as "no", exits cleanly.
+    - Any other exception → swallowed; lock exit code is never affected.
+    """
+    try:
+        findings = scan_for_hardcoded_provider_urls([cwd])
+        if not findings:
+            return
+        count = len(findings)
+        noun = "URL" if count == 1 else "URLs"
+        summary = f"Found {count} hardcoded provider {noun} that will bypass the proxy."
+        if _scan_prompt_is_tty():
+            confirmed = typer.confirm(f"\n{summary} Scan now?", default=True)
+            if not confirmed:
+                return
+            typer.echo(_format_code_findings_human(findings), err=True)
+            typer.echo(
+                "\nRun `worthless scan --code` at any time to see this again with fix"
+                " instructions.",
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"\nWarning: {summary} Run `worthless scan --code` for details and"
+                " fix instructions.",
+                err=True,
+            )
+    except typer.Abort:
+        # User pressed Ctrl-C at the "Scan now?" prompt — lock already succeeded,
+        # treat this as a polite "no thanks" rather than an error.
+        return
+    except Exception:  # noqa: BLE001
+        logger.debug("_maybe_prompt_code_scan raised, skipping", exc_info=True)
+
+
 def _emit_openclaw_failure(
     console,  # noqa: ANN001
     quiet: bool,
@@ -641,7 +714,7 @@ def _write_lock_sentinel(
 ) -> None:
     """Best-effort sentinel write. Failure is logged + swallowed."""
     try:
-        from worthless.cli.sentinel import write_sentinel
+        from worthless.cli.sentinel import write_sentinel  # noqa: PLC0415 — deferred import avoids circular dep at module load
 
         write_sentinel(
             home.base_dir,
@@ -771,6 +844,7 @@ def _lock_keys(
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
             )
+            _maybe_prompt_code_scan(Path.cwd())
         else:
             console.print_warning("No unprotected API keys found.")
 
