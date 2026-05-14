@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import stat
 import sys
@@ -506,8 +507,17 @@ def _apply_openclaw(
     return True
 
 
+_CI_ENV_VARS = ("CI", "GITHUB_ACTIONS", "GITLAB_CI", "CI_SERVER")
+
+
 def _scan_prompt_is_tty() -> bool:
-    """Patchable TTY check — extracted so tests can override without touching sys.stdin."""
+    """Patchable TTY check — extracted so tests can override without touching sys.stdin.
+
+    Returns False in known CI environments even when stdin appears to be a TTY
+    (some CI systems attach a pseudo-TTY), ensuring prompts are never shown there.
+    """
+    if any(os.environ.get(v) for v in _CI_ENV_VARS):
+        return False
     return hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
 
 
@@ -523,31 +533,29 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
     """
     try:
         findings = scan_for_hardcoded_provider_urls([cwd])
-    except Exception:  # noqa: BLE001
-        logger.debug("_maybe_prompt_code_scan: scanner raised, skipping", exc_info=True)
-        return
-
-    if not findings:
-        return
-
-    count = len(findings)
-    noun = "URL" if count == 1 else "URLs"
-    summary = f"Found {count} hardcoded provider {noun} that will bypass the proxy."
-
-    if _scan_prompt_is_tty():
-        confirmed = typer.confirm(f"\n{summary} Scan now?", default=True)
-        if not confirmed:
+        if not findings:
             return
-        typer.echo(_format_code_findings_human(findings), err=True)
-        typer.echo(
-            "\nRun `worthless scan --code` at any time to see this again with fix instructions.",
-            err=True,
-        )
-    else:
-        typer.echo(
-            f"\nWarning: {summary} Run `worthless scan --code` for details and fix instructions.",
-            err=True,
-        )
+        count = len(findings)
+        noun = "URL" if count == 1 else "URLs"
+        summary = f"Found {count} hardcoded provider {noun} that will bypass the proxy."
+        if _scan_prompt_is_tty():
+            confirmed = typer.confirm(f"\n{summary} Scan now?", default=True)
+            if not confirmed:
+                return
+            typer.echo(_format_code_findings_human(findings), err=True)
+            typer.echo(
+                "\nRun `worthless scan --code` at any time to see this again with fix"
+                " instructions.",
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"\nWarning: {summary} Run `worthless scan --code` for details and"
+                " fix instructions.",
+                err=True,
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("_maybe_prompt_code_scan raised, skipping", exc_info=True)
 
 
 def _emit_openclaw_failure(

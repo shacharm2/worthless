@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 from worthless.cli.code_scanner import CodeFinding
+from worthless.cli.console import WorthlessConsole
 from tests.helpers import fake_openai_key
 
 _SCAN_FN = "worthless.cli.commands.lock.scan_for_hardcoded_provider_urls"
@@ -196,13 +197,15 @@ class TestLockScanPromptNonTTY:
         assert "hardcoded" in result.stderr.lower() or "bypass" in result.stderr.lower()
 
     def test_ci_env_var_skips_prompt(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
-        """Non-TTY (as in CI) → no interactive prompt, one-line warning only."""
+        """CI=true suppresses the interactive prompt even when stdin appears as a TTY."""
         env_file = _make_env_file(tmp_path)
         finding = _make_finding(tmp_path)
 
+        # Simulate a pseudo-TTY CI environment: stdin says isatty()=True, but
+        # CI=true should override and force the non-interactive warning path.
         with (
             patch(_SCAN_FN, return_value=[finding]),
-            patch(_IS_TTY, return_value=False),
+            patch("worthless.cli.commands.lock.sys.stdin.isatty", return_value=True),
         ):
             result = runner.invoke(
                 app,
@@ -212,6 +215,7 @@ class TestLockScanPromptNonTTY:
 
         assert result.exit_code == 0
         assert "Scan now" not in result.output
+        assert "bypass" in result.stderr.lower()
 
     def test_scan_not_called_when_no_findings_non_tty(
         self, home_dir: WorthlessHome, tmp_path: Path
@@ -283,14 +287,24 @@ class TestLockScanPromptInsulation:
         env_file = _make_env_file(tmp_path)
         finding = _make_finding(tmp_path)
         call_order: list[str] = []
+        # Capture the unbound function BEFORE patching so the spy can delegate
+        # to the real implementation without infinite recursion.
+        _original_print_success = WorthlessConsole.print_success
 
         def _fake_scan(*_a, **_kw):
             call_order.append("scan")
             return [finding]
 
+        def _mark_success(self_console, message: str) -> None:
+            # Called as a plain function via the class patch; Python's descriptor
+            # protocol binds self_console automatically.
+            call_order.append("ok")
+            _original_print_success(self_console, message)
+
         with (
             patch(_SCAN_FN, side_effect=_fake_scan),
             patch(_IS_TTY, return_value=True),
+            patch.object(WorthlessConsole, "print_success", _mark_success),
         ):
             result = runner.invoke(
                 app,
@@ -300,9 +314,9 @@ class TestLockScanPromptInsulation:
             )
 
         assert result.exit_code == 0
-        assert "[OK]" in result.stderr, "lock success message must appear before scan runs"
+        assert "ok" in call_order, "lock success message must be emitted"
         assert "scan" in call_order, "scanner must have been called"
-        assert call_order[0] == "scan"
+        assert call_order.index("ok") < call_order.index("scan")
 
     def test_existing_lock_tests_not_broken(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Smoke: scanner patched out → existing lock behaviour fully preserved."""
