@@ -87,13 +87,15 @@ class TraceRunner:
         *,
         cwd: Path,
         env_files: Iterable[Path],
+        home: Path | None = None,
         expect_exit: Callable[[int], bool] | None = None,
     ) -> None:
+        command_home = home or self.journey.home
         before = snapshot_env_files("before", env_files)
         proc = subprocess.run(  # noqa: S603 - fixed executable plus controlled args.
             [resolve_worthless(), *args],
             cwd=cwd,
-            env=scrubbed_env(self.journey.home),
+            env=scrubbed_env(command_home),
             text=True,
             capture_output=True,
             check=False,
@@ -110,7 +112,7 @@ class TraceRunner:
             CommandTrace(
                 command=["worthless", *args],
                 cwd=cwd,
-                home=self.journey.home,
+                home=command_home,
                 exit_code=proc.returncode,
                 stdout=proc.stdout,
                 stderr=proc.stderr,
@@ -225,17 +227,12 @@ def build_teammate_handoff_failure() -> Journey:
     runner.run(["lock", "--env", str(owner_env)], cwd=owner_project, env_files=[owner_env])
     teammate_env.write_text(owner_env.read_text())
 
-    teammate = TraceRunner(
-        runner.journey.root / "teammate-home",
-        title=runner.journey.title,
-        summary=runner.journey.summary,
-    )
-    teammate.journey = runner.journey
-    teammate.journey.home = runner.journey.root / "teammate" / ".worthless"
-    teammate.run(
+    teammate_home = runner.journey.root / "teammate" / ".worthless"
+    runner.run(
         ["unlock", "--env", str(teammate_env)],
         cwd=teammate_project,
         env_files=[teammate_env],
+        home=teammate_home,
         expect_exit=lambda code: code != 0,
     )
     return runner.journey

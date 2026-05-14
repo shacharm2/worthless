@@ -367,6 +367,12 @@ async def _pass1_db_writes(
                     db_shard.charset,
                 )
                 await repo.add_enrollment(alias, var_name=var_name, env_path=env_str)
+                await _delete_superseded_location_enrollments(
+                    repo,
+                    alias=alias,
+                    var_name=var_name,
+                    env_path=env_str,
+                )
                 planned_out.append(
                     _PlannedUpdate(
                         alias=alias,
