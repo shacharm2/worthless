@@ -234,3 +234,29 @@ class TestProxyCmdShape:
             "single-process assumption poll_health_pid relies on. Revisit "
             "the PID-authority logic before shipping."
         )
+
+    def test_proxy_cmd_respects_worthless_host_env(self, monkeypatch):
+        """WORTHLESS_HOST must flow through to the uvicorn --host argument.
+
+        Regression guard: proxy_cmd previously hardcoded 127.0.0.1, so
+        WORTHLESS_DEPLOY_MODE=lan WORTHLESS_HOST=0.0.0.0 had no effect on
+        what address uvicorn actually bound.
+        """
+        from worthless.cli.process import proxy_cmd
+
+        monkeypatch.setenv("WORTHLESS_HOST", "0.0.0.0")  # noqa: S104
+        cmd = proxy_cmd(port=8787)
+        host_idx = cmd.index("--host")
+        assert cmd[host_idx + 1] == "0.0.0.0", (  # noqa: S104
+            f"Expected --host 0.0.0.0 but got {cmd[host_idx + 1]!r}. "
+            "WORTHLESS_HOST must be forwarded to the uvicorn bind address."
+        )
+
+    def test_proxy_cmd_defaults_to_loopback_without_env(self, monkeypatch):
+        """Without WORTHLESS_HOST set, proxy_cmd stays loopback-safe."""
+        from worthless.cli.process import proxy_cmd
+
+        monkeypatch.delenv("WORTHLESS_HOST", raising=False)
+        cmd = proxy_cmd(port=8787)
+        host_idx = cmd.index("--host")
+        assert cmd[host_idx + 1] == "127.0.0.1"

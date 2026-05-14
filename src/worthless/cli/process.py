@@ -247,7 +247,13 @@ def prepare_proxy_env(
 
 
 def proxy_cmd(port: int) -> list[str]:
-    """Build the uvicorn command for the proxy."""
+    """Build the uvicorn command for the proxy.
+
+    The bind host is resolved from WORTHLESS_HOST (if set) so that
+    ``worthless up`` respects LAN/public deploy modes.  Falls back to
+    loopback-safe ``127.0.0.1`` when unset.
+    """
+    host = os.environ.get("WORTHLESS_HOST", "127.0.0.1")
     return [
         sys.executable,
         "-m",
@@ -255,7 +261,7 @@ def proxy_cmd(port: int) -> list[str]:
         "worthless.proxy.app:create_app",
         "--factory",
         "--host",
-        "127.0.0.1",
+        host,
         "--port",
         str(port),
     ]
