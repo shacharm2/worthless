@@ -2,13 +2,94 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
-from worthless.adapters.openai import OpenAIAdapter
+from worthless.adapters.openai import OpenAIAdapter, _inject_include_usage
 from worthless.adapters.anthropic import AnthropicAdapter
 from worthless.adapters.registry import get_adapter
 from worthless.adapters.types import AdapterRequest, AdapterResponse
+
+
+# ---------------------------------------------------------------------------
+# _inject_include_usage unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestInjectIncludeUsage:
+    """Unit tests for the stream_options.include_usage injection helper."""
+
+    def _body(self, **kwargs) -> bytes:
+        return json.dumps(kwargs).encode()
+
+    def test_non_streaming_unchanged(self):
+        """Non-streaming requests must pass through byte-identical."""
+        body = self._body(model="gpt-4o", stream=False, messages=[])
+        assert _inject_include_usage(body) is body
+
+    def test_streaming_no_tools_injects(self):
+        """Plain streaming without tools gets include_usage injected."""
+        body = self._body(model="gpt-4o", stream=True, messages=[])
+        result = _inject_include_usage(body)
+        assert result is not body
+        parsed = json.loads(result)
+        assert parsed["stream_options"]["include_usage"] is True
+
+    def test_streaming_with_tools_unchanged(self):
+        """Streaming with tools must NOT be modified — OpenAI returns 400 otherwise."""
+        tools = [{"type": "function", "function": {"name": "read", "parameters": {}}}]
+        body = self._body(model="gpt-4o", stream=True, messages=[], tools=tools)
+        assert _inject_include_usage(body) is body, (
+            "body was modified for a tool-call request — this causes OpenAI 400"
+        )
+
+    def test_streaming_with_tools_body_not_re_serialised(self):
+        """No re-serialisation on tool-call requests — bytes are identical to input."""
+        tools = [{"type": "function", "function": {"name": "exec"}}]
+        body = self._body(model="gpt-4o-mini", stream=True, messages=[], tools=tools)
+        result = _inject_include_usage(body)
+        assert result == body
+
+    def test_already_has_include_usage_unchanged(self):
+        """Idempotent: if client already set include_usage, bytes are unchanged."""
+        body = self._body(
+            model="gpt-4o",
+            stream=True,
+            messages=[],
+            stream_options={"include_usage": True},
+        )
+        assert _inject_include_usage(body) is body
+
+    def test_invalid_json_unchanged(self):
+        """Malformed body passes through untouched."""
+        body = b"not json"
+        assert _inject_include_usage(body) is body
+
+    def test_empty_body_unchanged(self):
+        assert _inject_include_usage(b"") == b""
+
+    def test_injected_body_is_valid_json(self):
+        """Injected body round-trips cleanly."""
+        body = self._body(model="gpt-4o", stream=True, messages=[{"role": "user", "content": "hi"}])
+        result = _inject_include_usage(body)
+        parsed = json.loads(result)
+        assert parsed["stream_options"]["include_usage"] is True
+        assert parsed["model"] == "gpt-4o"
+
+    def test_existing_stream_options_preserved(self):
+        """Other stream_options fields survive the injection."""
+        body = self._body(
+            model="gpt-4o",
+            stream=True,
+            messages=[],
+            stream_options={"other_option": True},
+        )
+        result = _inject_include_usage(body)
+        parsed = json.loads(result)
+        assert parsed["stream_options"]["include_usage"] is True
+        assert parsed["stream_options"]["other_option"] is True
 
 
 # ---------------------------------------------------------------------------

@@ -248,6 +248,9 @@ def prepare_proxy_env(
 
 def proxy_cmd(port: int) -> list[str]:
     """Build the uvicorn command for the proxy."""
+    import os as _os
+
+    host = _os.environ.get("WORTHLESS_HOST", "127.0.0.1")
     return [
         sys.executable,
         "-m",
@@ -255,7 +258,7 @@ def proxy_cmd(port: int) -> list[str]:
         "worthless.proxy.app:create_app",
         "--factory",
         "--host",
-        "127.0.0.1",
+        host,
         "--port",
         str(port),
     ]
