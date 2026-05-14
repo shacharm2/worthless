@@ -13,6 +13,12 @@ arbitrary signals, open arbitrary files), the attacker cannot extract the Fernet
 key for offline decryption or bulk exfiltration — the kernel rejects ptrace,
 `/proc/<pid>/mem`, and `kill(-9)` across the uid wall.
 
+**WOR-465 A4 (shipped):** `fernet.key` is now owned `worthless-crypto:worthless-crypto 0400`
+unconditionally — no operator flag required. The Dockerfile sets
+`WORTHLESS_FERNET_IPC_ONLY=1` as the default ENV, and the entrypoint enforces
+the permission regardless of operator environment. A fail-closed stat check at
+container start exits 78 if the storage backend silently drops the chown.
+
 **What this does NOT defend against:** a live proxy RCE can still drive the IPC
 to request per-request `seal`/`open` operations on traffic that arrives at the
 proxy while the attacker controls it. The threat model WOR-310 closes is
@@ -43,7 +49,7 @@ docker inspect worthless --format '{{ .Config.Labels }}'
 | Attack | Defended? | How |
 |---|---|---|
 | Stolen `.env` (Shard A) | ✅ | XOR-split: Shard A alone reveals nothing. Pre-existing v1.1 claim. |
-| RCE in proxy → read Fernet key | ✅ | Two-uid wall + `PR_SET_DUMPABLE=0` + YAMA `ptrace_scope=1` + NO_NEW_PRIVS + CAPBSET_DROP. |
+| RCE in proxy → read Fernet key | ✅ (A4) | `fernet.key` owned `worthless-crypto:worthless-crypto 0400` unconditionally (WOR-465 A4 — no flag required). Kernel rejects `open()` from proxy uid 10001, which is not in gid 10002. Fail-closed stat check at container start exits 78 if chown was silently dropped by the storage backend. Two-uid wall + `PR_SET_DUMPABLE=0` + YAMA `ptrace_scope=1` + NO_NEW_PRIVS + CAPBSET_DROP block the remaining exfiltration paths (ptrace, `/proc/<pid>/mem`, core dump). **Does NOT defend against:** proxy RCE driving live IPC verbs (`seal`/`open`) while the attacker is present — the key cannot be extracted but can be used on chosen plaintexts/ciphertexts for the duration of the compromise. |
 | RCE in proxy → kill sidecar | ⚠ partial | `kill()` across uids is blocked by the OS, but proxy can still SIGTERM via the orchestrator if it has socket-level access. Out-of-scope for the in-container claim. |
 | Memory-disclosure crash dump | ✅ | `PR_SET_DUMPABLE=0` (Phase A) + `ulimit -c 0` (Phase D) + image-level core-dump suppression. |
 | `setuid` binary escalation | ✅ | `prctl(PR_SET_NO_NEW_PRIVS, 1)` in the priv-drop preexec_fn. Locks the bit before uid drops so it applies to the dropped uid. |
@@ -114,7 +120,7 @@ Branch: `feature/wor-310-dockerfile` → PR #137 → `feature/wor-306-fernet-sid
 - Plan: `~/.claude/plans/parallel-doodling-zephyr.md`
 - Linear ticket: WOR-310
 - Parent epic: WOR-306 (Fernet sidecar)
-- Related: WOR-307 (IPC contract), WOR-308 (sidecar production), WOR-309 (proxy hard-fail), WOR-384 (lifecycle)
+- Related: WOR-307 (IPC contract), WOR-308 (sidecar production), WOR-309 (proxy hard-fail), WOR-384 (lifecycle), WOR-465 (Fernet IPC migration — A4 ships unconditional key lockdown)
 - Linux kernel docs:
   - [`prctl(2)`](https://man7.org/linux/man-pages/man2/prctl.2.html) — `PR_SET_DUMPABLE`, `PR_SET_NO_NEW_PRIVS`, `PR_CAPBSET_DROP`
   - [`setresuid(2)`](https://man7.org/linux/man-pages/man2/setresuid.2.html) — saved-uid lock

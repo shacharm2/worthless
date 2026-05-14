@@ -1,5 +1,5 @@
 # ruff: noqa: S104, S108, S603, S607
-"""Kernel-level integration test for the fernet.key chmod path (WOR-465 A1).
+"""Kernel-level integration test for the fernet.key chmod path (WOR-465 A4).
 
 Static text-grep can confirm strings are present in entrypoint.sh; only a
 real container can confirm the kernel actually denies the proxy uid and
@@ -226,41 +226,6 @@ def _cleanup(container: str, volume: str) -> None:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-
-
-def test_default_off_keeps_legacy_root_worthless_0440(image: str) -> None:
-    """WORTHLESS_FERNET_IPC_ONLY unset → fernet.key stays root:worthless 0440.
-
-    This is what the existing docker-e2e relies on. Failure here means A1
-    broke production behavior — must hard-fail.
-    """
-    vol = f"chmod-default-{uuid.uuid4().hex[:8]}"
-    cnt = f"chmod-default-{uuid.uuid4().hex[:8]}"
-    try:
-        _seed_fernet_key(image, vol)
-        _run_entrypoint(
-            image,
-            vol,
-            cnt,
-            env={
-                # Point entrypoint at the seeded /secrets path. Default
-                # is $HOME_DIR/fernet.key (=/data/fernet.key); we use
-                # the migration env var so the chmod block targets the
-                # file we control. Production uses /secrets too.
-                "WORTHLESS_FERNET_KEY_PATH": "/secrets/fernet.key",
-                "WORTHLESS_DEPLOY_MODE": "lan",
-                "WORTHLESS_ALLOW_INSECURE": "true",
-                "WORTHLESS_HOST": "0.0.0.0",
-            },
-        )
-        owner_mode = _stat(image, vol, "fernet.key")
-        assert owner_mode == "root:worthless 440", (
-            "WOR-465 Phase A1 default-off regression: fernet.key must stay "
-            f"root:worthless 0440 when WORTHLESS_FERNET_IPC_ONLY is unset; "
-            f"got {owner_mode!r}. This breaks docker-e2e + bootstrap-validation."
-        )
-    finally:
-        _cleanup(cnt, vol)
 
 
 def test_flag_on_fails_closed_when_chown_is_silently_dropped(image: str) -> None:
