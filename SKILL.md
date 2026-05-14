@@ -42,7 +42,7 @@ Worthless scans for **LLM provider API key prefixes only** — currently `openai
 
 ### Package Info
 - **Package name**: `worthless`
-- **Version**: 0.3.6
+- **Version**: 0.3.7
 - **Entry point**: `worthless` (CLI command)
 - **Python**: 3.10+
 - **License**: AGPL-3.0
