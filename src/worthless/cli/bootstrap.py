@@ -309,24 +309,25 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
             home.base_dir.chmod(0o700)
             home.shard_a_dir.chmod(0o700)
 
-        # WOR-465 A3b / A4: when the sidecar socket is live AND we are running
-        # as the proxy uid (non-root), bypass the keystore cascade and attest
-        # via IPC instead. Root (euid 0) is always trusted and reads the key
-        # directly — this covers entrypoint.sh first-boot bootstrap, start.py
-        # pre-priv-drop, and operator CLI commands run via ``docker exec``
-        # (which default to root). The threat model protects against the proxy
-        # uid (10001 = worthless-proxy); container-escape is documented as
-        # out-of-scope. Failure mode for the proxy path is hard
+        # WOR-465 A3b / A4: on Linux/WSL non-root, bypass the keystore cascade
+        # and attest via IPC instead (the proxy uid cannot open fernet.key).
+        # Three exemptions where we fall through to the normal keystore path:
+        #   - Windows: no Docker container, no sidecar — always use keystore.
+        #   - WSL: IS_WINDOWS=False (real Linux kernel), os.geteuid() works.
+        #   - euid 0: root is trusted and reads the key directly — covers
+        #     entrypoint first-boot bootstrap, start.py pre-priv-drop, and
+        #     operator ``docker exec`` commands (default user = root).
+        # Threat model: protects proxy uid 10001. Root = container escape =
+        # documented out-of-scope. Failure mode for the proxy path is hard
         # SIDECAR_NOT_READY — never a silent fallback.
         #
-        # Socket-existence guard: entrypoint.sh calls get_home() on first boot
-        # *before* start.py spawns the sidecar, so the socket does not exist
-        # yet. When absent, fall through to _provision_keystore_path so the key
-        # is generated as root; start.py reads it (also as root, before
-        # priv-drop) to call split_to_tmpfs. After the entrypoint chmod the key
-        # is locked to worthless-crypto:worthless-crypto 0400, so the proxy uid
-        # can never open it again. WOR-309 proxy hard-fail preserves the claim.
-        if fernet_ipc_only_enabled() and getattr(os, "geteuid", lambda: 0)() != 0:
+        # Socket-existence guard: entrypoint.sh calls get_home() before
+        # start.py spawns the sidecar, so the socket does not yet exist on
+        # first boot. When absent, fall through to _provision_keystore_path so
+        # the key is generated as root; start.py reads it (also as root, before
+        # priv-drop) to split_to_tmpfs. The entrypoint chmod then locks the
+        # file to worthless-crypto:worthless-crypto 0400. WOR-309 hard-fail.
+        if fernet_ipc_only_enabled() and not IS_WINDOWS and os.geteuid() != 0:
             socket_path = Path(
                 os.environ.get(WORTHLESS_SIDECAR_SOCKET_ENV, _DEFAULT_SIDECAR_SOCKET)
             )
