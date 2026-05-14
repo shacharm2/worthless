@@ -14,6 +14,7 @@ from pathlib import Path
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
+from worthless.cli.code_scanner import scan_for_hardcoded_provider_urls
 from worthless.cli.process import resolve_port
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import (
@@ -504,6 +505,57 @@ def _apply_openclaw(
     return True
 
 
+def _scan_prompt_is_tty() -> bool:
+    """Return True when stdin is an interactive terminal.
+
+    Extracted as a module-level function so tests can patch it without
+    touching ``sys.stdin`` directly.
+    """
+    return sys.stdin.isatty()
+
+
+def _maybe_prompt_code_scan(cwd: Path) -> None:
+    """After successful enrollment, offer to scan source for hardcoded URLs.
+
+    Contract:
+    - Only called when count > 0 (keys were enrolled).
+    - TTY  + findings → interactive "Scan now? [Y/n]"; Y prints findings.
+    - non-TTY + findings → one-line warning to stderr (no prompt).
+    - Zero findings → completely silent.
+    - Any exception → swallowed; lock exit code is never affected.
+    """
+    try:
+        findings = scan_for_hardcoded_provider_urls([cwd])
+    except Exception:  # noqa: BLE001
+        logger.debug("_maybe_prompt_code_scan: scanner raised, skipping", exc_info=True)
+        return
+
+    if not findings:
+        return
+
+    count = len(findings)
+    noun = "URL" if count == 1 else "URLs"
+    summary = f"Found {count} hardcoded provider {noun} that will bypass the proxy."
+
+    if _scan_prompt_is_tty():
+        confirmed = typer.confirm(f"\n{summary} Scan now?", default=True)
+        if not confirmed:
+            return
+        # Print findings inline using the same format as `worthless scan --code`
+        from worthless.cli.commands.scan import _format_code_findings_human  # noqa: PLC0415
+
+        typer.echo(_format_code_findings_human(findings), err=True)
+        typer.echo(
+            "\nRun `worthless scan --code` at any time to see this again with fix instructions.",
+            err=True,
+        )
+    else:
+        typer.echo(
+            f"\nWarning: {summary} Run `worthless scan --code` for details and fix instructions.",
+            err=True,
+        )
+
+
 def _emit_openclaw_failure(
     console,  # noqa: ANN001
     quiet: bool,
@@ -670,6 +722,7 @@ def _lock_keys(
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
             )
+            _maybe_prompt_code_scan(env_path.parent)
         else:
             console.print_warning("No unprotected API keys found.")
 
