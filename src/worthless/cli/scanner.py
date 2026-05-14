@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -60,8 +61,6 @@ _NOISE_DIRS: frozenset[str] = frozenset(
 # Provider hostnames that route to localhost are already local — not a bypass.
 _LOCAL_HOSTNAMES: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
 
-# String-literal pattern: single or double quoted value containing the hostname.
-# Built lazily and cached per call to scan_source_for_hardcoded_provider_urls.
 _QUOTED_STR_RE = re.compile(r"""["']([^"'\n]+)["']""")
 
 
@@ -84,9 +83,7 @@ def scan_source_for_hardcoded_provider_urls(
     in sync with what worthless actually knows about. Localhost providers
     (e.g. Ollama on 127.0.0.1) are excluded — they're already local.
     """
-    from worthless.cli.providers import (
-        load_bundled,
-    )  # local import — avoids circular at module init
+    from worthless.cli.providers import load_bundled  # deferred — avoids circular at module init
 
     registry = load_bundled()
     hostnames: dict[str, str] = {}  # hostname → provider name
@@ -98,35 +95,35 @@ def scan_source_for_hardcoded_provider_urls(
     if not hostnames:
         return []
 
+    combined = re.compile("|".join(re.escape(h) for h in hostnames))
     findings: list[HardcodedUrlFinding] = []
     for src_file in _walk_source_files(project_root):
         try:
-            text = src_file.read_text(errors="replace")
+            with src_file.open(errors="replace") as fh:
+                for line_no, line in enumerate(fh, start=1):
+                    for m in _QUOTED_STR_RE.finditer(line):
+                        value = m.group(1)
+                        host_match = combined.search(value)
+                        if host_match:
+                            findings.append(
+                                HardcodedUrlFinding(
+                                    file=str(src_file),
+                                    line=line_no,
+                                    url=value,
+                                    provider=hostnames[host_match.group(0)],
+                                )
+                            )
         except OSError:
             continue
-        for line_no, line in enumerate(text.splitlines(), start=1):
-            for m in _QUOTED_STR_RE.finditer(line):
-                value = m.group(1)
-                for hostname, provider_name in hostnames.items():
-                    if hostname in value:
-                        findings.append(
-                            HardcodedUrlFinding(
-                                file=str(src_file),
-                                line=line_no,
-                                url=value,
-                                provider=provider_name,
-                            )
-                        )
-                        break  # one finding per string literal
     return findings
 
 
-def _walk_source_files(root: Path):
+def _walk_source_files(root: Path) -> Iterator[Path]:
     """Yield source files under *root*, pruning noise directories without descending into them."""
     stack = [root]
     while stack:
         for item in stack.pop().iterdir():
-            if item.is_dir():
+            if item.is_dir() and not item.is_symlink():
                 if item.name not in _NOISE_DIRS and not item.name.endswith(".egg-info"):
                     stack.append(item)
             elif item.suffix in _SOURCE_EXTENSIONS:

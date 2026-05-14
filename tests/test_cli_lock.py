@@ -1524,8 +1524,7 @@ class TestLockHardcodedBaseUrlDetection:
         assert result.exit_code != 0
         # Line 3 contains the hardcoded URL
         out = result.output
-        assert "llm.py" in out
-        assert ":3" in out
+        assert "llm.py:3" in out
 
     def test_scans_subdirectory(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Lock scans recursively — catches bypasses in nested source files."""
@@ -1548,7 +1547,7 @@ class TestLockHardcodedBaseUrlDetection:
         """Lock ignores .git — internal git objects aren't user code."""
         git_hooks = tmp_path / ".git" / "hooks"
         git_hooks.mkdir(parents=True)
-        (git_hooks / "pre-commit").write_text("# https://api.openai.com/v1\n")
+        (git_hooks / "hook.py").write_text('BASE = "https://api.openai.com/v1"\n')
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code == 0, result.output
 
@@ -1564,7 +1563,7 @@ class TestLockHardcodedBaseUrlDetection:
         """Lock ignores __pycache__ — compiled bytecode isn't user code."""
         cache = tmp_path / "__pycache__"
         cache.mkdir()
-        (cache / "app.cpython-311.pyc").write_bytes(b"# https://api.openai.com/v1\n")
+        (cache / "app.py").write_text('BASE = "https://api.openai.com/v1"\n')
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code == 0, result.output
 

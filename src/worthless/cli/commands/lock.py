@@ -58,6 +58,8 @@ logger = logging.getLogger(__name__)
 # registry name to its protocol via ``lookup_by_name`` before checking
 # this map. ``worthless-9t74`` will promote that translation into a
 # structural ``provider name`` vs ``protocol`` separation post-merge.
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
 _PROVIDER_ENV_MAP: dict[str, str] = {
     "openai": "OPENAI_BASE_URL",
     "anthropic": "ANTHROPIC_BASE_URL",
@@ -692,7 +694,9 @@ def _lock_keys(
     if bypass_findings:
         lines = ["worthless: hardcoded provider URLs detected — these bypass the proxy:"]
         for f in bypass_findings:
-            lines.append(f"  {f.file}:{f.line}  {f.url}  ({f.provider})")
+            safe_file = _CTRL_RE.sub("", f.file)
+            safe_url = _CTRL_RE.sub("", f.url)
+            lines.append(f"  {safe_file}:{f.line}  {safe_url}  ({f.provider})")
         lines.append(
             "Remove the hardcoded URL and read the *_BASE_URL variable"
             " from the environment instead."
