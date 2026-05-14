@@ -5,7 +5,7 @@ Scope: Linear `WOR-439`, first implementation branch `feature/wor-439-user-flow-
 
 ## Executive summary
 
-This branch protects the first two user-flow lanes:
+This report started with the first two user-flow lanes:
 
 - `WOR-440`: native CLI operations.
 - `WOR-445`: recovery, teammate handoff, rotation, and multi-project drift.
@@ -15,10 +15,12 @@ journeys, OpenClaw, or agent/MCP setup. This branch now includes a first CI
 lane for Linux/macOS user-flow proof plus uploaded terminal trace artifacts;
 Windows native and WSL proof remain explicitly deferred.
 
-The suite now contains 12 user-flow tests:
+The stress-test follow-on branch adds native destructive-state journeys on top
+of that baseline. The suite now contains 14 user-flow tests:
 
 - 4 seed tests that already existed.
 - 8 tests added by this branch.
+- 2 native stress tests added by the stress follow-on branch.
 
 The product confidence gained is centered on "I have a project with `.env`;
 Worthless can lock it, tell me what happened, recover it, and avoid corrupting
@@ -79,6 +81,8 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python tests/user_flows/render_traces.py \
 | Same-shape key rotation | A user can paste a replacement raw key into the same var and re-run `lock`. | Second `lock` protects the new value; `unlock` restores the new key, not the old one. | `test_recovery_journeys.py::test_rotation_relock_restores_new_raw_key` |
 | Different-shape key rotation | Relock should also work when the replacement key has a different provider prefix shape. | Replacing `sk-proj-...` with `sk-...` should not produce `WRTLS-199` or a traceback. | `test_recovery_journeys.py::test_rotation_relock_accepts_different_shape_raw_key` |
 | Multi-project isolation | Unlocking one project must not restore or corrupt another project under the same Worthless home. | Project A unlocks to raw key while project B remains protected until explicitly unlocked. | `test_recovery_journeys.py::test_multi_project_unlock_keeps_other_project_protected` |
+| Refused rewrite after planned lock | If Worthless refuses to rewrite an unsafe `.env`, the user must not be left half-protected. | `lock` fails without traceback, original `.env` bytes remain, status has no protected phantom row, and explicit scan still finds the raw key. | `test_native_stress_journeys.py::test_lock_rewrite_refusal_leaves_env_and_status_recoverable` |
+| Tampered locked `.env` | If a user edits a locked shard value, unlock should fail clearly without destroying evidence. | `unlock` fails without traceback, says the value was modified after lock / commitment mismatch, leaves `.env` unchanged, and status still shows protected state. | `test_native_stress_journeys.py::test_unlock_tampered_locked_env_fails_without_destroying_state` |
 
 ## Manual journey scripts
 
@@ -177,6 +181,43 @@ Trace first to:
 
 - `test_recovery_journeys.py::test_multi_project_unlock_keeps_other_project_protected`
 
+### Journey F: unsafe rewrite refusal
+
+1. Create `.env` with a fake raw key.
+2. Create a hardlink to that same `.env`.
+3. Run `worthless lock --env .env`.
+4. Run `worthless status`.
+5. Run `worthless scan .env`.
+
+Expected UX:
+
+- Lock fails without traceback.
+- `.env` still contains the original raw key.
+- Status does not claim the key is protected.
+- Explicit scan reports the raw key as unprotected without exposing the full value.
+
+Trace first to:
+
+- `test_native_stress_journeys.py::test_lock_rewrite_refusal_leaves_env_and_status_recoverable`
+
+### Journey G: tampered locked value
+
+1. Lock a fake raw key.
+2. Replace the locked `.env` value with another shape-valid fake key.
+3. Run `worthless unlock --env .env`.
+4. Run `worthless status`.
+
+Expected UX:
+
+- Unlock fails without traceback.
+- Output says the locked value was modified after lock or has a commitment mismatch.
+- `.env` keeps the tampered value for investigation/retry.
+- Status still shows protected state; the DB row was not deleted.
+
+Trace first to:
+
+- `test_native_stress_journeys.py::test_unlock_tampered_locked_env_fails_without_destroying_state`
+
 ## Current gaps
 
 These are intentionally not covered by this first branch:
@@ -193,7 +234,6 @@ Product-risk gaps still worth promoting into explicit journeys:
 
 - Deleting part of `WORTHLESS_HOME` after lock.
 - Corrupt shard DB or fernet material.
-- Unsafe `--env` path handling from a user-flow perspective.
 - Crash or disk-full during relock.
 - Same key across two `.env` files.
 - Unlock-all or multi-env state transitions.

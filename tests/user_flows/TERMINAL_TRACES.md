@@ -784,3 +784,232 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=fd48852568>
 ```text
 OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=b6e34dbee6>
 ```
+
+## Native Stress: Refused Rewrite and Tampered Lock
+
+Unsafe rewrite refusal leaves the raw .env recoverable and unenrolled; tampering with a locked value fails with an actionable commitment-mismatch message without destroying state.
+
+- Workspace: `$TRACE_ROOT/native-stress`
+
+### 1. `worthless lock --env $TRACE_ROOT/native-stress/rewrite-refusal/.env`
+
+- cwd: `$TRACE_ROOT/native-stress/rewrite-refusal`
+- WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
+- exit: `1`
+
+**.env before**
+
+`$TRACE_ROOT/native-stress/rewrite-refusal/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=686d33168b>
+```
+
+**stdout**
+
+```text
+<empty>
+```
+
+**stderr**
+
+```text
+Scanning $TRACE_ROOT/native-stress/rewrite-refusal/.env
+for API keys...
+  Protecting OPENAI_API_KEY...
+worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-686d3316/v1 to $TRACE_ROOT/native-stress/rewrite-refusal/.env (was missing)
+WRTLS-111: unsafe rewrite refused — your .env is unchanged
+Target path changed between resolution and open — retry.
+```
+
+**.env after**
+
+`$TRACE_ROOT/native-stress/rewrite-refusal/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=686d33168b>
+```
+
+### 2. `worthless status`
+
+- cwd: `$TRACE_ROOT/native-stress/rewrite-refusal`
+- WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
+- exit: `0`
+
+**.env before**
+
+`$TRACE_ROOT/native-stress/rewrite-refusal/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=686d33168b>
+```
+
+**stdout**
+
+```text
+<empty>
+```
+
+**stderr**
+
+```text
+No keys enrolled.
+Proxy: not running
+```
+
+**.env after**
+
+`$TRACE_ROOT/native-stress/rewrite-refusal/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=686d33168b>
+```
+
+### 3. `worthless scan $TRACE_ROOT/native-stress/rewrite-refusal/.env`
+
+- cwd: `$TRACE_ROOT/native-stress`
+- WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
+- exit: `1`
+
+**.env before**
+
+`$TRACE_ROOT/native-stress/rewrite-refusal/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=686d33168b>
+```
+
+**stdout**
+
+```text
+<empty>
+```
+
+**stderr**
+
+```text
+  $TRACE_ROOT/native-stress/rewrite-refusal/.env:1  openai (OPENAI_API_KEY)  UNPROTECTED  sk-p****
+
+Found 1 keys: 0 protected, 1 unprotected
+See: docs.worthless.dev/ci-setup
+```
+
+**.env after**
+
+`$TRACE_ROOT/native-stress/rewrite-refusal/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=686d33168b>
+```
+
+### 4. `worthless lock --env $TRACE_ROOT/native-stress/tampered-lock/.env`
+
+- cwd: `$TRACE_ROOT/native-stress/tampered-lock`
+- WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
+- exit: `0`
+
+**.env before**
+
+`$TRACE_ROOT/native-stress/tampered-lock/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=0ca90940b2>
+```
+
+**stdout**
+
+```text
+<empty>
+```
+
+**stderr**
+
+```text
+Scanning $TRACE_ROOT/native-stress/tampered-lock/.env for
+API keys...
+  Protecting OPENAI_API_KEY...
+worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-0ca90940/v1 to $TRACE_ROOT/native-stress/tampered-lock/.env (was missing)
+[OK] 1 key(s) split between this machine and a local key file — .env no longer contains a usable secret.
+Next: run `worthless wrap <command>` or `worthless up` for daemon mode
+```
+
+**.env after**
+
+`$TRACE_ROOT/native-stress/tampered-lock/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:protected-9:len=51>
+OPENAI_BASE_URL=http://127.0.0.1:8787/openai-0ca90940/v1
+```
+
+### 5. `worthless unlock --env $TRACE_ROOT/native-stress/tampered-lock/.env`
+
+- cwd: `$TRACE_ROOT/native-stress/tampered-lock`
+- WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
+- exit: `1`
+
+**.env before**
+
+`$TRACE_ROOT/native-stress/tampered-lock/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=aad839a097>
+```
+
+**stdout**
+
+```text
+<empty>
+```
+
+**stderr**
+
+```text
+WRTLS-102: Cannot unlock OPENAI_API_KEY: locked .env value was modified after lock (commitment mismatch). Restore the
+locked value, re-lock from the original raw key, or run `worthless doctor` for recovery guidance.
+```
+
+**.env after**
+
+`$TRACE_ROOT/native-stress/tampered-lock/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=aad839a097>
+```
+
+### 6. `worthless status`
+
+- cwd: `$TRACE_ROOT/native-stress/tampered-lock`
+- WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
+- exit: `0`
+
+**.env before**
+
+`$TRACE_ROOT/native-stress/tampered-lock/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=aad839a097>
+```
+
+**stdout**
+
+```text
+<empty>
+```
+
+**stderr**
+
+```text
+Enrolled keys:
+  openai-0ca90940  openai  PROTECTED
+
+Proxy: not running
+```
+
+**.env after**
+
+`$TRACE_ROOT/native-stress/tampered-lock/.env`
+
+```text
+OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=aad839a097>
+```

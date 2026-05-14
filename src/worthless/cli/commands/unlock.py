@@ -32,6 +32,7 @@ from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.orphans import format_orphan_error
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp
 from worthless.crypto.types import zero_buf
+from worthless.exceptions import ShardTamperedError
 from worthless.openclaw import integration as _openclaw_integration
 from worthless.openclaw.errors import OpenclawIntegrationError
 from worthless.storage.repository import (
@@ -188,7 +189,16 @@ async def _pass1_reconstruct(
             var_name = enrollment.var_name if enrollment else None
 
             shard_a = _load_shard_a(encrypted, env_path, var_name, home, alias)
-            key_buf = _reconstruct(encrypted, shard_a, stored)
+            try:
+                key_buf = _reconstruct(encrypted, shard_a, stored)
+            except ShardTamperedError as exc:
+                label = var_name or alias
+                raise WorthlessError(
+                    ErrorCode.KEY_NOT_FOUND,
+                    f"Cannot unlock {label}: locked .env value was modified after lock "
+                    "(commitment mismatch). Restore the locked value, re-lock from the "
+                    "original raw key, or run `worthless doctor` for recovery guidance.",
+                ) from exc
             planned_out.append(
                 _PlannedRestore(
                     alias=alias,

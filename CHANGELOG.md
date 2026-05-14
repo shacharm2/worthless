@@ -83,7 +83,7 @@ The "make `curl install.sh | sh` actually work" release. v0.3.2 dogfood surfaced
 - **HF9 (worthless-xw2m) keychain popup contract on dev machine, 2026-05-05**. Wiped keychain (drained 6 entries to 0) + `~/.worthless/`, fresh `uv tool install` from main, ran `worthless lock` + status / scan / unlock / lock / up / down. **0 popups across all commands.** HF2 unit + user-flow tests prove the 1-popup contract on truly clean machines via real-keyring spy. Phase-2 second-machine run is best-practice but not blocker.
 
 ### Known limitations
-- **Manual `worthless up` after every reboot** until WOR-174 (macOS launchd) and WOR-175 (Linux systemd) ship in v1.1.
+- **Manual `worthless up` after every reboot** until WOR-174 (macOS launchd) and WOR-175 (Linux systemd) ship in v0.4.
 - **Docker app + host worthless** requires manually editing `.env` to use `host.docker.internal:8787` instead of `127.0.0.1:8787` — `worthless lock` writes `127.0.0.1` blindly today (filed as v1.2 work).
 - **Two `worthless up` proxy bugs** discovered during HF9 manual QA: stale orphan proxy on port 8787 (`worthless-6gkb`) and `worthless up &` exits prematurely (`worthless-n8tj`). Both filed as v0.3.4 / v1.2 work; do not affect lock/scan/status/unlock paths.
 
