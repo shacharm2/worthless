@@ -35,9 +35,9 @@ _OPENAI_PREFIX = "sk-" + "proj-"
 # ---------------------------------------------------------------------------
 
 
-def _make_alias(provider: str, api_key: str) -> str:
-    """Mirror production logic: provider + first 8 hex chars of sha256(key)."""
-    digest = hashlib.sha256(api_key.encode()).hexdigest()[:8]
+def _make_alias(provider: str, value: str) -> str:
+    """Compute alias from provider + first 8 hex chars of sha256(value)."""
+    digest = hashlib.sha256(value.encode()).hexdigest()[:8]
     return f"{provider}-{digest}"
 
 
