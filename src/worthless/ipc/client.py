@@ -1,6 +1,6 @@
 """Async proxy-side client for the Worthless sidecar IPC.
 
-Wire protocol: see ``docs/ipc-contract.md``. This module is the counterpart
+Wire protocol: see ``engineering/ipc-contract.md``. This module is the counterpart
 to :mod:`worthless.sidecar.server` — a dumb transport that speaks the
 framed msgpack envelope protocol. It performs NO crypto itself; every
 ``seal``/``open``/``attest`` call round-trips to the sidecar.
@@ -235,6 +235,21 @@ class IPCClient:
                 f"attest response missing bytes evidence, got {type(evidence).__name__}"
             )
         return bytes(evidence)
+
+    async def mac(self, value: bytes) -> bytes:
+        """Request raw HMAC-SHA256(key, value) from the sidecar.
+
+        Returns the unwrapped MAC tag as bytes. Distinct from
+        :meth:`attest` — see ``Backend.mac`` docstring for semantics.
+        """
+        if not isinstance(value, bytes | bytearray):
+            raise TypeError(f"mac value must be bytes, got {type(value).__name__}")
+        body: dict[str, Any] = {"value": bytes(value)}
+        resp_body = await self._request("mac", body)
+        tag = resp_body.get("mac")
+        if not isinstance(tag, bytes | bytearray):
+            raise IPCProtocolError(f"mac response missing bytes mac, got {type(tag).__name__}")
+        return bytes(tag)
 
     # ------------------------------------------------------------------
     # Internals

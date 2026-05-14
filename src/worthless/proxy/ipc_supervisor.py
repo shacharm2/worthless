@@ -16,7 +16,7 @@ the operational policy the proxy needs:
 Design invariants kept here:
 
 * No fallback. Transport failure raises :class:`IPCUnavailable`. The proxy
-  HTTP layer maps that to HTTP 503 (``docs/ipc-contract.md`` §invariants).
+  HTTP layer maps that to HTTP 503 (``engineering/ipc-contract.md`` §invariants).
 * No crypto here. The supervisor is intentionally crypto-agnostic — it owns
   *transport policy*, not key material. Plaintext returned by ``open()`` is
   surfaced as a :class:`bytearray` so callers can zero it (SR-01).

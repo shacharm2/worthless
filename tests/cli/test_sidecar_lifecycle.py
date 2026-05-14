@@ -283,6 +283,13 @@ def test_spawn_sidecar_passes_current_uid_in_env(home: Path, key: bytearray) -> 
             "worthless.cli.sidecar_lifecycle._wait_for_ready",
             return_value=True,
         ),
+        # C4 added an lstat S_ISSOCK check on socket_path post-ready.
+        # The mock _wait_for_ready bypasses real socket creation, so the
+        # path doesn't exist — bypass the inode check too.
+        patch(
+            "worthless.cli.sidecar_lifecycle._verify_socket_inode",
+            return_value=None,
+        ),
     ):
         handle = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
 
@@ -292,6 +299,86 @@ def test_spawn_sidecar_passes_current_uid_in_env(home: Path, key: bytearray) -> 
     assert env["WORTHLESS_SIDECAR_SOCKET"] == str(socket_path)
     assert env["WORTHLESS_SIDECAR_SHARE_A"] == str(shares.share_a_path)
     assert env["WORTHLESS_SIDECAR_SHARE_B"] == str(shares.share_b_path)
+
+
+def test_spawn_sidecar_ready_timeout_env_override_extends_deadline(
+    home: Path, key: bytearray, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``WORTHLESS_SIDECAR_READY_TIMEOUT_SECS`` overrides the kwarg default.
+
+    Real-sidecar tests on slow CI runners (GitHub Actions Ubuntu under
+    xdist load) occasionally exceed the 5s prod default for the
+    AF_UNIX bind. The env override lets the workflow extend the
+    deadline without leaking that knob into prod callers.
+
+    Verified via the WRTLS-114 message, which echoes the active timeout.
+    Setting env=0.2 with kwarg=99 must still time out at 0.2s.
+    """
+    shares = split_to_tmpfs(key, home)
+    socket_path = _short_socket_path()
+    monkeypatch.setenv("WORTHLESS_SIDECAR_READY_TIMEOUT_SECS", "0.2")
+
+    real_popen = subprocess.Popen
+    spawned: list[subprocess.Popen[bytes]] = []
+
+    def _sleeper_popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        proc = real_popen(  # noqa: S603 — static args, no shell
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            env=kwargs.get("env"),
+            stdout=kwargs.get("stdout"),
+            stderr=kwargs.get("stderr"),
+        )
+        spawned.append(proc)
+        return proc
+
+    with patch("worthless.cli.sidecar_lifecycle.subprocess.Popen", _sleeper_popen):
+        with pytest.raises(WorthlessError) as exc_info:
+            spawn_sidecar(
+                socket_path,
+                shares,
+                allowed_uid=os.getuid(),
+                ready_timeout=99.0,  # would mask a broken override if it won
+            )
+
+    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
+    # Message echoes the env-derived timeout, NOT the 99s kwarg.
+    assert "0.2s" in exc_info.value.message, (
+        f"env override must replace kwarg in WRTLS-114 message; got {exc_info.value.message!r}"
+    )
+    assert spawned, "Popen replacement was never invoked"
+
+
+def test_spawn_sidecar_ignores_invalid_ready_timeout_env(
+    home: Path, key: bytearray, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Garbled or non-positive env values fall back to the kwarg default."""
+    shares = split_to_tmpfs(key, home)
+    socket_path = _short_socket_path()
+    monkeypatch.setenv("WORTHLESS_SIDECAR_READY_TIMEOUT_SECS", "garbage")
+
+    real_popen = subprocess.Popen
+
+    def _sleeper_popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        return real_popen(  # noqa: S603 — static args, no shell
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            env=kwargs.get("env"),
+            stdout=kwargs.get("stdout"),
+            stderr=kwargs.get("stderr"),
+        )
+
+    with patch("worthless.cli.sidecar_lifecycle.subprocess.Popen", _sleeper_popen):
+        with pytest.raises(WorthlessError) as exc_info:
+            spawn_sidecar(
+                socket_path,
+                shares,
+                allowed_uid=os.getuid(),
+                ready_timeout=0.3,
+            )
+
+    # Garbage env value must NOT silently extend the deadline.
+    assert "0.3s" in exc_info.value.message, (
+        f"invalid env must fall back to kwarg; got {exc_info.value.message!r}"
+    )
 
 
 def test_spawn_sidecar_times_out_with_wrtls_114(home: Path, key: bytearray) -> None:
@@ -344,6 +431,10 @@ def test_spawn_sidecar_passes_drain_timeout_and_log_level(home: Path, key: bytea
         patch(
             "worthless.cli.sidecar_lifecycle._wait_for_ready",
             return_value=True,
+        ),
+        patch(
+            "worthless.cli.sidecar_lifecycle._verify_socket_inode",
+            return_value=None,
         ),
     ):
         spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
@@ -498,6 +589,10 @@ def test_spawn_sidecar_unlinks_stale_socket_before_spawn(home: Path, key: bytear
         patch(
             "worthless.cli.sidecar_lifecycle._wait_for_ready",
             return_value=True,
+        ),
+        patch(
+            "worthless.cli.sidecar_lifecycle._verify_socket_inode",
+            return_value=None,
         ),
     ):
         spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
@@ -821,6 +916,7 @@ def test_spawn_sidecar_accepts_path_within_limit(
     with (
         _patch("worthless.cli.sidecar_lifecycle.subprocess.Popen", return_value=fake_proc),
         _patch("worthless.cli.sidecar_lifecycle._wait_for_ready", return_value=True),
+        _patch("worthless.cli.sidecar_lifecycle._verify_socket_inode", return_value=None),
     ):
         # Must NOT raise — path is well within the limit.
         handle = spawn_sidecar(short_path, shares, allowed_uid=os.getuid())

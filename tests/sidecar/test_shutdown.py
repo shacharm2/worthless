@@ -11,7 +11,7 @@ Mix of two test styles:
   Lets us assert drain-deadline behavior without flaky signal-timing
   gymnastics. Signal wiring itself is already covered by slice 1.
 
-See ``docs/ipc-contract.md`` for the env contract and exit codes.
+See ``engineering/ipc-contract.md`` for the env contract and exit codes.
 """
 
 from __future__ import annotations
@@ -187,6 +187,8 @@ class _DelegatingBackend(Backend):
     Subclasses override only the method they want to perturb (slow seal,
     stalling seal) instead of re-implementing the open/attest pass-throughs.
     """
+
+    caps = ("seal", "open", "attest")
 
     def __init__(self, inner: FernetBackend) -> None:
         self._inner = inner

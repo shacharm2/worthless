@@ -145,6 +145,227 @@ class TestListEnrolledAliasesWithDB:
         assert len(aliases) >= 1
         assert all(isinstance(a, str) and isinstance(p, str) for a, p in aliases)
 
+    def test_returns_aliases_under_ipc_only_flag_without_sidecar(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Under WORTHLESS_FERNET_IPC_ONLY=1, alias listing must NOT depend on a
+        running sidecar. The pre-flight enrollment check is a pure DB read —
+        no Fernet key, no IPC socket needed. A missing socket must not cause
+        _list_enrolled_aliases to silently return [] and mislead the user."""
+        monkeypatch.setenv("WORTHLESS_FERNET_IPC_ONLY", "1")
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert len(aliases) >= 1, (
+            "Expected enrolled aliases but got []. "
+            "Likely open_repo tried to connect IPC before sidecar started."
+        )
+        assert all(isinstance(a, str) and isinstance(p, str) for a, p in aliases)
+
+    @pytest.mark.asyncio
+    async def test_returns_aliases_from_running_loop(self, home_with_key) -> None:
+        """_list_enrolled_aliases is a sync function but is invoked from CLI
+        commands that may already be inside an event loop (MCP server,
+        pytest-asyncio auto mode). The implementation must route through
+        worthless._async.run_sync, not raw asyncio.run, otherwise asyncio.run
+        raises RuntimeError("This event loop is already running") and the
+        bare-except guard swallows it as []."""
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert len(aliases) >= 1
+
+    def test_corrupt_db_returns_empty(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
+        """OSError from aiosqlite.connect (e.g. unreadable file, permission
+        denied) must be caught by the narrowed handler and produce []."""
+        import aiosqlite
+
+        def _raise_oserror(*_args, **_kwargs):
+            raise OSError("simulated unreadable DB")
+
+        monkeypatch.setattr(aiosqlite, "connect", _raise_oserror)
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert aliases == []
+
+    def test_aiosqlite_error_returns_empty(
+        self, home_with_key, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """aiosqlite.Error (malformed DB, locked file, etc.) must be caught
+        by the narrowed handler and produce []."""
+        import aiosqlite
+
+        def _raise_aiosqlite_error(*_args, **_kwargs):
+            raise aiosqlite.Error("simulated query failure")
+
+        monkeypatch.setattr(aiosqlite, "connect", _raise_aiosqlite_error)
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert aliases == []
+
+    def test_returned_values_are_str(self, home_with_key) -> None:
+        """sqlite3.Row indexes return Any at the type level. The implementation
+        must coerce both fields to str() so the declared return type
+        list[tuple[str, str]] holds even if a column ever returns a non-text
+        value (defensive, pyright-strict compliance)."""
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert len(aliases) >= 1
+        for alias, provider in aliases:
+            assert type(alias) is str, f"alias is {type(alias).__name__}, not str"
+            assert type(provider) is str, f"provider is {type(provider).__name__}, not str"
+
+
+class TestListEnrolledAliasesAdversarial:
+    """Hostile-input and race-condition probes for _list_enrolled_aliases.
+
+    PR #166 changed this function to read the SQLite DB directly. The
+    attack surface is now: anyone who can write to ``home.db_path`` (or
+    swap it for a different file) can influence what the pre-flight
+    enrollment check returns. These tests pin the failure modes that
+    must produce a safe ``[]`` instead of a crash or data leak.
+    """
+
+    def test_symlink_to_non_sqlite_file_returns_empty(self, home_dir, tmp_path: Path) -> None:
+        """If home.db_path is a symlink pointing at a file that isn't a
+        valid SQLite database (e.g. /etc/hostname), aiosqlite must fail
+        cleanly and the function must return [] — never the target file's
+        content. This is the static analogue of a symlink-swap TOCTOU."""
+        decoy = tmp_path / "decoy.txt"
+        decoy.write_text("not a sqlite db, definitely not key material\n")
+        home_dir.db_path.unlink(missing_ok=True)
+        home_dir.db_path.symlink_to(decoy)
+
+        aliases = _list_enrolled_aliases(home_dir)
+        assert aliases == [], "non-SQLite symlink target leaked through"
+
+    def test_hostile_alias_round_trips_safely(self, home_with_key, tmp_path: Path) -> None:
+        """SQL-special chars / NULL-byte / RTL-unicode in the key_alias
+        column must not break the join, must not SQL-inject (queries are
+        parameterized), and must surface verbatim so downstream display
+        code can sanitise them — never silently swallowed.
+
+        If the schema enforces a CHECK constraint that rejects these
+        values, the test still proves the protection exists by failing
+        on insert; that's a different (also good) outcome."""
+        import sqlite3
+
+        hostile_aliases = [
+            "'; DROP TABLE shards; --",
+            "evil‮reversed",
+            "with spaces and 'quotes'",
+        ]
+
+        conn = sqlite3.connect(str(home_with_key.db_path))
+        try:
+            for alias in hostile_aliases:
+                try:
+                    conn.execute(
+                        "INSERT INTO shards (key_alias, shard_b_enc, commitment, "
+                        "nonce, provider, prefix, charset, base_url) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (alias, b"x", b"x", b"x", "openai", "sk-", "abc", None),
+                    )
+                    conn.execute(
+                        "INSERT INTO enrollments (key_alias, var_name, env_path, decoy_hash) "
+                        "VALUES (?, ?, ?, ?)",
+                        (alias, "OPENAI_API_KEY", str(tmp_path / ".env"), "h"),
+                    )
+                except sqlite3.IntegrityError:
+                    pytest.skip("schema rejects hostile alias — protection lives at write time")
+            conn.commit()
+        finally:
+            conn.close()
+
+        aliases = _list_enrolled_aliases(home_with_key)
+        returned_alias_names = {a for a, _ in aliases}
+        for hostile in hostile_aliases:
+            assert hostile in returned_alias_names, (
+                f"hostile alias {hostile!r} was silently dropped — "
+                "must round-trip so downstream code can decide to sanitise"
+            )
+        cursor = sqlite3.connect(str(home_with_key.db_path)).execute("SELECT COUNT(*) FROM shards")
+        assert cursor.fetchone()[0] >= 1, "shards table was dropped — SQL injection succeeded"
+
+    def test_missing_shards_table_returns_empty(self, home_dir, tmp_path: Path) -> None:
+        """If an attacker swaps home.db_path for a SQLite file with a
+        different schema (no shards/enrollments tables), aiosqlite raises
+        OperationalError (subclass of aiosqlite.Error). The narrowed
+        handler must catch it and return []."""
+        import sqlite3
+
+        home_dir.db_path.unlink(missing_ok=True)
+        conn = sqlite3.connect(str(home_dir.db_path))
+        try:
+            conn.execute("CREATE TABLE attacker_owned (junk TEXT)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        aliases = _list_enrolled_aliases(home_dir)
+        assert aliases == []
+
+    def test_busy_lock_returns_empty(self, home_with_key, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When another process holds an exclusive lock on the DB, SQLite
+        raises SQLITE_BUSY which aiosqlite surfaces as OperationalError
+        (subclass of aiosqlite.Error). The narrowed handler must catch it
+        and return [] — concurrent CLI commands (wrap + doctor) must not
+        crash each other."""
+        import aiosqlite
+
+        def _busy(*_args, **_kwargs):
+            raise aiosqlite.OperationalError("database is locked")
+
+        monkeypatch.setattr(aiosqlite, "connect", _busy)
+        aliases = _list_enrolled_aliases(home_with_key)
+        assert aliases == []
+
+    def test_permission_denied_returns_empty(self, home_with_key) -> None:
+        """DB file readable to the user at exists()-time but unreadable
+        at connect()-time (chmod 000, ownership flip, mount remount)
+        surfaces as PermissionError (subclass of OSError). Must be caught
+        by the narrowed handler."""
+        original_mode = home_with_key.db_path.stat().st_mode
+        home_with_key.db_path.chmod(0o000)
+        try:
+            aliases = _list_enrolled_aliases(home_with_key)
+            assert aliases == []
+        finally:
+            home_with_key.db_path.chmod(original_mode)
+
+    def test_large_alias_set_does_not_hang(self, home_with_key, tmp_path: Path) -> None:
+        """A DB with 10k enrolled aliases must complete the pre-flight
+        check quickly — startup cannot become O(seconds) on legit-shaped
+        but oversized data. Cap at 5s; on a healthy machine this runs
+        well under 1s."""
+        import sqlite3
+        import time
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("OPENAI_API_KEY=stub\n")
+        conn = sqlite3.connect(str(home_with_key.db_path))
+        try:
+            shard_rows = [
+                (f"bulk-{i:05d}", b"x", b"x", b"x", "openai", "sk-", "abc", None)
+                for i in range(10_000)
+            ]
+            conn.executemany(
+                "INSERT INTO shards "
+                "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset, base_url) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                shard_rows,
+            )
+            enroll_rows = [
+                (f"bulk-{i:05d}", "OPENAI_API_KEY", str(env_path), "h") for i in range(10_000)
+            ]
+            conn.executemany(
+                "INSERT INTO enrollments (key_alias, var_name, env_path, decoy_hash) "
+                "VALUES (?, ?, ?, ?)",
+                enroll_rows,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        start = time.monotonic()
+        aliases = _list_enrolled_aliases(home_with_key)
+        elapsed = time.monotonic() - start
+        assert len(aliases) >= 10_000
+        assert elapsed < 5.0, f"alias listing took {elapsed:.2f}s — too slow for startup"
+
 
 class TestWrapExitCode:
     """wrap mirrors child exit code."""

@@ -4,7 +4,7 @@ Extracted from ``test_roundtrip.py`` so failure-matrix and future IPC
 tests can reuse them without duplication. Pytest autodiscovers every
 fixture in this file for any test in ``tests/ipc/``.
 
-See ``docs/ipc-contract.md`` for the surfaces these fixtures exercise.
+See ``engineering/ipc-contract.md`` for the surfaces these fixtures exercise.
 """
 
 from __future__ import annotations
@@ -115,6 +115,11 @@ class StallingBackend(Backend):
     ``open`` and ``attest`` delegate to a real Fernet so the handshake and
     any non-seal paths still work — only the operation under test stalls.
     """
+
+    # Match the surface tests assert against. ``mac`` is omitted: stalling
+    # tests only exercise seal/open/attest, and per the WOR-465 A3a
+    # caps-driven dispatch the server simply won't route ``mac`` here.
+    caps = ("seal", "open", "attest")
 
     def __init__(self, inner: FernetBackend) -> None:
         self._inner = inner

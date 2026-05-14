@@ -645,7 +645,7 @@ class TestLockCommand:
         assert len(aliases) == 1
         encrypted = asyncio.run(repo.fetch_encrypted(aliases[0]))
         assert encrypted is not None
-        stored = repo.decrypt_shard(encrypted)
+        stored = asyncio.run(repo.decrypt_shard(encrypted))
 
         reconstructed = reconstruct_key_fp(
             bytearray(shard_a_str.encode()),

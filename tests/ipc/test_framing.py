@@ -1,6 +1,6 @@
 """Tests for ``worthless.ipc.framing`` — length-prefix + msgpack codec.
 
-Contract: docs/ipc-contract.md §Frame.
+Contract: engineering/ipc-contract.md §Frame.
 """
 
 from __future__ import annotations
