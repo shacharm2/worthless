@@ -214,8 +214,10 @@ async def _dispatch_op(
             raise ValueError(f"open.context must be bytes|None, got {type(context).__name__}")
         if key_id is not None and not isinstance(key_id, bytes | bytearray):
             raise ValueError(f"open.key_id must be bytes|None, got {type(key_id).__name__}")
-        ctx_bytes = bytes(context) if context is not None else None
-        kid_bytes = bytes(key_id) if key_id is not None else None
+        # key_id is a lookup identifier (not key material); context is AAD.
+        # Both are dict keys in the keyring — must be hashable bytes, not bytearray.
+        ctx_bytes = bytes(context) if context is not None else None  # nosemgrep
+        kid_bytes = bytes(key_id) if key_id is not None else None  # nosemgrep
         plaintext = await backend.open(bytes(ciphertext), ctx_bytes, kid_bytes)
         return {"plaintext": plaintext}
 
