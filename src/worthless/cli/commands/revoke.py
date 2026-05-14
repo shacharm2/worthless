@@ -79,6 +79,10 @@ def _revoke_key(alias: str) -> None:
             # Still inside the lock — prevents a concurrent enroll from slipping
             # in between the count check and the keychain delete.
             delete_fernet_key(home.base_dir)
+            # Remove the bootstrap sentinel so the next enroll treats this as a
+            # fresh install and generates a new Fernet key rather than failing
+            # with WRTLS-102 (key gone but sentinel says "already set up").
+            home.bootstrapped_marker.unlink(missing_ok=True)
 
     if revoked:
         console.print_success(
