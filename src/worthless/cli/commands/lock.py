@@ -15,6 +15,7 @@ import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.code_scanner import scan_for_hardcoded_provider_urls
+from worthless.cli.commands.scan import _format_code_findings_human
 from worthless.cli.process import resolve_port
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import (
@@ -506,12 +507,8 @@ def _apply_openclaw(
 
 
 def _scan_prompt_is_tty() -> bool:
-    """Return True when stdin is an interactive terminal.
-
-    Extracted as a module-level function so tests can patch it without
-    touching ``sys.stdin`` directly.
-    """
-    return sys.stdin.isatty()
+    """Patchable TTY check — extracted so tests can override without touching sys.stdin."""
+    return hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
 
 
 def _maybe_prompt_code_scan(cwd: Path) -> None:
@@ -541,9 +538,6 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
         confirmed = typer.confirm(f"\n{summary} Scan now?", default=True)
         if not confirmed:
             return
-        # Print findings inline using the same format as `worthless scan --code`
-        from worthless.cli.commands.scan import _format_code_findings_human  # noqa: PLC0415
-
         typer.echo(_format_code_findings_human(findings), err=True)
         typer.echo(
             "\nRun `worthless scan --code` at any time to see this again with fix instructions.",
