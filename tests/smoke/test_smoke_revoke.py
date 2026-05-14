@@ -89,12 +89,14 @@ class TestSmokeRevoke:
         key1 = fake_key(_OPENAI_PREFIX, seed="smoke-a1-key1")
         key2 = fake_key(_OPENAI_PREFIX, seed="smoke-a1-key2")
 
-        env1 = tmp_path / "env1"
+        env1 = tmp_path / "proj1" / ".env"
+        env1.parent.mkdir()
         env1.write_text(f"OPENAI_API_KEY={key1}\n")
         r1 = _lock(env1, smoke_home)
         assert r1.returncode == 0, f"first lock failed:\n{r1.stdout}\n{r1.stderr}"
 
-        env2 = tmp_path / "env2"
+        env2 = tmp_path / "proj2" / ".env"
+        env2.parent.mkdir()
         env2.write_text(f"OPENAI_API_KEY={key2}\n")
         r2 = _lock(env2, smoke_home)
         assert r2.returncode == 0, f"second lock failed:\n{r2.stdout}\n{r2.stderr}"
@@ -107,11 +109,13 @@ class TestSmokeRevoke:
         key2 = fake_key(_OPENAI_PREFIX, seed="smoke-a2-key2")
         alias1 = _make_alias("openai", key1)
 
-        env1 = tmp_path / "env1"
+        env1 = tmp_path / "proj1" / ".env"
+        env1.parent.mkdir()
         env1.write_text(f"OPENAI_API_KEY={key1}\n")
         assert _lock(env1, smoke_home).returncode == 0
 
-        env2 = tmp_path / "env2"
+        env2 = tmp_path / "proj2" / ".env"
+        env2.parent.mkdir()
         env2.write_text(f"OPENAI_API_KEY={key2}\n")
         assert _lock(env2, smoke_home).returncode == 0
 
@@ -129,7 +133,8 @@ class TestSmokeRevoke:
         key1 = fake_key(_OPENAI_PREFIX, seed="smoke-b1-key1")
         alias1 = _make_alias("openai", key1)
 
-        env1 = tmp_path / "env1"
+        env1 = tmp_path / "proj1" / ".env"
+        env1.parent.mkdir()
         env1.write_text(f"OPENAI_API_KEY={key1}\n")
         assert _lock(env1, smoke_home).returncode == 0
         assert (smoke_home / "fernet.key").exists(), "fernet.key should exist post-lock"
@@ -146,7 +151,8 @@ class TestSmokeRevoke:
         key1 = fake_key(_OPENAI_PREFIX, seed="smoke-c1-key1")
         alias1 = _make_alias("openai", key1)
 
-        env1 = tmp_path / "env1"
+        env1 = tmp_path / "proj1" / ".env"
+        env1.parent.mkdir()
         env1.write_text(f"OPENAI_API_KEY={key1}\n")
         assert _lock(env1, smoke_home).returncode == 0
 
@@ -156,7 +162,8 @@ class TestSmokeRevoke:
 
         # Re-enroll: must succeed without WRTLS-102
         key2 = fake_key(_OPENAI_PREFIX, seed="smoke-c1-key2")
-        env2 = tmp_path / "env2"
+        env2 = tmp_path / "proj2" / ".env"
+        env2.parent.mkdir()
         env2.write_text(f"OPENAI_API_KEY={key2}\n")
         r2 = _lock(env2, smoke_home)
         assert r2.returncode == 0, (
