@@ -34,7 +34,7 @@ Worthless protects API keys in three scenarios:
 
 ### Scope (important for agents)
 
-Worthless scans for **LLM provider API key prefixes only** — currently `openai` (`sk-`, `sk-proj-`), `anthropic` (`sk-ant-`), `google` (`AIza`), and `xai` (`xai-`). It will NOT detect general secrets: cloud-provider tokens (AWS, GCP, Azure), GitHub Personal Access Tokens, npm tokens, Cloudflare API tokens, database passwords, JWT signing keys, etc. If the user asks for a broad "find all secrets" or full `.env` audit, clarify the boundary and recommend [gitleaks](https://github.com/gitleaks/gitleaks) or [trufflehog](https://github.com/trufflesecurity/trufflehog) as a companion tool. `worthless scan --json` returns `{"schema_version": 2, "findings": [...], "orphans": [...]}` — `findings` are `.env` keys (each with `is_protected`), `orphans` are DB enrollments whose `.env` line was deleted (run `worthless doctor --fix` to clean them up). Both arrays are empty when nothing matches; an empty `findings` on a `.env` full of cloud tokens is correct behaviour, not a miss. Agents iterating findings: `for f in result["findings"]`. Guard against future shape breaks: `assert result["schema_version"] >= 2`. (HF5 changed shape from a bare findings array — schema 1.)
+Worthless scans for **LLM provider API key prefixes only** — currently `openai` (`sk-`, `sk-proj-`), `anthropic` (`sk-ant-`), `google` (`AIza`), and `xai` (`xai-`). It will NOT detect general secrets: cloud-provider tokens (AWS, GCP, Azure), GitHub Personal Access Tokens, npm tokens, Cloudflare API tokens, database passwords, JWT signing keys, etc. If the user asks for a broad "find all secrets" or full `.env` audit, clarify the boundary and recommend [gitleaks](https://github.com/gitleaks/gitleaks) or [trufflehog](https://github.com/trufflesecurity/trufflehog) as a companion tool. `worthless scan --json` returns `{"schema_version": 2, "findings": [...], "orphans": [...]}` — `findings` are `.env` keys (each with `is_protected`), `orphans` are DB enrollments whose `.env` line was deleted (run `worthless doctor --fix` to clean them up). Both arrays are empty when nothing matches; an empty `findings` on a `.env` full of cloud tokens is correct behaviour, not a miss. Agents iterating findings: `for f in result["findings"]`. Guard against future shape breaks: `assert result["schema_version"] >= 2`. (HF5 changed shape from a bare findings array — schema 1.) `worthless scan --code` is a separate, opt-in scan that detects hardcoded provider base URLs (routing bypasses) in source files — it does NOT scan for key-prefix patterns and does NOT overlap with the default `.env` scan. Both scans have distinct limits: `--code` cannot detect runtime-composed URLs, IP literals, regional endpoints, or env-var interpolation.
 
 ---
 
@@ -134,13 +134,19 @@ Scans files for high-entropy strings that match known API key patterns. Ignores 
 **Options:**
 - `--deep`: Scan beyond `.env`/`.env.local` — includes `*.yml`, `*.yaml`, `*.toml`, `*.json` in project root, plus env var dump
 - `--format {sarif|human}`: Output format (default: human-readable)
+- `--code`: Opt-in source-code scan. Walks project source files and matches hardcoded LLM provider base URLs (from the bundled registry) case-insensitively. Warn-only; always exits 0. Skips `.venv`, `node_modules`, `vendor`, `dist`, `build`, `__pycache__`, lockfiles, minified files, and files >1 MB. Respects `.gitignore` via `git ls-files` when inside a git repo. Scanned extensions: `.py`, `.js`, `.ts`, `.tsx`, `.mjs`, `.cjs`, `.jsx`, `.go`, `.rs`, `.rb`, `.java`, `.kt`, `.swift`, `.toml`, `.yaml`, `.yml`, `.json`, `.md`. **Does NOT detect**: runtime-composed URLs (e.g. `"https://api." + "openai.com/v1"`), IP literals, regional/Azure/Bedrock endpoints, env-var interpolation (e.g. `base_url=os.environ["OPENAI_BASE_URL"]`), or vendored SDKs.
+- `--ai-prompt` / `--no-ai-prompt`: When `--code` finds hardcoded URLs, emits a copy-pasteable prompt block on stderr addressed to the active AI agent (Claude Code, Cursor, etc.), instructing it to replace each hardcoded URL with the suggested env var. On by default when `--code` is active. Suppress with `--no-ai-prompt`. Never emitted on zero findings.
 - `PATHS`: Explicit file/directory paths to scan
+
+**JSON output with `--code --json`:** Adds `"code_findings": [...]` to the existing `{"schema_version": 2, "findings": [...], "orphans": [...]}` envelope. Each entry: `{file, line, column, matched_url, provider_name, suggested_env_var, line_text}`. Note: `line_text` has API keys redacted as `[REDACTED]`.
+
+**SARIF output:** Intentionally omits code findings. SARIF covers `.env`-key surface only.
 
 **Output:**
 - Lists findings with file, line, value preview, and confidence level
 - SARIF format for CI/CD integration
 
-**Use case:** Security audit before deploying; detect accidentally-committed keys in Git history.
+**Use case:** Security audit before deploying; detect accidentally-committed keys in Git history; detect hardcoded provider URLs that bypass the proxy.
 
 #### `worthless status [OPTIONS]`
 **List enrolled keys and check proxy health.**
@@ -423,8 +429,8 @@ Show enrolled keys and proxy health. Returns JSON:
 ### `worthless_lock(env_path: str = ".env") -> str`
 Lock all keys in a `.env` file. Returns summary of keys locked.
 
-### `worthless_scan(paths: list[str], deep: bool) -> str`
-Scan files for exposed keys. Returns SARIF or human-readable findings.
+### `worthless_scan(paths: list[str], deep: bool, code: bool = False) -> str`
+Scan files for exposed keys. Returns SARIF or human-readable findings. Pass `code=True` to also scan source files for hardcoded provider base URLs; adds `"code_findings"` array to JSON output. Does NOT detect runtime-composed URLs, IP literals, regional endpoints, or env-var interpolation.
 
 ### `worthless_spend(alias: str | None = None) -> str`
 Token spend history. Pass alias for one key, omit for all. Returns JSON.
@@ -480,7 +486,8 @@ worthless down                    # stop when done
 
 ### Audit for exposed keys
 ```bash
-worthless scan --deep
+worthless scan --deep             # .env and config files
+worthless scan --code             # source files — hardcoded provider URLs (routing bypasses)
 ```
 
 ### Permanently delete a key
@@ -520,19 +527,22 @@ Agents (Claude Code, Cursor, OpenClaw) can invoke Worthless via:
    ```bash
    worthless status
    worthless scan --deep
+   worthless scan --code             # detect hardcoded provider URLs before lock
    worthless wrap pytest
    ```
 
 2. **MCP server** (when available):
-   ```
+   ```text
    Tool: worthless_status() -> {"keys": [...], "proxy": {...}}
    Tool: worthless_scan(paths, deep) -> "key exposures found"
+   Tool: worthless_scan(paths, deep, code=True) -> includes code_findings
    Tool: worthless_wrap(command, args) -> "command output"
    ```
 
 Agents should:
 - Call `worthless status` to check if a proxy is running before issuing API calls
 - Use `worthless scan` to audit code before committing
+- Run `worthless scan --code` before `lock` to surface any hardcoded provider URLs that would bypass the proxy at runtime. When `--code` finds URLs, a copy-pasteable prompt block is emitted to stderr — act on it directly to replace each hardcoded URL with the suggested env var.
 - Use `worthless wrap` to transparently route agent code through the proxy, gaining all spending/rate/time controls
 - Call `worthless lock` before version control to ensure keys are never committed
 
@@ -557,6 +567,7 @@ The proxy forwards requests and responses transparently. It does NOT log, store,
 - An attacker who can read your `.env` AND intercept the proxy's database (same as above)
 - Provider-side breaches (worthless protects the key in transit, not at the provider)
 - Keys used outside worthless (if you also paste the key into a script, that copy is not protected)
+- Source code that hardcodes a provider base URL (e.g. `base_url="https://api.openai.com/v1"`) — those calls bypass the proxy entirely at runtime. Use `worthless scan --code` to surface these before running `lock`.
 
 **What about `.env` file permissions?**
 `worthless lock` removes group and other permissions from `.env` after writing shard-A (owner-only access). If your `.env` was world-readable before, lock fixes that.
