@@ -5,11 +5,132 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from worthless.cli.dotenv_rewriter import shannon_entropy
 from worthless.cli.key_patterns import ENTROPY_THRESHOLD, KEY_PATTERN, detect_provider
 
 _VAR_NAME_RE = re.compile(r"(\w+)\s*$")
+
+# Source file extensions to scan for hardcoded provider URLs.
+_SOURCE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".go",
+        ".rb",
+        ".java",
+        ".cs",
+        ".rs",
+        ".php",
+        ".kt",
+        ".swift",
+    }
+)
+
+# Directory names that are never user code — skip them entirely.
+_NOISE_DIRS: frozenset[str] = frozenset(
+    {
+        "node_modules",
+        ".git",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "env",
+        "dist",
+        "build",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".tox",
+        ".eggs",
+        "htmlcov",
+        ".ruff_cache",
+        ".next",
+        ".nuxt",
+        "target",
+        "vendor",
+    }
+)
+
+# Provider hostnames that route to localhost are already local — not a bypass.
+_LOCAL_HOSTNAMES: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# String-literal pattern: single or double quoted value containing the hostname.
+# Built lazily and cached per call to scan_source_for_hardcoded_provider_urls.
+_QUOTED_STR_RE = re.compile(r"""["']([^"'\n]+)["']""")
+
+
+@dataclass
+class HardcodedUrlFinding:
+    """A provider URL hardcoded in a source file — potential proxy bypass."""
+
+    file: str
+    line: int
+    url: str
+    provider: str
+
+
+def scan_source_for_hardcoded_provider_urls(
+    project_root: Path,
+) -> list[HardcodedUrlFinding]:
+    """Walk source files under *project_root*, return any hardcoded provider URLs.
+
+    Uses the bundled provider registry so the list of flagged hostnames stays
+    in sync with what worthless actually knows about. Localhost providers
+    (e.g. Ollama on 127.0.0.1) are excluded — they're already local.
+    """
+    from worthless.cli.providers import (
+        load_bundled,
+    )  # local import — avoids circular at module init
+
+    registry = load_bundled()
+    hostnames: dict[str, str] = {}  # hostname → provider name
+    for entry in registry.values():
+        hostname = urlparse(entry.url).hostname or ""
+        if hostname and hostname not in _LOCAL_HOSTNAMES:
+            hostnames[hostname] = entry.name
+
+    if not hostnames:
+        return []
+
+    findings: list[HardcodedUrlFinding] = []
+    for src_file in _walk_source_files(project_root):
+        try:
+            text = src_file.read_text(errors="replace")
+        except OSError:
+            continue
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            for m in _QUOTED_STR_RE.finditer(line):
+                value = m.group(1)
+                for hostname, provider_name in hostnames.items():
+                    if hostname in value:
+                        findings.append(
+                            HardcodedUrlFinding(
+                                file=str(src_file),
+                                line=line_no,
+                                url=value,
+                                provider=provider_name,
+                            )
+                        )
+                        break  # one finding per string literal
+    return findings
+
+
+def _walk_source_files(root: Path):
+    """Yield source files under *root*, pruning noise directories without descending into them."""
+    stack = [root]
+    while stack:
+        for item in stack.pop().iterdir():
+            if item.is_dir():
+                if item.name not in _NOISE_DIRS and not item.name.endswith(".egg-info"):
+                    stack.append(item)
+            elif item.suffix in _SOURCE_EXTENSIONS:
+                yield item
 
 
 @dataclass

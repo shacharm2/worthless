@@ -16,6 +16,7 @@ import typer
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.process import resolve_port
 from worthless.cli.console import get_console
+from worthless.cli.scanner import scan_source_for_hardcoded_provider_urls
 from worthless.cli.dotenv_rewriter import (
     rewrite_env_keys,
     scan_env_keys,
@@ -686,6 +687,21 @@ def _lock_keys(
         raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"File not found: {env_path}")
     if env_path.is_symlink():
         raise WorthlessError(ErrorCode.ENV_NOT_FOUND, f"Refusing to follow symlink: {env_path}")
+
+    bypass_findings = scan_source_for_hardcoded_provider_urls(env_path.parent)
+    if bypass_findings:
+        lines = ["worthless: hardcoded provider URLs detected — these bypass the proxy:"]
+        for f in bypass_findings:
+            lines.append(f"  {f.file}:{f.line}  {f.url}  ({f.provider})")
+        lines.append(
+            "Remove the hardcoded URL and read the *_BASE_URL variable"
+            " from the environment instead."
+        )
+        raise WorthlessError(
+            ErrorCode.SCAN_ERROR,
+            "\n".join(lines),
+            exit_code=1,
+        )
 
     if not quiet:
         console.print_hint(f"Scanning {env_path} for API keys...")

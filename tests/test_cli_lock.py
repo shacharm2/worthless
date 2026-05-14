@@ -1447,3 +1447,140 @@ class TestLockBaseUrlSlotPriority:
         )
 
         verify_upstream_response_openai(data)
+
+
+# ---------------------------------------------------------------------------
+# worthless-8a5d: lock must refuse when source files bypass the proxy
+# ---------------------------------------------------------------------------
+
+
+class TestLockHardcodedBaseUrlDetection:
+    """Lock fails fast when source files contain hardcoded provider URLs.
+
+    If a hardcoded base_url reaches the LLM SDK, the proxy is bypassed even
+    though the key is enrolled. The check runs before any enrollment so the
+    user never ends up in a "protected but not really" state.
+    """
+
+    def _env(self, tmp_path: Path) -> Path:
+        env = tmp_path / ".env"
+        env.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
+        return env
+
+    def _run(self, home_dir: WorthlessHome, env: Path) -> object:
+        return runner.invoke(
+            app,
+            ["lock", "--env", str(env)],
+            env={
+                "WORTHLESS_HOME": str(home_dir.base_dir),
+                "WORTHLESS_KEYRING_BACKEND": "null",
+            },
+        )
+
+    def test_passes_with_no_source_files(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock succeeds when project has no source files."""
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_fails_py_file_hardcoded_openai_url(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Lock fails when a Python file has a hardcoded OpenAI base URL."""
+        (tmp_path / "app.py").write_text('client = OpenAI(base_url="https://api.openai.com/v1")\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0, "Expected lock to fail with hardcoded base_url"
+        assert "api.openai.com" in result.output
+        assert "app.py" in result.output
+
+    def test_fails_ts_file_hardcoded_anthropic_url(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Lock fails when a TypeScript file has a hardcoded Anthropic base URL."""
+        (tmp_path / "client.ts").write_text(
+            'const ai = new Anthropic({ baseURL: "https://api.anthropic.com/v1" });\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "api.anthropic.com" in result.output
+        assert "client.ts" in result.output
+
+    def test_fails_openrouter_url(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock fails when OpenRouter's base URL is hardcoded."""
+        (tmp_path / "llm.py").write_text(
+            'client = OpenAI(base_url="https://openrouter.ai/api/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "openrouter.ai" in result.output
+
+    def test_error_includes_line_number(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Error output includes file:line so the user can find the bypass."""
+        (tmp_path / "llm.py").write_text(
+            "# LLM client setup\n"
+            "import openai\n"
+            'client = openai.OpenAI(base_url="https://api.openai.com/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        # Line 3 contains the hardcoded URL
+        out = result.output
+        assert "llm.py" in out
+        assert ":3" in out
+
+    def test_scans_subdirectory(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock scans recursively — catches bypasses in nested source files."""
+        nested = tmp_path / "src" / "providers"
+        nested.mkdir(parents=True)
+        (nested / "openai_client.py").write_text('BASE = "https://api.openai.com/v1"\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "openai_client.py" in result.output
+
+    def test_skips_node_modules(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock ignores node_modules — provider SDK source isn't user code."""
+        nm = tmp_path / "node_modules" / "openai" / "src"
+        nm.mkdir(parents=True)
+        (nm / "client.js").write_text('const DEFAULT_BASE_URL = "https://api.openai.com/v1";\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_skips_git_dir(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock ignores .git — internal git objects aren't user code."""
+        git_hooks = tmp_path / ".git" / "hooks"
+        git_hooks.mkdir(parents=True)
+        (git_hooks / "pre-commit").write_text("# https://api.openai.com/v1\n")
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_skips_venv(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock ignores .venv — installed packages aren't user code."""
+        venv = tmp_path / ".venv" / "lib" / "python3.11" / "site-packages" / "openai"
+        venv.mkdir(parents=True)
+        (venv / "_client.py").write_text('DEFAULT_BASE_URL: str = "https://api.openai.com/v1"\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_skips_pycache(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock ignores __pycache__ — compiled bytecode isn't user code."""
+        cache = tmp_path / "__pycache__"
+        cache.mkdir()
+        (cache / "app.cpython-311.pyc").write_bytes(b"# https://api.openai.com/v1\n")
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_skips_localhost_provider(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Localhost providers (e.g. Ollama) are not flagged — already local."""
+        (tmp_path / "local.py").write_text(
+            'client = OpenAI(base_url="http://localhost:11434/v1")\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code == 0, result.output
+
+    def test_js_and_go_files_also_scanned(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Lock scans .js and .go files, not just Python."""
+        (tmp_path / "api.js").write_text(
+            'const client = new OpenAI({ baseURL: "https://api.openai.com/v1" });\n'
+        )
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "api.js" in result.output
