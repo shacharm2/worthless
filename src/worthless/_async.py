@@ -57,6 +57,8 @@ def run_sync(coro: Awaitable[T], timeout: float | None = None) -> T:
 
     worker = threading.Thread(target=_worker, daemon=True, name="worthless-run_sync")
     worker.start()
+    if timeout is not None and timeout < 0:
+        raise concurrent.futures.TimeoutError
     worker.join(timeout=timeout)
     if worker.is_alive():
         raise concurrent.futures.TimeoutError
