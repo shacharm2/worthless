@@ -8,10 +8,10 @@ Worthless splits your API keys into two cryptographic shares using XOR secret sh
 
 ## Pages
 
-- [Home](https://worthless.cloud/): Product overview and value proposition
-- [Features](https://worthless.cloud/features.html): Feature list, comparison, and capabilities
-- [How It Works](https://worthless.cloud/how-it-works.html): Architecture, security model, and step-by-step walkthrough
-- [Blog](https://worthless.cloud/blog/): Articles on API key security, attack scenarios, and best practices
+- [Home](https://wless.io/): Product overview and value proposition
+- [Features](https://wless.io/features.html): Feature list, comparison, and capabilities
+- [How It Works](https://wless.io/how-it-works.html): Architecture, security model, and step-by-step walkthrough
+- [Blog](https://wless.io/blog/): Articles on API key security, attack scenarios, and best practices
 
 ## Install
 

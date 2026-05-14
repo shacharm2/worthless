@@ -36,12 +36,16 @@ jobs:
           test -f website/CNAME
           test -f website/robots.txt
           test -f website/sitemap.xml
+          test -f website/llms.txt
           test -f website/features.html
           test -f website/how-it-works.html
           test -f website/coming-soon.html
           test -f website/memes.html
           test -f website/blog/index.html
-          test -d website/.well-known
+          test -f website/.well-known/security.txt
+          grep -qx 'wless.io' website/CNAME
+          grep -qx 'Canonical: https://wless.io/.well-known/security.txt' website/.well-known/security.txt
+          grep -qx 'Sitemap: https://wless.io/sitemap.xml' website/robots.txt
 
       - name: Upload website preview artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
