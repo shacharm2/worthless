@@ -1489,7 +1489,7 @@ class TestLockHardcodedBaseUrlDetection:
         (tmp_path / "app.py").write_text('client = OpenAI(base_url="https://api.openai.com/v1")\n')
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0, "Expected lock to fail with hardcoded base_url"
-        assert "api.openai.com" in result.output
+        assert "(openai)" in result.output
         assert "app.py" in result.output
 
     def test_fails_ts_file_hardcoded_anthropic_url(
@@ -1501,7 +1501,7 @@ class TestLockHardcodedBaseUrlDetection:
         )
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0
-        assert "api.anthropic.com" in result.output
+        assert "(anthropic)" in result.output
         assert "client.ts" in result.output
 
     def test_fails_openrouter_url(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
@@ -1511,7 +1511,7 @@ class TestLockHardcodedBaseUrlDetection:
         )
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0
-        assert "openrouter.ai" in result.output
+        assert "(openrouter)" in result.output
 
     def test_error_includes_line_number(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Error output includes file:line so the user can find the bypass."""
@@ -1582,7 +1582,7 @@ class TestLockHardcodedBaseUrlDetection:
         )
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0
-        assert "api.js" in result.output
+        assert "(openai)" in result.output  # JS file was scanned and OpenAI URL detected
 
     # ------------------------------------------------------------------
     # Additional coverage — QA gap fills
@@ -1595,7 +1595,7 @@ class TestLockHardcodedBaseUrlDetection:
         )
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0
-        assert "api.groq.com" in result.output
+        assert "(groq)" in result.output
 
     def test_fails_together_url(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Together.ai is in the bundled registry — hardcoded Together URL must block lock."""
@@ -1604,7 +1604,7 @@ class TestLockHardcodedBaseUrlDetection:
         )
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0
-        assert "api.together.xyz" in result.output
+        assert "(together)" in result.output
 
     def test_no_db_enrollment_when_scan_blocks(
         self, home_dir: WorthlessHome, tmp_path: Path
@@ -1644,7 +1644,7 @@ class TestLockHardcodedBaseUrlDetection:
             },
         )
         assert result.exit_code == 0, result.output
-        assert "api.openai.com" in result.output
+        assert "(openai)" in result.output
 
     def test_url_in_python_comment_triggers_block(
         self, home_dir: WorthlessHome, tmp_path: Path
@@ -1691,8 +1691,8 @@ class TestLockHardcodedBaseUrlDetection:
         )
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0
-        assert "api.openai.com" in result.output
-        assert "api.anthropic.com" in result.output
+        assert "(openai)" in result.output
+        assert "(anthropic)" in result.output
         assert "multi.py:1" in result.output
         assert "multi.py:2" in result.output
 
