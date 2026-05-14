@@ -465,11 +465,9 @@ def _batch_rewrite(
         for p in planned:
             if not p.base_url_var:
                 continue
-            if p.base_url_var not in slot_winner:
-                slot_winner[p.base_url_var] = p
-                continue
+            existing = slot_winner.get(p.base_url_var)
             canonical_var = p.base_url_var[: -len("_BASE_URL")] + "_API_KEY"
-            if p.var_name == canonical_var:
+            if existing is None or p.var_name == canonical_var:
                 slot_winner[p.base_url_var] = p
 
         for slot, p in slot_winner.items():

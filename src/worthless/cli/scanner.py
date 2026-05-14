@@ -62,6 +62,7 @@ _NOISE_DIRS: frozenset[str] = frozenset(
 _LOCAL_HOSTNAMES: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # Backreference ensures closing quote matches opening — prevents mismatched-quote false positives.
+# Group 1 = quote char, group 2 = content between the matched quotes.
 _QUOTED_STR_RE = re.compile(r"""(['"])([^"'\n]+)\1""")
 
 

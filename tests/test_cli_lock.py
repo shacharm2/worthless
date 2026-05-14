@@ -1533,7 +1533,7 @@ class TestLockHardcodedBaseUrlDetection:
         (nested / "openai_client.py").write_text('BASE = "https://api.openai.com/v1"\n')
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0
-        assert "(openai)" in result.output  # nested file was found by recursive scan
+        assert "(openai)" in result.output
 
     def test_skips_node_modules(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
         """Lock ignores node_modules — provider SDK source isn't user code."""
@@ -1582,7 +1582,7 @@ class TestLockHardcodedBaseUrlDetection:
         )
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code != 0
-        assert "(openai)" in result.output  # JS file was scanned and OpenAI URL detected
+        assert "(openai)" in result.output
 
     # ------------------------------------------------------------------
     # Additional coverage — QA gap fills
@@ -1730,6 +1730,15 @@ class TestLockHardcodedBaseUrlDetection:
         )
         result = self._run(home_dir, self._env(tmp_path))
         assert result.exit_code == 0, result.output
+
+    def test_non_interactive_error_includes_flag_hint(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Non-interactive (no TTY) error output hints the user toward --allow-hardcoded-urls."""
+        (tmp_path / "app.py").write_text('client = OpenAI(base_url="https://api.openai.com/v1")\n')
+        result = self._run(home_dir, self._env(tmp_path))
+        assert result.exit_code != 0
+        assert "--allow-hardcoded-urls" in result.output
 
     def test_no_false_positive_on_mismatched_quotes(
         self, home_dir: WorthlessHome, tmp_path: Path
