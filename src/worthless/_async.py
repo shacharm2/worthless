@@ -39,6 +39,11 @@ def run_sync(coro: Awaitable[T], timeout: float | None = None) -> T:
     process exit. CLI callers can safely rely on ``timeout``; long-running
     services should still avoid coroutines that ignore cancellation.
 
+    ``timeout`` is only enforced on the threaded path. Direct-path calls
+    (no running loop detected) ignore ``timeout`` and run to completion.
+    A negative ``timeout`` raises ``TimeoutError`` without starting the
+    coroutine; the coroutine is closed to suppress the RuntimeWarning.
+
     Exceptions propagate to the caller unchanged.
     """
     try:
