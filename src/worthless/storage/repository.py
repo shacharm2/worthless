@@ -500,6 +500,13 @@ class ShardRepository:
             await db.execute("COMMIT")
             return cursor.rowcount > 0
 
+    async def count_aliases(self) -> int:
+        """Return the number of distinct enrolled aliases remaining."""
+        async with self._connect() as db:
+            cursor = await db.execute("SELECT COUNT(DISTINCT key_alias) FROM shards")
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
     # ------------------------------------------------------------------
     # Decoy hash registry (WOR-31)
     # ------------------------------------------------------------------

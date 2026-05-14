@@ -235,60 +235,64 @@ class TestProxyCmdShape:
             "the PID-authority logic before shipping."
         )
 
-    def test_proxy_cmd_default_host_is_loopback(self, monkeypatch):
-        """Without WORTHLESS_HOST the proxy binds to 127.0.0.1 (safe default)."""
-        from worthless.cli.process import proxy_cmd
+    def test_proxy_cmd_passes_host_to_uvicorn(self):
+        """proxy_cmd must forward its host arg to uvicorn --host.
 
-        monkeypatch.delenv("WORTHLESS_HOST", raising=False)
-        cmd = proxy_cmd(port=8787)
-        assert "--host" in cmd
-        idx = cmd.index("--host")
-        assert cmd[idx + 1] == "127.0.0.1"
-
-    def test_proxy_cmd_worthless_host_overrides_bind_address(self, monkeypatch):
-        """WORTHLESS_HOST=0.0.0.0 makes the proxy listen on all interfaces.
-
-        Regression test for the Docker connectivity bug: the proxy was
-        hardcoded to 127.0.0.1, so containers couldn't reach it even when
-        the user set WORTHLESS_HOST=0.0.0.0.
+        The host is now an explicit parameter — callers derive it from
+        build_proxy_env()["WORTHLESS_HOST"] so the env dict is the
+        single source of truth.
         """
         from worthless.cli.process import proxy_cmd
 
-        monkeypatch.setenv("WORTHLESS_HOST", "0.0.0.0")  # noqa: S104
-        cmd = proxy_cmd(port=8787)
-        idx = cmd.index("--host")
-        assert cmd[idx + 1] == "0.0.0.0"  # noqa: S104
+        cmd = proxy_cmd(port=8787, host="0.0.0.0")  # noqa: S104
+        host_idx = cmd.index("--host")
+        assert cmd[host_idx + 1] == "0.0.0.0"  # noqa: S104
 
-    def test_proxy_cmd_worthless_host_arbitrary_value(self, monkeypatch):
-        """WORTHLESS_HOST accepts any bind address the OS supports."""
+    def test_proxy_cmd_defaults_to_loopback(self):
+        """Default host arg is loopback-safe."""
         from worthless.cli.process import proxy_cmd
 
-        monkeypatch.setenv("WORTHLESS_HOST", "::1")
         cmd = proxy_cmd(port=8787)
-        idx = cmd.index("--host")
-        assert cmd[idx + 1] == "::1"
+        host_idx = cmd.index("--host")
+        assert cmd[host_idx + 1] == "127.0.0.1"
 
-    def test_proxy_cmd_port_is_forwarded(self, monkeypatch):
-        """The port argument lands in the command."""
-        from worthless.cli.process import proxy_cmd
+    def test_build_proxy_env_sets_worthless_host_for_lan(self, monkeypatch, tmp_path):
+        """build_proxy_env must populate WORTHLESS_HOST for LAN mode.
 
+        Regression guard: previously WORTHLESS_HOST was never written into the
+        env dict — it only reached the child via os.environ bleed-through in
+        prepare_proxy_env. A systemd unit or any non-shell spawn that sets
+        WORTHLESS_DEPLOY_MODE=lan but not WORTHLESS_HOST would silently bind
+        loopback, defeating the entire deploy mode.
+        """
+        from unittest.mock import MagicMock
+
+        from worthless.cli.process import build_proxy_env
+
+        monkeypatch.setenv("WORTHLESS_DEPLOY_MODE", "lan")
         monkeypatch.delenv("WORTHLESS_HOST", raising=False)
-        cmd = proxy_cmd(port=9999)
-        assert "--port" in cmd
-        idx = cmd.index("--port")
-        assert cmd[idx + 1] == "9999"
+
+        home = MagicMock()
+        home.db_path = tmp_path / "worthless.db"
+        home.base_dir = tmp_path
+        home.fernet_key = b"fake-key"
+
+        env = build_proxy_env(home)
+        got = env.get("WORTHLESS_HOST")
+        assert got == "0.0.0.0", (  # noqa: S104
+            f"Expected WORTHLESS_HOST=0.0.0.0 in env dict for LAN mode, got {got!r}"
+        )
 
 
 class TestPrepareProxyEnv:
-    """``prepare_proxy_env`` must forward WORTHLESS_HOST to the child process."""
+    """``prepare_proxy_env`` propagates env vars to the child process correctly."""
 
     def test_worthless_host_forwarded_from_os_environ(self, monkeypatch):
         """WORTHLESS_HOST set in parent shell reaches the spawned proxy.
 
-        Without this, setting WORTHLESS_HOST=0.0.0.0 in the parent only
-        affects ``proxy_cmd()``'s --host flag; the uvicorn child never sees
-        the variable (it uses the full env dict returned here). Both must
-        agree.
+        Even though ``proxy_cmd`` now takes ``host`` as an explicit param,
+        the child process env must also carry ``WORTHLESS_HOST`` so uvicorn
+        can be restarted in-process or inspected via env introspection.
         """
         from worthless.cli.process import prepare_proxy_env
 

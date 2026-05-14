@@ -56,6 +56,16 @@ class TestDefaultHost:
         monkeypatch.setenv("WORTHLESS_DEPLOY_MODE", "public")
         assert ProxySettings().host == "0.0.0.0"  # noqa: S104 — testing public-mode bind contract
 
+    def test_lan_defaults_anyiface(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """LAN mode alone must bind 0.0.0.0 — no WORTHLESS_HOST needed.
+
+        Regression guard: previously only PUBLIC triggered the all-ifaces default.
+        Declaring LAN intent and silently binding loopback defeats the whole mode.
+        """
+        monkeypatch.setenv("WORTHLESS_DEPLOY_MODE", "lan")
+        monkeypatch.delenv("WORTHLESS_HOST", raising=False)
+        assert ProxySettings().host == "0.0.0.0"  # noqa: S104 — testing lan-mode bind contract
+
     def test_explicit_host_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WORTHLESS_DEPLOY_MODE", "lan")
         monkeypatch.setenv("WORTHLESS_HOST", "10.0.5.7")

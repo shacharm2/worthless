@@ -60,7 +60,7 @@ def skill_commands(skill_content: str) -> list[str]:
     seen: set[str] = set()
     cmds: list[str] = []
     for m in matches:
-        if m not in seen and m not in ("v1", "v2", "v1.0", "v1.1", "v2.0"):
+        if m not in seen and m not in ("v1", "v2", "v1.0", "v2.0"):
             seen.add(m)
             cmds.append(m)
     return cmds

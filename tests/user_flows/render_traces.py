@@ -34,6 +34,9 @@ FAKE_KEY_SEEDS = [
     ("sk-", "trace-shape-new"),
     ("sk-proj-", "trace-project-a"),
     ("sk-proj-", "trace-project-b"),
+    ("sk-proj-", "trace-rewrite-refusal"),
+    ("sk-proj-", "trace-tamper-original"),
+    ("sk-proj-", "trace-tampered-locked-env"),
 ]
 _PROTECTED_LABELS: dict[str, str] = {}
 
@@ -306,6 +309,52 @@ def build_multi_project_isolation() -> Journey:
     return runner.journey
 
 
+def build_native_stress() -> Journey:
+    runner = TraceRunner(
+        TRACE_ROOT / "native-stress",
+        title="Native Stress: Refused Rewrite and Tampered Lock",
+        summary=(
+            "Unsafe rewrite refusal leaves the raw .env recoverable and unenrolled; "
+            "tampering with a locked value fails with an actionable commitment-mismatch "
+            "message without destroying state."
+        ),
+    )
+    refusal_project = runner.journey.root / "rewrite-refusal"
+    tamper_project = runner.journey.root / "tampered-lock"
+    refusal_project.mkdir(parents=True)
+    tamper_project.mkdir(parents=True)
+    refusal_env = refusal_project / ".env"
+    tamper_env = tamper_project / ".env"
+
+    refusal_env.write_text(f"OPENAI_API_KEY={fake_key('sk-proj-', 'trace-rewrite-refusal')}\n")
+    os.link(refusal_env, refusal_project / ".env.link")
+    runner.run(
+        ["lock", "--env", str(refusal_env)],
+        cwd=refusal_project,
+        env_files=[refusal_env],
+        expect_exit=lambda code: code != 0,
+    )
+    runner.run(["status"], cwd=refusal_project, env_files=[refusal_env])
+    runner.run(
+        ["scan", str(refusal_env)],
+        cwd=runner.journey.root,
+        env_files=[refusal_env],
+        expect_exit=lambda code: code != 0,
+    )
+
+    tamper_env.write_text(f"OPENAI_API_KEY={fake_key('sk-proj-', 'trace-tamper-original')}\n")
+    runner.run(["lock", "--env", str(tamper_env)], cwd=tamper_project, env_files=[tamper_env])
+    tamper_env.write_text(f"OPENAI_API_KEY={fake_key('sk-proj-', 'trace-tampered-locked-env')}\n")
+    runner.run(
+        ["unlock", "--env", str(tamper_env)],
+        cwd=tamper_project,
+        env_files=[tamper_env],
+        expect_exit=lambda code: code != 0,
+    )
+    runner.run(["status"], cwd=tamper_project, env_files=[tamper_env])
+    return runner.journey
+
+
 def render_report(journeys: list[Journey]) -> str:
     _PROTECTED_LABELS.clear()
     lines = [
@@ -447,6 +496,7 @@ def main() -> int:
         build_teammate_handoff_failure(),
         build_rotation_relock(),
         build_multi_project_isolation(),
+        build_native_stress(),
     ]
     report = render_report(journeys)
     args.output.parent.mkdir(parents=True, exist_ok=True)

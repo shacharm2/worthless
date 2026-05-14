@@ -169,7 +169,7 @@ services:
 ```
 
 > Multi-tenant team mode (per-dev enrollments, mTLS between CLI and
-> remote proxy, dashboard) is on the v1.1 launch roadmap — see
+> remote proxy, dashboard) is on the v0.4 roadmap — see
 > WOR-300 / WOR-388. The single-tenant flow above works today but
 > assumes your team trusts each other with the shared enrollment
 > table.
