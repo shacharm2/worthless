@@ -342,9 +342,10 @@ class TestEntrypoint:
         file permissions. The sidecar reads fernet.key directly (it owns it
         0400); the proxy never needs the raw key.
         """
-        assert "exec 3< " not in entrypoint_text, (
-            "WOR-465 A4: 'exec 3< fernet.key' must be absent from entrypoint.sh. "
-            "The open fd is inherited by uvicorn and bypasses the 0400 permission."
+        assert not re.search(r"\bexec\s+3<", entrypoint_text), (
+            "WOR-465 A4: 'exec 3< fernet.key' (any whitespace variant) must be absent "
+            "from entrypoint.sh. The open fd is inherited by uvicorn and bypasses the "
+            "0400 permission regardless of file ownership."
         )
         assert "WORTHLESS_FERNET_FD" not in entrypoint_text, (
             "WOR-465 A4: WORTHLESS_FERNET_FD must not be exported. The proxy no "

@@ -8,6 +8,7 @@ running Docker daemon.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -28,11 +29,11 @@ def test_fernet_fd_not_in_entrypoint() -> None:
     entrypoint = REPO_ROOT / "deploy" / "entrypoint.sh"
     text = entrypoint.read_text()
 
-    assert "exec 3< " not in text, (
-        "WOR-465 A4: 'exec 3< fernet.key' must be removed from entrypoint.sh. "
-        "Without removal, fd 3 is inherited by uvicorn (POSIX exec does not "
-        "close fds without O_CLOEXEC) and readable by a proxy-RCE attacker "
-        "via /proc/self/fd/3, bypassing the worthless-crypto:worthless-crypto "
+    assert not re.search(r"\bexec\s+3<", text), (
+        "WOR-465 A4: 'exec 3< fernet.key' (any whitespace variant) must be removed "
+        "from entrypoint.sh. Without removal, fd 3 is inherited by uvicorn (POSIX "
+        "exec does not close fds without O_CLOEXEC) and readable by a proxy-RCE "
+        "attacker via /proc/self/fd/3, bypassing the worthless-crypto:worthless-crypto "
         "0400 permission entirely."
     )
     assert "WORTHLESS_FERNET_FD" not in text, (
