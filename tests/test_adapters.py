@@ -113,6 +113,107 @@ class TestOpenAIRequestTransform:
         assert req.headers["authorization"] == f"Bearer {sample_api_key.decode()}"
         assert req.body == sample_openai_body
 
+    def _tool_call_body(self) -> bytes:
+        """Minimal OpenAI streaming request with tools — the exact shape that
+        caused the OpenAI 400 regression (WOR-501)."""
+        return json.dumps(
+            {
+                "model": "gpt-4o-mini",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hello"}],
+                "tools": [
+                    {"type": "function", "function": {"name": "read_file", "parameters": {}}}
+                ],
+            }
+        ).encode()
+
+    def test_tool_call_body_passes_through_byte_identical(self):
+        """Streaming tool-call requests must reach OpenAI byte-for-byte unchanged.
+
+        Root cause of WOR-501: ``_inject_include_usage`` re-serialised the
+        full request body (including 28 tools and 115 KB of schema) to add
+        ``stream_options.include_usage``. OpenAI accepted the semantically
+        identical JSON but returned 400 — the re-serialisation changed
+        key ordering in a way OpenAI's parser rejected.
+
+        Fix: skip injection entirely when ``tools`` is present.
+        """
+        adapter = OpenAIAdapter()
+        body = self._tool_call_body()
+        req = adapter.prepare_request(
+            body=body,
+            headers={"content-type": "application/json"},
+            api_key=bytearray(b"sk-test"),
+            base_url="https://api.openai.com/v1",
+        )
+        assert req.body is body, "tool-call request body was re-serialised — this causes OpenAI 400"
+
+    def test_tool_call_request_preserves_content_length(self):
+        """Content-Length header must NOT be removed for unmodified tool-call bodies.
+
+        When the body is not modified, the original Content-Length is still
+        correct. Removing it forces httpx to recalculate — harmless but
+        unnecessary, and it masks whether the body was actually touched.
+        """
+        adapter = OpenAIAdapter()
+        body = self._tool_call_body()
+        req = adapter.prepare_request(
+            body=body,
+            headers={
+                "content-type": "application/json",
+                "content-length": str(len(body)),
+            },
+            api_key=bytearray(b"sk-test"),
+            base_url="https://api.openai.com/v1",
+        )
+        # Body unchanged → Content-Length should survive (httpx will use it).
+        assert "content-length" in req.headers
+
+    def test_plain_streaming_removes_content_length_after_injection(self):
+        """When include_usage is injected, the old Content-Length is wrong.
+
+        The adapter must drop it so httpx recalculates from the actual
+        (longer) body.
+        """
+        adapter = OpenAIAdapter()
+        body = json.dumps(
+            {
+                "model": "gpt-4o",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+        ).encode()
+        req = adapter.prepare_request(
+            body=body,
+            headers={
+                "content-type": "application/json",
+                "content-length": str(len(body)),
+            },
+            api_key=bytearray(b"sk-test"),
+            base_url="https://api.openai.com/v1",
+        )
+        # Body was modified (include_usage injected) → stale Content-Length removed.
+        assert "content-length" not in req.headers
+
+    def test_plain_streaming_injects_include_usage_at_adapter_level(self):
+        """End-to-end: plain streaming through prepare_request gets include_usage."""
+        adapter = OpenAIAdapter()
+        body = json.dumps(
+            {
+                "model": "gpt-4o",
+                "stream": True,
+                "messages": [],
+            }
+        ).encode()
+        req = adapter.prepare_request(
+            body=body,
+            headers={"content-type": "application/json"},
+            api_key=bytearray(b"sk-test"),
+            base_url="https://api.openai.com/v1",
+        )
+        parsed = json.loads(req.body)
+        assert parsed.get("stream_options", {}).get("include_usage") is True
+
 
 class TestOpenAIResponseRelay:
     @pytest.mark.asyncio

@@ -234,3 +234,72 @@ class TestProxyCmdShape:
             "single-process assumption poll_health_pid relies on. Revisit "
             "the PID-authority logic before shipping."
         )
+
+    def test_proxy_cmd_default_host_is_loopback(self, monkeypatch):
+        """Without WORTHLESS_HOST the proxy binds to 127.0.0.1 (safe default)."""
+        from worthless.cli.process import proxy_cmd
+
+        monkeypatch.delenv("WORTHLESS_HOST", raising=False)
+        cmd = proxy_cmd(port=8787)
+        assert "--host" in cmd
+        idx = cmd.index("--host")
+        assert cmd[idx + 1] == "127.0.0.1"
+
+    def test_proxy_cmd_worthless_host_overrides_bind_address(self, monkeypatch):
+        """WORTHLESS_HOST=0.0.0.0 makes the proxy listen on all interfaces.
+
+        Regression test for the Docker connectivity bug: the proxy was
+        hardcoded to 127.0.0.1, so containers couldn't reach it even when
+        the user set WORTHLESS_HOST=0.0.0.0.
+        """
+        from worthless.cli.process import proxy_cmd
+
+        monkeypatch.setenv("WORTHLESS_HOST", "0.0.0.0")  # noqa: S104
+        cmd = proxy_cmd(port=8787)
+        idx = cmd.index("--host")
+        assert cmd[idx + 1] == "0.0.0.0"  # noqa: S104
+
+    def test_proxy_cmd_worthless_host_arbitrary_value(self, monkeypatch):
+        """WORTHLESS_HOST accepts any bind address the OS supports."""
+        from worthless.cli.process import proxy_cmd
+
+        monkeypatch.setenv("WORTHLESS_HOST", "::1")
+        cmd = proxy_cmd(port=8787)
+        idx = cmd.index("--host")
+        assert cmd[idx + 1] == "::1"
+
+    def test_proxy_cmd_port_is_forwarded(self, monkeypatch):
+        """The port argument lands in the command."""
+        from worthless.cli.process import proxy_cmd
+
+        monkeypatch.delenv("WORTHLESS_HOST", raising=False)
+        cmd = proxy_cmd(port=9999)
+        assert "--port" in cmd
+        idx = cmd.index("--port")
+        assert cmd[idx + 1] == "9999"
+
+
+class TestPrepareProxyEnv:
+    """``prepare_proxy_env`` must forward WORTHLESS_HOST to the child process."""
+
+    def test_worthless_host_forwarded_from_os_environ(self, monkeypatch):
+        """WORTHLESS_HOST set in parent shell reaches the spawned proxy.
+
+        Without this, setting WORTHLESS_HOST=0.0.0.0 in the parent only
+        affects ``proxy_cmd()``'s --host flag; the uvicorn child never sees
+        the variable (it uses the full env dict returned here). Both must
+        agree.
+        """
+        from worthless.cli.process import prepare_proxy_env
+
+        monkeypatch.setenv("WORTHLESS_HOST", "0.0.0.0")  # noqa: S104
+        env = prepare_proxy_env({}, fernet_fd=None)
+        assert env.get("WORTHLESS_HOST") == "0.0.0.0"  # noqa: S104
+
+    def test_fernet_key_scrubbed_from_child_env(self, monkeypatch):
+        """WORTHLESS_FERNET_KEY must never leak into child env via os.environ bleed."""
+        from worthless.cli.process import prepare_proxy_env
+
+        monkeypatch.setenv("WORTHLESS_FERNET_KEY", "secret-should-not-leak")
+        env = prepare_proxy_env({}, fernet_fd=None)
+        assert "WORTHLESS_FERNET_KEY" not in env
