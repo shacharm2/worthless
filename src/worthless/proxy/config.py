@@ -72,9 +72,18 @@ def _read_default_host(mode: DeployMode) -> str:
     explicit = os.environ.get("WORTHLESS_HOST", "").strip()
     if explicit:
         return explicit
-    if mode is DeployMode.PUBLIC:
-        return "0.0.0.0"  # noqa: S104  # nosec B104 — public mode binds edge-facing iface by design
+    if mode in (DeployMode.PUBLIC, DeployMode.LAN):
+        return "0.0.0.0"  # noqa: S104  # nosec B104 — lan/public modes bind all ifaces by design
     return "127.0.0.1"
+
+
+def resolve_bind_host() -> str:
+    """Return the uvicorn bind host for the current deploy mode + env overrides.
+
+    Public entry-point so ``cli.process`` can populate ``WORTHLESS_HOST`` in
+    the subprocess env dict without calling private helpers cross-module.
+    """
+    return _read_default_host(_read_deploy_mode())
 
 
 def _read_fernet_key() -> bytearray:

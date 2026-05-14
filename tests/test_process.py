@@ -234,3 +234,51 @@ class TestProxyCmdShape:
             "single-process assumption poll_health_pid relies on. Revisit "
             "the PID-authority logic before shipping."
         )
+
+    def test_proxy_cmd_passes_host_to_uvicorn(self):
+        """proxy_cmd must forward its host arg to uvicorn --host.
+
+        The host is now an explicit parameter — callers derive it from
+        build_proxy_env()["WORTHLESS_HOST"] so the env dict is the
+        single source of truth.
+        """
+        from worthless.cli.process import proxy_cmd
+
+        cmd = proxy_cmd(port=8787, host="0.0.0.0")  # noqa: S104
+        host_idx = cmd.index("--host")
+        assert cmd[host_idx + 1] == "0.0.0.0"  # noqa: S104
+
+    def test_proxy_cmd_defaults_to_loopback(self):
+        """Default host arg is loopback-safe."""
+        from worthless.cli.process import proxy_cmd
+
+        cmd = proxy_cmd(port=8787)
+        host_idx = cmd.index("--host")
+        assert cmd[host_idx + 1] == "127.0.0.1"
+
+    def test_build_proxy_env_sets_worthless_host_for_lan(self, monkeypatch, tmp_path):
+        """build_proxy_env must populate WORTHLESS_HOST for LAN mode.
+
+        Regression guard: previously WORTHLESS_HOST was never written into the
+        env dict — it only reached the child via os.environ bleed-through in
+        prepare_proxy_env. A systemd unit or any non-shell spawn that sets
+        WORTHLESS_DEPLOY_MODE=lan but not WORTHLESS_HOST would silently bind
+        loopback, defeating the entire deploy mode.
+        """
+        from unittest.mock import MagicMock
+
+        from worthless.cli.process import build_proxy_env
+
+        monkeypatch.setenv("WORTHLESS_DEPLOY_MODE", "lan")
+        monkeypatch.delenv("WORTHLESS_HOST", raising=False)
+
+        home = MagicMock()
+        home.db_path = tmp_path / "worthless.db"
+        home.base_dir = tmp_path
+        home.fernet_key = b"fake-key"
+
+        env = build_proxy_env(home)
+        got = env.get("WORTHLESS_HOST")
+        assert got == "0.0.0.0", (  # noqa: S104
+            f"Expected WORTHLESS_HOST=0.0.0.0 in env dict for LAN mode, got {got!r}"
+        )

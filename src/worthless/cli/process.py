@@ -121,9 +121,17 @@ def build_proxy_env(home: WorthlessHome) -> dict[str, str]:
     the test-suite case (conftest sets the var; this propagates it).
     (WOR-463)
     """
+    # Derive bind host without importing proxy.config (circular import risk).
+    # Mirror logic from proxy/config.py _read_default_host so the env dict
+    # is the single source of truth for the child process bind address.
+    _host = os.environ.get("WORTHLESS_HOST", "").strip()
+    if not _host:
+        _mode = os.environ.get("WORTHLESS_DEPLOY_MODE", "loopback").strip().lower()
+        _host = "0.0.0.0" if _mode in ("lan", "public") else "127.0.0.1"  # noqa: S104  # nosec B104
     env: dict[str, str] = {
         "WORTHLESS_DB_PATH": str(home.db_path),
         "WORTHLESS_HOME": str(home.base_dir),
+        "WORTHLESS_HOST": _host,
     }
     if "WORTHLESS_KEYRING_BACKEND" in os.environ:
         env["WORTHLESS_KEYRING_BACKEND"] = os.environ["WORTHLESS_KEYRING_BACKEND"]
@@ -246,8 +254,15 @@ def prepare_proxy_env(
     return full_env
 
 
-def proxy_cmd(port: int) -> list[str]:
-    """Build the uvicorn command for the proxy."""
+def proxy_cmd(port: int, host: str = "127.0.0.1") -> list[str]:
+    """Build the uvicorn command for the proxy.
+
+    Args:
+        port: Port for uvicorn to bind.
+        host: Bind address.  Callers should derive this from
+            ``build_proxy_env()["WORTHLESS_HOST"]`` so the env dict
+            is the single source of truth for the bind address.
+    """
     return [
         sys.executable,
         "-m",
@@ -255,7 +270,7 @@ def proxy_cmd(port: int) -> list[str]:
         "worthless.proxy.app:create_app",
         "--factory",
         "--host",
-        "127.0.0.1",
+        host,
         "--port",
         str(port),
     ]
@@ -282,7 +297,7 @@ def spawn_proxy(
     Returns:
         (process, actual_port).
     """
-    cmd = proxy_cmd(port)
+    cmd = proxy_cmd(port, host=env.get("WORTHLESS_HOST", "127.0.0.1"))
 
     with fernet_transport(env) as (fernet_key, fernet_fd, fernet_fds):
         full_env = prepare_proxy_env(env, fernet_fd, liveness_fd=liveness_fd)
