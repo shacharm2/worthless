@@ -72,8 +72,8 @@ def _read_default_host(mode: DeployMode) -> str:
     explicit = os.environ.get("WORTHLESS_HOST", "").strip()
     if explicit:
         return explicit
-    if mode is DeployMode.PUBLIC:
-        return "0.0.0.0"  # noqa: S104  # nosec B104 — public mode binds edge-facing iface by design
+    if mode in (DeployMode.PUBLIC, DeployMode.LAN):
+        return "0.0.0.0"  # noqa: S104  # nosec B104 — lan/public modes bind all ifaces by design
     return "127.0.0.1"
 
 
