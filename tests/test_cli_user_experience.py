@@ -215,11 +215,18 @@ class TestLockUx:
         """
         import sys
 
+        from worthless.cli.commands import lock as lock_module
+
         monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(lock_module, "keyring_available", lambda: True)
         result = runner.invoke(
             app,
             ["lock", "--env", str(env_with_openai)],
-            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+            env={
+                "HOME": str(home_dir.base_dir.parent / "user-home"),
+                "USERPROFILE": str(home_dir.base_dir.parent / "user-home"),
+                "WORTHLESS_HOME": str(home_dir.base_dir),
+            },
         )
         assert result.exit_code == 0
         combined = result.stdout + result.stderr
@@ -251,6 +258,38 @@ class TestLockUx:
         combined = result.stdout + result.stderr
         assert "Always Allow" not in combined, (
             f"non-macOS run leaked the macOS-only Keychain hint:\n{combined}"
+        )
+
+    def test_lock_file_fallback_does_not_claim_keychain_or_system_keystore(
+        self,
+        home_dir: WorthlessHome,
+        env_with_openai: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When keyring is forced off, lock must not claim Keychain storage."""
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_with_openai)],
+            env={
+                "HOME": str(home_dir.base_dir.parent / "user-home"),
+                "USERPROFILE": str(home_dir.base_dir.parent / "user-home"),
+                "WORTHLESS_HOME": str(home_dir.base_dir),
+                "WORTHLESS_KEYRING_BACKEND": "null",
+            },
+        )
+        assert result.exit_code == 0
+        combined = result.stdout + result.stderr
+        assert "Keychain" not in combined, (
+            f"file fallback should not mention macOS Keychain:\n{combined}"
+        )
+        assert "system keystore" not in combined, (
+            f"file fallback should not claim system keystore storage:\n{combined}"
+        )
+        assert "local key file" in combined, (
+            f"file fallback should name where the other shard lives:\n{combined}"
         )
 
     def test_lock_no_keys_message(self, home_dir: WorthlessHome, env_clean: Path) -> None:

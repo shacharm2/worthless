@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sqlite3
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 
 from tests.conftest import make_repo as _repo
-from tests.helpers import fake_anthropic_key, fake_openai_key
+from tests.helpers import fake_anthropic_key, fake_key, fake_openai_key
 
 runner = CliRunner()
 
@@ -656,6 +657,46 @@ class TestLockCommand:
             encrypted.charset or "",
         )
         assert reconstructed.decode() == key
+
+    def test_relock_existing_key_deletes_superseded_location_enrollment(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Relocking a location to an already-known key removes the old alias.
+
+        The existing-enrollment branch must keep the one-live-enrollment-per
+        ``(var_name, env_path)`` invariant, matching the fresh-enroll path.
+        """
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        old_key = fake_key("sk-proj-", seed="existing-location-old")
+        new_key = fake_key("sk-proj-", seed="existing-location-new")
+
+        env_a = tmp_path / "a" / ".env"
+        env_b = tmp_path / "b" / ".env"
+        env_a.parent.mkdir()
+        env_b.parent.mkdir()
+        env_a.write_text(f"OPENAI_API_KEY={old_key}\n")
+        env_b.write_text(f"OPENAI_API_KEY={new_key}\n")
+
+        r1 = runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars)
+        assert r1.exit_code == 0, r1.output
+        r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
+        assert r2.exit_code == 0, r2.output
+
+        # User rotates env_a to a key already known from env_b.
+        env_a.write_text(f"OPENAI_API_KEY={new_key}\n")
+        r3 = runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars)
+        assert r3.exit_code == 0, r3.output
+
+        repo = _repo(home_dir)
+        env_a_records = [
+            record
+            for record in asyncio.run(repo.list_enrollments())
+            if record.var_name == "OPENAI_API_KEY" and record.env_path == str(env_a)
+        ]
+        assert len(env_a_records) == 1
+        assert env_a_records[0].key_alias.endswith(
+            hashlib.sha256(bytearray(new_key.encode())).hexdigest()[:8]
+        )
 
     def test_relock_compensation_restores_env_on_base_url_failure(
         self, home_dir: WorthlessHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -4,7 +4,7 @@ per ``worthless lock``.
 THIS IS the test pattern for ``@pytest.mark.user_flow``. THIS IS NOT a
 mocked unit test — it spies on the actual ``keyring`` module while a real
 CLI invocation runs. The full user-flow suite (install / uninstall /
-multi-platform Docker matrix) is tracked under bead ``worthless-bwu6``.
+multi-platform Docker matrix) is tracked in Linear under ``WOR-439``.
 
 Why this lives here, not in ``tests/test_bootstrap_keyring.py``:
 
