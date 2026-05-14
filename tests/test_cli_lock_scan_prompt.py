@@ -195,13 +195,10 @@ class TestLockScanPromptNonTTY:
         # _maybe_prompt_code_scan writes the warning to sys.stderr
         assert "hardcoded" in result.stderr.lower() or "bypass" in result.stderr.lower()
 
-    def test_ci_env_var_skips_prompt(
-        self, home_dir: WorthlessHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """CI=true in environment → non-interactive path, one-line warning only."""
+    def test_ci_env_var_skips_prompt(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
+        """Non-TTY (as in CI) → no interactive prompt, one-line warning only."""
         env_file = _make_env_file(tmp_path)
         finding = _make_finding(tmp_path)
-        monkeypatch.setenv("CI", "true")
 
         with (
             patch(_SCAN_FN, return_value=[finding]),
@@ -305,8 +302,6 @@ class TestLockScanPromptInsulation:
         assert result.exit_code == 0
         assert "[OK]" in result.stderr, "lock success message must appear before scan runs"
         assert "scan" in call_order, "scanner must have been called"
-        # typer.confirm prompt (with "bypass") goes to stdout; [OK] is in stderr
-        # Just verify ordering: scan called only after enrollment (call_order confirms this)
         assert call_order[0] == "scan"
 
     def test_existing_lock_tests_not_broken(self, home_dir: WorthlessHome, tmp_path: Path) -> None:
