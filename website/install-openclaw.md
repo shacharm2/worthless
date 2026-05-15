@@ -47,6 +47,50 @@ docker run --rm -it \
 
 > `--add-host=host.docker.internal:host-gateway` is the Linux equivalent of Docker Desktop's built-in `host.docker.internal`. On macOS with Docker Desktop, it resolves automatically.
 
+## All-container setup (docker-compose)
+
+Run the Worthless proxy and OpenClaw in the same Docker network — no worthless process on your host.
+
+**1. Start the stack**
+
+```bash
+# Clone or download deploy/docker-compose.yml from the worthless repo
+docker compose --profile openclaw up -d
+```
+
+**2. Enroll your API key and wire OpenClaw**
+
+```bash
+# Enroll the key (shard B stored in the proxy container)
+printf '%s' "$OPENAI_API_KEY" | docker compose exec -T proxy \
+  worthless enroll --alias openai --key-stdin --provider openai
+
+# Lock: writes openclaw.json with baseUrl=http://proxy:8787 into the shared volume
+docker compose exec proxy worthless lock
+
+# Restart openclaw so it picks up the new provider entry
+docker compose restart openclaw
+```
+
+`WORTHLESS_PROXY_HOST=proxy` is pre-set in `docker-compose.yml`, so `worthless lock` automatically writes the Docker-internal hostname — no env var to remember.
+
+**3. Send a request through OpenClaw**
+
+```bash
+docker compose exec openclaw \
+  openclaw agent --local --message "hello"
+```
+
+Check the proxy log for a proxied request count increment:
+
+```bash
+docker compose logs proxy | grep proxied
+```
+
+**What the shared volume does**
+
+Both services mount the same `openclaw-config` volume: the proxy writes to it at `/data/.openclaw`, openclaw reads from it at `/home/node/.openclaw`. The API key never leaves the proxy container.
+
 ## Verify it's working
 
 ```bash
