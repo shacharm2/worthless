@@ -16,6 +16,14 @@ set -e
 # any python executes so even bootstrap errors can't dump.
 ulimit -c 0 || true
 
+# WOR-465 A4: warn operators who explicitly disable the isolation boundary.
+# WORTHLESS_FERNET_IPC_ONLY defaults to 1 in the Docker image; setting it to 0
+# makes fernet.key readable by the proxy uid — do not do this in production.
+if [ "${WORTHLESS_FERNET_IPC_ONLY:-1}" = "0" ]; then
+  echo "WARNING: WORTHLESS_FERNET_IPC_ONLY=0 — Fernet key isolation is disabled." >&2
+  echo "         The proxy uid can read fernet.key directly. Do not use in production." >&2
+fi
+
 HOME_DIR="${WORTHLESS_HOME:-/data}"
 FERNET_PATH="${WORTHLESS_FERNET_KEY_PATH:-$HOME_DIR/fernet.key}"
 MODE="${WORTHLESS_DEPLOY_MODE:-loopback}"
@@ -49,9 +57,9 @@ fi
 # env var the key stays on the data volume — safe for single-volume PaaS.
 if [ -n "$WORTHLESS_FERNET_KEY_PATH" ] && [ ! -f "$FERNET_PATH" ] && [ -f "$HOME_DIR/fernet.key" ]; then
   # Mode 0440 (not 0400) so the worthless group can read post-chown
-  # below.  Final ownership/mode is fixed up in the priv-drop block:
-  # root:worthless 0440 — root owns (proxy can't unlink), worthless
-  # group reads (bootstrap-validation + sidecar reconstruct work).
+  # below.  Final ownership/mode is fixed by the priv-drop block:
+  # worthless-crypto:worthless-crypto 0400 — sidecar owns the key;
+  # the proxy uid (10001) has no access even under RCE. See WOR-465 A4.
   install -m 0440 "$HOME_DIR/fernet.key" "$FERNET_PATH"
   rm "$HOME_DIR/fernet.key"
 fi
@@ -88,8 +96,10 @@ if [ "$(id -u)" = "0" ]; then
     chmod 0400 "$FERNET_PATH" 2>/dev/null || true
     actual="$(stat -c '%U:%G %a' "$FERNET_PATH" 2>/dev/null || echo unknown)"
     if [ "$actual" != "worthless-crypto:worthless-crypto 400" ]; then
-      echo "FATAL: $FERNET_PATH permissions were not enforced (got $actual, expected worthless-crypto:worthless-crypto 400)" >&2
-      echo "Hint: storage backend silently dropped chown or chmod — common on macOS Docker Desktop bind-mounts and WSL /mnt/c paths. Use a Docker named volume." >&2
+      echo "FATAL: $FERNET_PATH permissions were not enforced." >&2
+      echo "  Got:      $actual" >&2
+      echo "  Expected: worthless-crypto:worthless-crypto 400" >&2
+      echo "  Fix: use a Docker named volume — storage backends (macOS Docker Desktop bind-mounts, WSL /mnt/c) silently drop chown/chmod." >&2
       exit 78
     fi
   fi

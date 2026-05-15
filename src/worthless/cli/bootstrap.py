@@ -18,7 +18,7 @@ from pathlib import Path
 from worthless._async import run_sync
 from worthless._flags import (
     WORTHLESS_SIDECAR_SOCKET_ENV,
-    fernet_ipc_only_enabled,
+    ipc_mode_active,
 )
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.cli.keystore import (
@@ -40,8 +40,8 @@ _BOOTSTRAP_ATTEST_PURPOSE = "bootstrap-validate"
 
 
 def _validate_via_sidecar(socket_path: Path) -> None:
-    """Round-trip an ``attest`` call to confirm the sidecar is alive AND
-    holds a real key. Raises :class:`WorthlessError(SIDECAR_NOT_READY)` on
+    """Round-trip an ``attest`` call to confirm a sidecar is running and
+    returns structurally valid evidence. Raises :class:`WorthlessError(SIDECAR_NOT_READY)` on
     any failure — never falls back to reading ``home.fernet_key``.
 
     Structural validation (bytes type, exact HMAC-SHA256 length) is the
@@ -69,7 +69,7 @@ def _validate_via_sidecar(socket_path: Path) -> None:
         evidence = run_sync(_go())
     except IPCError as exc:
         raise _fail(
-            "Sidecar is not reachable for bootstrap attestation. "
+            f"Sidecar is not reachable for bootstrap attestation ({socket_path}). "
             "Start the sidecar before invoking the CLI inside the proxy "
             "container, or unset WORTHLESS_FERNET_IPC_ONLY for bare-metal use.",
             exc,
@@ -327,7 +327,7 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
         # the key is generated as root; start.py reads it (also as root, before
         # priv-drop) to split_to_tmpfs. The entrypoint chmod then locks the
         # file to worthless-crypto:worthless-crypto 0400. WOR-309 hard-fail.
-        if fernet_ipc_only_enabled() and not IS_WINDOWS and os.geteuid() != 0:
+        if ipc_mode_active():
             socket_path = Path(
                 os.environ.get(WORTHLESS_SIDECAR_SOCKET_ENV, DEFAULT_SIDECAR_SOCKET_PATH)
             )

@@ -25,8 +25,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from worthless._flags import WORTHLESS_SIDECAR_SOCKET_ENV, fernet_ipc_only_enabled
-from worthless.cli.platform import IS_WINDOWS
+from worthless._flags import WORTHLESS_SIDECAR_SOCKET_ENV, ipc_mode_active
 from worthless.ipc.client import IPCClient
 from worthless.proxy.config import DEFAULT_SIDECAR_SOCKET_PATH
 from worthless.storage.repository import ShardRepository
@@ -52,7 +51,10 @@ async def open_repo(home: WorthlessHome) -> AsyncIterator[ShardRepository]:
     In both modes ``close()`` runs on exit so SR-02 key-zeroing still
     fires for the bare-metal path.
     """
-    if fernet_ipc_only_enabled() and not IS_WINDOWS and os.geteuid() != 0:
+    # No socket_path.exists() guard here — unlike ensure_home (which tolerates
+    # first-boot before the sidecar starts), open_repo is called after
+    # bootstrap completes. A missing socket means the sidecar is down; fail fast.
+    if ipc_mode_active():
         socket_path = Path(
             os.environ.get(WORTHLESS_SIDECAR_SOCKET_ENV, DEFAULT_SIDECAR_SOCKET_PATH)
         )
