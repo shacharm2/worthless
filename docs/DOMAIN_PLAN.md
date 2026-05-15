@@ -38,7 +38,7 @@ In Cloudflare dashboard → `worthless.cloud` → DNS:
 
 Add a `CNAME` file to `docs/` (GitHub may auto-create this):
 
-```text
+```
 worthless.cloud
 ```
 
@@ -175,7 +175,7 @@ Even if you don't send email FROM these domains, lock them down to prevent spoof
 
 | Type | Name | Value |
 |---|---|---|
-| TXT | `@` | `v=spf1 include:_spf.mx.cloudflare.net -all` |
+| TXT | `@` | `v=spf1 include:_spf.mx.cloudflare.net ~all` |
 | TXT | `_dmarc` | `v=DMARC1; p=reject; rua=mailto:dmarc@worthless.cloud` |
 
 For `worthless.sh` (no email at all):
@@ -207,7 +207,7 @@ Dashboard → `worthless.cloud` → Email → Email Routing:
 
 Add `docs/.well-known/security.txt` to the website:
 
-```text
+```
 Contact: mailto:security@worthless.cloud
 Expires: 2027-04-15T00:00:00.000Z
 Preferred-Languages: en
