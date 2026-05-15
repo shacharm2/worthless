@@ -60,7 +60,7 @@ services:
   # `http://proxy:8787`) into the shared openclaw-config volume. openclaw
   # picks it up on restart and routes all API calls through the proxy.
   openclaw:
-    image: ghcr.io/openclaw/openclaw:latest
+    image: ghcr.io/openclaw/openclaw:v2026.5.13
     profiles:
       - openclaw
     ports:
