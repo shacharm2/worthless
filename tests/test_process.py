@@ -282,3 +282,28 @@ class TestProxyCmdShape:
         assert got == "0.0.0.0", (  # noqa: S104
             f"Expected WORTHLESS_HOST=0.0.0.0 in env dict for LAN mode, got {got!r}"
         )
+
+
+class TestPrepareProxyEnv:
+    """``prepare_proxy_env`` propagates env vars to the child process correctly."""
+
+    def test_worthless_host_forwarded_from_os_environ(self, monkeypatch):
+        """WORTHLESS_HOST set in parent shell reaches the spawned proxy.
+
+        Even though ``proxy_cmd`` now takes ``host`` as an explicit param,
+        the child process env must also carry ``WORTHLESS_HOST`` so uvicorn
+        can be restarted in-process or inspected via env introspection.
+        """
+        from worthless.cli.process import prepare_proxy_env
+
+        monkeypatch.setenv("WORTHLESS_HOST", "0.0.0.0")  # noqa: S104
+        env = prepare_proxy_env({}, fernet_fd=None)
+        assert env.get("WORTHLESS_HOST") == "0.0.0.0"  # noqa: S104
+
+    def test_fernet_key_scrubbed_from_child_env(self, monkeypatch):
+        """WORTHLESS_FERNET_KEY must never leak into child env via os.environ bleed."""
+        from worthless.cli.process import prepare_proxy_env
+
+        monkeypatch.setenv("WORTHLESS_FERNET_KEY", "secret-should-not-leak")
+        env = prepare_proxy_env({}, fernet_fd=None)
+        assert "WORTHLESS_FERNET_KEY" not in env

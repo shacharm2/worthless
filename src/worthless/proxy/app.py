@@ -401,7 +401,6 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         upstream_resp: httpx.Response | None = None
         try:
             with secure_key(key_buf) as k:
-                # Prepare upstream request
                 adapter_req = adapter.prepare_request(
                     body=body,
                     headers=req_headers,

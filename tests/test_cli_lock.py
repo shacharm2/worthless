@@ -31,6 +31,72 @@ runner = CliRunner()
 
 
 # ---------------------------------------------------------------------------
+# WOR-501: _proxy_base_url host configurability (Docker / LAN deployments)
+# ---------------------------------------------------------------------------
+
+
+class TestProxyBaseUrlDockerHost:
+    """``_proxy_base_url`` must respect ``WORTHLESS_PROXY_HOST``.
+
+    Regression tests for the Docker connectivity bug: lock was hardcoding
+    ``127.0.0.1`` in the BASE_URL written to ``.env``, so container agents
+    that reached the proxy via ``host.docker.internal`` would point at the
+    wrong address after locking.
+    """
+
+    def test_default_host_is_loopback(self, monkeypatch):
+        """Without WORTHLESS_PROXY_HOST the URL contains 127.0.0.1."""
+        from worthless.cli.commands.lock import _proxy_base_url
+
+        monkeypatch.delenv("WORTHLESS_PROXY_HOST", raising=False)
+        url = _proxy_base_url("openai-abc12345")
+        assert "127.0.0.1" in url
+
+    def test_worthless_proxy_host_overrides_hostname(self, monkeypatch):
+        """WORTHLESS_PROXY_HOST=host.docker.internal is written into the URL.
+
+        Without this fix, every ``worthless lock`` run inside a Docker
+        workflow would embed ``127.0.0.1`` — which resolves to the container
+        itself, not the host machine running the proxy.
+        """
+        from worthless.cli.commands.lock import _proxy_base_url
+
+        monkeypatch.setenv("WORTHLESS_PROXY_HOST", "host.docker.internal")
+        url = _proxy_base_url("openai-abc12345")
+        assert "host.docker.internal" in url
+        assert "127.0.0.1" not in url
+
+    def test_url_contains_alias_and_v1(self, monkeypatch):
+        """URL format is ``http://<host>:<port>/<alias>/v1``."""
+        from worthless.cli.commands.lock import _proxy_base_url
+
+        monkeypatch.delenv("WORTHLESS_PROXY_HOST", raising=False)
+        url = _proxy_base_url("openai-deadbeef")
+        assert url.startswith("http://")
+        assert "openai-deadbeef" in url
+        assert url.endswith("/v1")
+
+    def test_url_contains_default_port(self, monkeypatch):
+        """Default port 8787 appears in the generated URL."""
+        from worthless.cli.commands.lock import _proxy_base_url
+
+        monkeypatch.delenv("WORTHLESS_PROXY_HOST", raising=False)
+        monkeypatch.delenv("WORTHLESS_PORT", raising=False)
+        url = _proxy_base_url("openai-cafebabe")
+        assert ":8787/" in url
+
+    def test_worthless_port_env_var_respected(self, monkeypatch):
+        """WORTHLESS_PORT overrides the default 8787 in the generated URL."""
+        from worthless.cli.commands.lock import _proxy_base_url
+
+        monkeypatch.delenv("WORTHLESS_PROXY_HOST", raising=False)
+        monkeypatch.setenv("WORTHLESS_PORT", "9000")
+        url = _proxy_base_url("openai-cafebabe")
+        assert ":9000/" in url
+        assert ":8787" not in url
+
+
+# ---------------------------------------------------------------------------
 # WOR-207 Phase 2: Format-preserving lock + decoy deletion
 # ---------------------------------------------------------------------------
 

@@ -84,8 +84,16 @@ def _make_alias(provider: str, api_key: str) -> str:
 
 
 def _proxy_base_url(alias: str) -> str:
-    """Build the proxy BASE_URL for a given alias."""
-    return f"http://127.0.0.1:{resolve_port(None)}/{alias}/v1"
+    """Build the proxy BASE_URL for a given alias.
+
+    Reads ``WORTHLESS_PROXY_HOST`` from the environment so Docker and LAN
+    deployments can write ``host.docker.internal`` (or any reachable hostname)
+    into openclaw.json instead of the loopback address.
+    """
+    import os as _os
+
+    host = _os.environ.get("WORTHLESS_PROXY_HOST", "127.0.0.1")
+    return f"http://{host}:{resolve_port(None)}/{alias}/v1"
 
 
 def _derive_base_url_var(var_name: str, provider: str) -> str:
