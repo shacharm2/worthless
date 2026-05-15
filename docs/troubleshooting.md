@@ -1,3 +1,8 @@
+---
+title: "Troubleshooting"
+description: "Action-first guide to every worthless doctor check_id — symptoms, commands, and fixes."
+---
+
 # Worthless Troubleshooting
 
 Every `worthless doctor` check has a short, action-first entry here. If
