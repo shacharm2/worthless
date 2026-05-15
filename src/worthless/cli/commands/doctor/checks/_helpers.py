@@ -36,7 +36,7 @@ def load_enrollments(
             status="error",
             findings=[],
             summary=f"Could not read enrollment DB: {type(exc).__name__}",
-            fixable=True,
+            fixable=False,
             fixed=[],
             skipped_reason=None,
         )

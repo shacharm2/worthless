@@ -12,7 +12,7 @@ same data from `worthless doctor --json`.
 
 ## Decision tree
 
-```
+```text
 Are you stuck?
   ├── "unlock says no keys, status says PROTECTED"   → orphan_db
   ├── "Worthless asks me to unlock keychain on another Mac"
