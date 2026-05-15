@@ -29,13 +29,13 @@ from worthless.cli.keystore import (
 )
 from worthless.cli.platform import IS_WINDOWS
 from worthless.ipc.client import IPCClient, IPCError
+from worthless.proxy.config import DEFAULT_SIDECAR_SOCKET_PATH
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE = Path.home() / ".worthless"
 _STALE_LOCK_SECONDS = 300  # 5 minutes
 
-_DEFAULT_SIDECAR_SOCKET = "/run/worthless/sidecar.sock"
 _BOOTSTRAP_ATTEST_PURPOSE = "bootstrap-validate"
 
 
@@ -329,7 +329,7 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
         # file to worthless-crypto:worthless-crypto 0400. WOR-309 hard-fail.
         if fernet_ipc_only_enabled() and not IS_WINDOWS and os.geteuid() != 0:
             socket_path = Path(
-                os.environ.get(WORTHLESS_SIDECAR_SOCKET_ENV, _DEFAULT_SIDECAR_SOCKET)
+                os.environ.get(WORTHLESS_SIDECAR_SOCKET_ENV, DEFAULT_SIDECAR_SOCKET_PATH)
             )
             if socket_path.exists():
                 _validate_via_sidecar(socket_path)
@@ -368,8 +368,6 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
 
 def _init_db(home: WorthlessHome) -> None:
     """Create the SQLite database using the canonical schema and run migrations."""
-    import asyncio
-
     from worthless.storage.schema import SCHEMA, migrate_db
 
     conn = sqlite3.connect(str(home.db_path))

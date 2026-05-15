@@ -25,11 +25,13 @@ Design seams (foreseen extensions, NOT in this PR):
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import typer
 
 from worthless._flags import fernet_ipc_only_enabled
+from worthless.cli.platform import IS_WINDOWS
 from worthless.cli.bootstrap import acquire_lock, get_home
 from worthless.cli.commands.revoke import _revoke_async
 from worthless.cli.console import get_console
@@ -112,7 +114,7 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
     # silently materialise ``home.fernet_key`` and break the proxy-uid
     # invariant. Operators run doctor on bare metal; inside a flag-on
     # proxy container, this command has no use case.
-    if fernet_ipc_only_enabled():
+    if fernet_ipc_only_enabled() and not IS_WINDOWS and os.geteuid() != 0:
         raise WorthlessError(
             ErrorCode.SIDECAR_NOT_READY,
             "`worthless doctor` is not available under WORTHLESS_FERNET_IPC_ONLY=1. "
