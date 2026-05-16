@@ -75,29 +75,54 @@ jobs:
           persist-credentials: false
 
       - name: Show runner platform
+        shell: bash
         run: |
-          uname -a
-          echo "SHELL=${SHELL:-unset}"
-          if [ "$RUNNER_OS" = "macOS" ]; then sw_vers; fi
-          if [ "$RUNNER_OS" = "Linux" ]; then ldd --version | head -1; fi
+          set -euo pipefail
+          mkdir -p install-smoke-traces
+          {
+            uname -a
+            echo "SHELL=${SHELL:-unset}"
+            if [ "$RUNNER_OS" = "macOS" ]; then sw_vers; fi
+            if [ "$RUNNER_OS" = "Linux" ]; then ldd --version | head -1; fi
+          } 2>&1 | tee install-smoke-traces/platform-${{ runner.os }}.log
 
       - name: Run install.sh
         env:
           # Force the same managed-Python path real users get on a fresh box.
           UV_PYTHON_PREFERENCE: only-managed
-        run: sh ./install.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p install-smoke-traces
+          sh ./install.sh 2>&1 | tee install-smoke-traces/install-${{ runner.os }}.log
 
       - name: Verify worthless is installed and runs
+        shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p install-smoke-traces
           # PATH-independent — uv knows where it put the binary.
-          uv run --no-project worthless --version
+          uv run --no-project worthless --version 2>&1 | tee install-smoke-traces/verify-version-${{ runner.os }}.log
           # And via uv tool list (smoke that the tool is registered).
-          uv tool list
+          uv tool list 2>&1 | tee install-smoke-traces/uv-tool-list-${{ runner.os }}.log
 
       - name: Re-run install.sh — must be idempotent (upgrade path)
         env:
           UV_PYTHON_PREFERENCE: only-managed
-        run: sh ./install.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p install-smoke-traces
+          sh ./install.sh 2>&1 | tee install-smoke-traces/reinstall-${{ runner.os }}.log
+
+      - name: Upload live install terminal traces
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: install-smoke-traces-${{ matrix.os }}-${{ github.run_id }}
+          path: install-smoke-traces/**
+          if-no-files-found: ignore
+          retention-days: 14
 
   proxy:
     name: Behind a proxy (squid simulation)
@@ -111,26 +136,55 @@ jobs:
           persist-credentials: false
 
       - name: Start local squid proxy
+        shell: bash
         run: |
-          sudo apt-get update && sudo apt-get install -y squid
-          sudo systemctl start squid
-          # Give squid a beat to bind.
-          for _ in 1 2 3 4 5; do
-            if curl -fsS -x http://localhost:3128 https://astral.sh/ -o /dev/null; then
-              echo "proxy reachable"; break
+          set -euo pipefail
+          mkdir -p install-smoke-traces
+          {
+            sudo apt-get update && sudo apt-get install -y squid
+            sudo systemctl start squid
+            # Give squid a beat to bind.
+            proxy_ready=0
+            for _ in 1 2 3 4 5; do
+              if curl -fsS -x http://localhost:3128 https://astral.sh/ -o /dev/null; then
+                echo "proxy reachable"
+                proxy_ready=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "$proxy_ready" -ne 1 ]; then
+              echo "proxy did not become reachable after retries" >&2
+              exit 1
             fi
-            sleep 2
-          done
+          } 2>&1 | tee install-smoke-traces/proxy-setup.log
 
       - name: Run install.sh through proxy
         env:
           HTTPS_PROXY: http://localhost:3128
           HTTP_PROXY: http://localhost:3128
           UV_PYTHON_PREFERENCE: only-managed
-        run: sh ./install.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p install-smoke-traces
+          sh ./install.sh 2>&1 | tee install-smoke-traces/proxy-install.log
 
       - name: Smoke worthless via proxy install
         env:
           HTTPS_PROXY: http://localhost:3128
           HTTP_PROXY: http://localhost:3128
-        run: uv run --no-project worthless --version
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p install-smoke-traces
+          uv run --no-project worthless --version 2>&1 | tee install-smoke-traces/proxy-verify.log
+
+      - name: Upload proxy install terminal traces
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: install-smoke-traces-proxy-${{ github.run_id }}
+          path: install-smoke-traces/**
+          if-no-files-found: ignore
+          retention-days: 14

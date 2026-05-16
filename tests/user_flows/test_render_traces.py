@@ -49,3 +49,29 @@ def test_teammate_handoff_trace_keeps_distinct_command_homes(
     assert journey.traces[1].home == (
         tmp_path / "teammate-handoff-failure" / "teammate" / ".worthless"
     )
+
+
+def test_install_lifecycle_trace_documents_current_install_contract(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """WOR-441 trace proof must include install, reinstall, and uninstall UX."""
+    monkeypatch.setattr(render_traces, "TRACE_ROOT", tmp_path)
+
+    journey = render_traces.build_install_lifecycle()
+    report = "\n".join(render_traces.render_journey(journey))
+
+    assert len(journey.traces) == 6
+    assert [trace.exit_code for trace in journey.traces] == [0, 0, 0, 30, 10, 0]
+    assert "Install, Reinstall, Manual Uninstall Guidance" in report
+    assert "fresh install" in report.lower()
+    assert "reinstall" in report.lower()
+    assert "Done! 'worthless' is on your PATH." in report
+    assert "Done! 'worthless' works in this shell." in report
+    assert "Heads up: a new terminal won't find 'worthless' yet" in report
+    assert "worthless 0.3.0 already installed" in report
+    assert "pipx uninstall worthless" in report
+    assert "No solution found when resolving dependencies" in report
+    assert "UV_PYTHON_INSTALL_MIRROR" in report
+    assert "uv tool uninstall worthless" in report
+    assert "worthless uninstall" not in report
