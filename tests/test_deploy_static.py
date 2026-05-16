@@ -514,6 +514,21 @@ class TestEntrypoint:
             "must not appear in entrypoint.sh. A4 removes the fallback path entirely."
         )
 
+    def test_ipc_only_zero_warning_present(self, entrypoint_text: str) -> None:
+        """WOR-465 A4: entrypoint warns when WORTHLESS_FERNET_IPC_ONLY=0 is set.
+
+        The flag defaults to 1 in Docker; operators who explicitly set it to 0
+        degrade the isolation boundary. The warning must fire before any Python
+        starts so it appears in logs even if Python crashes at startup.
+        """
+        assert 'WORTHLESS_FERNET_IPC_ONLY:-1}" = "0"' in entrypoint_text, (
+            "WOR-465 A4: entrypoint must check for WORTHLESS_FERNET_IPC_ONLY=0 "
+            "and emit a WARNING before Python starts."
+        )
+        assert "WARNING" in entrypoint_text, (
+            "WOR-465 A4: the =0 check must emit a WARNING line to stderr."
+        )
+
     def test_no_hardcoded_secrets(self, entrypoint_text: str):
         """Entrypoint must not contain hardcoded secrets or keys."""
         # Patterns that would indicate leaked secrets
