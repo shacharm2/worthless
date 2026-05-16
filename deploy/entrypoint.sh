@@ -40,18 +40,18 @@ fi
 
 # Best-effort: seed the OpenClaw config stub on the shared volume so that
 # `worthless lock` can detect openclaw before the openclaw container starts.
-# The Dockerfile pre-creates /data/.openclaw as worthless:worthless 777
-# (Docker initialises the openclaw-config volume from that image path on
-# first mount), so chmod 777 + stub creation succeed on fresh volumes.
-# On restarts where openclaw may have changed dir ownership these ops
-# silently no-op — that is intentional.
-OPENCLAW_DIR="${HOME_DIR}/.openclaw"
-mkdir -p "$OPENCLAW_DIR" 2>/dev/null || true
-chmod 777 "$OPENCLAW_DIR" 2>/dev/null || true
-[ -f "${OPENCLAW_DIR}/openclaw.json" ] || {
-  printf '{}' > "${OPENCLAW_DIR}/openclaw.json" 2>/dev/null || true
-  chmod 666 "${OPENCLAW_DIR}/openclaw.json" 2>/dev/null || true
-}
+# Only runs when WORTHLESS_OPENCLAW_CONFIG_SHARED=1 (all-container Docker
+# setup). In host or single-container deployments the openclaw config dir
+# is the user's ~/.openclaw and must keep its default permissions.
+if [ "${WORTHLESS_OPENCLAW_CONFIG_SHARED:-}" = "1" ]; then
+  OPENCLAW_DIR="${HOME_DIR}/.openclaw"
+  mkdir -p "$OPENCLAW_DIR" 2>/dev/null || true
+  chmod 777 "$OPENCLAW_DIR" 2>/dev/null || true
+  [ -f "${OPENCLAW_DIR}/openclaw.json" ] || {
+    printf '{}' > "${OPENCLAW_DIR}/openclaw.json" 2>/dev/null || true
+    chmod 666 "${OPENCLAW_DIR}/openclaw.json" 2>/dev/null || true
+  }
+fi
 
 # Pass Fernet key via file descriptor (not env var — env is visible in /proc)
 exec 3< "$FERNET_PATH"

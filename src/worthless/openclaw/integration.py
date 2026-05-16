@@ -653,7 +653,8 @@ def apply_lock(
     # created it before openclaw started).  Emit one warn-level event so the
     # operator knows non-worthless config keys (gateway auth etc.) were reset.
     try:
-        _file_readable = os.access(str(config_path), os.R_OK)
+        _file_exists = config_path.exists()
+        _file_readable = (not _file_exists) or os.access(str(config_path), os.R_OK)
     except OSError:
         _file_readable = True  # can't tell — don't emit the advisory
     if not _file_readable:
@@ -679,18 +680,31 @@ def apply_lock(
 
         # F-CFG-13: pre-existing entry pointing somewhere that isn't our
         # proxy is a manual override. Skip + emit conflict event.
+        #
+        # PermissionError from get_provider means the file is foreign-owned
+        # (DV-02/DV-01): we can't detect a conflict, but set_provider reads
+        # with permission_as_missing=True and can still write atomically via
+        # os.replace (dir is 777 in shared-volume setup, or will fail with
+        # WRITE_FAILED if the whole dir is locked). Fall through rather than
+        # skipping — let the write attempt determine the outcome.
+        existing = None
         try:
             existing = _config_mod.get_provider(config_path, provider_name)
         except OpenclawConfigError as exc:
-            events.append(
-                OpenclawIntegrationEvent(
-                    code=OpenclawErrorCode.CONFIG_UNREADABLE,
-                    level="error",
-                    detail=f"could not read {config_path}: {exc}",
+            if isinstance(exc.__cause__, PermissionError):
+                # File unreadable (foreign-owned) — can't check conflict;
+                # fall through to set_provider which handles this case.
+                pass
+            else:
+                events.append(
+                    OpenclawIntegrationEvent(
+                        code=OpenclawErrorCode.CONFIG_UNREADABLE,
+                        level="error",
+                        detail=f"could not read {config_path}: {exc}",
+                    )
                 )
-            )
-            providers_skipped.append((provider_name, "config_unreadable"))
-            continue
+                providers_skipped.append((provider_name, "config_unreadable"))
+                continue
         except OSError as exc:
             events.append(
                 OpenclawIntegrationEvent(

@@ -198,14 +198,36 @@ def test_dv01_notes_contain_actionable_guidance_when_dir_locked(
 # ---------------------------------------------------------------------------
 
 
-def test_dv02_read_config_permission_denied_returns_empty(tmp_path: Path) -> None:
-    """DV-02a: read_config returns {} when the file is unreadable.
+def test_dv02_read_config_strict_raises_on_permission_denied(tmp_path: Path) -> None:
+    """DV-02a: read_config raises OpenclawConfigError in strict mode (default).
 
-    Simulates openclaw's atomic write rewriting openclaw.json as 0600 owned
-    by the node user.  ``read_config`` must treat this as "no existing config"
-    so ``set_provider`` starts from a blank slate and writes fresh entries via
-    atomic replace (which only needs write permission on the *directory*,
-    not the target file).
+    By default, a PermissionError is surfaced so callers like get_provider
+    and unset_provider can distinguish "file absent" from "file unreadable" —
+    the latter is an error, not a no-op.
+    """
+    _needs_nonroot()
+
+    from worthless.openclaw.config import OpenclawConfigError, read_config
+
+    cfg = tmp_path / "openclaw.json"
+    cfg.write_text(
+        json.dumps({"models": {"providers": {"existing": {"baseUrl": "http://x"}}}}),
+        encoding="utf-8",
+    )
+    cfg.chmod(0o000)
+    try:
+        with pytest.raises(OpenclawConfigError, match="could not read"):
+            read_config(cfg)
+    finally:
+        cfg.chmod(0o644)
+
+
+def test_dv02_read_config_permission_as_missing_returns_empty(tmp_path: Path) -> None:
+    """DV-02a-opt: read_config(permission_as_missing=True) returns {} on PermissionError.
+
+    set_provider opts into this mode so it can write fresh entries via atomic
+    replace even when the existing file is foreign-owned (0600 node:node in
+    the Docker shared-volume setup).
     """
     _needs_nonroot()
 
@@ -218,13 +240,13 @@ def test_dv02_read_config_permission_denied_returns_empty(tmp_path: Path) -> Non
     )
     cfg.chmod(0o000)
     try:
-        result = read_config(cfg)
+        result = read_config(cfg, permission_as_missing=True)
     finally:
         cfg.chmod(0o644)
 
     assert result == {}, (
-        "read_config must return {} on PermissionError — "
-        "treating unreadable file as 'no existing config'"
+        "read_config(permission_as_missing=True) must return {} on PermissionError — "
+        "treating unreadable file as 'no existing config' for the atomic write path"
     )
 
 
