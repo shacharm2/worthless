@@ -45,7 +45,8 @@ if sys.platform != "win32":
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
+from dotenv import dotenv_values
+from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home, _DEFAULT_BASE
 from worthless.cli.platform import read_process_env
 from worthless.cli.process import pid_path, read_pid, resolve_port
 from worthless.cli.commands.revoke import _revoke_async
@@ -352,7 +353,7 @@ def _check_home_mismatch(home: WorthlessHome) -> bool:
     pid, _port = pid_result
     env = read_process_env(pid)
     proxy_home_str = env.get("WORTHLESS_HOME")
-    proxy_home = Path(proxy_home_str) if proxy_home_str else Path.home() / ".worthless"
+    proxy_home = Path(proxy_home_str) if proxy_home_str else _DEFAULT_BASE
     if proxy_home.resolve() == home.base_dir.resolve():
         return False
     typer.echo(f"WARNING: {HOME_MISMATCH_PHRASE}")
@@ -363,60 +364,52 @@ def _check_home_mismatch(home: WorthlessHome) -> bool:
 
 
 def _check_alias_not_in_db(repo: ShardRepository, home: WorthlessHome) -> bool:
-    """Check for BASE_URL proxy aliases in .env files missing from current DB.
+    """Inverse of the orphan check: finds .env BASE_URLs pointing at aliases the DB doesn't know.
 
-    Scans all env_paths referenced in existing enrollments plus CWD's .env.
-    Prints issues and returns True when any are found. Returns False and stays
-    silent when all clear — same contract as _check_openclaw_section.
-
-    Inverse of the orphan check: orphan = DB row without .env line;
-    alias-not-in-DB = .env BASE_URL pointing at an alias the DB doesn't know.
+    Same contract as _check_openclaw_section: prints and returns True when issues found.
     """
     try:
         enrollments = asyncio.run(repo.list_enrollments())
     except Exception:
+        logger.debug("_check_alias_not_in_db: failed to read enrollments", exc_info=True)
         return False
 
-    known_aliases = {e.key_alias for e in enrollments}
-
-    env_paths: set[str] = set()
+    known_aliases: set[str] = set()
+    env_paths: set[Path] = set()
     for e in enrollments:
+        known_aliases.add(e.key_alias)
         if e.env_path:
-            env_paths.add(e.env_path)
+            env_paths.add(Path(e.env_path))
     cwd_env = Path.cwd() / ".env"
     if cwd_env.is_file():
-        env_paths.add(str(cwd_env))
+        env_paths.add(cwd_env)
 
     issues = _collect_alias_issues(env_paths, known_aliases, home)
     if not issues:
         return False
 
-    console = get_console()
-    console.print_warning(f"{len(issues)} .env BASE_URL alias(es) missing from DB:")
+    typer.echo(f"WARNING: {len(issues)} .env BASE_URL alias(es) missing from DB:")
     for issue in issues:
         typer.echo(f"  • {issue}")
     return True
 
 
 def _collect_alias_issues(
-    env_paths: set[str], known_aliases: set[str], home: WorthlessHome
+    env_paths: set[Path], known_aliases: set[str], home: WorthlessHome
 ) -> list[str]:
-    """Scan env_paths for BASE_URL lines referencing proxy aliases absent from DB."""
+    """Scan env_paths for BASE_URL values referencing proxy aliases absent from DB."""
     issues: list[str] = []
     seen: set[str] = set()
-    for path_str in env_paths:
-        env_file = Path(path_str)
+    for env_file in env_paths:
         if not env_file.is_file():
             continue
         try:
-            content = env_file.read_text(encoding="utf-8", errors="replace")
+            parsed = dotenv_values(env_file)
         except OSError:
             continue
-        for line in content.splitlines():
-            if "_BASE_URL" not in line or "=" not in line:
+        for key, value in parsed.items():
+            if not key.endswith("_BASE_URL") or not value:
                 continue
-            _, _, value = line.partition("=")
-            value = value.strip().strip('"').strip("'")
             m = _PROXY_ALIAS_URL_RE.search(value)
             if m is None:
                 continue
@@ -671,13 +664,15 @@ def _doctor_apply(
 def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
     """Diagnose and (optionally) repair stuck states.
 
-    Four checks, run in order:
+    Six checks, run in order:
       1. Recovery file imports (sibling-Mac coming online with files copied across)
       2. Orphan DB rows (HF7)
       3. OpenClaw integration drift (WOR-431)
-      4. iCloud-synced keychain entries (WOR-456)
+      4. Home mismatch (proxy running with a different WORTHLESS_HOME than this shell)
+      5. iCloud-synced keychain entries (WOR-456)
+      6. Alias-not-in-DB (.env BASE_URL points at a proxy alias the current DB doesn't know)
 
-    A clean state on all four reports ``No issues found.`` and exits 0.
+    A clean state on all six reports ``No issues found.`` and exits 0.
     """
     console = get_console()
     home = get_home()
