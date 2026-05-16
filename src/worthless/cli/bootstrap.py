@@ -309,17 +309,10 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
             home.base_dir.chmod(0o700)
             home.shard_a_dir.chmod(0o700)
 
-        # WOR-465 A3b / A4: on Linux/WSL non-root, bypass the keystore cascade
-        # and attest via IPC instead (the proxy uid cannot open fernet.key).
-        # Three exemptions where we fall through to the normal keystore path:
-        #   - Windows: no Docker container, no sidecar — always use keystore.
-        #   - WSL: IS_WINDOWS=False (real Linux kernel), os.geteuid() works.
-        #   - euid 0: root is trusted and reads the key directly — covers
-        #     entrypoint first-boot bootstrap, start.py pre-priv-drop, and
-        #     operator ``docker exec`` commands (default user = root).
-        # Threat model: protects proxy uid 10001. Root = container escape =
-        # documented out-of-scope. Failure mode for the proxy path is hard
-        # SIDECAR_NOT_READY — never a silent fallback.
+        # WOR-465 A3b / A4: under the proxy uid, bypass the keystore cascade
+        # and attest via IPC — fernet.key is unreadable. See ipc_mode_active()
+        # for the predicate; failure mode is hard SIDECAR_NOT_READY, never a
+        # silent fallback.
         #
         # Socket-existence guard: entrypoint.sh calls get_home() before
         # start.py spawns the sidecar, so the socket does not yet exist on
@@ -410,6 +403,17 @@ def _init_db(home: WorthlessHome) -> None:
     except RuntimeError:
         # No running loop — safe to use asyncio.run()
         asyncio.run(migrate_db(str(home.db_path)))
+        # aiosqlite starts a daemon thread per connection and signals it to
+        # stop before close() returns, but never calls thread.join().  The
+        # thread breaks out of its loop and calls _delete() a few
+        # microseconds after the future resolves — which is after
+        # asyncio.run() returns.  deploy/start.py checks threading.active_count()
+        # immediately after ensure_home(); join here to guarantee the aiosqlite
+        # thread has fully exited before we return (WRTLS-114).
+        _main = threading.main_thread()
+        for _t in list(threading.enumerate()):
+            if _t is not _main:
+                _t.join(timeout=2.0)
 
     # Restrict DB file permissions (no-op on Windows — NTFS ACLs are different)
     if not IS_WINDOWS:
