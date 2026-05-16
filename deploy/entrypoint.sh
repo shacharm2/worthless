@@ -16,12 +16,18 @@ set -e
 # any python executes so even bootstrap errors can't dump.
 ulimit -c 0 || true
 
-# WOR-465 A4: warn operators who explicitly disable the isolation boundary.
-# WORTHLESS_FERNET_IPC_ONLY defaults to 1 in the Docker image; setting it to 0
-# makes fernet.key readable by the proxy uid — do not do this in production.
+# WOR-465 A4: the IPC-only topology is permanent — fernet.key is locked to
+# worthless-crypto:worthless-crypto 0400 unconditionally.  An explicit =0
+# override would cause the proxy uid to attempt a direct file read that the
+# kernel will reject with EACCES.  Fail closed immediately rather than letting
+# the container start in a half-broken state.
 if [ "${WORTHLESS_FERNET_IPC_ONLY:-1}" = "0" ]; then
-  echo "WARNING: WORTHLESS_FERNET_IPC_ONLY=0 — Fernet key isolation is disabled." >&2
-  echo "         The proxy uid can read fernet.key directly. Do not use in production." >&2
+  echo "FATAL: WORTHLESS_FERNET_IPC_ONLY=0 is no longer supported." >&2
+  echo "  fernet.key is unconditionally locked to worthless-crypto:worthless-crypto 0400." >&2
+  echo "  The proxy uid cannot read it directly — setting =0 would break the container." >&2
+  echo "  Remove the WORTHLESS_FERNET_IPC_ONLY=0 override from your environment." >&2
+  echo "  For bare-metal installs (no sidecar), use install.sh, not Docker." >&2
+  exit 78
 fi
 
 HOME_DIR="${WORTHLESS_HOME:-/data}"

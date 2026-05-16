@@ -328,7 +328,20 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
                 _validate_via_sidecar(socket_path)
                 _init_db(home)
                 return home
-            # Socket absent → fall through to key generation below.
+            if home.bootstrapped_marker.exists():
+                # Post-bootstrap: sidecar should be running — missing socket means it
+                # crashed. Fail hard rather than falling through to key generation,
+                # which would silently attempt to read a fernet.key the proxy uid
+                # cannot access (locked 0400 worthless-crypto by entrypoint.sh).
+                raise WorthlessError(
+                    ErrorCode.SIDECAR_NOT_READY,
+                    f"Sidecar socket not found at {socket_path}. "
+                    "The sidecar has stopped or crashed. "
+                    "Run: docker exec --user root <container> worthless doctor",
+                )
+            # First boot: entrypoint.sh calls ensure_home() before start.py spawns
+            # the sidecar, so the socket does not yet exist.  Fall through to key
+            # generation below (as root, before priv-drop).
 
         _provision_keystore_path(home)
     except WorthlessError:
