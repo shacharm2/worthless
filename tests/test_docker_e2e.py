@@ -452,24 +452,27 @@ class TestBootstrap:
         assert "shards" in result.stdout
 
     def test_fernet_key_permissions(self, container: tuple[str, int]) -> None:
-        """fernet.key is root:worthless 0440 inside the Docker image.
+        """fernet.key is worthless-crypto:worthless-crypto 0400 inside Docker.
 
-        Mode 0440 (not 0400) so the worthless group can read: both
-        proxy uid (bootstrap-validation) and crypto uid (sidecar
-        reconstruct) need read access.  Owner is root so neither
-        service uid can unlink/replace the key — addresses CR-3204010079.
+        WOR-465 A4: unconditional lockdown — the sidecar (worthless-crypto)
+        owns the key exclusively. Mode 0400 (owner-only) means the proxy uid
+        (10001 = worthless-proxy) cannot open() the file even with group
+        membership; only the sidecar uid (10002 = worthless-crypto) can read
+        it. Owner is worthless-crypto (not root) so chown is load-bearing: the
+        entrypoint fail-closed stat check exits 78 if a host bind-mount
+        silently swallows the chown (e.g. macOS Docker Desktop, WSL /mnt/c).
 
-        Bare-metal install.sh still uses 0400 single-uid (no group
-        wall there); that's tested in tests/test_bootstrap.py and
-        tests/test_cli_security_hardening.py.
+        Bare-metal install.sh still uses 0400 single-uid (no group wall);
+        tested in tests/test_bootstrap.py and test_cli_security_hardening.py.
         """
         name, _ = container
         # GNU coreutils stat inside Debian slim
         result = docker_exec(name, ["stat", "-c", "%a %U:%G", "/data/fernet.key"])
         assert result.returncode == 0
-        assert result.stdout.strip() == "440 root:worthless", (
-            f"WOR-310: fernet.key should be root:worthless 0440 in Docker, "
-            f"got {result.stdout.strip()!r}"
+        assert result.stdout.strip() == "400 worthless-crypto:worthless-crypto", (
+            f"WOR-465 A4: fernet.key must be worthless-crypto:worthless-crypto 0400 "
+            f"in Docker (unconditional — no operator flag required). "
+            f"Got {result.stdout.strip()!r}."
         )
 
 

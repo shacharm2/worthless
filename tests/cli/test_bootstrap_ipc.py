@@ -88,8 +88,14 @@ def flag_on(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def fake_socket_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A non-binding sidecar socket path the test can point ensure_home at."""
+    """A non-binding sidecar socket path the test can point ensure_home at.
+
+    The file is touched so ``socket_path.exists()`` returns True — simulating
+    a running sidecar. WOR-465 A4: ensure_home skips validation when the
+    socket is absent (first-boot bootstrap before start.py spawns the sidecar).
+    """
     sock = tmp_path / "sidecar.sock"
+    sock.touch()  # exists() → True → validation fires (happy-path tests)
     monkeypatch.setenv("WORTHLESS_SIDECAR_SOCKET", str(sock))
     return sock
 
@@ -342,6 +348,80 @@ def test_ensure_home_with_flag_socket_is_regular_file_raises_cleanly(
         ensure_home(base_dir=base)
 
     assert excinfo.value.code is ErrorCode.SIDECAR_NOT_READY
+
+
+def test_ensure_home_post_bootstrap_missing_socket_raises_sidecar_not_ready(
+    flag_on: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag on + .bootstrapped marker present + socket absent → SIDECAR_NOT_READY.
+
+    After the first successful boot the sidecar should always be running.
+    A missing socket means it crashed — fail hard with a useful error instead
+    of falling through to key generation (which would attempt a direct read of
+    a fernet.key the proxy uid cannot access).
+
+    Contrast with the first-boot test below: no marker → falls through.
+    This is the post-boot regression direction for the Thread 2 fix.
+    """
+    absent_sock = tmp_path / "nonexistent-sidecar.sock"
+    assert not absent_sock.exists(), "precondition: socket must be absent"
+    monkeypatch.setenv("WORTHLESS_SIDECAR_SOCKET", str(absent_sock))
+
+    base = tmp_path / ".worthless"
+    base.mkdir(mode=0o700)
+    (base / ".bootstrapped").touch(mode=0o600)  # simulate post-bootstrap state
+
+    with patch("worthless.cli.bootstrap.IPCClient") as mock_ipc:
+        with pytest.raises(WorthlessError) as excinfo:
+            ensure_home(base_dir=base)
+
+    assert excinfo.value.code is ErrorCode.SIDECAR_NOT_READY, (
+        f"post-bootstrap missing socket must raise SIDECAR_NOT_READY, got {excinfo.value.code!r}"
+    )
+    mock_ipc.assert_not_called(), "IPCClient must not be instantiated when socket is absent"
+
+
+def test_ensure_home_with_flag_no_socket_skips_validation_on_first_boot(
+    flag_on: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WOR-465 A4: when the sidecar socket does not exist, ensure_home MUST
+    skip IPC validation and succeed.
+
+    Rationale: entrypoint.sh calls ``get_home()`` on first boot BEFORE
+    ``start.py`` spawns the sidecar, so the socket is absent at that point.
+    Failing here would make every fresh container unbootstrappable. The proxy
+    hard-fails without a live sidecar (WOR-309), so the security claim is
+    preserved — attestation is just deferred to the first CLI invocation after
+    the sidecar is running.
+
+    Regression direction: this test goes RED if someone reverts the
+    ``socket_path.exists()`` guard back to an unconditional
+    ``_validate_via_sidecar()`` call.
+    """
+    absent_sock = tmp_path / "nonexistent-sidecar.sock"
+    assert not absent_sock.exists(), "precondition: socket must be absent"
+    monkeypatch.setenv("WORTHLESS_SIDECAR_SOCKET", str(absent_sock))
+
+    base = tmp_path / ".worthless"
+
+    instantiated: list[None] = []
+
+    def _no_ipc(*_args, **_kwargs) -> None:
+        instantiated.append(None)
+        raise AssertionError(
+            "IPCClient MUST NOT be instantiated when the sidecar socket is absent "
+            "(first-boot bootstrap before start.py spawns the sidecar)."
+        )
+
+    with patch("worthless.cli.bootstrap.IPCClient", side_effect=_no_ipc):
+        home = ensure_home(base_dir=base)
+
+    assert instantiated == [], "no IPCClient call expected when socket is absent"
+    assert home is not None, "ensure_home must return a home object even without the sidecar"
 
 
 def test_validate_via_sidecar_with_embedded_null_path_raises_cleanly(

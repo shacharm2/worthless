@@ -18,7 +18,7 @@ from pathlib import Path
 from worthless._async import run_sync
 from worthless._flags import (
     WORTHLESS_SIDECAR_SOCKET_ENV,
-    fernet_ipc_only_enabled,
+    ipc_mode_active,
 )
 from worthless.cli.errors import ErrorCode, WorthlessError, sanitize_exception
 from worthless.cli.keystore import (
@@ -29,19 +29,19 @@ from worthless.cli.keystore import (
 )
 from worthless.cli.platform import IS_WINDOWS
 from worthless.ipc.client import IPCClient, IPCError
+from worthless.proxy.config import DEFAULT_SIDECAR_SOCKET_PATH
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE = Path.home() / ".worthless"
 _STALE_LOCK_SECONDS = 300  # 5 minutes
 
-_DEFAULT_SIDECAR_SOCKET = "/run/worthless/sidecar.sock"
 _BOOTSTRAP_ATTEST_PURPOSE = "bootstrap-validate"
 
 
 def _validate_via_sidecar(socket_path: Path) -> None:
-    """Round-trip an ``attest`` call to confirm the sidecar is alive AND
-    holds a real key. Raises :class:`WorthlessError(SIDECAR_NOT_READY)` on
+    """Round-trip an ``attest`` call to confirm a sidecar is running and
+    returns structurally valid evidence. Raises :class:`WorthlessError(SIDECAR_NOT_READY)` on
     any failure — never falls back to reading ``home.fernet_key``.
 
     Structural validation (bytes type, exact HMAC-SHA256 length) is the
@@ -69,7 +69,7 @@ def _validate_via_sidecar(socket_path: Path) -> None:
         evidence = run_sync(_go())
     except IPCError as exc:
         raise _fail(
-            "Sidecar is not reachable for bootstrap attestation. "
+            f"Sidecar is not reachable for bootstrap attestation ({socket_path}). "
             "Start the sidecar before invoking the CLI inside the proxy "
             "container, or unset WORTHLESS_FERNET_IPC_ONLY for bare-metal use.",
             exc,
@@ -309,18 +309,39 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
             home.base_dir.chmod(0o700)
             home.shard_a_dir.chmod(0o700)
 
-        # WOR-465 A3b: flag-on path bypasses the keystore cascade entirely.
-        # The proxy container's worthless-proxy uid CANNOT read fernet.key;
-        # bootstrap proves key-presence via the sidecar's attestation
-        # instead. Failure mode is hard SIDECAR_NOT_READY — never a silent
-        # fallback that would defeat the flag.
-        if fernet_ipc_only_enabled():
+        # WOR-465 A3b / A4: under the proxy uid, bypass the keystore cascade
+        # and attest via IPC — fernet.key is unreadable. See ipc_mode_active()
+        # for the predicate; failure mode is hard SIDECAR_NOT_READY, never a
+        # silent fallback.
+        #
+        # Socket-existence guard: entrypoint.sh calls get_home() before
+        # start.py spawns the sidecar, so the socket does not yet exist on
+        # first boot. When absent, fall through to _provision_keystore_path so
+        # the key is generated as root; start.py reads it (also as root, before
+        # priv-drop) to split_to_tmpfs. The entrypoint chmod then locks the
+        # file to worthless-crypto:worthless-crypto 0400. WOR-309 hard-fail.
+        if ipc_mode_active():
             socket_path = Path(
-                os.environ.get(WORTHLESS_SIDECAR_SOCKET_ENV, _DEFAULT_SIDECAR_SOCKET)
+                os.environ.get(WORTHLESS_SIDECAR_SOCKET_ENV, DEFAULT_SIDECAR_SOCKET_PATH)
             )
-            _validate_via_sidecar(socket_path)
-            _init_db(home)
-            return home
+            if socket_path.exists():
+                _validate_via_sidecar(socket_path)
+                _init_db(home)
+                return home
+            if home.bootstrapped_marker.exists():
+                # Post-bootstrap: sidecar should be running — missing socket means it
+                # crashed. Fail hard rather than falling through to key generation,
+                # which would silently attempt to read a fernet.key the proxy uid
+                # cannot access (locked 0400 worthless-crypto by entrypoint.sh).
+                raise WorthlessError(
+                    ErrorCode.SIDECAR_NOT_READY,
+                    f"Sidecar socket not found at {socket_path}. "
+                    "The sidecar has stopped or crashed. "
+                    "Run: docker exec --user root <container> worthless doctor",
+                )
+            # First boot: entrypoint.sh calls ensure_home() before start.py spawns
+            # the sidecar, so the socket does not yet exist.  Fall through to key
+            # generation below (as root, before priv-drop).
 
         _provision_keystore_path(home)
     except WorthlessError:
@@ -353,8 +374,6 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
 
 def _init_db(home: WorthlessHome) -> None:
     """Create the SQLite database using the canonical schema and run migrations."""
-    import asyncio
-
     from worthless.storage.schema import SCHEMA, migrate_db
 
     conn = sqlite3.connect(str(home.db_path))
@@ -397,6 +416,17 @@ def _init_db(home: WorthlessHome) -> None:
     except RuntimeError:
         # No running loop — safe to use asyncio.run()
         asyncio.run(migrate_db(str(home.db_path)))
+        # aiosqlite starts a daemon thread per connection and signals it to
+        # stop before close() returns, but never calls thread.join().  The
+        # thread breaks out of its loop and calls _delete() a few
+        # microseconds after the future resolves — which is after
+        # asyncio.run() returns.  deploy/start.py checks threading.active_count()
+        # immediately after ensure_home(); join here to guarantee the aiosqlite
+        # thread has fully exited before we return (WRTLS-114).
+        _main = threading.main_thread()
+        for _t in list(threading.enumerate()):
+            if _t is not _main:
+                _t.join(timeout=2.0)
 
     # Restrict DB file permissions (no-op on Windows — NTFS ACLs are different)
     if not IS_WINDOWS:
