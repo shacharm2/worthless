@@ -54,8 +54,9 @@ Run the Worthless proxy and OpenClaw in the same Docker network — no worthless
 **1. Start the stack**
 
 ```bash
-# Clone the repo and enter the deploy directory
-git clone https://github.com/shacharm2/worthless.git && cd worthless/deploy
+# Download the compose file and env template
+curl -sSL https://raw.githubusercontent.com/shacharm2/worthless/main/deploy/docker-compose.yml -o docker-compose.yml
+curl -sSL https://raw.githubusercontent.com/shacharm2/worthless/main/deploy/docker-compose.env.example -o docker-compose.env
 docker compose --profile openclaw up -d
 ```
 
