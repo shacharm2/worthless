@@ -174,7 +174,14 @@ function main() {
     process.exit(1);
   });
 
-  proc.on('close', (code) => process.exit(code ?? 0));
+  proc.on('close', (code, signal) => {
+    if (signal) {
+      // uvx exited via signal — re-raise so the parent shell sees the correct exit reason.
+      process.kill(process.pid, signal);
+    } else {
+      process.exit(code ?? 0);
+    }
+  });
 }
 
 main();
