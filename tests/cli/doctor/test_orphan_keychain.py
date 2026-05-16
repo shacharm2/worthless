@@ -81,9 +81,19 @@ def test_fix_deletes_only_non_allowlisted(ctx, fake_home, monkeypatch) -> None:
     assert result["status"] == "ok"  # all orphans repaired
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="orphan_keychain darwin-only")
 def test_findings_are_well_formed(ctx, monkeypatch) -> None:
-    """Each finding has the documented keys (snake_case)."""
-    monkeypatch.setattr(orphan_keychain.sys, "platform", "linux")
-    result = orphan_keychain.run(ctx)
+    """Each finding dict contains the documented keychain_account key."""
+    monkeypatch.setattr(orphan_keychain, "keyring_available", lambda: True)
+    orphan = "fernet-key-deadbeef1234"
+    fake_keystore = MagicMock()
+    fake_keystore.find_all_entries.return_value = [orphan]
+    fake_keystore.KeychainNotFound = type("KeychainNotFound", (Exception,), {})
+
+    with patch("worthless.cli.keystore_macos", fake_keystore):
+        result = orphan_keychain.run(ctx)
+
+    assert result["findings"], "expected at least one finding"
     for f in result["findings"]:
         assert isinstance(f, dict)
+        assert "keychain_account" in f

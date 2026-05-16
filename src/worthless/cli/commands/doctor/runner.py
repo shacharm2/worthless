@@ -60,7 +60,7 @@ def _doctor_run_json(*, fix: bool, dry_run: bool) -> None:
     does not fire in JSON mode (no migration is performed in --json).
     """
     home = get_home()
-    fernet_key = bytes(read_fernet_key(home.base_dir))
+    fernet_key = bytearray(read_fernet_key(home.base_dir))  # SR-01: mutable for zeroing
     repo = ShardRepository(str(home.db_path), fernet_key)
 
     with acquire_lock(home):
