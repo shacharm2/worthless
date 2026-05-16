@@ -26,6 +26,12 @@ services:
     networks:
       - frontend
       - openclaw-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8787/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -47,18 +53,7 @@ services:
         max-file: "3"
 
   # OpenClaw Gateway — opt-in via: docker compose --profile openclaw up
-  #
-  # After first `docker compose --profile openclaw up -d`, enroll your key and
-  # wire openclaw in one step:
-  #
-  #   printf '%s' "$YOUR_API_KEY" | docker compose exec -T proxy \
-  #     worthless enroll --alias openai --key-stdin --provider openai
-  #   docker compose exec proxy worthless lock
-  #   docker compose restart openclaw
-  #
-  # worthless lock writes openclaw.json (with the Docker-internal baseUrl
-  # `http://proxy:8787`) into the shared openclaw-config volume. openclaw
-  # picks it up on restart and routes all API calls through the proxy.
+  # Full setup steps: see website/install-openclaw.md § All-container setup
   openclaw:
     image: ghcr.io/openclaw/openclaw:2026.5.3-1@sha256:142f70fa2751bdedf03648ae427372fff3f92ac0e96ab91abb3824b088c38b7b
     profiles:
