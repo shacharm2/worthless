@@ -46,7 +46,8 @@ if sys.platform != "win32":
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
-from worthless.cli.process import resolve_port
+from worthless.cli.platform import read_process_env
+from worthless.cli.process import pid_path, read_pid, resolve_port
 from worthless.cli.commands.revoke import _revoke_async
 from worthless.cli.console import WorthlessConsole, get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
@@ -73,6 +74,9 @@ logger = logging.getLogger(__name__)
 ICLOUD_LEAK_PHRASE = "stored in iCloud Keychain"
 ICLOUD_FIX_PHRASE = "worthless doctor --fix"
 RECOVERY_IMPORT_PHRASE = "Recovered"
+HOME_MISMATCH_PHRASE = "home mismatch"
+ALIAS_NOT_IN_DB_PHRASE = "has no shard in the current DB"
+_PROXY_ALIAS_URL_RE = re.compile(r"https?://[^/]+/([a-zA-Z0-9_-]+)/v1\b")
 
 # Multi-device safety warning shown in the --fix consent prompt. Verbatim
 # substrings are AND-bound by tests so future copy-paste cleanups don't
@@ -338,6 +342,93 @@ def _list_recovery_files(home: WorthlessHome) -> list[Path]:
     if not home.recovery_dir.exists():
         return []
     return sorted(home.recovery_dir.glob("*.recover"))
+
+
+def _check_home_mismatch(home: WorthlessHome) -> bool:
+    """Check if the running proxy uses a different home. Prints and returns True on mismatch."""
+    pid_result = read_pid(pid_path(home))
+    if pid_result is None:
+        return False
+    pid, _port = pid_result
+    env = read_process_env(pid)
+    proxy_home_str = env.get("WORTHLESS_HOME")
+    proxy_home = Path(proxy_home_str) if proxy_home_str else Path.home() / ".worthless"
+    if proxy_home.resolve() == home.base_dir.resolve():
+        return False
+    typer.echo(f"WARNING: {HOME_MISMATCH_PHRASE}")
+    typer.echo(f"  proxy is using: {proxy_home / 'worthless.db'}")
+    typer.echo(f"  this shell sees: {home.base_dir / 'worthless.db'}")
+    typer.echo("  Fix: unset WORTHLESS_HOME, then restart the proxy.")
+    return True
+
+
+def _check_alias_not_in_db(repo: ShardRepository, home: WorthlessHome) -> bool:
+    """Check for BASE_URL proxy aliases in .env files missing from current DB.
+
+    Scans all env_paths referenced in existing enrollments plus CWD's .env.
+    Prints issues and returns True when any are found. Returns False and stays
+    silent when all clear — same contract as _check_openclaw_section.
+
+    Inverse of the orphan check: orphan = DB row without .env line;
+    alias-not-in-DB = .env BASE_URL pointing at an alias the DB doesn't know.
+    """
+    try:
+        enrollments = asyncio.run(repo.list_enrollments())
+    except Exception:
+        return False
+
+    known_aliases = {e.key_alias for e in enrollments}
+
+    env_paths: set[str] = set()
+    for e in enrollments:
+        if e.env_path:
+            env_paths.add(e.env_path)
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.is_file():
+        env_paths.add(str(cwd_env))
+
+    issues = _collect_alias_issues(env_paths, known_aliases, home)
+    if not issues:
+        return False
+
+    console = get_console()
+    console.print_warning(f"{len(issues)} .env BASE_URL alias(es) missing from DB:")
+    for issue in issues:
+        typer.echo(f"  • {issue}")
+    return True
+
+
+def _collect_alias_issues(
+    env_paths: set[str], known_aliases: set[str], home: WorthlessHome
+) -> list[str]:
+    """Scan env_paths for BASE_URL lines referencing proxy aliases absent from DB."""
+    issues: list[str] = []
+    seen: set[str] = set()
+    for path_str in env_paths:
+        env_file = Path(path_str)
+        if not env_file.is_file():
+            continue
+        try:
+            content = env_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in content.splitlines():
+            if "_BASE_URL" not in line or "=" not in line:
+                continue
+            _, _, value = line.partition("=")
+            value = value.strip().strip('"').strip("'")
+            m = _PROXY_ALIAS_URL_RE.search(value)
+            if m is None:
+                continue
+            alias = m.group(1)
+            if alias in seen or alias in known_aliases:
+                continue
+            seen.add(alias)
+            issues.append(
+                f"alias '{alias}' is set in {env_file.name} BASE_URL "
+                f"but {ALIAS_NOT_IN_DB_PHRASE} ({home.db_path.name})"
+            )
+    return issues
 
 
 def _import_recovery_files(files: list[Path]) -> int:
@@ -608,10 +699,22 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
         orphans = asyncio.run(_list_orphans(repo))
         openclaw_issues = _check_openclaw_section(repo, fix=fix, dry_run=dry_run)
 
+        # ----------- check 3: home mismatch -----------
+        had_mismatch = _check_home_mismatch(home)
+
         # ----------- check 4: iCloud-synced keychain entries -----------
         synced = _list_synced_keychain_entries()
 
-        if not orphans and not openclaw_issues and not synced:
+        # ----------- check 5: alias-not-in-DB -----------
+        had_alias_issues = _check_alias_not_in_db(repo, home)
+
+        if (
+            not orphans
+            and not openclaw_issues
+            and not synced
+            and not had_mismatch
+            and not had_alias_issues
+        ):
             if not imported:
                 console.print_success("No issues found.")
             return

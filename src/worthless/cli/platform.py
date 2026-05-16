@@ -59,6 +59,14 @@ def check_pid_alive(pid: int) -> bool:
     return psutil.pid_exists(pid)
 
 
+def read_process_env(pid: int) -> dict[str, str]:
+    """Return the live environment dict of *pid*, or {} on any error."""
+    try:
+        return psutil.Process(pid).environ()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return {}
+
+
 def pid_in_tree(root_pid: int, candidate_pid: int) -> bool:
     """Return True if *candidate_pid* is *root_pid* or one of its descendants.
 
