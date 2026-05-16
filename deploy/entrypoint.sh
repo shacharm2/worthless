@@ -22,9 +22,9 @@ ulimit -c 0 || true
 # kernel will reject with EACCES.  Fail closed immediately rather than letting
 # the container start in a half-broken state.
 if [ "${WORTHLESS_FERNET_IPC_ONLY:-1}" = "0" ]; then
-  echo "FATAL: WORTHLESS_FERNET_IPC_ONLY=0 is no longer supported." >&2
-  echo "  fernet.key is unconditionally locked to worthless-crypto:worthless-crypto 0400." >&2
-  echo "  The proxy uid cannot read it directly — setting =0 would break the container." >&2
+  echo "FATAL: WORTHLESS_FERNET_IPC_ONLY=0 is not valid in this image." >&2
+  echo "  fernet.key is locked to worthless-crypto:worthless-crypto 0400 unconditionally." >&2
+  echo "  The proxy uid cannot read it directly — =0 would break the container." >&2
   echo "  Remove the WORTHLESS_FERNET_IPC_ONLY=0 override from your environment." >&2
   echo "  For bare-metal installs (no sidecar), use install.sh, not Docker." >&2
   exit 78

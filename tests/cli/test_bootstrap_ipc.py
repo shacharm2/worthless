@@ -350,6 +350,39 @@ def test_ensure_home_with_flag_socket_is_regular_file_raises_cleanly(
     assert excinfo.value.code is ErrorCode.SIDECAR_NOT_READY
 
 
+def test_ensure_home_post_bootstrap_missing_socket_raises_sidecar_not_ready(
+    flag_on: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag on + .bootstrapped marker present + socket absent → SIDECAR_NOT_READY.
+
+    After the first successful boot the sidecar should always be running.
+    A missing socket means it crashed — fail hard with a useful error instead
+    of falling through to key generation (which would attempt a direct read of
+    a fernet.key the proxy uid cannot access).
+
+    Contrast with the first-boot test below: no marker → falls through.
+    This is the post-boot regression direction for the Thread 2 fix.
+    """
+    absent_sock = tmp_path / "nonexistent-sidecar.sock"
+    assert not absent_sock.exists(), "precondition: socket must be absent"
+    monkeypatch.setenv("WORTHLESS_SIDECAR_SOCKET", str(absent_sock))
+
+    base = tmp_path / ".worthless"
+    base.mkdir(mode=0o700)
+    (base / ".bootstrapped").touch(mode=0o600)  # simulate post-bootstrap state
+
+    with patch("worthless.cli.bootstrap.IPCClient") as mock_ipc:
+        with pytest.raises(WorthlessError) as excinfo:
+            ensure_home(base_dir=base)
+
+    assert excinfo.value.code is ErrorCode.SIDECAR_NOT_READY, (
+        f"post-bootstrap missing socket must raise SIDECAR_NOT_READY, got {excinfo.value.code!r}"
+    )
+    mock_ipc.assert_not_called(), "IPCClient must not be instantiated when socket is absent"
+
+
 def test_ensure_home_with_flag_no_socket_skips_validation_on_first_boot(
     flag_on: None,
     tmp_path: Path,
