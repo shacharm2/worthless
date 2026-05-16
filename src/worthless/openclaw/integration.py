@@ -537,7 +537,6 @@ def _is_proxy_url(url: str, proxy_base_url: str) -> bool:
 
 
 def _get_provider_for_lock(
-    config_mod: object,
     config_path: Path,
     provider_name: str,
 ) -> tuple[dict | None, Exception | None]:
@@ -550,7 +549,7 @@ def _get_provider_for_lock(
     ``permission_as_missing=True`` and the atomic-replace path.
     """
     try:
-        return config_mod.get_provider(config_path, provider_name), None
+        return _config_mod.get_provider(config_path, provider_name), None
     except OpenclawConfigError as exc:
         if isinstance(exc.__cause__, PermissionError):
             # File unreadable — can't detect conflicts, but set_provider can
@@ -707,7 +706,7 @@ def apply_lock(
         # proxy is a manual override. Skip + emit conflict event.
         # PermissionError is handled transparently by _get_provider_for_lock —
         # see its docstring for the DV-01/DV-02 fall-through rationale.
-        existing, read_err = _get_provider_for_lock(_config_mod, config_path, provider_name)
+        existing, read_err = _get_provider_for_lock(config_path, provider_name)
         if read_err is not None:
             events.append(
                 OpenclawIntegrationEvent(
