@@ -536,6 +536,31 @@ def _is_proxy_url(url: str, proxy_base_url: str) -> bool:
     return re.match(rf"^https?://[^/]*:{port}/", url) is not None
 
 
+def _get_provider_for_lock(
+    config_mod: object,
+    config_path: Path,
+    provider_name: str,
+) -> tuple[dict | None, Exception | None]:
+    """Return ``(existing_entry_or_None, skip_error_or_None)``.
+
+    ``skip_error`` is non-None when the caller must skip the provider (corrupt
+    config, raw OSError).  ``None`` means either the entry was read cleanly or
+    the file is unreadable due to a ``PermissionError`` (foreign-owned in the
+    Docker shared-volume setup) — in that case ``set_provider`` handles it via
+    ``permission_as_missing=True`` and the atomic-replace path.
+    """
+    try:
+        return config_mod.get_provider(config_path, provider_name), None
+    except OpenclawConfigError as exc:
+        if isinstance(exc.__cause__, PermissionError):
+            # File unreadable — can't detect conflicts, but set_provider can
+            # still write atomically. Fall through; do not skip.
+            return None, None
+        return None, exc
+    except OSError as exc:
+        return None, exc
+
+
 def apply_lock(
     planned_updates: list[tuple[str, str, str]],
     *,
@@ -680,37 +705,15 @@ def apply_lock(
 
         # F-CFG-13: pre-existing entry pointing somewhere that isn't our
         # proxy is a manual override. Skip + emit conflict event.
-        #
-        # PermissionError from get_provider means the file is foreign-owned
-        # (DV-02/DV-01): we can't detect a conflict, but set_provider reads
-        # with permission_as_missing=True and can still write atomically via
-        # os.replace (dir is 777 in shared-volume setup, or will fail with
-        # WRITE_FAILED if the whole dir is locked). Fall through rather than
-        # skipping — let the write attempt determine the outcome.
-        existing = None
-        try:
-            existing = _config_mod.get_provider(config_path, provider_name)
-        except OpenclawConfigError as exc:
-            if isinstance(exc.__cause__, PermissionError):
-                # File unreadable (foreign-owned) — can't check conflict;
-                # fall through to set_provider which handles this case.
-                pass
-            else:
-                events.append(
-                    OpenclawIntegrationEvent(
-                        code=OpenclawErrorCode.CONFIG_UNREADABLE,
-                        level="error",
-                        detail=f"could not read {config_path}: {exc}",
-                    )
-                )
-                providers_skipped.append((provider_name, "config_unreadable"))
-                continue
-        except OSError as exc:
+        # PermissionError is handled transparently by _get_provider_for_lock —
+        # see its docstring for the DV-01/DV-02 fall-through rationale.
+        existing, read_err = _get_provider_for_lock(_config_mod, config_path, provider_name)
+        if read_err is not None:
             events.append(
                 OpenclawIntegrationEvent(
                     code=OpenclawErrorCode.CONFIG_UNREADABLE,
                     level="error",
-                    detail=f"could not read {config_path}: {exc}",
+                    detail=f"could not read {config_path}: {read_err}",
                 )
             )
             providers_skipped.append((provider_name, "config_unreadable"))
