@@ -14,10 +14,17 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tests._install_helpers import run_install, write_happy_path_stubs, write_stub  # noqa: E402
 
 
 TRACE_ROOT = Path(tempfile.gettempdir()) / "worthless-terminal-traces"
@@ -124,6 +131,125 @@ class TraceRunner:
             )
         )
 
+    def run_install_case(
+        self,
+        name: str,
+        *,
+        expect_exit: Callable[[int], bool] | None = None,
+    ) -> None:
+        case_root = self.journey.root / slugify(name)
+        bin_dir = case_root / "bin"
+        bin_dir.mkdir(parents=True)
+        state_file = case_root / "install-state.txt"
+        state_file.write_text(f"case={name}\nphase=before\n")
+        before = snapshot_env_files("before", [state_file])
+
+        if name == "fresh install with persistent PATH":
+            write_happy_path_stubs(bin_dir)
+            (case_root / ".zshrc").write_text('export PATH="$HOME/.local/bin:$PATH"\n')
+            result = run_install(bin_dir)
+            command = ["sh", "./install.sh"]
+        elif name == "fresh install without persistent PATH":
+            write_happy_path_stubs(bin_dir)
+            result = run_install(bin_dir)
+            command = ["sh", "./install.sh"]
+        elif name == "reinstall pinned version already installed":
+            write_happy_path_stubs(bin_dir)
+            write_stub(
+                bin_dir,
+                "uv",
+                """case "$1" in
+  --version) echo "uv 0.11.7" ;;
+  tool) shift; case "$1" in
+    list) echo "worthless v0.3.0" ;;
+    install|upgrade) echo "unexpected reinstall" >&2; exit 1 ;;
+    *) echo "uv tool: unhandled: $*" >&2; exit 1 ;;
+  esac ;;
+  run) echo "worthless 0.3.0" ;;
+  *) echo "uv: unhandled: $*" >&2; exit 1 ;;
+esac""",
+            )
+            result = run_install(bin_dir, env_extra={"WORTHLESS_VERSION": "0.3.0"})
+            command = ["WORTHLESS_VERSION=0.3.0", "sh", "./install.sh"]
+        elif name == "pipx conflict shows uninstall guidance":
+            write_stub(bin_dir, "uname", "echo Darwin")
+            write_stub(bin_dir, "sw_vers", 'echo "14.5"')
+            write_stub(
+                bin_dir,
+                "pipx",
+                """case "$1" in
+  list) echo "package worthless 0.3.0, installed using Python 3.12.0" ;;
+  *) echo "pipx stub: $@" ;;
+esac
+exit 0""",
+            )
+            result = run_install(bin_dir)
+            command = ["sh", "./install.sh"]
+        elif name == "uv failure surfaces network hints":
+            write_stub(bin_dir, "uname", "echo Darwin")
+            write_stub(bin_dir, "sw_vers", 'echo "14.5"')
+            write_stub(
+                bin_dir,
+                "uv",
+                """case "$1" in
+  --version) echo "uv 0.11.7" ;;
+  tool) shift; case "$1" in
+    list) ;;
+    install) echo "x No solution found when resolving dependencies" >&2; exit 1 ;;
+    upgrade) echo "x package not installed" >&2; exit 1 ;;
+    *) echo "uv tool: unhandled: $*" >&2; exit 1 ;;
+  esac ;;
+  *) echo "uv: unhandled: $*" >&2; exit 1 ;;
+esac""",
+            )
+            result = run_install(bin_dir)
+            command = ["sh", "./install.sh"]
+        elif name == "manual uninstall current limitation":
+            write_stub(
+                bin_dir,
+                "uv",
+                """case "$1 $2 $3" in
+  "tool uninstall worthless") echo "uninstalled worthless" ;;
+  *) echo "uv: unhandled: $*" >&2; exit 1 ;;
+esac""",
+            )
+            result = subprocess.run(  # noqa: S603 - controlled stub in temp PATH.
+                [str(bin_dir / "uv"), "tool", "uninstall", "worthless"],
+                cwd=case_root,
+                env={
+                    **scrubbed_env(self.journey.home),
+                    "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+                },
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            command = ["uv", "tool", "uninstall", "worthless"]
+        else:
+            raise ValueError(f"unknown install trace case: {name}")
+
+        if expect_exit is None:
+            expect_exit = expected_success
+        if not expect_exit(result.returncode):
+            raise RuntimeError(
+                f"unexpected exit {result.returncode} for install trace case {name}\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+        state_file.write_text(f"case={name}\nphase=after\nexit={result.returncode}\n")
+        after = snapshot_env_files("after", [state_file])
+        self.journey.traces.append(
+            CommandTrace(
+                command=command,
+                cwd=case_root,
+                home=self.journey.home,
+                exit_code=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                before=before,
+                after=after,
+            )
+        )
+
 
 def resolve_worthless() -> str:
     executable = shutil.which("worthless")
@@ -186,6 +312,36 @@ def reset_root() -> None:
     if TRACE_ROOT.exists():
         shutil.rmtree(TRACE_ROOT)
     TRACE_ROOT.mkdir(parents=True)
+
+
+def slugify(value: str) -> str:
+    return "-".join(value.lower().replace("/", " ").split())
+
+
+def build_install_lifecycle() -> Journey:
+    runner = TraceRunner(
+        TRACE_ROOT / "install-lifecycle",
+        title="Install, Reinstall, Manual Uninstall Guidance",
+        summary=(
+            "The installer succeeds with and without persistent PATH setup, re-running a "
+            "pinned install is a no-op, failure paths keep actionable diagnostics visible, "
+            "and uninstall is currently documented as the manual `uv tool uninstall worthless` "
+            "command plus platform cleanup notes until WOR-435 ships a first-class command."
+        ),
+    )
+    runner.run_install_case("fresh install with persistent PATH")
+    runner.run_install_case("fresh install without persistent PATH")
+    runner.run_install_case("reinstall pinned version already installed")
+    runner.run_install_case(
+        "pipx conflict shows uninstall guidance",
+        expect_exit=lambda code: code == 30,
+    )
+    runner.run_install_case(
+        "uv failure surfaces network hints",
+        expect_exit=lambda code: code == 10,
+    )
+    runner.run_install_case("manual uninstall current limitation")
+    return runner.journey
 
 
 def build_lock_status_scan_unlock() -> Journey:
@@ -392,7 +548,7 @@ def render_trace(index: int, trace: CommandTrace) -> list[str]:
         f"- WORTHLESS_HOME: `{redact_paths(trace.home)}`",
         f"- exit: `{trace.exit_code}`",
         "",
-        "**.env before**",
+        "**Files before**",
         "",
         *render_snapshot(trace.before),
         "**stdout**",
@@ -403,7 +559,7 @@ def render_trace(index: int, trace: CommandTrace) -> list[str]:
         "",
         fenced(redact_text(trace.stderr) if trace.stderr else "<empty>\n"),
         "",
-        "**.env after**",
+        "**Files after**",
         "",
         *render_snapshot(trace.after),
     ]
@@ -497,6 +653,7 @@ def main() -> int:
         build_rotation_relock(),
         build_multi_project_isolation(),
         build_native_stress(),
+        build_install_lifecycle(),
     ]
     report = render_report(journeys)
     args.output.parent.mkdir(parents=True, exist_ok=True)

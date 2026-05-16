@@ -24,8 +24,10 @@ of that baseline. The suite now contains 14 user-flow tests:
 
 The product confidence gained is centered on "I have a project with `.env`;
 Worthless can lock it, tell me what happened, recover it, and avoid corrupting
-nearby projects." The product confidence not yet gained is centered on "I am a
-new user or agent starting from installation."
+nearby projects." `WOR-441` extends that proof to "I am a new user starting
+from installation": deterministic install traces exercise installer messaging,
+reinstall/idempotency, failure diagnostics, and the current manual uninstall
+guidance; GitHub install-smoke CI remains the live Ubuntu/macOS proof.
 
 ## How to use this report
 
@@ -83,6 +85,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python tests/user_flows/render_traces.py \
 | Multi-project isolation | Unlocking one project must not restore or corrupt another project under the same Worthless home. | Project A unlocks to raw key while project B remains protected until explicitly unlocked. | `test_recovery_journeys.py::test_multi_project_unlock_keeps_other_project_protected` |
 | Refused rewrite after planned lock | If Worthless refuses to rewrite an unsafe `.env`, the user must not be left half-protected. | `lock` fails without traceback, original `.env` bytes remain, status has no protected phantom row, and explicit scan still finds the raw key. | `test_native_stress_journeys.py::test_lock_rewrite_refusal_leaves_env_and_status_recoverable` |
 | Tampered locked `.env` | If a user edits a locked shard value, unlock should fail clearly without destroying evidence. | `unlock` fails without traceback, says the value was modified after lock / commitment mismatch, leaves `.env` unchanged, and status still shows protected state. | `test_native_stress_journeys.py::test_unlock_tampered_locked_env_fails_without_destroying_state` |
+| Install lifecycle evidence | A new user should see a clear install result, safe reinstall behavior, actionable failure output, and honest uninstall guidance. | Deterministic terminal traces show PATH messaging, pinned reinstall no-op, pipx conflict guidance, uv failure diagnostics, and current `uv tool uninstall worthless` limitation. Live install-smoke CI uploads per-runner artifacts. | `test_render_traces.py::test_install_lifecycle_trace_documents_current_install_contract` + `test_install_static.py::test_install_smoke_uploads_terminal_artifacts` |
 
 ## Manual journey scripts
 
@@ -218,13 +221,33 @@ Trace first to:
 
 - `test_native_stress_journeys.py::test_unlock_tampered_locked_env_fails_without_destroying_state`
 
+### Journey H: install/reinstall/manual uninstall
+
+1. Run `sh ./install.sh` on a supported macOS/Linux shell.
+2. Inspect whether the output says `worthless` is already on PATH or only works in the current shell.
+3. Re-run the installer with the same pinned version.
+4. Simulate a pipx conflict or uv/network failure when reviewing failure wording.
+5. For uninstall today, run `uv tool uninstall worthless` and then follow the platform docs for keychain/state cleanup.
+
+Expected UX:
+
+- Install exits 0 and prints a usable next command.
+- Fresh shells without persistent `~/.local/bin` get a clear permanent PATH hint.
+- Reinstall is safe and avoids unnecessary work when the pinned version is already installed.
+- Failure output keeps the underlying uv error above proxy/mirror hints.
+- Uninstall guidance is honest: `uv tool uninstall worthless` removes the tool, but does not purge keychain or `~/.worthless` state until WOR-435 ships `worthless uninstall`.
+
+Trace first to:
+
+- `test_render_traces.py::test_install_lifecycle_trace_documents_current_install_contract`
+- `test_install_static.py::test_install_smoke_uploads_terminal_artifacts`
+
 ## Current gaps
 
 These are intentionally not covered by this first branch:
 
 | Linear issue | Surface | Status |
 | --- | --- | --- |
-| `WOR-441` | Install, reinstall, uninstall | Backlog |
 | `WOR-442` | Docker and clean distro matrix | Backlog |
 | `WOR-443` | OpenClaw install/config/protected request | Backlog |
 | `WOR-444` | Agent and MCP driven setup | Backlog |
@@ -238,7 +261,8 @@ Product-risk gaps still worth promoting into explicit journeys:
 - Same key across two `.env` files.
 - Unlock-all or multi-env state transitions.
 - Agent-facing JSON/exit-code contracts.
-- Non-TTY install and consent behavior.
+- Non-TTY install and consent behavior beyond the deterministic installer traces.
+- First-class `worthless uninstall` remains future WOR-435 scope.
 
 ## Review rule
 
