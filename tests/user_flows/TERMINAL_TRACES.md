@@ -16,7 +16,7 @@ A project key is protected, status shows one enrollment, scan no longer finds ra
 - WORTHLESS_HOME: `$TRACE_ROOT/lock-status-scan-unlock/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/lock-status-scan-unlock/project/.env`
 
@@ -41,7 +41,7 @@ worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-6628552e/v1 to $TR
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/lock-status-scan-unlock/project/.env`
 
@@ -56,7 +56,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-6628552e/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/lock-status-scan-unlock/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/lock-status-scan-unlock/project/.env`
 
@@ -80,7 +80,7 @@ Enrolled keys:
 Proxy: not running
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/lock-status-scan-unlock/project/.env`
 
@@ -95,7 +95,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-6628552e/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/lock-status-scan-unlock/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/lock-status-scan-unlock/project/.env`
 
@@ -118,7 +118,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-6628552e/v1
 Found 1 keys: 1 protected, 0 unprotected
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/lock-status-scan-unlock/project/.env`
 
@@ -133,7 +133,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-6628552e/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/lock-status-scan-unlock/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/lock-status-scan-unlock/project/.env`
 
@@ -155,7 +155,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-6628552e/v1
 $TRACE_ROOT/lock-status-scan-unlock/project/.env
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/lock-status-scan-unlock/project/.env`
 
@@ -169,7 +169,7 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=6628552e72>
 - WORTHLESS_HOME: `$TRACE_ROOT/lock-status-scan-unlock/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/lock-status-scan-unlock/project/.env`
 
@@ -190,7 +190,7 @@ No keys enrolled.
 Proxy: not running
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/lock-status-scan-unlock/project/.env`
 
@@ -210,7 +210,7 @@ A locked .env copied without the local Worthless home fails with a plain-English
 - WORTHLESS_HOME: `$TRACE_ROOT/teammate-handoff-failure/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/teammate-handoff-failure/owner-project/.env`
 
@@ -236,7 +236,7 @@ worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-fe676590/v1 to $TR
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/teammate-handoff-failure/owner-project/.env`
 
@@ -251,7 +251,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-fe676590/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/teammate-handoff-failure/teammate/.worthless`
 - exit: `1`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/teammate-handoff-failure/teammate-project/.env`
 
@@ -275,7 +275,7 @@ v: OPENAI_API_KEY. If this .env was copied from another machine, those values ar
 from the original machine, or remove them manually if they are junk.
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/teammate-handoff-failure/teammate-project/.env`
 
@@ -296,7 +296,7 @@ A raw replacement key is treated as a new key, including when the replacement ha
 - WORTHLESS_HOME: `$TRACE_ROOT/rotation-relock/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/rotation-relock/same-shape/.env`
 
@@ -321,7 +321,7 @@ worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-0122837f/v1 to $TR
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/rotation-relock/same-shape/.env`
 
@@ -336,7 +336,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-0122837f/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/rotation-relock/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/rotation-relock/same-shape/.env`
 
@@ -361,7 +361,7 @@ worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-8190d0c3/v1 to $TR
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/rotation-relock/same-shape/.env`
 
@@ -376,7 +376,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-8190d0c3/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/rotation-relock/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/rotation-relock/same-shape/.env`
 
@@ -398,7 +398,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-8190d0c3/v1
 $TRACE_ROOT/rotation-relock/same-shape/.env
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/rotation-relock/same-shape/.env`
 
@@ -412,7 +412,7 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=8190d0c36a>
 - WORTHLESS_HOME: `$TRACE_ROOT/rotation-relock/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/rotation-relock/different-shape/.env`
 
@@ -437,7 +437,7 @@ worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-54ddf68f/v1 to $TR
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/rotation-relock/different-shape/.env`
 
@@ -452,7 +452,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-54ddf68f/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/rotation-relock/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/rotation-relock/different-shape/.env`
 
@@ -477,7 +477,7 @@ worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-21f00034/v1 to $TR
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/rotation-relock/different-shape/.env`
 
@@ -492,7 +492,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-21f00034/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/rotation-relock/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/rotation-relock/different-shape/.env`
 
@@ -514,7 +514,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-21f00034/v1
 $TRACE_ROOT/rotation-relock/different-shape/.env
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/rotation-relock/different-shape/.env`
 
@@ -534,7 +534,7 @@ Two projects share one Worthless home; unlocking one project leaves the other pr
 - WORTHLESS_HOME: `$TRACE_ROOT/multi-project-isolation/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/multi-project-isolation/project-a/.env`
 
@@ -566,7 +566,7 @@ worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-fd488525/v1 to $TR
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/multi-project-isolation/project-a/.env`
 
@@ -587,7 +587,7 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=b6e34dbee6>
 - WORTHLESS_HOME: `$TRACE_ROOT/multi-project-isolation/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/multi-project-isolation/project-a/.env`
 
@@ -620,7 +620,7 @@ worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-b6e34dbe/v1 to $TR
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/multi-project-isolation/project-a/.env`
 
@@ -642,7 +642,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-b6e34dbe/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/multi-project-isolation/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/multi-project-isolation/project-a/.env`
 
@@ -671,7 +671,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-b6e34dbe/v1
 $TRACE_ROOT/multi-project-isolation/project-a/.env
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/multi-project-isolation/project-a/.env`
 
@@ -692,7 +692,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-b6e34dbe/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/multi-project-isolation/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/multi-project-isolation/project-a/.env`
 
@@ -722,7 +722,7 @@ Enrolled keys:
 Proxy: not running
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/multi-project-isolation/project-a/.env`
 
@@ -743,7 +743,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-b6e34dbe/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/multi-project-isolation/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/multi-project-isolation/project-a/.env`
 
@@ -771,7 +771,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-b6e34dbe/v1
 $TRACE_ROOT/multi-project-isolation/project-b/.env
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/multi-project-isolation/project-a/.env`
 
@@ -797,7 +797,7 @@ Unsafe rewrite refusal leaves the raw .env recoverable and unenrolled; tampering
 - WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
 - exit: `1`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/native-stress/rewrite-refusal/.env`
 
@@ -822,7 +822,7 @@ WRTLS-111: unsafe rewrite refused — your .env is unchanged
 Target path changed between resolution and open — retry.
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/native-stress/rewrite-refusal/.env`
 
@@ -836,7 +836,7 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=686d33168b>
 - WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/native-stress/rewrite-refusal/.env`
 
@@ -857,7 +857,7 @@ No keys enrolled.
 Proxy: not running
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/native-stress/rewrite-refusal/.env`
 
@@ -871,7 +871,7 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=686d33168b>
 - WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
 - exit: `1`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/native-stress/rewrite-refusal/.env`
 
@@ -894,7 +894,7 @@ Found 1 keys: 0 protected, 1 unprotected
 See: docs.worthless.dev/ci-setup
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/native-stress/rewrite-refusal/.env`
 
@@ -908,7 +908,7 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=686d33168b>
 - WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/native-stress/tampered-lock/.env`
 
@@ -933,7 +933,7 @@ worthless: added OPENAI_BASE_URL=http://127.0.0.1:8787/openai-0ca90940/v1 to $TR
 Next: run `worthless wrap <command>` or `worthless up` for daemon mode
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/native-stress/tampered-lock/.env`
 
@@ -948,7 +948,7 @@ OPENAI_BASE_URL=http://127.0.0.1:8787/openai-0ca90940/v1
 - WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
 - exit: `1`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/native-stress/tampered-lock/.env`
 
@@ -969,7 +969,7 @@ WRTLS-102: Cannot unlock OPENAI_API_KEY: locked .env value was modified after lo
 locked value, re-lock from the original raw key, or run `worthless doctor` for recovery guidance.
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/native-stress/tampered-lock/.env`
 
@@ -983,7 +983,7 @@ OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=aad839a097>
 - WORTHLESS_HOME: `$TRACE_ROOT/native-stress/.worthless`
 - exit: `0`
 
-**.env before**
+**Files before**
 
 `$TRACE_ROOT/native-stress/tampered-lock/.env`
 
@@ -1006,10 +1006,314 @@ Enrolled keys:
 Proxy: not running
 ```
 
-**.env after**
+**Files after**
 
 `$TRACE_ROOT/native-stress/tampered-lock/.env`
 
 ```text
 OPENAI_API_KEY=sk-proj-<redacted:fake-raw:len=51:sha256=aad839a097>
+```
+
+## Install, Reinstall, Manual Uninstall Guidance
+
+The installer succeeds with and without persistent PATH setup, re-running a pinned install is a no-op, failure paths keep actionable diagnostics visible, and uninstall is currently documented as the manual `uv tool uninstall worthless` command plus platform cleanup notes until WOR-435 ships a first-class command.
+
+- Workspace: `$TRACE_ROOT/install-lifecycle`
+
+### 1. `sh ./install.sh`
+
+- cwd: `$TRACE_ROOT/install-lifecycle/fresh-install-with-persistent-path`
+- WORTHLESS_HOME: `$TRACE_ROOT/install-lifecycle/.worthless`
+- exit: `0`
+
+**Files before**
+
+`$TRACE_ROOT/install-lifecycle/fresh-install-with-persistent-path/install-state.txt`
+
+```text
+case=fresh install with persistent PATH
+phase=before
+```
+
+**stdout**
+
+```text
+
+Worthless installer (uv-bootstrap)
+
+  Platform: macos
+  uv 0.11.7 already installed
+  worthless 0.3.0
+
+Done! 'worthless' is on your PATH.
+
+  Try it:        cd your-project && worthless lock
+  Audit script:  curl worthless.sh?explain=1 | less
+  Source:        https://github.com/shacharm2/worthless
+
+  worthless lock rewrites .env, splits your API keys, and starts a
+  local proxy. Your app code doesn't change.
+
+  Docs: https://docs.wless.io
+```
+
+**stderr**
+
+```text
+<empty>
+```
+
+**Files after**
+
+`$TRACE_ROOT/install-lifecycle/fresh-install-with-persistent-path/install-state.txt`
+
+```text
+case=fresh install with persistent PATH
+phase=after
+exit=0
+```
+
+### 2. `sh ./install.sh`
+
+- cwd: `$TRACE_ROOT/install-lifecycle/fresh-install-without-persistent-path`
+- WORTHLESS_HOME: `$TRACE_ROOT/install-lifecycle/.worthless`
+- exit: `0`
+
+**Files before**
+
+`$TRACE_ROOT/install-lifecycle/fresh-install-without-persistent-path/install-state.txt`
+
+```text
+case=fresh install without persistent PATH
+phase=before
+```
+
+**stdout**
+
+```text
+
+Worthless installer (uv-bootstrap)
+
+  Platform: macos
+  uv 0.11.7 already installed
+  worthless 0.3.0
+
+Done! 'worthless' works in this shell.
+
+
+  Make permanent:         echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+
+  Try it:        cd your-project && worthless lock
+  Audit script:  curl worthless.sh?explain=1 | less
+  Source:        https://github.com/shacharm2/worthless
+
+  worthless lock rewrites .env, splits your API keys, and starts a
+  local proxy. Your app code doesn't change.
+
+  Docs: https://docs.wless.io
+```
+
+**stderr**
+
+```text
+Heads up: a new terminal won't find 'worthless' yet — ~/.local/bin isn't in your rc file.
+```
+
+**Files after**
+
+`$TRACE_ROOT/install-lifecycle/fresh-install-without-persistent-path/install-state.txt`
+
+```text
+case=fresh install without persistent PATH
+phase=after
+exit=0
+```
+
+### 3. `WORTHLESS_VERSION=0.3.0 sh ./install.sh`
+
+- cwd: `$TRACE_ROOT/install-lifecycle/reinstall-pinned-version-already-installed`
+- WORTHLESS_HOME: `$TRACE_ROOT/install-lifecycle/.worthless`
+- exit: `0`
+
+**Files before**
+
+`$TRACE_ROOT/install-lifecycle/reinstall-pinned-version-already-installed/install-state.txt`
+
+```text
+case=reinstall pinned version already installed
+phase=before
+```
+
+**stdout**
+
+```text
+
+Worthless installer (uv-bootstrap)
+
+  Platform: macos
+  uv 0.11.7 already installed
+  worthless 0.3.0 already installed
+  worthless 0.3.0
+
+Done! 'worthless' works in this shell.
+
+
+  Make permanent:         echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+
+  Try it:        cd your-project && worthless lock
+  Audit script:  curl worthless.sh?explain=1 | less
+  Source:        https://github.com/shacharm2/worthless
+
+  worthless lock rewrites .env, splits your API keys, and starts a
+  local proxy. Your app code doesn't change.
+
+  Docs: https://docs.wless.io
+```
+
+**stderr**
+
+```text
+Heads up: a new terminal won't find 'worthless' yet — ~/.local/bin isn't in your rc file.
+```
+
+**Files after**
+
+`$TRACE_ROOT/install-lifecycle/reinstall-pinned-version-already-installed/install-state.txt`
+
+```text
+case=reinstall pinned version already installed
+phase=after
+exit=0
+```
+
+### 4. `sh ./install.sh`
+
+- cwd: `$TRACE_ROOT/install-lifecycle/pipx-conflict-shows-uninstall-guidance`
+- WORTHLESS_HOME: `$TRACE_ROOT/install-lifecycle/.worthless`
+- exit: `30`
+
+**Files before**
+
+`$TRACE_ROOT/install-lifecycle/pipx-conflict-shows-uninstall-guidance/install-state.txt`
+
+```text
+case=pipx conflict shows uninstall guidance
+phase=before
+```
+
+**stdout**
+
+```text
+
+Worthless installer (uv-bootstrap)
+
+  Platform: macos
+```
+
+**stderr**
+
+```text
+error: Detected a pipx-installed worthless.
+       uv and pipx both manage tool isolation; running both is confusing.
+       Remove the pipx version, then re-run this installer:
+         pipx uninstall worthless
+```
+
+**Files after**
+
+`$TRACE_ROOT/install-lifecycle/pipx-conflict-shows-uninstall-guidance/install-state.txt`
+
+```text
+case=pipx conflict shows uninstall guidance
+phase=after
+exit=30
+```
+
+### 5. `sh ./install.sh`
+
+- cwd: `$TRACE_ROOT/install-lifecycle/uv-failure-surfaces-network-hints`
+- WORTHLESS_HOME: `$TRACE_ROOT/install-lifecycle/.worthless`
+- exit: `10`
+
+**Files before**
+
+`$TRACE_ROOT/install-lifecycle/uv-failure-surfaces-network-hints/install-state.txt`
+
+```text
+case=uv failure surfaces network hints
+phase=before
+```
+
+**stdout**
+
+```text
+
+Worthless installer (uv-bootstrap)
+
+  Platform: macos
+  uv 0.11.7 already installed
+```
+
+**stderr**
+
+```text
+error: Failed to install worthless.
+
+       uv tool install reported:
+         x No solution found when resolving dependencies
+
+       uv tool upgrade also failed (same root cause likely).
+
+       If this looks like a network issue:
+       Behind a proxy or corporate network? Try:
+         export HTTPS_PROXY=https://your-proxy:port
+         export UV_PYTHON_INSTALL_MIRROR=https://your-mirror/python-build-standalone
+         export SSL_CERT_FILE=/path/to/corp-bundle.pem
+```
+
+**Files after**
+
+`$TRACE_ROOT/install-lifecycle/uv-failure-surfaces-network-hints/install-state.txt`
+
+```text
+case=uv failure surfaces network hints
+phase=after
+exit=10
+```
+
+### 6. `uv tool uninstall worthless`
+
+- cwd: `$TRACE_ROOT/install-lifecycle/manual-uninstall-current-limitation`
+- WORTHLESS_HOME: `$TRACE_ROOT/install-lifecycle/.worthless`
+- exit: `0`
+
+**Files before**
+
+`$TRACE_ROOT/install-lifecycle/manual-uninstall-current-limitation/install-state.txt`
+
+```text
+case=manual uninstall current limitation
+phase=before
+```
+
+**stdout**
+
+```text
+uninstalled worthless
+```
+
+**stderr**
+
+```text
+<empty>
+```
+
+**Files after**
+
+`$TRACE_ROOT/install-lifecycle/manual-uninstall-current-limitation/install-state.txt`
+
+```text
+case=manual uninstall current limitation
+phase=after
+exit=0
 ```
