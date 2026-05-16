@@ -35,9 +35,7 @@ _INSTRUCTIONS = (
 
 
 def run(ctx: CheckContext) -> CheckResult:
-    # fixable is ALWAYS False for this check. No --fix path exists.
     fernet_path = ctx.home.fernet_key_path
-    file_present = fernet_path.exists()
 
     keyring_value: bytes | None = None
     if keyring_available():
@@ -48,25 +46,28 @@ def run(ctx: CheckContext) -> CheckResult:
         except Exception as exc:  # noqa: BLE001 - SR-04
             logger.debug("keyring read failed in fernet_drift: %s", type(exc).__name__)
 
-    if not file_present or keyring_value is None:
-        return CheckResult(
-            check_id=check_id,
-            status="ok",
-            findings=[],
-            summary="No Fernet key drift (only one source present).",
-            fixable=False,
-            fixed=[],
-            skipped_reason=None,
-        )
-
+    file_value: bytes | None = None
     try:
         file_value = fernet_path.read_bytes().strip()
+    except FileNotFoundError:
+        pass  # file absent — only one source, no drift possible
     except OSError as exc:
         return CheckResult(
             check_id=check_id,
             status="error",
             findings=[],
             summary=f"Could not read fernet.key: {type(exc).__name__}",
+            fixable=False,
+            fixed=[],
+            skipped_reason=None,
+        )
+
+    if file_value is None or keyring_value is None:
+        return CheckResult(
+            check_id=check_id,
+            status="ok",
+            findings=[],
+            summary="No Fernet key drift (only one source present).",
             fixable=False,
             fixed=[],
             skipped_reason=None,

@@ -11,9 +11,8 @@ without the matching shard_b row in the DB.
 from __future__ import annotations
 
 import logging
-from typing import Literal
 
-from worthless.cli.commands.doctor.checks._helpers import load_enrollments
+from worthless.cli.commands.doctor.checks._helpers import load_enrollments, maybe_fix
 from worthless.cli.commands.doctor.registry import CheckContext, CheckResult
 
 logger = logging.getLogger(__name__)
@@ -69,20 +68,6 @@ def _build_summary(n: int) -> str:
     return f"{n} stranded shard file{'s' if n != 1 else ''} with no DB enrollment"
 
 
-def _maybe_fix(
-    ctx: CheckContext,
-    stranded: list,
-    on_disk: dict,
-    status: Literal["ok", "warn", "error"],
-) -> tuple[list[dict], Literal["ok", "warn", "error"]]:
-    fixed: list[dict] = []
-    if ctx.fix and stranded and not ctx.dry_run:
-        fixed = _repair_stranded(ctx, stranded, on_disk)
-        if len(fixed) == len(stranded):
-            status = "ok"
-    return fixed, status
-
-
 def run(ctx: CheckContext) -> CheckResult:
     on_disk, early = _list_shard_a_files(ctx)
     if early is not None:
@@ -101,7 +86,9 @@ def run(ctx: CheckContext) -> CheckResult:
 
     findings = [{"shard_path": str(on_disk[name])} for name in stranded]
     status = "ok" if not stranded else "warn"
-    fixed, status = _maybe_fix(ctx, stranded, on_disk, status)
+    fixed, status = maybe_fix(
+        ctx, stranded, lambda items: _repair_stranded(ctx, items, on_disk), status
+    )
 
     return CheckResult(
         check_id=check_id,

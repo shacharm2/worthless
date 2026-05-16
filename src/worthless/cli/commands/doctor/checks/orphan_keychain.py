@@ -19,6 +19,7 @@ see the check ran, not that it disappeared. macOS-only repair via
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -50,8 +51,6 @@ def _candidate_home_dirs() -> list[Path]:
         candidates.append((Path.home() / ".worthless").resolve())
     except (OSError, RuntimeError):
         pass
-    import os
-
     env_home = os.environ.get("WORTHLESS_HOME")
     if env_home:
         try:

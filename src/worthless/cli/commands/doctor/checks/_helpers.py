@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from worthless.cli.commands.doctor.registry import CheckContext, CheckResult
+
+
+async def _init_and_list(repo) -> list:  # type: ignore[type-arg]
+    await repo.initialize()
+    return await repo.list_enrollments()
 
 
 def load_enrollments(
@@ -27,8 +33,7 @@ def load_enrollments(
     from worthless.cli.commands.doctor.registry import CheckResult
 
     try:
-        asyncio.run(ctx.repo.initialize())
-        enrollments = asyncio.run(ctx.repo.list_enrollments())
+        enrollments = asyncio.run(_init_and_list(ctx.repo))
         return enrollments, None
     except Exception as exc:  # noqa: BLE001
         return None, CheckResult(
@@ -40,3 +45,22 @@ def load_enrollments(
             fixed=[],
             skipped_reason=None,
         )
+
+
+def maybe_fix(
+    ctx: CheckContext,
+    items: list,
+    repair_fn: Callable[[list], list[dict]],
+    status: Literal["ok", "warn", "error"],
+) -> tuple[list[dict], Literal["ok", "warn", "error"]]:
+    """Run repair_fn on items when ctx.fix is set and dry_run is off.
+
+    Returns (fixed, updated_status). Status flips to "ok" only when
+    every item was successfully repaired.
+    """
+    fixed: list[dict] = []
+    if ctx.fix and items and not ctx.dry_run:
+        fixed = repair_fn(items)
+        if len(fixed) == len(items):
+            status = "ok"
+    return fixed, status

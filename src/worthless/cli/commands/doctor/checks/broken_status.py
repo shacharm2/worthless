@@ -20,23 +20,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Literal
 
-from worthless.cli.commands.doctor.checks._helpers import load_enrollments
+from worthless.cli.commands.doctor.checks._helpers import load_enrollments, maybe_fix
 from worthless.cli.commands.doctor.registry import CheckContext, CheckResult
 
 logger = logging.getLogger(__name__)
 check_id = "broken_status"
 
 
+async def _delete_rows_async(repo, rows: list) -> int:
+    results = await asyncio.gather(
+        *(repo.delete_enrollment(row.key_alias, row.env_path) for row in rows)
+    )
+    return sum(1 for r in results if r)
+
+
 def _delete_one_alias(ctx: CheckContext, alias: str, rows: list) -> dict | None:
     """Delete all DB rows for *alias*. Return a fixed-entry dict or None on failure."""
     try:
-        deleted = sum(
-            1
-            for row in rows
-            if asyncio.run(ctx.repo.delete_enrollment(row.key_alias, row.env_path))
-        )
+        deleted = asyncio.run(_delete_rows_async(ctx.repo, rows))
         if deleted:
             return {"key_alias": alias, "rows_deleted": deleted}
         return None
@@ -77,21 +79,6 @@ def _build_summary(n: int) -> str:
     return f"{n} enrollment{'s' if n != 1 else ''} in BROKEN status (shard_a missing)"
 
 
-def _maybe_fix(
-    ctx: CheckContext,
-    broken: list[str],
-    enrollments: list,
-    status: Literal["ok", "warn", "error"],
-) -> tuple[list[dict], Literal["ok", "warn", "error"]]:
-    fixed: list[dict] = []
-    if ctx.fix and broken and not ctx.dry_run:
-        alias_map = _build_alias_map(enrollments)
-        fixed = _repair_broken(ctx, broken, alias_map)
-        if len(fixed) == len(broken):
-            status = "ok"
-    return fixed, status
-
-
 def run(ctx: CheckContext) -> CheckResult:
     enrollments, err = load_enrollments(ctx, check_id)
     if err is not None:
@@ -103,7 +90,10 @@ def run(ctx: CheckContext) -> CheckResult:
 
     findings = [{"key_alias": a, "inferred_status": "BROKEN"} for a in broken]
     status = "ok" if not broken else "warn"
-    fixed, status = _maybe_fix(ctx, broken, enrollments, status)
+    alias_map = _build_alias_map(enrollments)
+    fixed, status = maybe_fix(
+        ctx, broken, lambda items: _repair_broken(ctx, items, alias_map), status
+    )
 
     return CheckResult(
         check_id=check_id,
