@@ -574,7 +574,7 @@ Add to `.mcp.json` — works on any machine with Node ≥ 18, no Python required
 ```
 
 After restart, agents get native MCP tools:
-```
+```text
 Tool: worthless_status()            -> {"keys": [...], "proxy": {...}}
 Tool: worthless_lock(env_path)      -> {"protected_count": N}
 Tool: worthless_scan(paths, deep)   -> {"findings": [...], "summary": {...}}
