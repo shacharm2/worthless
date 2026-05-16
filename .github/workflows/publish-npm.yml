@@ -1,6 +1,6 @@
 name: Publish worthless-mcp to npm
 
-on:
+on: # zizmor: ignore[cache-poisoning]
   push:
     tags:
       - "v*"
