@@ -1,5 +1,5 @@
-"""WOR-456 supplemental tests — coverage for paths not exercised by the primary
-test files added in this PR (test_doctor_icloud.py, test_keystore_macos.py).
+"""Supplemental doctor tests — coverage for paths not exercised by the primary
+test files (test_doctor_keychain_migration.py, test_keystore_macos.py).
 
 Covers:
 * WorthlessHome.recovery_dir property (bootstrap.py)
