@@ -49,6 +49,8 @@ docker run --rm -it \
 
 ## All-container setup (docker-compose)
 
+> **Server / cloud deployments only.** This section is for running both services in Docker on a remote server with no host process. If you installed OpenClaw locally, use the [Quick start](#quick-start-local) above instead. A one-command `clawhub install worthless` skill is coming — check [ClawHub](https://clawhub.ai) for availability.
+
 Run the Worthless proxy and OpenClaw in the same Docker network — no worthless process on your host.
 
 **1. Start the stack**

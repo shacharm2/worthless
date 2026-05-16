@@ -60,7 +60,7 @@ services:
   # `http://proxy:8787`) into the shared openclaw-config volume. openclaw
   # picks it up on restart and routes all API calls through the proxy.
   openclaw:
-    image: ghcr.io/openclaw/openclaw:v2026.5.13
+    image: ghcr.io/openclaw/openclaw:2026.5.3-1@sha256:142f70fa2751bdedf03648ae427372fff3f92ac0e96ab91abb3824b088c38b7b
     profiles:
       - openclaw
     ports:
@@ -77,6 +77,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     read_only: true
+    user: "node"
     tmpfs:
       - /tmp:noexec,nosuid,size=64m
       - /run:noexec,nosuid,size=64m
@@ -90,6 +91,11 @@ services:
           memory: 512M
           cpus: "1.0"
           pids: 100
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   frontend:
