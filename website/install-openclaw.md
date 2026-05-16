@@ -62,21 +62,22 @@ curl -sSL https://raw.githubusercontent.com/shacharm2/worthless/main/deploy/dock
 docker compose --profile openclaw up -d
 ```
 
-**2. Enroll your API key and wire OpenClaw**
+**2. Write your key and lock**
 
 ```bash
-# Enroll the key (shard B stored in the proxy container)
-printf '%s' "$OPENAI_API_KEY" | docker compose exec -T proxy \
-  worthless enroll --alias openai --key-stdin --provider openai
+# Write the key into the proxy container's tmpfs — ephemeral, never on disk
+printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY" | \
+  docker compose exec -T proxy sh -c 'cat > /tmp/.env'
 
-# Lock: writes openclaw.json with baseUrl=http://proxy:8787 into the shared volume
-docker compose exec proxy worthless lock
+# Lock: splits the key, stores shard B in the proxy, writes openclaw.json
+# with baseUrl=http://proxy:8787 into the shared volume
+docker compose exec proxy worthless lock --env /tmp/.env
 
 # Restart openclaw so it picks up the new provider entry
 docker compose restart openclaw
 ```
 
-`WORTHLESS_PROXY_HOST=proxy` is pre-set in `docker-compose.yml`, so `worthless lock` automatically writes the Docker-internal hostname — no env var to remember.
+`WORTHLESS_PROXY_HOST=proxy` is pre-set in `docker-compose.yml`, so `worthless lock` writes the Docker-internal hostname into `openclaw.json` automatically — no env var to remember. The key in `/tmp/.env` is replaced with shard A and lives only in tmpfs (reset on container restart).
 
 **3. Send a request through OpenClaw**
 

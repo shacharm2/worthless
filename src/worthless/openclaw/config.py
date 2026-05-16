@@ -220,6 +220,20 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
         # level so the atomic-write contract test can simulate disk-full.
         os.replace(tmp_path, path)  # noqa: PTH105
         tmp_path = None
+        # In all-container Docker deployments (WORTHLESS_OPENCLAW_CONFIG_SHARED=1)
+        # the openclaw.json lives on a shared named volume mounted by both the
+        # proxy (worthless user) and the openclaw container (node user).
+        # ``tempfile.mkstemp`` creates the temp file as 0600; after
+        # ``os.replace`` the destination inherits that mode, making it
+        # unreadable by the other container.  Widen to 0644 (world-readable,
+        # no world-write) so openclaw can read the provider entry the proxy
+        # just wrote.  The ``_check_world_writable`` guard in integration.py
+        # checks only S_IWGRP | S_IWOTH — 0644 does not trigger it.
+        if os.environ.get("WORTHLESS_OPENCLAW_CONFIG_SHARED"):
+            try:
+                path.chmod(0o644)
+            except OSError:
+                pass
     finally:
         if fd is not None:
             try:

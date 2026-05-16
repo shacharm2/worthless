@@ -38,6 +38,21 @@ if [ ! -f "$FERNET_PATH" ]; then
   chmod 0400 "$FERNET_PATH"
 fi
 
+# Best-effort: seed the OpenClaw config stub on the shared volume so that
+# `worthless lock` can detect openclaw before the openclaw container starts.
+# The Dockerfile pre-creates /data/.openclaw as worthless:worthless 777
+# (Docker initialises the openclaw-config volume from that image path on
+# first mount), so chmod 777 + stub creation succeed on fresh volumes.
+# On restarts where openclaw may have changed dir ownership these ops
+# silently no-op — that is intentional.
+OPENCLAW_DIR="${HOME_DIR}/.openclaw"
+mkdir -p "$OPENCLAW_DIR" 2>/dev/null || true
+chmod 777 "$OPENCLAW_DIR" 2>/dev/null || true
+[ -f "${OPENCLAW_DIR}/openclaw.json" ] || {
+  printf '{}' > "${OPENCLAW_DIR}/openclaw.json" 2>/dev/null || true
+  chmod 666 "${OPENCLAW_DIR}/openclaw.json" 2>/dev/null || true
+}
+
 # Pass Fernet key via file descriptor (not env var — env is visible in /proc)
 exec 3< "$FERNET_PATH"
 export WORTHLESS_FERNET_FD=3

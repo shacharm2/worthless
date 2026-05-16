@@ -14,6 +14,11 @@ services:
       # Used by `worthless lock` so openclaw.json gets the Docker-internal
       # service name instead of 127.0.0.1. Harmless when openclaw is not running.
       WORTHLESS_PROXY_HOST: proxy
+      # Signal to _atomic_write_json to chmod openclaw.json to 0644 after
+      # each write. Required because mkstemp creates 0600 files and the
+      # openclaw container (node user) must be able to read what the proxy
+      # (worthless user) writes on the shared openclaw-config volume.
+      WORTHLESS_OPENCLAW_CONFIG_SHARED: "1"
     volumes:
       - worthless-data:/data
       # Keeps the decryption key off the same volume as shard data.
@@ -53,7 +58,10 @@ services:
         max-file: "3"
 
   # OpenClaw Gateway — opt-in via: docker compose --profile openclaw up
-  # Full setup steps: see website/install-openclaw.md § All-container setup
+  # Setup: printf 'OPENAI_API_KEY=<key>\n' | docker compose exec -T proxy sh -c 'cat > /tmp/.env'
+  #        docker compose exec proxy worthless lock --env /tmp/.env
+  #        docker compose restart openclaw
+  # Full guide: website/install-openclaw.md § All-container setup
   openclaw:
     image: ghcr.io/openclaw/openclaw:2026.5.3-1@sha256:142f70fa2751bdedf03648ae427372fff3f92ac0e96ab91abb3824b088c38b7b
     profiles:
