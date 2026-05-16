@@ -66,7 +66,7 @@ REQUIRES_SYNC_ENTITLEMENT = pytest.mark.skipif(
     sys.platform != "darwin" or not _can_seed_synced_entries(),
     reason="Synced-entry seeding requires keychain-access-groups entitlement; "
     "skip on unsigned Python interpreters. Migration logic is covered by "
-    "mocked unit tests in tests/test_doctor_icloud_migration.py.",
+    "mocked unit tests in tests/test_doctor_keychain_migration.py.",
 )
 
 

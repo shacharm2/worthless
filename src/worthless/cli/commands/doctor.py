@@ -1,32 +1,51 @@
-"""Doctor command — diagnose and repair stuck DB/.env states (HF7 / worthless-3907).
+"""Doctor command — run this when something feels wrong with worthless.
 
-Currently handles TWO known shapes:
+When to run ``worthless doctor``
+---------------------------------
 
-1. Orphan DB enrollments whose ``.env`` line was deleted by the user (HF7).
-   The dogfood-discovered stuck state from 2026-04-30:
+**"I get 401s even though I locked my key"**
+  The proxy and your shell may be talking to different databases. This happens
+  when ``WORTHLESS_HOME`` is set in one terminal but not another. Doctor will
+  say "home mismatch" and tell you exactly which DB each side is using.
 
-     worthless unlock -> "No enrolled keys found." (silently skips orphan)
-     worthless status -> "Enrolled keys: ... PROTECTED" (lists the orphan)
+**"status says PROTECTED but wrap/unlock does nothing"**
+  Your ``.env`` file was deleted or moved after the key was locked, leaving an
+  orphan row in the DB. Doctor detects the dangling enrollment and ``--fix``
+  removes it so you can lock a fresh key cleanly.
 
-2. OpenClaw integration drift (Phase 2.d / WOR-431): OpenClaw installed
-   after ``worthless lock`` ran, or skill folder gone stale. Doctor
-   surfaces skill version mismatches and un-wired providers, and can
-   reinstall the skill when ``--fix`` is passed.
+**"BASE_URL in my .env points somewhere but requests fail immediately"**
+  The alias in ``OPENAI_BASE_URL`` (e.g. ``openai-abc12345``) has no matching
+  shard in the current database. Doctor will name the alias and confirm it is
+  absent. Common cause: locked in one home directory, running proxy from
+  another.
 
-``worthless doctor`` is read-only: it lists issues.
-``worthless doctor --fix`` repairs what it can (destructive for orphans,
-safe for skill reinstall). Prompts unless ``--yes``. ``--dry-run`` shows
-the planned action without writing.
+**"OpenClaw stopped routing after I reinstalled the skill"**
+  The OpenClaw skill folder drifted from what was wired at lock time. Doctor
+  surfaces version mismatches and un-wired providers; ``--fix`` reinstalls the
+  skill automatically.
 
-Design seams (foreseen extensions, NOT in this PR):
+**"I set up worthless on a second Mac and keys aren't available"** (macOS)
+  Fernet keys synced via iCloud Keychain instead of staying local. Doctor
+  finds them and ``--fix`` migrates them to local-only storage so the proxy
+  can start without iCloud access.
 
-* ``worthless-7db2`` (P3): a SECOND repair shape — partial-state recovery
-  when the home dir is intact but the fernet key is missing from every
-  source (manual keyring deletion). ``ensure_home`` will surface that
-  state and point users here; doctor will need a key-regeneration flow
-  guarded against silently destroying access to existing locked secrets.
-* ``worthless-57ad`` (P3, post-v0.4): a BYO-key LLM agent diagnoses
-  UNKNOWN stuck states using a user-locked enrollment.
+**"I copied recovery files over from another Mac"** (macOS)
+  Doctor automatically imports any ``*.recover`` files it finds in the
+  recovery directory — no ``--fix`` flag needed.
+
+Usage
+-----
+``worthless doctor``        — read-only scan, lists every issue found
+``worthless doctor --fix``  — repair what can be repaired (prompts first)
+``worthless doctor --yes``  — skip confirmation prompts (CI / scripted use)
+``worthless doctor --dry-run`` — show planned repairs without writing anything
+
+Design seams (foreseen extensions, not yet implemented):
+
+* ``worthless-7db2`` (P3): partial-state recovery when the home dir is intact
+  but the fernet key is missing from every source (manual keyring deletion).
+* ``worthless-57ad`` (P3, post-v0.4): BYO-key LLM agent diagnoses unknown
+  stuck states using a user-locked enrollment.
 """
 
 from __future__ import annotations
@@ -45,8 +64,10 @@ if sys.platform != "win32":
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
-from worthless.cli.process import resolve_port
+from dotenv import dotenv_values
+from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home, _DEFAULT_BASE
+from worthless.cli.platform import read_process_env
+from worthless.cli.process import pid_path, read_pid, resolve_port
 from worthless.cli.commands.revoke import _revoke_async
 from worthless.cli.console import WorthlessConsole, get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
@@ -73,6 +94,9 @@ logger = logging.getLogger(__name__)
 ICLOUD_LEAK_PHRASE = "stored in iCloud Keychain"
 ICLOUD_FIX_PHRASE = "worthless doctor --fix"
 RECOVERY_IMPORT_PHRASE = "Recovered"
+HOME_MISMATCH_PHRASE = "home mismatch"
+ALIAS_NOT_IN_DB_PHRASE = "has no shard in the current DB"
+_PROXY_ALIAS_URL_RE = re.compile(r"https?://[^/]+/([a-zA-Z0-9_-]+)/v1\b")
 
 # Multi-device safety warning shown in the --fix consent prompt. Verbatim
 # substrings are AND-bound by tests so future copy-paste cleanups don't
@@ -90,13 +114,18 @@ _MULTI_DEVICE_WARNING = (
 )
 
 
-async def _list_orphans(repo: ShardRepository) -> list[EnrollmentRecord]:
-    """Initialize the repo and return all orphan enrollments. Uses
-    ``find_orphans`` so each shared ``.env`` is parsed at most once.
+async def _list_orphans(
+    repo: ShardRepository,
+) -> tuple[list[EnrollmentRecord], list[EnrollmentRecord]]:
+    """Initialize the repo and return ``(all_enrollments, orphans)``.
+
+    Returns both so callers can reuse the already-fetched enrollment list
+    without a second ``asyncio.run`` on the same repo (which fails on Linux
+    when the event loop is closed between calls).
     """
     await repo.initialize()
-    enrollments = await repo.list_enrollments()
-    return find_orphans(enrollments)
+    all_enrollments = await repo.list_enrollments()
+    return all_enrollments, find_orphans(all_enrollments)
 
 
 async def _purge_all(
@@ -261,7 +290,7 @@ def _check_providers(
 
 
 def _check_openclaw_section(
-    repo: ShardRepository,
+    enrollments: list[EnrollmentRecord],
     *,
     fix: bool,
     dry_run: bool,
@@ -280,12 +309,6 @@ def _check_openclaw_section(
         return False
 
     skill_issues, fixed_items = _check_skill(state, fix=fix, dry_run=dry_run)
-
-    try:
-        enrollments = asyncio.run(repo.list_enrollments())
-    except Exception:
-        enrollments = []
-        skill_issues.append("could not read enrollment DB — provider check skipped")
 
     healthy = [e for e in enrollments if not is_orphan(e)]
     port = resolve_port(None)
@@ -338,6 +361,68 @@ def _list_recovery_files(home: WorthlessHome) -> list[Path]:
     if not home.recovery_dir.exists():
         return []
     return sorted(home.recovery_dir.glob("*.recover"))
+
+
+def _check_home_mismatch(home: WorthlessHome) -> bool:
+    """Check if the running proxy uses a different home. Prints and returns True on mismatch."""
+    pid_result = read_pid(pid_path(home))
+    if pid_result is None:
+        return False
+    pid, _port = pid_result
+    env = read_process_env(pid)
+    proxy_home_str = env.get("WORTHLESS_HOME")
+    proxy_home = Path(proxy_home_str) if proxy_home_str else _DEFAULT_BASE
+    if proxy_home.resolve() == home.base_dir.resolve():
+        return False
+    typer.echo(f"WARNING: {HOME_MISMATCH_PHRASE}")
+    typer.echo(f"  proxy is using: {proxy_home / 'worthless.db'}")
+    typer.echo(f"  this shell sees: {home.base_dir / 'worthless.db'}")
+    typer.echo("  Fix: unset WORTHLESS_HOME, then restart the proxy.")
+    return True
+
+
+def _check_alias_not_in_db(home: WorthlessHome, enrollments: list[EnrollmentRecord]) -> bool:
+    """Returns True when a .env BASE_URL references a proxy alias absent from *enrollments*."""
+    known_aliases = {e.key_alias for e in enrollments}
+    env_paths: set[Path] = {Path(e.env_path) for e in enrollments if e.env_path}
+    env_paths.add(Path.cwd() / ".env")
+
+    issues = _collect_alias_issues(env_paths, known_aliases, home)
+    if not issues:
+        return False
+
+    typer.echo(f"WARNING: {len(issues)} .env BASE_URL alias(es) missing from DB:")
+    for issue in issues:
+        typer.echo(f"  • {issue}")
+    return True
+
+
+def _collect_alias_issues(
+    env_paths: set[Path], known_aliases: set[str], home: WorthlessHome
+) -> list[str]:
+    """Scan env_paths for BASE_URL values referencing proxy aliases absent from DB."""
+    issues: list[str] = []
+    seen: set[str] = set()
+    for env_file in env_paths:
+        try:
+            parsed = dotenv_values(env_file)
+        except OSError:
+            continue
+        for key, value in parsed.items():
+            if not key.endswith("_BASE_URL") or not value:
+                continue
+            m = _PROXY_ALIAS_URL_RE.search(value)
+            if m is None:
+                continue
+            alias = m.group(1)
+            if alias in seen or alias in known_aliases:
+                continue
+            seen.add(alias)
+            issues.append(
+                f"alias '{alias}' is set in {env_file.name} BASE_URL "
+                f"but {ALIAS_NOT_IN_DB_PHRASE} ({home.db_path.name})"
+            )
+    return issues
 
 
 def _import_recovery_files(files: list[Path]) -> int:
@@ -580,13 +665,15 @@ def _doctor_apply(
 def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
     """Diagnose and (optionally) repair stuck states.
 
-    Four checks, run in order:
+    Six checks, run in order:
       1. Recovery file imports (sibling-Mac coming online with files copied across)
       2. Orphan DB rows (HF7)
       3. OpenClaw integration drift (WOR-431)
-      4. iCloud-synced keychain entries (WOR-456)
+      4. Home mismatch (proxy running with a different WORTHLESS_HOME than this shell)
+      5. iCloud-synced keychain entries (WOR-456)
+      6. Alias-not-in-DB (.env BASE_URL points at a proxy alias the current DB doesn't know)
 
-    A clean state on all four reports ``No issues found.`` and exits 0.
+    A clean state on all six reports ``No issues found.`` and exits 0.
     """
     console = get_console()
     home = get_home()
@@ -605,13 +692,25 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
 
         # ----------- check 2: orphan DB rows -----------
         repo = ShardRepository(str(home.db_path), home.fernet_key)
-        orphans = asyncio.run(_list_orphans(repo))
-        openclaw_issues = _check_openclaw_section(repo, fix=fix, dry_run=dry_run)
+        all_enrollments, orphans = asyncio.run(_list_orphans(repo))
+        openclaw_issues = _check_openclaw_section(all_enrollments, fix=fix, dry_run=dry_run)
+
+        # ----------- check 3: home mismatch -----------
+        had_mismatch = _check_home_mismatch(home)
 
         # ----------- check 4: iCloud-synced keychain entries -----------
         synced = _list_synced_keychain_entries()
 
-        if not orphans and not openclaw_issues and not synced:
+        # ----------- check 5: alias-not-in-DB -----------
+        had_alias_issues = _check_alias_not_in_db(home, all_enrollments)
+
+        if (
+            not orphans
+            and not openclaw_issues
+            and not synced
+            and not had_mismatch
+            and not had_alias_issues
+        ):
             if not imported:
                 console.print_success("No issues found.")
             return
