@@ -1,32 +1,51 @@
-"""Doctor command — diagnose and repair stuck DB/.env states (HF7 / worthless-3907).
+"""Doctor command — run this when something feels wrong with worthless.
 
-Currently handles TWO known shapes:
+When to run ``worthless doctor``
+---------------------------------
 
-1. Orphan DB enrollments whose ``.env`` line was deleted by the user (HF7).
-   The dogfood-discovered stuck state from 2026-04-30:
+**"I get 401s even though I locked my key"**
+  The proxy and your shell may be talking to different databases. This happens
+  when ``WORTHLESS_HOME`` is set in one terminal but not another. Doctor will
+  say "home mismatch" and tell you exactly which DB each side is using.
 
-     worthless unlock -> "No enrolled keys found." (silently skips orphan)
-     worthless status -> "Enrolled keys: ... PROTECTED" (lists the orphan)
+**"status says PROTECTED but wrap/unlock does nothing"**
+  Your ``.env`` file was deleted or moved after the key was locked, leaving an
+  orphan row in the DB. Doctor detects the dangling enrollment and ``--fix``
+  removes it so you can lock a fresh key cleanly.
 
-2. OpenClaw integration drift (Phase 2.d / WOR-431): OpenClaw installed
-   after ``worthless lock`` ran, or skill folder gone stale. Doctor
-   surfaces skill version mismatches and un-wired providers, and can
-   reinstall the skill when ``--fix`` is passed.
+**"BASE_URL in my .env points somewhere but requests fail immediately"**
+  The alias in ``OPENAI_BASE_URL`` (e.g. ``openai-abc12345``) has no matching
+  shard in the current database. Doctor will name the alias and confirm it is
+  absent. Common cause: locked in one home directory, running proxy from
+  another.
 
-``worthless doctor`` is read-only: it lists issues.
-``worthless doctor --fix`` repairs what it can (destructive for orphans,
-safe for skill reinstall). Prompts unless ``--yes``. ``--dry-run`` shows
-the planned action without writing.
+**"OpenClaw stopped routing after I reinstalled the skill"**
+  The OpenClaw skill folder drifted from what was wired at lock time. Doctor
+  surfaces version mismatches and un-wired providers; ``--fix`` reinstalls the
+  skill automatically.
 
-Design seams (foreseen extensions, NOT in this PR):
+**"I set up worthless on a second Mac and keys aren't available"** (macOS)
+  Fernet keys synced via iCloud Keychain instead of staying local. Doctor
+  finds them and ``--fix`` migrates them to local-only storage so the proxy
+  can start without iCloud access.
 
-* ``worthless-7db2`` (P3): a SECOND repair shape — partial-state recovery
-  when the home dir is intact but the fernet key is missing from every
-  source (manual keyring deletion). ``ensure_home`` will surface that
-  state and point users here; doctor will need a key-regeneration flow
-  guarded against silently destroying access to existing locked secrets.
-* ``worthless-57ad`` (P3, post-v0.4): a BYO-key LLM agent diagnoses
-  UNKNOWN stuck states using a user-locked enrollment.
+**"I copied recovery files over from another Mac"** (macOS)
+  Doctor automatically imports any ``*.recover`` files it finds in the
+  recovery directory — no ``--fix`` flag needed.
+
+Usage
+-----
+``worthless doctor``        — read-only scan, lists every issue found
+``worthless doctor --fix``  — repair what can be repaired (prompts first)
+``worthless doctor --yes``  — skip confirmation prompts (CI / scripted use)
+``worthless doctor --dry-run`` — show planned repairs without writing anything
+
+Design seams (foreseen extensions, not yet implemented):
+
+* ``worthless-7db2`` (P3): partial-state recovery when the home dir is intact
+  but the fernet key is missing from every source (manual keyring deletion).
+* ``worthless-57ad`` (P3, post-v0.4): BYO-key LLM agent diagnoses unknown
+  stuck states using a user-locked enrollment.
 """
 
 from __future__ import annotations
