@@ -489,9 +489,14 @@ class TestEntrypoint:
         the only reader. chown root:worthless-crypto 0400 locks the sidecar out
         of its own key (the A1 bug caught by task-completion-validator on PR #158).
         """
-        # No conditional gate — flag reference is gone from entrypoint.
-        assert "WORTHLESS_FERNET_IPC_ONLY" not in entrypoint_text, (
-            "WOR-465 A4: WORTHLESS_FERNET_IPC_ONLY conditional must be removed "
+        # No A1-style flag gate (if WORTHLESS_FERNET_IPC_ONLY = "1").
+        # The flag may appear for other purposes (e.g. "= 0" operator warning).
+        assert not any(
+            "WORTHLESS_FERNET_IPC_ONLY" in line and '"1"' in line
+            for line in entrypoint_text.splitlines()
+            if not line.strip().startswith("#")
+        ), (
+            "WOR-465 A4: WORTHLESS_FERNET_IPC_ONLY='1' gate must be removed "
             "from entrypoint.sh. A4 makes the chmod unconditional."
         )
         # Unconditional chown to sidecar uid — anchored to full owner:group pair.
