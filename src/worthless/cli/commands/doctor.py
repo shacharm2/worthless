@@ -114,6 +114,12 @@ _MULTI_DEVICE_WARNING = (
 )
 
 
+async def _fetch_enrollments(repo: ShardRepository) -> list[EnrollmentRecord]:
+    """Initialize repo and return all enrollments (no filtering)."""
+    await repo.initialize()
+    return await repo.list_enrollments()
+
+
 async def _list_orphans(repo: ShardRepository) -> list[EnrollmentRecord]:
     """Initialize the repo and return all orphan enrollments. Uses
     ``find_orphans`` so each shared ``.env`` is parsed at most once.
@@ -382,15 +388,17 @@ def _check_home_mismatch(home: WorthlessHome) -> bool:
     return True
 
 
-def _check_alias_not_in_db(repo: ShardRepository, home: WorthlessHome) -> bool:
+def _check_alias_not_in_db(home: WorthlessHome) -> bool:
     """Inverse of the orphan check: finds .env BASE_URLs pointing at aliases the DB doesn't know.
 
     Same contract as _check_openclaw_section: prints and returns True when issues found.
+    Uses a fresh ShardRepository so it never shares event-loop state with the caller.
     """
+    repo = ShardRepository(str(home.db_path), home.fernet_key)
     try:
-        enrollments = asyncio.run(repo.list_enrollments())
+        enrollments = asyncio.run(_fetch_enrollments(repo))
     except Exception:
-        logger.debug("_check_alias_not_in_db: failed to read enrollments", exc_info=True)
+        logger.debug("_check_alias_not_in_db: could not read enrollments", exc_info=True)
         return False
 
     known_aliases: set[str] = set()
@@ -720,7 +728,7 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
         synced = _list_synced_keychain_entries()
 
         # ----------- check 5: alias-not-in-DB -----------
-        had_alias_issues = _check_alias_not_in_db(repo, home)
+        had_alias_issues = _check_alias_not_in_db(home)
 
         if (
             not orphans
