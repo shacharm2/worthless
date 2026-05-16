@@ -16,6 +16,7 @@ docstring for the rationale.
 from __future__ import annotations
 
 import os
+import sys
 
 #: Env var that gates routing of every Fernet crypto operation through
 #: the sidecar. Set by the proxy container's entrypoint; never set on
@@ -25,6 +26,21 @@ WORTHLESS_FERNET_IPC_ONLY_ENV = "WORTHLESS_FERNET_IPC_ONLY"
 #: Env var for the sidecar's AF_UNIX socket path. Defaults handled by
 #: ``proxy.config.DEFAULT_SIDECAR_SOCKET_PATH`` at the call site.
 WORTHLESS_SIDECAR_SOCKET_ENV = "WORTHLESS_SIDECAR_SOCKET"
+
+
+def ipc_mode_active() -> bool:
+    """True when this process should route Fernet operations via the sidecar IPC.
+
+    Single source of truth for the three-way guard used in ``ensure_home``,
+    ``open_repo``, and ``doctor``: flag enabled + not Windows + non-root.
+
+    Root (uid 0) reads ``fernet.key`` directly — it bypasses DAC on Linux
+    and covers entrypoint bootstrap and operator ``docker exec`` sessions.
+    Windows has no Docker sidecar topology.
+    """
+    if sys.platform == "win32":
+        return False
+    return fernet_ipc_only_enabled() and os.geteuid() != 0
 
 
 def fernet_ipc_only_enabled() -> bool:
