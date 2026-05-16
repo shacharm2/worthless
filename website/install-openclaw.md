@@ -53,9 +53,18 @@ docker run --rm -it \
 worthless status
 ```
 
-Look for `openclaw` in the output — it shows whether the provider entries and skill folder are present.
+```
+Enrolled keys:
+  openai-a1b2c3d4  openai  PROTECTED
 
-To test end-to-end, send a request through OpenClaw and check the proxy log for a proxied request count increment.
+OpenClaw:
+  ~/.openclaw/openclaw.json — worthless-openai ✓
+  ~/.openclaw/workspace/skills/worthless/ — installed ✓
+
+Proxy: running on 127.0.0.1:8787
+```
+
+`PROTECTED` and both OpenClaw entries present means your key is enrolled and OpenClaw is wired to the proxy. Restart OpenClaw and send a request — the proxied request count in `worthless status` will increment.
 
 ## Undo
 
