@@ -53,13 +53,15 @@ docker run --rm -it \
 
 Run the Worthless proxy and OpenClaw in the same Docker network — no worthless process on your host.
 
-**1. Start the stack**
+**1. Start the proxy first (openclaw comes after)**
 
 ```bash
 # Download the compose file and env template
 curl -sSL https://raw.githubusercontent.com/shacharm2/worthless/main/deploy/docker-compose.yml -o docker-compose.yml
 curl -sSL https://raw.githubusercontent.com/shacharm2/worthless/main/deploy/docker-compose.env.example -o docker-compose.env
-docker compose --profile openclaw up -d
+
+# Start only the proxy — openclaw must not be running yet when you lock
+docker compose up -d
 ```
 
 **2. Write your key and lock**
@@ -72,14 +74,20 @@ printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY" | \
 # Lock: splits the key, stores shard B in the proxy, writes openclaw.json
 # with baseUrl=http://proxy:8787 into the shared volume
 docker compose exec proxy worthless lock --env /tmp/.env
+```
 
-# Restart openclaw so it picks up the new provider entry
-docker compose restart openclaw
+> **Order matters.** Lock must run before OpenClaw starts. Once OpenClaw has started it locks down its config directory and a subsequent `worthless lock` cannot write to it. If you need to re-lock (e.g. to rotate a key), stop openclaw first: `docker compose stop openclaw`, then lock, then `docker compose start openclaw`.
+
+**3. Start OpenClaw**
+
+```bash
+# Start openclaw — it reads the provider entry lock just wrote
+docker compose --profile openclaw up -d
 ```
 
 `WORTHLESS_PROXY_HOST=proxy` is pre-set in `docker-compose.yml`, so `worthless lock` writes the Docker-internal hostname into `openclaw.json` automatically — no env var to remember. The key in `/tmp/.env` is replaced with shard A and lives only in tmpfs (reset on container restart).
 
-**3. Send a request through OpenClaw**
+**4. Send a request through OpenClaw**
 
 ```bash
 docker compose exec openclaw \
