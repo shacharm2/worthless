@@ -88,15 +88,13 @@ async def worthless_status() -> str:
     home = resolve_home()
 
     keys: list[dict[str, str]] = []
+    proxy_info: dict[str, Any] = {"healthy": False, "port": None, "mode": None}
     if home is not None:
         # _list_enrolled_keys calls asyncio.run() internally, raising
         # RuntimeError inside FastMCP's running event loop. Run in a thread
         # executor — the same pattern used by worthless_lock in this file.
         loop = asyncio.get_running_loop()
         keys = await loop.run_in_executor(None, _list_enrolled_keys, home)
-
-    proxy_info: dict[str, Any] = {"healthy": False, "port": None, "mode": None}
-    if home is not None:
         port = _discover_proxy_port(home)
         if port is not None:
             proxy_info = _check_proxy_health(port)
