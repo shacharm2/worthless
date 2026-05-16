@@ -114,19 +114,18 @@ _MULTI_DEVICE_WARNING = (
 )
 
 
-async def _fetch_enrollments(repo: ShardRepository) -> list[EnrollmentRecord]:
-    """Initialize repo and return all enrollments (no filtering)."""
-    await repo.initialize()
-    return await repo.list_enrollments()
+async def _list_orphans(
+    repo: ShardRepository,
+) -> tuple[list[EnrollmentRecord], list[EnrollmentRecord]]:
+    """Initialize the repo and return ``(all_enrollments, orphans)``.
 
-
-async def _list_orphans(repo: ShardRepository) -> list[EnrollmentRecord]:
-    """Initialize the repo and return all orphan enrollments. Uses
-    ``find_orphans`` so each shared ``.env`` is parsed at most once.
+    Returns both so callers can reuse the already-fetched enrollment list
+    without a second ``asyncio.run`` on the same repo (which fails on Linux
+    when the event loop is closed between calls).
     """
     await repo.initialize()
-    enrollments = await repo.list_enrollments()
-    return find_orphans(enrollments)
+    all_enrollments = await repo.list_enrollments()
+    return all_enrollments, find_orphans(all_enrollments)
 
 
 async def _purge_all(
@@ -291,7 +290,7 @@ def _check_providers(
 
 
 def _check_openclaw_section(
-    repo: ShardRepository,
+    enrollments: list[EnrollmentRecord],
     *,
     fix: bool,
     dry_run: bool,
@@ -310,12 +309,6 @@ def _check_openclaw_section(
         return False
 
     skill_issues, fixed_items = _check_skill(state, fix=fix, dry_run=dry_run)
-
-    try:
-        enrollments = asyncio.run(repo.list_enrollments())
-    except Exception:
-        enrollments = []
-        skill_issues.append("could not read enrollment DB — provider check skipped")
 
     healthy = [e for e in enrollments if not is_orphan(e)]
     port = resolve_port(None)
@@ -388,28 +381,11 @@ def _check_home_mismatch(home: WorthlessHome) -> bool:
     return True
 
 
-def _check_alias_not_in_db(home: WorthlessHome) -> bool:
-    """Inverse of the orphan check: finds .env BASE_URLs pointing at aliases the DB doesn't know.
-
-    Same contract as _check_openclaw_section: prints and returns True when issues found.
-    Uses a fresh ShardRepository so it never shares event-loop state with the caller.
-    """
-    repo = ShardRepository(str(home.db_path), home.fernet_key)
-    try:
-        enrollments = asyncio.run(_fetch_enrollments(repo))
-    except Exception:
-        logger.debug("_check_alias_not_in_db: could not read enrollments", exc_info=True)
-        return False
-
-    known_aliases: set[str] = set()
-    env_paths: set[Path] = set()
-    for e in enrollments:
-        known_aliases.add(e.key_alias)
-        if e.env_path:
-            env_paths.add(Path(e.env_path))
-    cwd_env = Path.cwd() / ".env"
-    if cwd_env.is_file():
-        env_paths.add(cwd_env)
+def _check_alias_not_in_db(home: WorthlessHome, enrollments: list[EnrollmentRecord]) -> bool:
+    """Returns True when a .env BASE_URL references a proxy alias absent from *enrollments*."""
+    known_aliases = {e.key_alias for e in enrollments}
+    env_paths: set[Path] = {Path(e.env_path) for e in enrollments if e.env_path}
+    env_paths.add(Path.cwd() / ".env")
 
     issues = _collect_alias_issues(env_paths, known_aliases, home)
     if not issues:
@@ -428,8 +404,6 @@ def _collect_alias_issues(
     issues: list[str] = []
     seen: set[str] = set()
     for env_file in env_paths:
-        if not env_file.is_file():
-            continue
         try:
             parsed = dotenv_values(env_file)
         except OSError:
@@ -718,8 +692,8 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
 
         # ----------- check 2: orphan DB rows -----------
         repo = ShardRepository(str(home.db_path), home.fernet_key)
-        orphans = asyncio.run(_list_orphans(repo))
-        openclaw_issues = _check_openclaw_section(repo, fix=fix, dry_run=dry_run)
+        all_enrollments, orphans = asyncio.run(_list_orphans(repo))
+        openclaw_issues = _check_openclaw_section(all_enrollments, fix=fix, dry_run=dry_run)
 
         # ----------- check 3: home mismatch -----------
         had_mismatch = _check_home_mismatch(home)
@@ -728,7 +702,7 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
         synced = _list_synced_keychain_entries()
 
         # ----------- check 5: alias-not-in-DB -----------
-        had_alias_issues = _check_alias_not_in_db(home)
+        had_alias_issues = _check_alias_not_in_db(home, all_enrollments)
 
         if (
             not orphans

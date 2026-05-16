@@ -84,9 +84,8 @@ class TestDoctorHomeMismatch:
         # monkeypatch creates the attribute so the test fails on the assertion,
         # not on the patch setup.
         monkeypatch.setattr(
-            "worthless.cli.platform.read_process_env",
+            "worthless.cli.commands.doctor.read_process_env",
             lambda pid: {"WORTHLESS_HOME": other_home},
-            raising=False,
         )
         result = runner.invoke(
             app,

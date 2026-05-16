@@ -879,7 +879,7 @@ class TestDoctorRunIntegration:
         monkeypatch.setattr(
             doctor_module, "_list_synced_keychain_entries", lambda: ["fernet-key-X"]
         )
-        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns([]))
+        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
         monkeypatch.setattr(
             doctor_module,
@@ -905,7 +905,7 @@ class TestDoctorRunIntegration:
         (fake_home.recovery_dir / "key.recover").write_bytes(b"v")
 
         monkeypatch.setattr(doctor_module, "_list_synced_keychain_entries", lambda: [])
-        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns([]))
+        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
         # Simulate successful recovery import.
         monkeypatch.setattr(doctor_module, "_import_recovery_files", lambda _files: 1)
@@ -927,7 +927,7 @@ class TestDoctorRunIntegration:
         (fake_home.recovery_dir / "key.recover").write_bytes(b"v")
 
         monkeypatch.setattr(doctor_module, "_list_synced_keychain_entries", lambda: [])
-        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns([]))
+        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
         monkeypatch.setattr(doctor_module, "_import_recovery_files", lambda _files: 2)
 
@@ -946,7 +946,7 @@ class TestDoctorRunIntegration:
     ) -> None:
         """No recovery files, no orphans, no synced → 'No issues found.' exactly."""
         monkeypatch.setattr(doctor_module, "_list_synced_keychain_entries", lambda: [])
-        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns([]))
+        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
 
         result = runner.invoke(app, ["doctor"])
@@ -967,7 +967,7 @@ class TestDoctorRunIntegration:
         monkeypatch.setattr(
             doctor_module, "_list_synced_keychain_entries", lambda: ["fernet-key-X"]
         )
-        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns([]))
+        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
         monkeypatch.setattr(
             doctor_module,

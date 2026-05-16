@@ -86,7 +86,7 @@ def test_iclolud_finding_uses_canonical_phrases(
         lambda: ["fernet-key-abc123", "fernet-key-def456"],
     )
     # No orphans, no recovery files — only the iCloud finding.
-    monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns([]))
+    monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
     monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
 
     result = runner.invoke(app, ["doctor"])
@@ -136,7 +136,9 @@ def test_doctor_exit_codes(
     fake_synced = [f"fernet-key-{i}" for i in range(n_synced)]
 
     monkeypatch.setattr(doctor_module, "_list_synced_keychain_entries", lambda: fake_synced)
-    monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(fake_orphans))
+    monkeypatch.setattr(
+        doctor_module, "_list_orphans", _async_returns((fake_orphans, fake_orphans))
+    )
     monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
 
     # Pre-populate recovery files
