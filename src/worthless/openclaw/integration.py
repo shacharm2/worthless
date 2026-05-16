@@ -292,30 +292,53 @@ def _probe_config() -> tuple[Path | None, list[str]]:
     where the project-local file is the correct write target.
     """
     notes: list[str] = []
+    locked_candidate: Path | None = None
+
     try:
-        candidate = next(
-            (p for p in _global_config_candidates() if p.exists()),
-            None,
-        )
+        candidates = _global_config_candidates()
     except OSError as exc:
         notes.append(f"config probe failed: {exc}")
         return None, notes
 
-    if candidate is None:
-        return None, notes
+    for p in candidates:
+        try:
+            p.stat()
+        except FileNotFoundError:
+            continue
+        except PermissionError:
+            # The file's *parent dir* is locked (e.g. openclaw sets its config
+            # dir to 0700 on startup — DV-01).  ``p.exists()`` catches this and
+            # returns False, making detect() silently report present=False.
+            # ``p.stat()`` surfaces the distinction so we can store the path
+            # and return present=True with an actionable diagnostic note.
+            if locked_candidate is None:
+                locked_candidate = p
+                notes.append(
+                    f"openclaw config dir locked ({p.parent}): PermissionError "
+                    "on stat — openclaw has likely set the dir to 0700 on "
+                    "startup. Stop openclaw before re-locking to restore write "
+                    "access (worthless-eq5c)."
+                )
+            continue
+        except OSError:
+            continue
 
-    # F-CFG-15: do NOT call .resolve() on a symlink — that dereferences
-    # the link and hides the attack vector. Return the un-resolved path
-    # so apply_lock's symlink check fires correctly. For non-symlinks
-    # we still resolve for F35 (case-insensitive FS canonical compare).
-    try:
-        if candidate.is_symlink():
-            notes.append(f"config is a symlink (refused for safety): {candidate}")
-            return candidate, notes
-        return candidate.resolve(), notes
-    except OSError as exc:
-        notes.append(f"config unresolvable: {exc}")
-        return None, notes
+        # stat() succeeded — the file is accessible. Apply F-CFG-15 symlink
+        # check: do NOT call .resolve() on a symlink — that dereferences the
+        # link and hides the attack vector. For non-symlinks resolve for F35
+        # (case-insensitive FS canonical compare).
+        try:
+            if p.is_symlink():
+                notes.append(f"config is a symlink (refused for safety): {p}")
+                return p, notes
+            return p.resolve(), notes
+        except OSError as exc:
+            notes.append(f"config unresolvable: {exc}")
+            return None, notes
+
+    # No accessible config found. If we hit a locked dir, return that path so
+    # detect() can report present=True and surface the diagnostic to the user.
+    return locked_candidate, notes
 
 
 def detect() -> IntegrationState:
