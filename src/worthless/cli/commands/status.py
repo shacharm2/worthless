@@ -1,4 +1,13 @@
-"""Status command — show enrolled keys and proxy health."""
+"""Status command — show enrolled keys and proxy health.
+
+Trust-fix (2026-05-08 verification gauntlet): also reads
+``$WORTHLESS_HOME/last-lock-status.json``. When the sentinel reports
+DEGRADED state (lock-core succeeded but the OpenClaw integration stage
+failed), status emits a ``[WARN]`` row AND exits non-zero so the
+"five-minute-later" trust failure mode is closed: a stale terminal
+session that swallowed the original ``lock`` exit code still gets
+told the truth on the next ``worthless status`` invocation.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +18,6 @@ import sqlite3
 import sys
 from typing import Any
 
-import httpx
 import typer
 
 from worthless.cli.bootstrap import WorthlessHome, resolve_home
@@ -17,8 +25,15 @@ from worthless.cli.console import get_console
 from worthless.cli.errors import error_boundary
 from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY
 from worthless.cli.orphans import FIX_PHRASE, is_orphan
-from worthless.cli.process import read_pid
+from worthless.cli.process import check_proxy_health, read_pid
+from worthless.cli.sentinel import is_partial, read_sentinel
 from worthless.storage.repository import EnrollmentRecord, ShardRepository
+
+# Backward-compatible alias — the canonical home is now
+# ``worthless.cli.process.check_proxy_health``. Kept so existing
+# imports from ``worthless.cli.commands.status`` (mcp/server.py,
+# tests) keep working without churn.
+_check_proxy_health = check_proxy_health
 
 
 def _list_enrolled_keys(home: WorthlessHome) -> list[dict[str, str]]:
@@ -91,24 +106,6 @@ def _discover_proxy_port(home: WorthlessHome) -> int | None:
     return None
 
 
-def _check_proxy_health(port: int) -> dict[str, Any]:
-    """Hit /healthz and return proxy status dict."""
-    try:
-        resp = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=2.0)
-        if resp.status_code == 200:
-            data = resp.json()
-            return {
-                "healthy": True,
-                "port": port,
-                "mode": data.get("mode", "up"),
-                "requests_proxied": data.get("requests_proxied", 0),
-            }
-    except Exception:  # noqa: S110 — proxy may not be running; absence is the expected default state  # nosec B110
-        pass
-
-    return {"healthy": False, "port": port, "mode": None, "requests_proxied": 0}
-
-
 def register_status_commands(app: typer.Typer) -> None:
     """Register the status command on the Typer app."""
 
@@ -138,9 +135,24 @@ def register_status_commands(app: typer.Typer) -> None:
             if port is not None:
                 proxy_info = _check_proxy_health(port)
 
+        # Trust-fix sentinel (2026-05-08 gauntlet): persistent DEGRADED
+        # state survives the terminal session that ran `worthless lock`.
+        # If the last lock/unlock left a partial state, status MUST tell
+        # the user — the original exit code may have been swallowed by CI
+        # or shell-script `; my-app` chaining.
+        sentinel: dict[str, Any] | None = None
+        if home is not None:
+            sentinel = read_sentinel(home.base_dir)
+        degraded = is_partial(sentinel)
+
         # Output. Sub-command --json mirrors scan/wrap; honors top-level --json too.
         if console.json_mode or json_output:
-            result = {"keys": keys, "proxy": proxy_info}
+            result = {
+                "keys": keys,
+                "proxy": proxy_info,
+                "sentinel": sentinel,
+                "degraded": degraded,
+            }
             sys.stdout.write(json.dumps(result, default=str) + "\n")
             sys.stdout.flush()
         else:
@@ -168,6 +180,17 @@ def register_status_commands(app: typer.Typer) -> None:
                 sys.stderr.write(f"Requests proxied: {proxy_info['requests_proxied']}\n")
             else:
                 sys.stderr.write("Proxy: not running\n")
+
+            if degraded:
+                sys.stderr.write(
+                    "\n[WARN] OpenClaw integration is broken — "
+                    "your agent traffic may NOT be gated by worthless.\n"
+                    "       Run `worthless doctor` to repair, or "
+                    "`worthless unlock` to roll back.\n"
+                )
             sys.stderr.flush()
 
-        raise typer.Exit(code=0)
+        # Trust-fix exit: degraded sentinel = non-zero exit so callers
+        # (CI scripts, shell pipelines, agents polling status) get the
+        # signal even if they ignored the original lock exit code.
+        raise typer.Exit(code=73 if degraded else 0)

@@ -39,11 +39,10 @@ Entry: `worthless wrap <cmd>`
 
 High-level path:
 
-1. start a temporary proxy on an ephemeral local port
-2. inject provider `BASE_URL` env vars for the child process
-3. spawn the child command
-4. child SDK/HTTP traffic routes through the proxy
-5. on child exit, clean up proxy/process state
+1. start a temporary proxy on the same port `lock` wrote into `.env` (default 8787, override via `WORTHLESS_PORT`)
+2. spawn the child command with the parent environment unchanged — `lock` already wrote `*_BASE_URL` into the user's `.env`, so the child picks them up via dotenv
+3. child SDK/HTTP traffic resolves `*_BASE_URL` from `.env` and reaches the proxy on the bound port
+4. on child exit, clean up proxy/process state
 
 Important characteristic:
 

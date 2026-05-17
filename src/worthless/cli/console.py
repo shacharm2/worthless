@@ -97,3 +97,15 @@ class WorthlessConsole:
         """Yellow text to stderr (suppressed in quiet mode)."""
         if not self.quiet:
             self._err.print(f"[yellow]{message}[/yellow]")
+
+    def print_failure(self, message: str) -> None:
+        """Red text to stderr for [FAIL] blocks (always shown — even in quiet).
+
+        Distinct from :meth:`print_error` which formats a structured
+        :class:`WorthlessError`. This prints a free-form failure line and is
+        used for the trust-fix [FAIL] block on partial OpenClaw failure
+        (per spec § L2 revised 2026-05-08). Always shown — quiet does not
+        suppress trust-failure messages, by design: the user MUST learn
+        about partial failures even with -q.
+        """
+        self._err.print(f"[bold red]{message}[/bold red]")

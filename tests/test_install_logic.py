@@ -14,6 +14,7 @@ from tests._install_helpers import (
     EXIT_NETWORK,
     EXIT_PIPX_CONFLICT,
     EXIT_PLATFORM,
+    INSTALL_SH,
     run_install,
     write_happy_path_stubs,
     write_stub,
@@ -166,4 +167,234 @@ def test_success_without_persistent_rc_warns_and_shows_persistence_hint(
     assert "Activate in this shell" not in result.stdout, (
         "must NOT print 'Activate in this shell' — PATH is already live here; "
         "that hint would confuse users into thinking worthless doesn't work yet"
+    )
+
+
+# ---------------------------------------------------------------------------
+# worthless-nrl1: failure path surfaces uv's actual stderr above the proxy hint
+# ---------------------------------------------------------------------------
+
+
+def _failing_uv_stub(install_stderr: str = "", upgrade_stderr: str = "") -> str:
+    """Build a uv stub that fails BOTH install AND upgrade with the given stderr."""
+    return f"""case "$1" in
+  --version) echo "uv 0.11.7" ;;
+  tool) shift; case "$1" in
+    list) ;;  # empty → no fast-path; force install+upgrade attempts
+    install)
+      printf '%b' {install_stderr!r} >&2
+      exit 1 ;;
+    upgrade)
+      printf '%b' {upgrade_stderr!r} >&2
+      exit 1 ;;
+    *) echo "uv tool: unhandled: $*" >&2; exit 1 ;;
+  esac ;;
+  *) echo "uv: unhandled: $*" >&2; exit 1 ;;
+esac"""
+
+
+def test_install_failure_surfaces_uv_stderr(tmp_path: Path) -> None:
+    """When uv tool install fails, the user sees uv's actual error message —
+    not just a generic "Failed to install" + proxy hint banner that masks
+    the real cause. (worthless-nrl1)
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_stub(bin_dir, "uname", "echo Darwin")
+    write_stub(bin_dir, "sw_vers", 'echo "14.5"')
+    write_stub(
+        bin_dir,
+        "uv",
+        _failing_uv_stub(
+            install_stderr="× No solution found when resolving dependencies\n",
+            upgrade_stderr="× package not installed\n",
+        ),
+    )
+
+    result = run_install(bin_dir)
+
+    assert result.returncode == EXIT_NETWORK, (
+        f"failure path must exit {EXIT_NETWORK}, got {result.returncode}\nstderr: {result.stderr}"
+    )
+    # The install error MUST appear — that's the actionable diagnostic.
+    assert "No solution found" in result.stderr, (
+        f"uv's actual install error must surface to stderr, "
+        f"not be hidden behind the generic banner.\nstderr: {result.stderr}"
+    )
+    assert "uv tool install reported:" in result.stderr, (
+        "install stderr must be fenced under a clear header so injected "
+        f"text in uv output looks like uv, not install.sh.\nstderr: {result.stderr}"
+    )
+    # Banner is still there (not removed, just demoted).
+    assert "Failed to install" in result.stderr
+    # Proxy hint is still there.
+    assert "HTTPS_PROXY" in result.stderr
+
+
+def test_install_failure_dual_skips_upgrade_block(tmp_path: Path) -> None:
+    """When BOTH install AND upgrade fail with non-empty stderrs, only the
+    install stderr is inlined. Upgrade is summarized as a one-liner — uv's
+    resolver tracebacks are easily 30+ lines each, and printing both
+    back-to-back buries the actionable proxy hint below the fold. The install
+    error is the actionable diagnostic ~95% of the time; upgrade is just a
+    retry that fails for the same root cause. (worthless-nrl1, brutus catch.)
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_stub(bin_dir, "uname", "echo Darwin")
+    write_stub(bin_dir, "sw_vers", 'echo "14.5"')
+    write_stub(
+        bin_dir,
+        "uv",
+        _failing_uv_stub(
+            install_stderr="× No solution found when resolving dependencies\n",
+            upgrade_stderr="× package not installed sentinel-do-not-print\n",
+        ),
+    )
+
+    result = run_install(bin_dir)
+    stderr = result.stderr
+
+    assert result.returncode == EXIT_NETWORK
+    # Install stderr is inlined.
+    assert "No solution found" in stderr
+    assert "uv tool install reported:" in stderr
+    # Upgrade stderr is NOT inlined — only a one-liner acknowledging it failed.
+    assert "sentinel-do-not-print" not in stderr, (
+        f"upgrade stderr must NOT be inlined when install stderr is — "
+        f"30 lines of redundant resolver output buries the proxy hint.\nstderr: {stderr}"
+    )
+    assert "uv tool upgrade reported:" not in stderr, (
+        f"`uv tool upgrade reported:` block must be suppressed when install "
+        f"stderr already covers the same root cause.\nstderr: {stderr}"
+    )
+    assert "uv tool upgrade also failed" in stderr, (
+        f"user must still know upgrade was attempted — show a one-liner "
+        f"so the absence of the upgrade block isn't mysterious.\nstderr: {stderr}"
+    )
+
+
+def test_install_failure_proxy_hint_is_secondary(tmp_path: Path) -> None:
+    """The proxy hint must come AFTER uv's stderr, not before — uv's actual
+    error is the primary diagnostic; proxy is the fallback suggestion.
+    (worthless-nrl1)
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_stub(bin_dir, "uname", "echo Darwin")
+    write_stub(bin_dir, "sw_vers", 'echo "14.5"')
+    write_stub(
+        bin_dir,
+        "uv",
+        _failing_uv_stub(
+            install_stderr="× No solution found\n",
+            upgrade_stderr="× package not installed\n",
+        ),
+    )
+
+    result = run_install(bin_dir)
+    stderr = result.stderr
+
+    no_sol_idx = stderr.find("No solution found")
+    proxy_hint_idx = stderr.find("HTTPS_PROXY")
+    assert no_sol_idx >= 0, f"install stderr missing from output:\n{stderr}"
+    assert proxy_hint_idx >= 0, f"proxy hint missing from output:\n{stderr}"
+    assert no_sol_idx < proxy_hint_idx, (
+        f"uv's stderr must come BEFORE the proxy hint (it's the primary "
+        f"diagnostic, hint is the fallback). "
+        f"Got: install_err at {no_sol_idx}, proxy_hint at {proxy_hint_idx}.\n{stderr}"
+    )
+    # The "If this looks like a network issue" framing demotes the proxy
+    # hint from "this IS the cause" to "this MIGHT be the cause".
+    assert "If this looks like a network issue" in stderr, (
+        f"proxy hint must be reframed as conditional fallback:\n{stderr}"
+    )
+
+
+def test_install_failure_empty_stderr_still_shows_banner(tmp_path: Path) -> None:
+    """If uv exits 1 with empty stderr (rare but possible), the failure banner
+    + proxy hint still print — and we don't emit an empty 'uv reported:'
+    block that would be more confusing than useful. (worthless-nrl1)
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    write_stub(bin_dir, "uname", "echo Darwin")
+    write_stub(bin_dir, "sw_vers", 'echo "14.5"')
+    write_stub(
+        bin_dir,
+        "uv",
+        _failing_uv_stub(install_stderr="", upgrade_stderr=""),
+    )
+
+    result = run_install(bin_dir)
+
+    assert result.returncode == EXIT_NETWORK
+    assert "Failed to install" in result.stderr
+    assert "HTTPS_PROXY" in result.stderr
+    # No empty "uv reported:" block — guard against showing
+    # "uv reported:\n\n" with no content underneath.
+    assert "uv tool install reported:" not in result.stderr, (
+        f"empty-stderr path must not show an empty 'uv tool install reported:' "
+        f"block — that's noise, not signal.\nstderr: {result.stderr}"
+    )
+    assert "uv tool upgrade reported:" not in result.stderr, (
+        f"empty-stderr path must not show an empty 'uv tool upgrade reported:' "
+        f"block.\nstderr: {result.stderr}"
+    )
+    # Empty upgrade stderr → no "upgrade also failed" one-liner either.
+    # No file content means we can't be sure upgrade was even attempted in
+    # a way that produced output; better to stay silent than confuse.
+    assert "uv tool upgrade also failed" not in result.stderr, (
+        f"empty-stderr path must not show the upgrade one-liner; reserve "
+        f"it for the case where there IS suppressed content.\nstderr: {result.stderr}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Trap chaining — guards against silently dropping prior cleanups
+# ---------------------------------------------------------------------------
+
+
+def test_install_trap_preserves_ensure_uv_tmpdir_cleanup() -> None:
+    """install_or_upgrade_worthless's trap must keep ensure_uv's tmpdir cleanup.
+
+    POSIX `trap CMD SIGNAL` REPLACES (not chains) the previously registered
+    trap for that signal. ensure_uv() registers an EXIT trap that cleans up
+    the downloaded-installer tmpdir; if install_or_upgrade_worthless()
+    registers a fresh EXIT trap without re-including that cleanup, the
+    tmpdir leaks every time install_or_upgrade_worthless runs (i.e. always,
+    on the common path of any non-fresh box).
+
+    Static check (per feedback_extract_and_test): grep the actual on-disk
+    install.sh and assert the install_or_upgrade_worthless trap line
+    references BOTH tmpdir AND uv_*_err. The functional repro would need
+    to force ensure_uv through the full mktemp-d path (no uv on PATH at
+    all) — heavy stub setup for a 1-line invariant. Static check catches
+    every regression mode that matters: someone re-overwriting the trap
+    without chaining. (CodeRabbit catch on PR #148.)
+    """
+    install_sh = INSTALL_SH.read_text()
+
+    # Find the trap line inside install_or_upgrade_worthless. The function
+    # contains a single trap directive; locate it by searching for the
+    # uv_install_err reference (unique to install_or_upgrade_worthless).
+    trap_lines = [
+        line
+        for line in install_sh.splitlines()
+        if line.lstrip().startswith("trap ") and "uv_install_err" in line
+    ]
+    assert len(trap_lines) == 1, (
+        f"expected exactly one trap directive referencing uv_install_err in "
+        f"install.sh; found {len(trap_lines)}: {trap_lines!r}"
+    )
+    trap_line = trap_lines[0]
+
+    # Both cleanups must be present in the same directive.
+    assert "tmpdir" in trap_line, (
+        f"install_or_upgrade_worthless's EXIT trap dropped ensure_uv's "
+        f"tmpdir cleanup — POSIX trap REPLACES, must chain explicitly. "
+        f"got: {trap_line!r}"
+    )
+    assert "uv_install_err" in trap_line and "uv_upgrade_err" in trap_line, (
+        f"trap must clean BOTH uv stderr tempfiles. got: {trap_line!r}"
     )

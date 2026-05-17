@@ -1,0 +1,272 @@
+name: Release Sync Check
+
+# Daily check that every install front door agrees: PyPI, GitHub tag,
+# worthless.sh Worker, docs.wless.io, wless.io marketing, DNS. Sync at
+# release time is enforced by publish.yml + deploy-worker.yml + worker-
+# url-smoke.yml; THIS workflow catches drift BETWEEN releases — the gap
+# WOR-449 was opened to close.
+#
+# Runs at 03:00 UTC = 06:00 Asia/Jerusalem (TLV wake-up) = 23:00 ET prev-
+# day (post-US-workday) = 20:00 PT prev-day. The cron window minimises
+# both noisy alerts during EU/US business hours and time-to-detect for
+# the operator who reviews mornings TLV-time.
+#
+# Failure model: any failed assertion fails the workflow. GitHub emails
+# the watchers. No Slack/PagerDuty (anti-target per WOR-449 done-state).
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Don't drop a scheduled run if a manual one fires — both are useful.
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  sync-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # Need full tag history for `git show <tag>:install.sh`.
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Set up Python (for tomllib + JSON parsing)
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.13"
+
+      - name: Resolve canonical versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Latest GH `v*` release tag — authoritative source for "what's shipped".
+          LATEST_TAG=$(gh release view --json tagName -q .tagName)
+          LATEST_VERSION="${LATEST_TAG#v}"
+
+          # PyPI's view of "what's installable today".
+          PYPI_VERSION=$(curl -fsSL https://pypi.org/pypi/worthless/json \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])')
+
+          # pyproject AT THE TAG (not at HEAD — HEAD legitimately leads
+          # the tag during the pre-release window; that's not drift).
+          PYPROJECT_AT_TAG=$(git show "${LATEST_TAG}:pyproject.toml" \
+            | python3 -c "import tomllib,sys; print(tomllib.loads(sys.stdin.read())['project']['version'])")
+
+          {
+            echo "latest_tag=${LATEST_TAG}"
+            echo "latest_version=${LATEST_VERSION}"
+            echo "pypi_version=${PYPI_VERSION}"
+            echo "pyproject_at_tag=${PYPROJECT_AT_TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved: tag=${LATEST_TAG}  pypi=${PYPI_VERSION}  pyproject@tag=${PYPROJECT_AT_TAG}"
+
+      # ===== Assertion 1: version chain =====================================
+      - name: A1 — PyPI version == latest GH tag
+        env:
+          LATEST_TAG: ${{ steps.versions.outputs.latest_tag }}
+          LATEST_VERSION: ${{ steps.versions.outputs.latest_version }}
+          PYPI_VERSION: ${{ steps.versions.outputs.pypi_version }}
+          PYPROJECT_AT_TAG: ${{ steps.versions.outputs.pyproject_at_tag }}
+        run: |
+          set -euo pipefail
+          if [ "$PYPI_VERSION" != "$LATEST_VERSION" ]; then
+            echo "::error title=Version chain drift::PyPI $PYPI_VERSION != latest tag $LATEST_TAG"
+            exit 1
+          fi
+          # Sanity: pyproject AT the tag should also match (catches a tag
+          # that was force-pushed without bumping pyproject).
+          if [ "$PYPROJECT_AT_TAG" != "$LATEST_VERSION" ]; then
+            echo "::error title=Tag/pyproject drift at tag::pyproject@${LATEST_TAG} = ${PYPROJECT_AT_TAG}, tag = ${LATEST_VERSION}"
+            exit 1
+          fi
+          echo "OK: PyPI = tag = pyproject@tag = $LATEST_VERSION"
+
+      # ===== Assertion 2a: worthless.sh content negotiation (curl) ==========
+      - name: A2a — worthless.sh curl-UA serves install.sh @ latest tag
+        env:
+          LATEST_TAG: ${{ steps.versions.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+          # Body byte-equality vs install.sh @ tag.
+          BODY_TMP=$(mktemp)
+          curl -fsSL -A "curl/8.0" https://worthless.sh -o "$BODY_TMP"
+          BODY_SHA=$(sha256sum "$BODY_TMP" | awk '{print $1}')
+          REPO_SHA=$(git show "${LATEST_TAG}:install.sh" | sha256sum | awk '{print $1}')
+          if [ "$BODY_SHA" != "$REPO_SHA" ]; then
+            echo "::error title=Worker body drift::worthless.sh body sha256 ${BODY_SHA} != install.sh@${LATEST_TAG} ${REPO_SHA}"
+            exit 1
+          fi
+
+          # X-Worthless-Script-Tag header == latest tag.
+          HDRS=$(curl -fsI -A "curl/8.0" https://worthless.sh)
+          TAG_HEADER=$(printf '%s\n' "$HDRS" | awk -F': ' 'tolower($1)=="x-worthless-script-tag"{print $2}' | tr -d '\r\n ')
+          if [ "$TAG_HEADER" != "$LATEST_TAG" ]; then
+            echo "::error title=Worker header drift::X-Worthless-Script-Tag = '${TAG_HEADER}', expected '${LATEST_TAG}'"
+            exit 1
+          fi
+          echo "OK: worthless.sh body sha256 matches install.sh@${LATEST_TAG} and header = ${TAG_HEADER}"
+
+      # ===== Assertion 2b: worthless.sh content negotiation (browser) =======
+      - name: A2b — worthless.sh browser-UA → 30x → wless.io
+        run: |
+          set -euo pipefail
+          # -o /dev/null + -w '%{http_code}\t%{redirect_url}' avoids -L (we want the redirect itself, not its target).
+          OUT=$(curl -sI -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" -o /dev/null \
+            -w '%{http_code}\t%{redirect_url}' https://worthless.sh)
+          STATUS=$(printf '%s' "$OUT" | cut -f1)
+          LOCATION=$(printf '%s' "$OUT" | cut -f2)
+          case "$STATUS" in
+            301|302|303|307|308) ;;
+            *) echo "::error title=Worker browser redirect missing::HTTP $STATUS, expected 30x"; exit 1 ;;
+          esac
+          case "$LOCATION" in
+            https://wless.io|https://wless.io/*) ;;
+            *) echo "::error title=Worker browser redirect wrong target::Location='$LOCATION', expected wless.io"; exit 1 ;;
+          esac
+          echo "OK: browser-UA → $STATUS → $LOCATION"
+
+      # ===== Assertion 3: docs.wless.io install paths =======================
+      - name: A3 — docs.wless.io install pages return 200
+        run: |
+          set -euo pipefail
+          # Per WOR-449 done-state: every URL printed by install.sh resolves;
+          # docs sidebar advertises these six paths.
+          FAILED=""
+          for path in /install/ /install/mac /install/linux /install/wsl /install/docker /install/agent-schema; do
+            CODE=$(curl -fsSL -o /dev/null -w '%{http_code}' "https://docs.wless.io$path" || true)
+            if [ "$CODE" != "200" ]; then
+              FAILED="${FAILED}\n  https://docs.wless.io${path} → ${CODE}"
+            fi
+          done
+          if [ -n "$FAILED" ]; then
+            printf "::error title=docs.wless.io drift::%b\n" "$FAILED"
+            exit 1
+          fi
+          echo "OK: 6 install paths on docs.wless.io return 200"
+
+      # ===== Assertion 3b: wless.io marketing copy ==========================
+      - name: A3b — wless.io contains ≥1 documented install command
+        run: |
+          set -euo pipefail
+          # WOR-449 design: multiple install commands per audience is intentional.
+          # We assert ≥1 of the documented forms exists, NOT a specific one.
+          BODY=$(curl -fsSL https://wless.io)
+          if echo "$BODY" | grep -qE 'curl -sSL https://worthless\.sh|pipx install worthless|pip install worthless|docker run[^"]*worthless'; then
+            echo "OK: wless.io advertises a documented install command"
+          else
+            echo "::error title=wless.io marketing drift::wless.io html does not contain any of: curl -sSL worthless.sh, pipx install worthless, pip install worthless, docker run ... worthless"
+            exit 1
+          fi
+
+      # ===== Assertion 4: dynamic install in clean Docker ===================
+      - name: A4 — `curl | sh` on clean Ubuntu installs latest PyPI version
+        env:
+          EXPECT: ${{ steps.versions.outputs.latest_version }}
+        run: |
+          set -euo pipefail
+          docker run --rm -e EXPECT="$EXPECT" ubuntu:24.04 bash -c '
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null
+            curl -sSL https://worthless.sh | sh
+            export PATH="$HOME/.local/bin:$PATH"
+            VER=$(worthless --version 2>&1 | awk "{print \$NF}")
+            echo "got=$VER  expect=$EXPECT"
+            [ "$VER" = "$EXPECT" ] || { echo "::error::worthless --version=$VER, expected $EXPECT"; exit 1; }
+          '
+
+      - name: A4b — `pipx install worthless` resolves latest PyPI version
+        env:
+          EXPECT: ${{ steps.versions.outputs.latest_version }}
+        run: |
+          set -euo pipefail
+          docker run --rm -e EXPECT="$EXPECT" python:3.13-slim bash -c '
+            set -euo pipefail
+            python -m pip install --quiet pipx
+            export PATH="$HOME/.local/bin:$PATH"
+            python -m pipx install worthless --quiet
+            VER=$(worthless --version 2>&1 | awk "{print \$NF}")
+            echo "got=$VER  expect=$EXPECT"
+            [ "$VER" = "$EXPECT" ] || { echo "::error::pipx-installed worthless --version=$VER, expected $EXPECT"; exit 1; }
+          '
+
+      # ===== Assertion 5: deploy-lag check ==================================
+      - name: A5 — Pages + Worker deployments not stale vs source pushes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          LATEST_TAG: ${{ steps.versions.outputs.latest_tag }}
+          # Threshold: 24 hours. Tunable. Picked generous to avoid FP on
+          # weekends / slow doc edits; tight enough that a stuck deploy
+          # surfaces within a workday. Re-tune if FP rate > 1/quarter.
+          STALE_HOURS: "24"
+        run: |
+          set -euo pipefail
+          # GitHub Pages deploys from the `website` branch (per WOR-326).
+          # Compare last `website` commit time to last successful Pages build.
+          WEBSITE_PUSH=$(gh api "repos/${REPO}/branches/website" --jq '.commit.commit.committer.date' 2>/dev/null || echo "")
+          PAGES_BUILD=$(gh api "repos/${REPO}/pages/builds/latest" --jq '.updated_at' 2>/dev/null || echo "")
+
+          if [ -z "$WEBSITE_PUSH" ] || [ -z "$PAGES_BUILD" ]; then
+            echo "::warning title=Deploy-lag check incomplete::Could not query Pages timestamps (website_push='$WEBSITE_PUSH', pages_build='$PAGES_BUILD'). Skipping."
+          else
+            # Convert to epoch and compare.
+            PUSH_EPOCH=$(date -d "$WEBSITE_PUSH" +%s)
+            BUILD_EPOCH=$(date -d "$PAGES_BUILD" +%s)
+            LAG_HOURS=$(( (PUSH_EPOCH - BUILD_EPOCH) / 3600 ))
+            if [ "$LAG_HOURS" -gt "$STALE_HOURS" ]; then
+              echo "::error title=Pages deploy lag::website branch pushed at $WEBSITE_PUSH, last Pages build $PAGES_BUILD (${LAG_HOURS}h stale, threshold ${STALE_HOURS}h)"
+              exit 1
+            fi
+            echo "OK: Pages last build $PAGES_BUILD, last website push $WEBSITE_PUSH (lag ${LAG_HOURS}h ≤ ${STALE_HOURS}h)"
+          fi
+
+          # Worker deploy lag: last successful run of deploy-worker.yml on a
+          # `v*` tag, compared to that tag's creation time. If a tag exists
+          # but no deploy ran successfully within the threshold, flag.
+          LAST_DEPLOY=$(gh run list --workflow="Deploy worker (worthless.sh)" --status=success --limit=1 --json updatedAt --jq '.[0].updatedAt' 2>/dev/null || echo "")
+          if [ -z "$LAST_DEPLOY" ]; then
+            echo "::warning title=Worker deploy-lag check incomplete::Could not query deploy-worker workflow runs. Skipping."
+          else
+            TAG_DATE=$(gh release view "$LATEST_TAG" --json publishedAt --jq '.publishedAt')
+            TAG_EPOCH=$(date -d "$TAG_DATE" +%s)
+            DEPLOY_EPOCH=$(date -d "$LAST_DEPLOY" +%s)
+            # If most recent successful deploy is OLDER than the latest tag, that's drift.
+            if [ "$DEPLOY_EPOCH" -lt "$TAG_EPOCH" ]; then
+              LAG_HOURS=$(( (TAG_EPOCH - DEPLOY_EPOCH) / 3600 ))
+              if [ "$LAG_HOURS" -gt "$STALE_HOURS" ]; then
+                echo "::error title=Worker deploy lag::tag ${LATEST_TAG} published $TAG_DATE, last successful Worker deploy $LAST_DEPLOY (${LAG_HOURS}h stale, threshold ${STALE_HOURS}h)"
+                exit 1
+              fi
+            fi
+            echo "OK: Worker last deploy $LAST_DEPLOY ≥ tag publish $TAG_DATE"
+          fi
+
+      # ===== Assertion 6: stale-domain regression guard =====================
+      - name: A6 — install.sh contains no docs.worthless.sh substring
+        run: |
+          set -euo pipefail
+          if grep -q 'docs\.worthless\.sh' install.sh; then
+            echo "::error title=Stale domain regression::install.sh contains 'docs.worthless.sh' — should be 'docs.wless.io' (WOR-451 closed this; do not re-open)"
+            grep -n 'docs\.worthless\.sh' install.sh
+            exit 1
+          fi
+          # Belt-and-suspenders: also check the manual smoke fixture.
+          if grep -q 'docs\.worthless\.sh' tests/install_fixtures/MANUAL_SMOKE.md 2>/dev/null; then
+            echo "::error title=Stale domain regression::tests/install_fixtures/MANUAL_SMOKE.md contains 'docs.worthless.sh'"
+            exit 1
+          fi
+          echo "OK: no docs.worthless.sh references in install.sh or manual smoke fixture"

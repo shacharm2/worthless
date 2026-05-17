@@ -4,15 +4,88 @@ All notable changes to Worthless are documented here. Format follows [Keep a Cha
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-05-12
+
+The "OpenClaw integration actually works for Docker users" release. v0.3.5 shipped the WOR-431 OpenClaw magic-integration (Phase 2), but Brutus review caught 3 release blockers and CodeRabbit caught 2 more before the developer-facing flow was sound. Headline: `worthless lock` on a host with a Dockerised OpenClaw now writes a `baseUrl` that OpenClaw can actually reach (loopback → docker0 bridge / `host.docker.internal`), SKILL.md ships the YAML frontmatter ClawHub needs for auto-install discovery, and cross-environment re-locks on non-default ports correctly refresh the apiKey instead of misclassifying our own entries as third-party conflicts.
+
+### Fixed
+- **`worthless lock` now writes a Docker-reachable proxy URL** (PR #168). `apply_lock` resolves the proxy host at lock-time via `_resolve_proxy_base_url()` — bare-metal returns `127.0.0.1:8787`, Docker Desktop returns `host.docker.internal:8787`, Docker on Linux reads the `docker0` bridge gateway (default `172.17.0.1`). Pre-fix every OpenClaw-in-Docker user hit a silent connection-refused; `127.0.0.1` from inside the container points back at the container, not the host. The probe uses `shutil.which("docker")` + a 3 s `docker info` timeout, so when Docker is absent there's zero startup latency cost.
+- **`_is_proxy_url` cross-host fallback handles non-default ports** (PR #168, CodeRabbit catch). The original fallback hardcoded `:8787`. A user on `--port 9090` who locked without Docker then re-locked with Docker on would have the existing entry's `apiKey` silently skip refresh — primary prefix check fails on host mismatch, fallback regex fails on port mismatch, entry misclassified as third-party conflict. Now the fallback derives the port from `proxy_base_url` via `urlsplit()`, so `WORTHLESS_PORT`/`--port` deployments work end-to-end. Regression test pins port 9090 with host mismatch.
+- **`health_check()` uses the same resolved host as `apply_lock`** (PR #168, CodeRabbit catch). Pre-fix, doctor compared the `openclaw.json` entry against a hardcoded `http://127.0.0.1:<port>/<alias>/v1`. On Docker hosts every healthy config got reported as drifted. Optional `proxy_base_url` parameter defaults to `_resolve_proxy_base_url()`; `proxy_port` is preserved so non-default deployments don't false-flag.
+- **urllib3 bumped to 2.7.0** (PR #168). Closes GHSA-qccp and GHSA-mf9v via lockfile bump (no direct dependency added).
+
+### Added
+- **SKILL.md `metadata.openclaw` frontmatter** (PR #168). `requires.bins: [worthless]` enforces the worthless CLI is installed before the skill activates; `install` array gives ClawHub two recipes (`uv tool install` + `pip install`) for one-click bootstrap. Pre-fix ClawHub had no way to auto-install; the developer had to know they needed worthless on the host before the skill made sense.
+- **WOR-432 e2e Docker test runs in CI** (PR #168). `tests/test_openclaw_skill_e2e.py` was already implemented but had been gated on a Docker daemon — confirmed it runs locally end-to-end (mock upstream receives the reconstructed key, shard-A absent from outbound traffic).
+- **+8 unit tests covering all `_resolve_proxy_base_url()` branches** (PR #168). Linux/macOS/Windows + Docker present/absent + bridge inspection failure.
+
+### Changed
+- **`_is_proxy_url` rewrite** (PR #168). Architecturally the cleanest fix is an explicit `managedBy` marker on each entry; v0.3.6 ships the heuristic and tracks the proper fix as [WOR-487](https://linear.app/plumbusai/issue/WOR-487). Outstanding research: does OpenClaw's daemon preserve unknown fields on rewrite?
+
+### Notes
+- The end-to-end developer flow (clean machine → OpenClaw + worthless → first protected request) still leans on the developer reading docs to install worthless first. Real ClawHub publish (WOR-94 + WOR-478) is a separate ticket.
+
+## [0.3.5] — 2026-05-08
+
+The "WOR-431 Phase 2 lands + install front-door drift fixed" release. Ships the OpenClaw magic-integration that `worthless lock` had been promising — automatic detection + `openclaw.json` rewrite + SKILL.md install — plus a daily CI check that every install front door (`worthless.sh`, `docs.wless.io/install/`, `install.sh` digests) stays in sync.
+
+### Added
+- **`worthless lock` detects OpenClaw and rewires its config automatically** (WOR-431 Phase 2, #152). On any host where `~/.openclaw/` exists, `lock` injects `worthless-<provider>` entries into `openclaw.json` and installs the worthless SKILL.md into the skill workspace. Best-effort + idempotent — failures here surface as structured events in `--json` and never roll back the `.env`/DB writes. Symmetric undo on `unlock`. New `worthless doctor` rows surface drift between the proxy and `openclaw.json`.
+- **Install front-door daily-drift CI** (WOR-452, #149). Cron check pulls `worthless.sh`, `docs.wless.io/install/`, and the `install.sh` digest from each surface — flags divergence as a Linear issue automatically.
+- **`scripts/bump-version.sh`** (#145). Atomic version bumper that writes to `pyproject.toml`, `SKILL.md`, and the lockfile in one shot — prevents SKILL.md drift that previously slipped through.
+
+### Fixed
+- **`install.sh` surfaces uv's actual stderr instead of a generic banner** (#148). Previously a uv install failure showed only "installation failed" with no clue why; now the user sees uv's real error message.
+- **xdist-isolated default-command tests don't collide with a real port-8787 daemon** (#147).
+- **Worker-concurrency tests stop flaking the merge gate** (WOR-448, #142).
+- **`DOCS_URL` points at live `docs.wless.io`** instead of stale staging (worthless-1lfi, #144).
+
+### Removed
+- **Dead `_build_child_env` helper in `wrap.py`** (#146).
+
+## [0.3.4] — 2026-05-06
+
+The "make `worthless wrap` actually work end-to-end" hotfix. v0.3.3's HF10 fresh-install verification surfaced that `worthless wrap python main.py` on a clean machine left the child unable to reach the proxy: `lock` writes port 8787 to `.env` but `wrap` was binding a random port the child had no way to discover. The earlier "wrap works" verdict was contaminated by a stale `worthless up` daemon hogging 8787 across sessions. Fix: `wrap` now binds the same port `lock` wrote.
+
+### Fixed
+- **`worthless wrap` proxy now binds the port `lock` wrote to `.env`** (worthless-djoe, closes worthless-hyb1). Pre-fix `wrap` called `spawn_proxy(port=0)` (OS-random), which gave the proxy a port the child couldn't discover — post-8rqs `wrap` had stopped injecting `*_BASE_URL` vars into child env, so the only port the child saw was `.env`'s. With lock writing 8787 and wrap binding random, the child hit 8787 and got connection-refused. Now `wrap` calls `_resolve_port(None)` (same priority chain `lock` and `up` use: arg → `WORTHLESS_PORT` env → `8787` default), so child + proxy agree. Regression introduced in v0.3.3 / PR #127 (worthless-8rqs).
+- **`worthless wrap` gives a clean error when its port is already in use.** If `worthless up` is already running on the same port, wrap names it: *"port 8787 is already serving a worthless proxy (`worthless up` is running). Either run your command directly (the daemon proxies it already), or stop the daemon and re-run wrap."* If a non-worthless process holds the port, wrap names that case too. `up` and `wrap` are alternatives, not combinable on the same port.
+
+## [0.3.3] — 2026-05-05
+
+The "make `curl install.sh | sh` actually work" release. v0.3.2 dogfood surfaced 9 hotfixes (HF1-9) covering keychain UX, scan/status correctness, unlock messaging, and orphan recovery. Plus install-matrix supply-chain hardening (WOR-317-320) so the release pipeline can't be tampered with via floating-tag base images.
+
 ### Added
 - **`WORTHLESS_DEPLOY_MODE` trust-boundary contract** (WOR-345). Three modes — `loopback` / `lan` / `public` — pin host bind, X-Forwarded-Proto trust source, and whether `WORTHLESS_ALLOW_INSECURE` is even legal. `public` mode requires `WORTHLESS_TRUSTED_PROXIES` (validated as CIDR; placeholders are rejected at startup). PaaS auto-detection (RENDER / FLY_APP_NAME / KUBERNETES_SERVICE_HOST) refuses silent loopback default.
+- **`worthless doctor --fix`** (HF7, worthless-3907, PR #128). Recovers stuck states from the v0.3.2 dogfood scenario where `unlock` reported "no keys" but `status` reported "PROTECTED". Surgical delete by `(alias, env_path)` tuple. Shared `cli/orphans.py` module owns the `is_orphan` predicate plus canonical user-facing phrases — no drift between scan/status/doctor wording.
+- **`worthless lock` supports multiple providers side-by-side** (PR #127). One `.env` can have OpenAI + Anthropic + Google + xAI keys; each enrolls with its own per-provider upstream URL.
+- **Per-key unlock messaging** (HF4, worthless-5u6y, PR #123). `worthless unlock` now prints `Restored {var} ({provider}, alias {alias_id}) → {env_path}` per key, plus skip lines for missing shard-A vars. Final summary `Restored N, skipped K`. No more silent batch-fatal exceptions.
+- **Scanner scope docs** (HF6, worthless-8axm, PR #123). README + SKILL.md + threat model document the LLM-provider-keys-only scope; recommend gitleaks/trufflehog as companions for general secret detection.
+- **Cross-command state-machine integration tests** (HF8, worthless-5koc, PR #120). Tests covering commitment-mismatch, partial-unlock, scan-orphan, status-orphan, unlock-db-wipe, unlock-no-db-row contracts.
+- **Install matrix supply-chain hardening** (WOR-317-320, PR #132). Pinned base-image digests (`@sha256:...`) on every fixture, Astral installer SHA verification in `Dockerfile.ubuntu-with-uv`, BuildKit cache mount on uv-running RUN steps, non-root user fixture (`ubuntu-nonroot`), idempotency check fixture (`ubuntu-idempotency`) that runs `install.sh` twice and diffs snapshots. `install.sh` gains a fast-path: `WORTHLESS_VERSION` set + matches installed → return early before `uv tool install/upgrade` writes metadata.
 
 ### Changed
 - **BREAKING — Docker default bind is now loopback** (`127.0.0.1`), not `0.0.0.0`. The Dockerfile no longer hard-codes `--host 0.0.0.0`; bind is composed by `entrypoint.sh` from `WORTHLESS_DEPLOY_MODE`. `docker run -p 8787:8787 worthless` without setting the env var binds only inside the container — set `-e WORTHLESS_DEPLOY_MODE=lan` to restore network reachability behind a private network, or `=public` (with `WORTHLESS_TRUSTED_PROXIES`) for edge deployments. `deploy/docker-compose.env.example` and `deploy/render.yaml` updated accordingly.
+- **`worthless scan` JSON shape** (HF5, worthless-gmky, PR #131): bare-array → `{schema_version: 2, findings, orphans}`. Schema version is pinned exactly in a contract test. Consumers must update.
 
 ### Fixed
-- **OpenRouter API keys classified as `openrouter`** (worthless-lj0z, advances WOR-381). `sk-or-v1-...` and `sk-or-...` keys were previously mislabeled `openai` because the generic `sk-` prefix won the longest-first match; the new `openrouter` prefixes now beat it. **Behaviour change:** SARIF/scan consumers filtering on `provider == "openai"` for OpenRouter keys will see relabels to `provider == "openrouter"` — update filter logic accordingly. Detection only; per-enrollment proxy routing for `provider == "openrouter"` is tracked separately under `worthless-8rqs` and remains future work.
-- **macOS Keychain prompts collapse to one per CLI invocation** (worthless-mnlp). `WorthlessHome.fernet_key` is now memoized per-instance via a private `_cached_fernet_key` field, so a single `worthless lock` triggers exactly one keychain ACL probe instead of 3+ (bootstrap probe + `ShardRepository` init + proxy env injection each previously hit `read_fernet_key` independently, and macOS re-evaluates `SecKeychainItemCopyContent` ACL on every call so 'Always Allow' didn't suppress later prompts). The bootstrap probe in `ensure_home()` now routes through the property so its read populates the cache; subsequent consumers within the same CLI invocation are served from cache. The property returns a *fresh bytearray copy* on each access so callers can `zero_buf()` their own copy (per SR-01) without poisoning the cache. Cache populate uses a per-instance `threading.Lock` with double-checked init so concurrent first-readers (e.g., the FastMCP executor thread + main thread in `worthless mcp`) collapse to a single `read_fernet_key` call instead of racing on the check-then-set. Cache is process-scoped — new CLI invocations still re-prompt once.
+- **OpenRouter API keys classified as `openrouter`** (HF1, worthless-lj0z, PR #124, advances WOR-381). `sk-or-v1-...` and `sk-or-...` keys were previously mislabeled `openai` because the generic `sk-` prefix won the longest-first match; the new `openrouter` prefixes now beat it. **Behaviour change:** SARIF/scan consumers filtering on `provider == "openai"` for OpenRouter keys will see relabels to `provider == "openrouter"` — update filter logic accordingly. Detection only; per-enrollment proxy routing for `provider == "openrouter"` is tracked separately under `worthless-8rqs` and remains future work.
+- **macOS Keychain prompts collapse to one per CLI invocation** (HF2, worthless-mnlp, PR #125). `WorthlessHome.fernet_key` is now memoized per-instance via a private `_cached_fernet_key` field, so a single `worthless lock` triggers exactly one keychain ACL probe instead of 3+. Cache populate uses a per-instance `threading.Lock` with double-checked init so concurrent first-readers collapse to a single `read_fernet_key` call. Cache is process-scoped — new CLI invocations still re-prompt once until "Always Allow" is granted.
+- **`worthless scan` and `worthless status` no longer prompt for keychain on read-only paths** (HF3, worthless-cmpf, PR #126). New `_fernet_key_present(home)` gate at the scan path; placeholder `bytearray(b"")` for the unused parameter on missing-key paths. Scans + status checks now produce zero popups even on a brand-new machine.
+- **`worthless status` and `worthless scan` flag broken DB rows as `BROKEN`** (HF5, worthless-gmky, PR #131) instead of lying that they're `PROTECTED`. Plain-English wording: `PROBLEM_PHRASE = "can't restore"`, `FIX_PHRASE = "worthless doctor --fix"`. Per-alias aggregation: `BROKEN` iff all enrollments are orphan; `PROTECTED` if any enrollment is healthy.
+- **`worthless unlock` default `--env` no longer surfaces HF4's hard error on implicit defaults** (pnn2, PR #129). Implicit `--env=.env` doesn't trigger the per-key skip messaging path that was meant only for explicit user-named paths.
+
+### Security
+- **Pinned base-image digests across the install test matrix** (WOR-319). Every `FROM` line uses `@sha256:<digest>` instead of floating tags, so a compromised upstream tag cannot ship malware via our matrix.
+- **Astral uv installer SHA verification** in `Dockerfile.ubuntu-with-uv` (WOR-319). The fixture awks `ASTRAL_INSTALLER_SHA256` out of `install.sh` at build time so the SHA stays in lockstep with `UV_VERSION`.
+
+### Verified manually
+- **HF9 (worthless-xw2m) keychain popup contract on dev machine, 2026-05-05**. Wiped keychain (drained 6 entries to 0) + `~/.worthless/`, fresh `uv tool install` from main, ran `worthless lock` + status / scan / unlock / lock / up / down. **0 popups across all commands.** HF2 unit + user-flow tests prove the 1-popup contract on truly clean machines via real-keyring spy. Phase-2 second-machine run is best-practice but not blocker.
+
+### Known limitations
+- **Manual `worthless up` after every reboot** until WOR-174 (macOS launchd) and WOR-175 (Linux systemd) ship in v0.4.
+- **Docker app + host worthless** requires manually editing `.env` to use `host.docker.internal:8787` instead of `127.0.0.1:8787` — `worthless lock` writes `127.0.0.1` blindly today (filed as v1.2 work).
+- **Two `worthless up` proxy bugs** discovered during HF9 manual QA: stale orphan proxy on port 8787 (`worthless-6gkb`) and `worthless up &` exits prematurely (`worthless-n8tj`). Both filed as v0.3.4 / v1.2 work; do not affect lock/scan/status/unlock paths.
 
 ## [0.3.0] — 2026-04-18
 
@@ -42,4 +115,8 @@ First release published to PyPI. `pip install worthless` now works.
 - Gate evaluation strictly precedes shard reconstruction (SR-03).
 - Published artifacts built via PyPI trusted publishing (OIDC, no long-lived tokens).
 
+[0.3.6]: https://github.com/shacharm2/worthless/releases/tag/v0.3.6
+[0.3.5]: https://github.com/shacharm2/worthless/releases/tag/v0.3.5
+[0.3.4]: https://github.com/shacharm2/worthless/releases/tag/v0.3.4
+[0.3.3]: https://github.com/shacharm2/worthless/releases/tag/v0.3.3
 [0.3.0]: https://github.com/shacharm2/worthless/releases/tag/v0.3.0

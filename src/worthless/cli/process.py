@@ -25,6 +25,7 @@ from pathlib import Path
 
 import httpx
 
+from worthless.cli.errors import ErrorCode, WorthlessError
 from worthless.cli.keystore import keyring_available
 from worthless.cli.platform import IS_WINDOWS, check_pid_alive, popen_platform_kwargs
 
@@ -32,6 +33,73 @@ logger = logging.getLogger(__name__)
 
 # Regex to capture the port from uvicorn's startup line
 _UVICORN_PORT_RE = re.compile(r"Uvicorn running on http://[\d.]+:(\d+)")
+
+
+# ---------------------------------------------------------------------------
+# Port resolution — canonical chain shared by ``lock``, ``up``, ``wrap``,
+# and the default-command flow. One source of truth so all four commands
+# write/bind/probe the same port for a given config.
+# ---------------------------------------------------------------------------
+
+
+def resolve_port(port_arg: int | None) -> int:
+    """Resolve the proxy port from argument, env var, or default.
+
+    Priority: explicit ``port_arg`` > ``WORTHLESS_PORT`` env > ``8787`` default.
+
+    All consumers (``lock`` for the .env BASE_URL, ``up`` for the daemon
+    bind, ``wrap`` for the ephemeral proxy bind) share this function so
+    they agree on which port a child loading .env will reach.
+
+    Raises:
+        WorthlessError: when ``WORTHLESS_PORT`` is set to a non-integer
+            value. Without this guard the underlying ``int()`` call would
+            surface a raw ``ValueError`` traceback to every command —
+            ``lock``, ``up``, ``wrap``, and the default flow. Caught
+            here so the user sees a single-line CLI error.
+    """
+    if port_arg is not None:
+        return port_arg
+    env_port = os.environ.get("WORTHLESS_PORT")
+    if env_port:
+        try:
+            return int(env_port)
+        except ValueError as exc:
+            raise WorthlessError(
+                ErrorCode.BOOTSTRAP_FAILED,
+                f"WORTHLESS_PORT must be an integer, got {env_port!r}. "
+                f"Unset it (`unset WORTHLESS_PORT`) or set it to a port number.",
+            ) from exc
+    return 8787
+
+
+def check_proxy_health(port: int) -> dict[str, object]:
+    """Hit ``/healthz`` on *port* and return a status dict.
+
+    Shared probe used by ``status`` (display health to the user),
+    ``wrap`` (distinguish ``worthless up`` collision from a foreign
+    process), the MCP server, and the default-command flow. Single
+    canonical implementation so the heuristic doesn't drift across
+    consumers.
+
+    Returns: ``{"healthy": bool, "port": int, "mode": str | None,
+    "requests_proxied": int}``. ``healthy=False`` covers connection
+    refused, timeout, non-200, and non-JSON responses.
+    """
+    try:
+        resp = httpx.get(f"http://127.0.0.1:{port}/healthz", timeout=2.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "healthy": True,
+                "port": port,
+                "mode": data.get("mode", "up"),
+                "requests_proxied": data.get("requests_proxied", 0),
+            }
+    except Exception:  # noqa: S110 — proxy may not be running; absence is the expected default state  # nosec B110
+        pass
+
+    return {"healthy": False, "port": port, "mode": None, "requests_proxied": 0}
 
 
 # ---------------------------------------------------------------------------
@@ -44,11 +112,29 @@ def build_proxy_env(home: WorthlessHome) -> dict[str, str]:
 
     When OS keyring is available, omits WORTHLESS_FERNET_KEY — the proxy
     reads from keyring directly via ``read_fernet_key()``.
+
+    Forwards ``WORTHLESS_KEYRING_BACKEND`` so the proxy child inherits the
+    parent's keyring opt-out choice. Without this, a production user who
+    set ``WORTHLESS_KEYRING_BACKEND=null`` in their shell would get
+    file-fallback in the CLI but the proxy child would still try the
+    real OS keyring (defeating the override). Same forwarding handles
+    the test-suite case (conftest sets the var; this propagates it).
+    (WOR-463)
     """
+    # Derive bind host without importing proxy.config (circular import risk).
+    # Mirror logic from proxy/config.py _read_default_host so the env dict
+    # is the single source of truth for the child process bind address.
+    _host = os.environ.get("WORTHLESS_HOST", "").strip()
+    if not _host:
+        _mode = os.environ.get("WORTHLESS_DEPLOY_MODE", "loopback").strip().lower()
+        _host = "0.0.0.0" if _mode in ("lan", "public") else "127.0.0.1"  # noqa: S104  # nosec B104
     env: dict[str, str] = {
         "WORTHLESS_DB_PATH": str(home.db_path),
         "WORTHLESS_HOME": str(home.base_dir),
+        "WORTHLESS_HOST": _host,
     }
+    if "WORTHLESS_KEYRING_BACKEND" in os.environ:
+        env["WORTHLESS_KEYRING_BACKEND"] = os.environ["WORTHLESS_KEYRING_BACKEND"]
     if not keyring_available():
         env["WORTHLESS_FERNET_KEY"] = home.fernet_key.decode()
     return env
@@ -168,8 +254,15 @@ def prepare_proxy_env(
     return full_env
 
 
-def proxy_cmd(port: int) -> list[str]:
-    """Build the uvicorn command for the proxy."""
+def proxy_cmd(port: int, host: str = "127.0.0.1") -> list[str]:
+    """Build the uvicorn command for the proxy.
+
+    Args:
+        port: Port for uvicorn to bind.
+        host: Bind address.  Callers should derive this from
+            ``build_proxy_env()["WORTHLESS_HOST"]`` so the env dict
+            is the single source of truth for the bind address.
+    """
     return [
         sys.executable,
         "-m",
@@ -177,7 +270,7 @@ def proxy_cmd(port: int) -> list[str]:
         "worthless.proxy.app:create_app",
         "--factory",
         "--host",
-        "127.0.0.1",
+        host,
         "--port",
         str(port),
     ]
@@ -204,7 +297,7 @@ def spawn_proxy(
     Returns:
         (process, actual_port).
     """
-    cmd = proxy_cmd(port)
+    cmd = proxy_cmd(port, host=env.get("WORTHLESS_HOST", "127.0.0.1"))
 
     with fernet_transport(env) as (fernet_key, fernet_fd, fernet_fds):
         full_env = prepare_proxy_env(env, fernet_fd, liveness_fd=liveness_fd)

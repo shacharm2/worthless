@@ -2,13 +2,107 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
-from worthless.adapters.openai import OpenAIAdapter
+from worthless.adapters.openai import OpenAIAdapter, _inject_include_usage
 from worthless.adapters.anthropic import AnthropicAdapter
 from worthless.adapters.registry import get_adapter
 from worthless.adapters.types import AdapterRequest, AdapterResponse
+
+
+# ---------------------------------------------------------------------------
+# _inject_include_usage unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestInjectIncludeUsage:
+    """Unit tests for the stream_options.include_usage injection helper."""
+
+    def _body(self, **kwargs) -> bytes:
+        return json.dumps(kwargs).encode()
+
+    def test_non_streaming_unchanged(self):
+        """Non-streaming requests must pass through byte-identical."""
+        body = self._body(model="gpt-4o", stream=False, messages=[])
+        assert _inject_include_usage(body) is body
+
+    def test_streaming_no_tools_injects(self):
+        """Plain streaming without tools gets include_usage injected."""
+        body = self._body(model="gpt-4o", stream=True, messages=[])
+        result = _inject_include_usage(body)
+        assert result is not body
+        parsed = json.loads(result)
+        assert parsed["stream_options"]["include_usage"] is True
+
+    def test_streaming_with_tools_unchanged(self):
+        """Streaming with tools must NOT be modified — OpenAI returns 400 otherwise."""
+        tools = [{"type": "function", "function": {"name": "read", "parameters": {}}}]
+        body = self._body(model="gpt-4o", stream=True, messages=[], tools=tools)
+        assert _inject_include_usage(body) is body, (
+            "body was modified for a tool-call request — this causes OpenAI 400"
+        )
+
+    def test_streaming_with_tools_body_not_re_serialised(self):
+        """No re-serialisation on tool-call requests — bytes are identical to input."""
+        tools = [{"type": "function", "function": {"name": "exec"}}]
+        body = self._body(model="gpt-4o-mini", stream=True, messages=[], tools=tools)
+        result = _inject_include_usage(body)
+        assert result == body
+
+    def test_already_has_include_usage_unchanged(self):
+        """Idempotent: if client already set include_usage, bytes are unchanged."""
+        body = self._body(
+            model="gpt-4o",
+            stream=True,
+            messages=[],
+            stream_options={"include_usage": True},
+        )
+        assert _inject_include_usage(body) is body
+
+    def test_invalid_json_unchanged(self):
+        """Malformed body passes through untouched."""
+        body = b"not json"
+        assert _inject_include_usage(body) is body
+
+    def test_empty_body_unchanged(self):
+        assert _inject_include_usage(b"") == b""
+
+    def test_injected_body_is_valid_json(self):
+        """Injected body round-trips cleanly."""
+        body = self._body(model="gpt-4o", stream=True, messages=[{"role": "user", "content": "hi"}])
+        result = _inject_include_usage(body)
+        parsed = json.loads(result)
+        assert parsed["stream_options"]["include_usage"] is True
+        assert parsed["model"] == "gpt-4o"
+
+    def test_streaming_with_empty_tools_list_injects(self):
+        """Empty tools list is falsy — injection proceeds, not skipped.
+
+        ``tools=[]`` is not a tool-call request; it carries no schemas that
+        OpenAI might reject after re-serialisation. The bypass guard
+        (``if payload.get("tools")``) correctly treats an empty list as
+        "no tools" and allows include_usage injection.
+        """
+        body = self._body(model="gpt-4o", stream=True, messages=[], tools=[])
+        result = _inject_include_usage(body)
+        assert result is not body
+        assert json.loads(result)["stream_options"]["include_usage"] is True
+
+    def test_existing_stream_options_preserved(self):
+        """Other stream_options fields survive the injection."""
+        body = self._body(
+            model="gpt-4o",
+            stream=True,
+            messages=[],
+            stream_options={"other_option": True},
+        )
+        result = _inject_include_usage(body)
+        parsed = json.loads(result)
+        assert parsed["stream_options"]["include_usage"] is True
+        assert parsed["stream_options"]["other_option"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -31,6 +125,107 @@ class TestOpenAIRequestTransform:
         assert req.url == "https://api.openai.com/v1/chat/completions"
         assert req.headers["authorization"] == f"Bearer {sample_api_key.decode()}"
         assert req.body == sample_openai_body
+
+    def _tool_call_body(self) -> bytes:
+        """Minimal OpenAI streaming request with tools — the exact shape that
+        caused the OpenAI 400 regression (WOR-501)."""
+        return json.dumps(
+            {
+                "model": "gpt-4o-mini",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hello"}],
+                "tools": [
+                    {"type": "function", "function": {"name": "read_file", "parameters": {}}}
+                ],
+            }
+        ).encode()
+
+    def test_tool_call_body_passes_through_byte_identical(self):
+        """Streaming tool-call requests must reach OpenAI byte-for-byte unchanged.
+
+        Root cause of WOR-501: ``_inject_include_usage`` re-serialised the
+        full request body (including 28 tools and 115 KB of schema) to add
+        ``stream_options.include_usage``. OpenAI accepted the semantically
+        identical JSON but returned 400 — the re-serialisation changed
+        key ordering in a way OpenAI's parser rejected.
+
+        Fix: skip injection entirely when ``tools`` is present.
+        """
+        adapter = OpenAIAdapter()
+        body = self._tool_call_body()
+        req = adapter.prepare_request(
+            body=body,
+            headers={"content-type": "application/json"},
+            api_key=bytearray(b"sk-test"),
+            base_url="https://api.openai.com/v1",
+        )
+        assert req.body is body, "tool-call request body was re-serialised — this causes OpenAI 400"
+
+    def test_tool_call_request_preserves_content_length(self):
+        """Content-Length header must NOT be removed for unmodified tool-call bodies.
+
+        When the body is not modified, the original Content-Length is still
+        correct. Removing it forces httpx to recalculate — harmless but
+        unnecessary, and it masks whether the body was actually touched.
+        """
+        adapter = OpenAIAdapter()
+        body = self._tool_call_body()
+        req = adapter.prepare_request(
+            body=body,
+            headers={
+                "content-type": "application/json",
+                "content-length": str(len(body)),
+            },
+            api_key=bytearray(b"sk-test"),
+            base_url="https://api.openai.com/v1",
+        )
+        # Body unchanged → Content-Length should survive (httpx will use it).
+        assert "content-length" in req.headers
+
+    def test_plain_streaming_removes_content_length_after_injection(self):
+        """When include_usage is injected, the old Content-Length is wrong.
+
+        The adapter must drop it so httpx recalculates from the actual
+        (longer) body.
+        """
+        adapter = OpenAIAdapter()
+        body = json.dumps(
+            {
+                "model": "gpt-4o",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+        ).encode()
+        req = adapter.prepare_request(
+            body=body,
+            headers={
+                "content-type": "application/json",
+                "content-length": str(len(body)),
+            },
+            api_key=bytearray(b"sk-test"),
+            base_url="https://api.openai.com/v1",
+        )
+        # Body was modified (include_usage injected) → stale Content-Length removed.
+        assert "content-length" not in req.headers
+
+    def test_plain_streaming_injects_include_usage_at_adapter_level(self):
+        """End-to-end: plain streaming through prepare_request gets include_usage."""
+        adapter = OpenAIAdapter()
+        body = json.dumps(
+            {
+                "model": "gpt-4o",
+                "stream": True,
+                "messages": [],
+            }
+        ).encode()
+        req = adapter.prepare_request(
+            body=body,
+            headers={"content-type": "application/json"},
+            api_key=bytearray(b"sk-test"),
+            base_url="https://api.openai.com/v1",
+        )
+        parsed = json.loads(req.body)
+        assert parsed.get("stream_options", {}).get("include_usage") is True
 
 
 class TestOpenAIResponseRelay:

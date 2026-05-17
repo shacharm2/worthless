@@ -15,15 +15,18 @@ from worthless.adapters.types import (
 
 
 def _inject_include_usage(body: bytes) -> bytes:
-    """Ensure streaming requests always receive a final usage chunk.
+    """Ensure streaming requests receive a final usage chunk for metering.
 
     OpenAI only emits token counts in the SSE stream when
-    ``stream_options.include_usage`` is ``true``.  Without it the proxy
-    meters 0 tokens and spend caps silently never fire (WOR-240).
+    ``stream_options.include_usage`` is ``true`` (WOR-240).
 
-    Returns the original ``body`` bytes unchanged when no injection is
-    required so callers can detect whether the body was modified (byte
-    identity comparison) and skip updating ``Content-Length`` accordingly.
+    Skipped when the request carries ``tools``: modifying the body of a
+    tool-call request causes OpenAI to return 400. Streaming tool-call
+    metering is a known gap tracked in WOR-500.
+
+    Returns the original ``body`` bytes unchanged when no injection is needed
+    so callers can detect the no-op via byte identity and skip Content-Length
+    removal.
     """
     try:
         payload = json.loads(body)
@@ -33,7 +36,11 @@ def _inject_include_usage(body: bytes) -> bytes:
     if not isinstance(payload, dict) or not payload.get("stream"):
         return body
 
-    # Already set — return original bytes; no re-serialisation needed.
+    # Don't touch tool-call requests — body modification causes OpenAI 400.
+    if payload.get("tools"):
+        return body
+
+    # Already set — return original bytes unchanged.
     if payload.get("stream_options", {}).get("include_usage"):
         return body
 
@@ -57,7 +64,7 @@ class OpenAIAdapter:
         new_body = _inject_include_usage(body)
         if new_body is not body:
             # Body was modified: stale Content-Length must be removed so
-            # httpx recalculates it from the actual byte count (WOR-240).
+            # httpx recalculates it from the actual byte count.
             out_headers.pop("content-length", None)
         url = f"{base_url.rstrip('/')}/chat/completions"
         return AdapterRequest(url=url, headers=out_headers, body=new_body)

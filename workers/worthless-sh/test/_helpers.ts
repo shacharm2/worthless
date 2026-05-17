@@ -26,6 +26,18 @@ export const REDIRECT_URL = testEnv.REDIRECT_URL;
 export const INSTALL_SH_SHEBANG = /^#!\/bin\/sh/;
 
 /**
+ * Decode a base64 string to its raw bytes. Binary-safe.
+ *
+ * `atob` returns a binary string (each char = one byte 0..255), not a UTF-8
+ * decoded string. For text round-trips, wrap with TextDecoder; for byte
+ * comparison, use the result directly.
+ */
+export function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+/**
  * Assert a response is the install script served to curl-family clients:
  * 200 status, text/plain content-type, body that starts with the canonical
  * shebang and is recognisably the Worthless installer.

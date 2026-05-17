@@ -122,7 +122,12 @@ class TestHelpText:
             assert cmd in output, f"Command {cmd!r} missing from --help output"
 
     def test_no_args_runs_default_command(self) -> None:
-        """worthless with no args runs the default pipeline (not help)."""
+        """worthless with no args runs the default pipeline (not help).
+
+        No xdist_group marker: the autouse `_isolate_default_command_proxy`
+        fixture in conftest.py stubs the daemon path for every test, so two
+        workers can run this in parallel without racing port 8787.
+        """
         result = runner.invoke(app, [])
         assert result.exit_code == 0
         output = result.stdout + result.stderr
@@ -143,10 +148,17 @@ class TestLockUx:
     ) -> None:
         """Success message names the .env file + says what changed (UX P1#3).
 
-        Prior wording was "{N} key(s) protected." — opaque about what just
-        happened. New wording: "Done. {N} key(s) split between this machine
-        and your system keystore — {env_filename} no longer contains a
-        usable secret." Tells the user a story, names the file.
+        Combines two intents:
+
+        - Main's storytelling shape: name what changed and which .env file
+          is now safe ("split between this machine and your system
+          keystore — {env_filename} no longer contains a usable secret.").
+        - Trust-fix accessibility (2026-05-08 verification gauntlet):
+          lead with the literal ``[OK]`` text prefix as the carrier for
+          monochrome terminals + screen readers + CI log scrapers
+          (color/glyph reinforces but is never the carrier).
+
+        Both must hold — no regression on either side.
         """
         result = runner.invoke(
             app,
@@ -155,7 +167,9 @@ class TestLockUx:
         )
         assert result.exit_code == 0
         combined = result.stdout + result.stderr
-        # Must say what changed (split between machine + keystore).
+        # Trust-fix accessibility: literal ``[OK]`` carrier present.
+        assert "[OK]" in combined, f"success message missing [OK] text prefix:\n{combined}"
+        # Main's storytelling: must say what changed.
         assert "split between" in combined, (
             f"success message missing storytelling shape:\n{combined}"
         )
@@ -201,11 +215,18 @@ class TestLockUx:
         """
         import sys
 
+        from worthless.cli.commands import lock as lock_module
+
         monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(lock_module, "keyring_available", lambda: True)
         result = runner.invoke(
             app,
             ["lock", "--env", str(env_with_openai)],
-            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+            env={
+                "HOME": str(home_dir.base_dir.parent / "user-home"),
+                "USERPROFILE": str(home_dir.base_dir.parent / "user-home"),
+                "WORTHLESS_HOME": str(home_dir.base_dir),
+            },
         )
         assert result.exit_code == 0
         combined = result.stdout + result.stderr
@@ -237,6 +258,38 @@ class TestLockUx:
         combined = result.stdout + result.stderr
         assert "Always Allow" not in combined, (
             f"non-macOS run leaked the macOS-only Keychain hint:\n{combined}"
+        )
+
+    def test_lock_file_fallback_does_not_claim_keychain_or_system_keystore(
+        self,
+        home_dir: WorthlessHome,
+        env_with_openai: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When keyring is forced off, lock must not claim Keychain storage."""
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_with_openai)],
+            env={
+                "HOME": str(home_dir.base_dir.parent / "user-home"),
+                "USERPROFILE": str(home_dir.base_dir.parent / "user-home"),
+                "WORTHLESS_HOME": str(home_dir.base_dir),
+                "WORTHLESS_KEYRING_BACKEND": "null",
+            },
+        )
+        assert result.exit_code == 0
+        combined = result.stdout + result.stderr
+        assert "Keychain" not in combined, (
+            f"file fallback should not mention macOS Keychain:\n{combined}"
+        )
+        assert "system keystore" not in combined, (
+            f"file fallback should not claim system keystore storage:\n{combined}"
+        )
+        assert "local key file" in combined, (
+            f"file fallback should name where the other shard lives:\n{combined}"
         )
 
     def test_lock_no_keys_message(self, home_dir: WorthlessHome, env_clean: Path) -> None:
@@ -586,8 +639,11 @@ class TestQuietMode:
             env={"WORTHLESS_HOME": str(home_dir.base_dir)},
         )
         assert result.exit_code == 0
-        # In quiet mode, success messages are suppressed
-        assert "key(s) protected" not in result.stderr
+        # In quiet mode, success messages are suppressed.
+        # Trust-fix wording is "[OK] Protected N key(s)." — assert that
+        # neither the prefix nor the body leaks through quiet mode.
+        assert "[OK]" not in result.stderr
+        assert "Protected" not in result.stderr
 
     def test_quiet_scan_suppresses_output(self, env_with_openai: Path) -> None:
         """--quiet scan produces no stderr output (exit code only)."""

@@ -52,7 +52,7 @@ jobs:
 ## What this does
 
 1. **Enroll** -- Pipes each API key from GitHub Secrets through stdin to `worthless enroll`. The key is split into shards and stored locally on the ephemeral runner. Secrets never touch disk as a `.env` file.
-2. **Wrap** -- Starts an ephemeral proxy, injects `OPENAI_BASE_URL`, runs `pytest` through it.
+2. **Wrap** -- Starts an ephemeral proxy on the same port `lock` wrote into `.env` (default 8787, override via `WORTHLESS_PORT`) and runs `pytest` through it. Your test code reads `OPENAI_BASE_URL` from `.env` like any normal app — wrap doesn't synthesise it.
 3. **Scan** -- Checks files and environment variables for any exposed (unprotected) keys. Exits non-zero if found.
 
 ## Adding more keys

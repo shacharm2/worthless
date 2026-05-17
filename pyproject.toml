@@ -1,6 +1,6 @@
 [project]
 name = "worthless"
-version = "0.3.2"
+version = "0.3.7"
 description = "Split-key reverse proxy that makes leaked API keys worthless"
 readme = "README.md"
 license = { text = "AGPL-3.0-only" }
@@ -131,6 +131,11 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 worthless = ["providers.toml"]
+# OpenClaw skill assets ship with the wheel; loaded at runtime via
+# Path(__file__).parent / "skill_assets" in worthless.openclaw.skill.
+# Without this, SKILL.md is dropped from sdists/wheels and install()
+# fails with FileNotFoundError on a wheel-installed worthless.
+"worthless.openclaw.skill_assets" = ["*.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -150,7 +155,7 @@ markers = [
     "e2e: end-to-end smoke tests — full lifecycle (lock, proxy, healthz)",
     "openclaw: OpenClaw integration tests (requires Docker + network pull)",
     "real_ipc: opt out of the autouse FakeIPCSupervisor injection — these tests bring their own real or subprocess sidecar (WOR-309 Phase 5)",
-    "user_flow: end-to-end user-flow tests — real keyring, real CLI, real fs. Run with `pytest -m user_flow`. See worthless-bwu6 for the full suite scope.",
+    "user_flow: end-to-end user-flow tests — real keyring, real CLI, real fs. Run with `pytest -m user_flow`. See Linear WOR-439 for the full suite scope.",
 ]
 
 [tool.coverage.run]
@@ -197,6 +202,8 @@ ignore = [
 "tests/test_docker_e2e.py" = ["S607", "S108"]
 # OpenClaw integration tests shell out to docker CLI
 "tests/test_openclaw_e2e.py" = ["S607", "S108"]
+# Smoke tests invoke the CLI via subprocess — partial path is intentional
+"tests/smoke/*.py" = ["S607"]
 # Deploy static tests use bash -n for entrypoint syntax validation
 "tests/test_deploy_static.py" = ["S607"]
 # Eval scripts shell out to claude CLI

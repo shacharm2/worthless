@@ -61,7 +61,7 @@ During Phase 2 (lock rewrite), we changed `lock` to use `split_key_fp` but forgo
 |------|-------|----------|
 | Pass Fernet key via pipe | `process.py:91-131` | FD inheritance |
 | **Pass WORTHLESS_SHARD_A_DIR to proxy (SR-09 VIOLATION)** | `process.py:49` | **Env var → subprocess** |
-| Inject BASE_URL for child | `wrap.py:_build_child_env()` | Env var → child process |
+| ~~Inject BASE_URL for child~~ | ~~`wrap.py:_build_child_env()`~~ — **removed in v0.3.5** (worthless-rvcq); post-8rqs per-enrollment routing made child env synthesis obsolete. `wrap.py` now passes `dict(os.environ)` unchanged. | n/a |
 
 ### SCAN / STATUS (read-only)
 

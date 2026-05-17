@@ -268,11 +268,6 @@ class TestManualRotationMismatch:
     garbage and writing it back as the "real" key.
     """
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="RED: commitment-verification gap — no specific HF assigned yet. "
-        "File a bead and remove this marker when the fix lands.",
-    )
     def test_unlock_detects_commitment_mismatch(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:

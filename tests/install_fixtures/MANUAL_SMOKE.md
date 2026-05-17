@@ -50,7 +50,7 @@ For supply-chain trust roots, see
 
 ## Negative path
 
-- [ ] Running on Windows native (Git Bash / MINGW): exit 20 with link to `docs.worthless.sh/install/windows`
+- [ ] Running on Windows native (Git Bash / MINGW): exit 20 with link to `docs.wless.io/install/wsl`
 - [ ] Running on macOS 10.15 (Catalina, in a VM): exit 20 with version requirement message
 - [ ] `astral.sh` simulated down (block via `/etc/hosts`): exit 10 with proxy / retry hint
 

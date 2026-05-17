@@ -49,6 +49,20 @@ class TestConstants:
 class TestKeyringAvailable:
     """Backend detection: reject fail/null/plaintext, accept real backends."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_backend_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Tests in this class assert the BACKEND-DETECTION behaviour.
+
+        The session-wide ``WORTHLESS_KEYRING_BACKEND=null`` setdefault from
+        ``conftest.py`` (WOR-463) would short-circuit ``keyring_available``
+        BEFORE the backend check runs, breaking the
+        ``test_macos_keychain_returns_true`` / ``test_secretservice_returns_true``
+        cases. Delenv it for this class so backend-detection logic is what
+        the tests actually exercise. The env-override path is covered by
+        ``TestKeyringBackendEnvOverride`` below.
+        """
+        monkeypatch.delenv("WORTHLESS_KEYRING_BACKEND", raising=False)
+
     @staticmethod
     def _make_backend(module: str, qualname: str) -> object:
         """Create a fake backend with the given fully-qualified class identity."""
@@ -673,3 +687,97 @@ class TestMigrateFileToKeyring:
 
         assert result is True
         assert not fernet_path.exists(), "fernet.key should be removed after successful migration"
+
+
+# ------------------------------------------------------------------
+# WOR-463: WORTHLESS_KEYRING_BACKEND env-var escape hatch
+# ------------------------------------------------------------------
+
+
+class TestKeyringBackendEnvOverride:
+    """``WORTHLESS_KEYRING_BACKEND=null`` short-circuits the keyring path.
+
+    Two audiences:
+    1. Tests that subprocess-spawn ``worthless`` — the parent pytest's
+       ``keyring.set_keyring(null)`` doesn't propagate; the env var does.
+    2. Production users who don't trust their OS keyring — explicit opt-out.
+    """
+
+    def test_null_value_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Set the var to ``"null"`` → ``keyring_available()`` is False."""
+        monkeypatch.setenv("WORTHLESS_KEYRING_BACKEND", "null")
+        assert keyring_available() is False
+
+    def test_null_value_short_circuits_before_backend_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backend lookup is never invoked when the env var forces null.
+
+        Otherwise we'd hit the OS keyring API on every CLI startup just
+        to discover the user opted out — defeats the perf/safety point.
+        """
+        monkeypatch.setenv("WORTHLESS_KEYRING_BACKEND", "null")
+        with patch("worthless.cli.keystore.keyring") as mock_kr:
+            mock_kr.get_keyring.side_effect = AssertionError(
+                "keyring.get_keyring should NOT be called when env var forces null"
+            )
+            assert keyring_available() is False
+
+    def test_other_value_does_not_short_circuit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only the literal value ``"null"`` triggers the gate.
+
+        Future expansion may support other backend names; until then,
+        unrecognized values fall through to normal backend detection so
+        a typo doesn't silently disable the keyring.
+        """
+        monkeypatch.setenv("WORTHLESS_KEYRING_BACKEND", "macos")  # not "null"
+        backend_cls = type(
+            "Keyring",
+            (),
+            {"__module__": "keyring.backends.macOS", "__qualname__": "Keyring"},
+        )
+        with patch("worthless.cli.keystore.keyring") as mock_kr:
+            mock_kr.get_keyring.return_value = backend_cls()
+            assert keyring_available() is True
+
+    def test_unset_does_not_short_circuit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When the var is unset, backend detection runs normally."""
+        monkeypatch.delenv("WORTHLESS_KEYRING_BACKEND", raising=False)
+        backend_cls = type(
+            "Keyring",
+            (),
+            {"__module__": "keyring.backends.macOS", "__qualname__": "Keyring"},
+        )
+        with patch("worthless.cli.keystore.keyring") as mock_kr:
+            mock_kr.get_keyring.return_value = backend_cls()
+            assert keyring_available() is True
+
+    def test_store_fernet_key_does_not_call_set_password_when_null(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """End-to-end: env-var-null means no real keyring write happens.
+
+        This is the critical no-leak invariant. A test subprocess running
+        ``worthless lock`` against a tmp home_dir must NOT pollute the
+        host's keychain even if a real OS keyring is available.
+        """
+        monkeypatch.setenv("WORTHLESS_KEYRING_BACKEND", "null")
+        with patch("worthless.cli.keystore.keyring") as mock_kr:
+            store_fernet_key(b"some-key-bytes", home_dir=tmp_path)
+            mock_kr.set_password.assert_not_called()
+        # File fallback should have happened instead.
+        assert (tmp_path / "fernet.key").exists()
+        assert (tmp_path / "fernet.key").read_bytes() == b"some-key-bytes"
+
+    def test_logs_info_when_forcing_null(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Production users who force the override should see it in logs."""
+        monkeypatch.setenv("WORTHLESS_KEYRING_BACKEND", "null")
+        with caplog.at_level(logging.INFO, logger="worthless.cli.keystore"):
+            keyring_available()
+        assert any(
+            "WORTHLESS_KEYRING_BACKEND" in rec.message
+            for rec in caplog.records
+            if rec.levelno >= logging.INFO
+        ), "Expected INFO log when env var forces null backend"

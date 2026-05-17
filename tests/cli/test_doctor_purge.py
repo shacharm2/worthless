@@ -49,14 +49,19 @@ class TestDoctorOrphanPurge:
     # ---- 1. Empty / no-orphans path -----------------------------------------
 
     def test_doctor_no_orphans_exits_clean(self, home_dir: WorthlessHome) -> None:
-        """Fresh home, no enrollments — doctor reports nothing-to-fix and exits 0."""
+        """Fresh home, no enrollments — doctor reports a clean state and exits 0.
+
+        Wording revised from "nothing to fix" to "no issues found" in WOR-456
+        per UX review (drop exclamation, flat house-style tone). Tests AND-bind
+        on the new phrase so engineer-speak drift is caught.
+        """
         result = cli_invoke(["doctor"], home_dir)
 
         assert result.exit_code == 0, f"doctor exited non-zero:\n{result.output}"
         assert not looks_like_traceback(result.output)
         # Bind to a positive-state phrase so a Typer "no such command" error
         # (which ALSO exits non-zero with no traceback) cannot pass this.
-        assert has_all_tokens(result.output, "nothing to fix"), (
+        assert has_all_tokens(result.output, "no issues found"), (
             f"doctor on empty DB must announce a clean state:\n{result.output}"
         )
 
