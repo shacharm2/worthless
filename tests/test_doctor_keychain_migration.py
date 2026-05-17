@@ -88,6 +88,9 @@ def test_iclolud_finding_uses_canonical_phrases(
     # No orphans, no recovery files — only the iCloud finding.
     monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
     monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+    monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+    monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+    monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
 
     result = runner.invoke(app, ["doctor"])
 
@@ -140,6 +143,12 @@ def test_doctor_exit_codes(
         doctor_module, "_list_orphans", _async_returns((fake_orphans, fake_orphans))
     )
     monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+    # Isolate from CI environment: these checks touch real filesystem paths
+    # (resolve_port, cwd()/.env, _oc_integration.detect) that can produce
+    # unexpected state or raise on CI runners, causing error_boundary → exit 1.
+    monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+    monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+    monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
 
     # Pre-populate recovery files
     if n_recovery:

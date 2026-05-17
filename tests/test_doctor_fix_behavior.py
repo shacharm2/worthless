@@ -881,6 +881,9 @@ class TestDoctorRunIntegration:
         )
         monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+        monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
         monkeypatch.setattr(
             doctor_module,
             "_doctor_apply",
@@ -907,6 +910,9 @@ class TestDoctorRunIntegration:
         monkeypatch.setattr(doctor_module, "_list_synced_keychain_entries", lambda: [])
         monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+        monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
         # Simulate successful recovery import.
         monkeypatch.setattr(doctor_module, "_import_recovery_files", lambda _files: 1)
 
@@ -929,6 +935,9 @@ class TestDoctorRunIntegration:
         monkeypatch.setattr(doctor_module, "_list_synced_keychain_entries", lambda: [])
         monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+        monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
         monkeypatch.setattr(doctor_module, "_import_recovery_files", lambda _files: 2)
 
         result = runner.invoke(app, ["doctor"])
@@ -948,6 +957,9 @@ class TestDoctorRunIntegration:
         monkeypatch.setattr(doctor_module, "_list_synced_keychain_entries", lambda: [])
         monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+        monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
 
         result = runner.invoke(app, ["doctor"])
 
@@ -969,6 +981,9 @@ class TestDoctorRunIntegration:
         )
         monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+        monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
         monkeypatch.setattr(
             doctor_module,
             "_doctor_apply",
