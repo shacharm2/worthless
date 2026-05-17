@@ -1,9 +1,4 @@
-"""Docs-as-contract tests for the install page E2E journey (WOR-502).
-
-These tests pin the relationship between what the install pages claim and what
-the CLI actually does. A failing test here means either the docs are lying or
-the CLI regressed — both need fixing.
-"""
+"""Docs-as-contract tests for the install page E2E journey (WOR-502)."""
 
 from __future__ import annotations
 
@@ -13,6 +8,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
+from tests.helpers import fake_openai_key
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome
 
@@ -51,16 +47,16 @@ class TestInstallPageContract:
     def test_worthless_status_shows_protected(self, home_with_key: WorthlessHome) -> None:
         """worthless status shows PROTECTED and proxy running — as documented."""
         pid_file = home_with_key.base_dir / "proxy.pid"
-        pid_file.write_text("99999\n8787\n")
+        pid_file.write_text("99999\n18787\n")
 
-        class _MockResponse:
+        class MockResponse:
             status_code = 200
 
             def json(self):
                 return {"status": "ok", "mode": "up"}
 
         with patch("worthless.cli.process.httpx") as mock_httpx:
-            mock_httpx.get.return_value = _MockResponse()
+            mock_httpx.get.return_value = MockResponse()
             result = runner.invoke(
                 app,
                 ["status"],
@@ -76,8 +72,6 @@ class TestInstallPageContract:
         self, home_dir: WorthlessHome, tmp_path: Path
     ) -> None:
         """worthless lock output matches the terminal block shown in install-solo.md."""
-        from tests.helpers import fake_openai_key
-
         key = fake_openai_key()
         env_file = tmp_path / ".env"
         env_file.write_text(f"OPENAI_API_KEY={key}\n")
@@ -90,9 +84,7 @@ class TestInstallPageContract:
 
         # Normalize Rich line-wrapping before asserting on multi-word phrases.
         output = " ".join((result.stderr + result.stdout).split())
-        assert "key(s) split" in output or "key split" in output, (
-            "lock output must confirm key was split (docs claim this)"
-        )
+        assert "key(s) split" in output, "lock output must confirm key was split (docs claim this)"
         assert "no longer contains a usable secret" in output, (
             "lock output must confirm .env no longer contains the real key"
         )
