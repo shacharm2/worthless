@@ -53,6 +53,6 @@ class TestDoctorIpcGuard:
         assert result.exit_code == 0, (
             f"doctor must succeed on bare metal (flag off):\n{result.output}"
         )
-        assert "nothing to fix" in result.output.lower(), (
+        assert "no issues found" in result.output.lower(), (
             f"doctor on empty DB must report clean state:\n{result.output}"
         )
