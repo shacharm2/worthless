@@ -12,7 +12,7 @@ test matrix rows U-DOC-01..07.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 
 from worthless.cli.commands.doctor import _check_openclaw_section, _skill_installed_version
@@ -59,13 +59,6 @@ def _make_enrollment(
     return e
 
 
-def _make_repo(enrollments: list | None = None) -> MagicMock:
-    """Return a mock ShardRepository whose list_enrollments coroutine resolves."""
-    repo = MagicMock()
-    repo.list_enrollments = AsyncMock(return_value=enrollments or [])
-    return repo
-
-
 # ---------------------------------------------------------------------------
 # U-DOC-01: OpenClaw not detected
 # ---------------------------------------------------------------------------
@@ -77,10 +70,9 @@ class TestUDoc01OpenclawAbsent:
     def test_absent_returns_false(self, capsys) -> None:
         """U-DOC-01: absent host produces no OpenClaw section."""
         state = _make_state(present=False)
-        repo = _make_repo()
 
         with patch("worthless.openclaw.integration.detect", return_value=state):
-            result = _check_openclaw_section(repo, fix=False, dry_run=False)
+            result = _check_openclaw_section([], fix=False, dry_run=False)
 
         assert result is False
         assert capsys.readouterr().out == ""
@@ -88,10 +80,9 @@ class TestUDoc01OpenclawAbsent:
     def test_absent_fix_still_returns_false(self, capsys) -> None:
         """U-DOC-01 variant: --fix on an absent host is also a no-op."""
         state = _make_state(present=False)
-        repo = _make_repo()
 
         with patch("worthless.openclaw.integration.detect", return_value=state):
-            result = _check_openclaw_section(repo, fix=True, dry_run=False)
+            result = _check_openclaw_section([], fix=True, dry_run=False)
 
         assert result is False
         assert capsys.readouterr().out == ""
@@ -121,7 +112,6 @@ class TestUDoc02AllHealthy:
             workspace_path=workspace,
         )
         enrollment = _make_enrollment(key_alias="my-key", provider="openai")
-        repo = _make_repo(enrollments=[enrollment])
 
         with (
             patch("worthless.openclaw.integration.detect", return_value=state),
@@ -138,7 +128,7 @@ class TestUDoc02AllHealthy:
                 return_value="http://127.0.0.1:8787",
             ),
         ):
-            result = _check_openclaw_section(repo, fix=False, dry_run=False)
+            result = _check_openclaw_section([enrollment], fix=False, dry_run=False)
 
         assert result is False
         assert capsys.readouterr().out == ""
@@ -159,13 +149,12 @@ class TestUDoc03SkillMissing:
         # No skills/worthless/ subdir
 
         state = _make_state(present=True, workspace_path=workspace)
-        repo = _make_repo()
 
         with (
             patch("worthless.openclaw.integration.detect", return_value=state),
             patch("worthless.openclaw.skill.current_version", return_value="0.1.0"),
         ):
-            result = _check_openclaw_section(repo, fix=False, dry_run=False)
+            result = _check_openclaw_section([], fix=False, dry_run=False)
 
         assert result is True
         out = capsys.readouterr().out
@@ -178,14 +167,13 @@ class TestUDoc03SkillMissing:
         workspace.mkdir(parents=True)
 
         state = _make_state(present=True, workspace_path=workspace)
-        repo = _make_repo()
 
         with (
             patch("worthless.openclaw.integration.detect", return_value=state),
             patch("worthless.openclaw.skill.current_version", return_value="0.1.0"),
             patch("worthless.openclaw.skill.install") as mock_install,
         ):
-            result = _check_openclaw_section(repo, fix=True, dry_run=False)
+            result = _check_openclaw_section([], fix=True, dry_run=False)
 
         assert result is True
         mock_install.assert_called_once()
@@ -198,14 +186,13 @@ class TestUDoc03SkillMissing:
         workspace.mkdir(parents=True)
 
         state = _make_state(present=True, workspace_path=workspace)
-        repo = _make_repo()
 
         with (
             patch("worthless.openclaw.integration.detect", return_value=state),
             patch("worthless.openclaw.skill.current_version", return_value="0.1.0"),
             patch("worthless.openclaw.skill.install") as mock_install,
         ):
-            result = _check_openclaw_section(repo, fix=True, dry_run=True)
+            result = _check_openclaw_section([], fix=True, dry_run=True)
 
         assert result is True
         mock_install.assert_not_called()
@@ -231,7 +218,6 @@ class TestUDoc04ProviderMissing:
 
         state = _make_state(present=True, config_path=config, workspace_path=workspace)
         enrollment = _make_enrollment(key_alias="my-key", provider="openai")
-        repo = _make_repo(enrollments=[enrollment])
 
         with (
             patch("worthless.openclaw.integration.detect", return_value=state),
@@ -239,7 +225,7 @@ class TestUDoc04ProviderMissing:
             patch("worthless.cli.commands.doctor.is_orphan", return_value=False),
             patch("worthless.openclaw.config.get_provider", return_value=None),
         ):
-            result = _check_openclaw_section(repo, fix=False, dry_run=False)
+            result = _check_openclaw_section([enrollment], fix=False, dry_run=False)
 
         assert result is True
         out = capsys.readouterr().out
@@ -256,7 +242,6 @@ class TestUDoc04ProviderMissing:
 
         state = _make_state(present=True, config_path=config, workspace_path=workspace)
         enrollment = _make_enrollment(key_alias="my-key", provider="openai")
-        repo = _make_repo(enrollments=[enrollment])
 
         with (
             patch("worthless.openclaw.integration.detect", return_value=state),
@@ -267,7 +252,7 @@ class TestUDoc04ProviderMissing:
                 return_value={"baseUrl": "http://127.0.0.1:9999/different/v1"},
             ),
         ):
-            result = _check_openclaw_section(repo, fix=False, dry_run=False)
+            result = _check_openclaw_section([enrollment], fix=False, dry_run=False)
 
         assert result is True
         out = capsys.readouterr().out
@@ -290,13 +275,12 @@ class TestUDoc05StaleSkill:
         skill_dir.joinpath("SKILL.md").write_text("Version: 0.0.1\n", encoding="utf-8")
 
         state = _make_state(present=True, workspace_path=workspace)
-        repo = _make_repo()
 
         with (
             patch("worthless.openclaw.integration.detect", return_value=state),
             patch("worthless.openclaw.skill.current_version", return_value="0.1.0"),
         ):
-            result = _check_openclaw_section(repo, fix=False, dry_run=False)
+            result = _check_openclaw_section([], fix=False, dry_run=False)
 
         assert result is True
         out = capsys.readouterr().out
@@ -312,14 +296,13 @@ class TestUDoc05StaleSkill:
         skill_dir.joinpath("SKILL.md").write_text("Version: 0.0.1\n", encoding="utf-8")
 
         state = _make_state(present=True, workspace_path=workspace)
-        repo = _make_repo()
 
         with (
             patch("worthless.openclaw.integration.detect", return_value=state),
             patch("worthless.openclaw.skill.current_version", return_value="0.1.0"),
             patch("worthless.openclaw.skill.install") as mock_install,
         ):
-            result = _check_openclaw_section(repo, fix=True, dry_run=False)
+            result = _check_openclaw_section([], fix=True, dry_run=False)
 
         assert result is True
         mock_install.assert_called_once()
@@ -338,10 +321,9 @@ class TestUDoc06WorkspaceMissing:
     def test_workspace_none(self, tmp_path, capsys) -> None:
         """U-DOC-06: present but workspace=None → 'workspace not found' issue."""
         state = _make_state(present=True, workspace_path=None)
-        repo = _make_repo()
 
         with patch("worthless.openclaw.integration.detect", return_value=state):
-            result = _check_openclaw_section(repo, fix=False, dry_run=False)
+            result = _check_openclaw_section([], fix=False, dry_run=False)
 
         assert result is True
         out = capsys.readouterr().out
@@ -369,14 +351,13 @@ class TestUDoc07ConfigMissing:
             config_path=None,  # no openclaw.json
         )
         enrollment = _make_enrollment(key_alias="my-key", provider="openai")
-        repo = _make_repo(enrollments=[enrollment])
 
         with (
             patch("worthless.openclaw.integration.detect", return_value=state),
             patch("worthless.openclaw.skill.current_version", return_value="0.1.0"),
             patch("worthless.cli.commands.doctor.is_orphan", return_value=False),
         ):
-            result = _check_openclaw_section(repo, fix=False, dry_run=False)
+            result = _check_openclaw_section([enrollment], fix=False, dry_run=False)
 
         assert result is True
         out = capsys.readouterr().out
