@@ -43,7 +43,7 @@ export OPENAI_BASE_URL=http://localhost:8787/openai-a1b2c3d4/v1
 
 ## OpenClaw or other tools running in a container
 
-If your client runs in a container and the Worthless proxy runs on your host, the container needs to reach the host. Set two env vars before locking on the host:
+If your client runs in a container and the Worthless proxy runs on your host, the container needs to reach the host. Set three env vars before locking on the host:
 
 ```bash
 # Switch proxy out of loopback mode so it can bind to all interfaces
