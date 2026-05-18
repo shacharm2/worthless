@@ -209,6 +209,48 @@ async def test_16x2_no_auth_token_in_proxy_returns_401(
         await db.close()
 
 
+@pytest.mark.asyncio
+async def test_16x2_lazy_load_when_proxy_started_before_lock(
+    enrolled_16x2, repo: ShardRepository, proxy_settings: ProxySettings
+) -> None:
+    """Proxy started before lock (auth_token=None at startup) lazy-loads from DB.
+
+    Normal fresh-install flow: `worthless up` runs first, then `worthless lock`
+    writes the token to DB. The proxy must not require a restart — it loads the
+    token on the first 16x2 request and caches it.
+    """
+    alias, auth_token, _ = enrolled_16x2
+
+    # Simulate: lock ran and wrote the token to DB, but proxy started before that
+    await repo.set_proxy_auth_token(auth_token)
+    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=None)  # None = pre-lock start
+
+    try:
+        with respx.mock:
+            respx.post("https://api.openai.com/v1/chat/completions").respond(
+                200,
+                json={
+                    "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 10, "total_tokens": 15},
+                    "model": "gpt-4",
+                },
+            )
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    f"/{alias}/v1/chat/completions",
+                    json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
+                    headers={"Authorization": f"Bearer {auth_token}"},
+                )
+        assert resp.status_code == 200
+        # Token should now be cached in app.state
+        assert app.state.proxy_auth_token == auth_token
+    finally:
+        await app.state.httpx_client.aclose()
+        await db.close()
+
+
 # ------------------------------------------------------------------
 # DB persistence: auth token survives proxy restart
 # ------------------------------------------------------------------

@@ -377,14 +377,18 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         shard_a: bytearray | None
 
         if encrypted.shard_a_enc is not None:
-            # 16x2 path — verify stable token (constant-time, SR-07)
+            # 16x2 path — verify stable token (constant-time, SR-07).
+            # Lazy-load: the proxy may have started before `worthless lock` ran
+            # (normal fresh-install flow). Re-read once from DB and cache so
+            # subsequent requests don't pay the round-trip.
             if proxy_auth_token is None:
-                # Alias locked with 16x2 but proxy has no auth token loaded.
-                # This should not happen in normal operation (token set at lock
-                # time, proxy loaded it at startup). Fail safe.
+                proxy_auth_token = await repo.get_proxy_auth_token()
+                if proxy_auth_token is not None:
+                    request.app.state.proxy_auth_token = proxy_auth_token
+            if proxy_auth_token is None:
+                # Lock has genuinely never run — no token in DB at all.
                 logger.warning(
-                    "16x2 alias %r has shard_a_enc but proxy_auth_token not loaded; "
-                    "re-start the proxy after `worthless lock`",
+                    "16x2 alias %r: no proxy_auth_token in DB; run `worthless lock`",
                     alias,
                 )
                 return _uniform_401()
