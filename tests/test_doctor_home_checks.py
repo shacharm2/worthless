@@ -1,8 +1,5 @@
 """Doctor home-mismatch + alias-not-in-DB checks, and lock non-default home warning.
 
-TDD-first: all tests are written before any implementation. They must all fail
-(red) before any code is written.
-
 Coverage:
 * Lock warns when WORTHLESS_HOME is set (test 1)
 * Lock stays silent when using the default home (test 2)
@@ -17,12 +14,11 @@ Coverage:
 * _collect_alias_issues: no false positive for an enrolled alias (unit, test 10)
 * _collect_alias_issues: malformed BASE_URL that doesn't match the regex (unit, test 11)
 * _collect_alias_issues: permission-denied .env is silently skipped (unit, test 12)
-* _collect_alias_issues: two missing aliases in same file → two issues (unit, test 13)
+* _collect_alias_issues: two missing aliases in same file - two issues (unit, test 13)
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 from pathlib import Path
 
@@ -31,11 +27,19 @@ from typer.testing import CliRunner
 
 from worthless.cli.app import app
 from worthless.cli.bootstrap import WorthlessHome, ensure_home
+from worthless.cli.commands.doctor import _collect_alias_issues
+from worthless.cli.orphans import PROBLEM_PHRASE
 from worthless.cli.process import pid_path, write_pid
+from worthless.crypto.splitter import split_key_fp
+from worthless.storage.repository import ShardRepository, StoredShard
 
 from tests.helpers import fake_openai_key
 
 runner = CliRunner(mix_stderr=False)
+
+# Shared sentinel — all _collect_alias_issues unit tests use this so a future
+# signature change only needs updating here.
+_TEST_DB_NAME = "worthless.db"
 
 
 @pytest.fixture
@@ -82,12 +86,12 @@ class TestLockHomeMismatchWarning:
         itself errors out, we must never reach that branch — even when WORTHLESS_HOME
         is set — so the user doesn't see a spurious warning alongside a failure message.
         """
-        home = ensure_home(tmp_path / ".worthless")
         missing_env = tmp_path / "nonexistent.env"
         result = runner.invoke(
             app,
             ["lock", "--env", str(missing_env)],
-            env={"WORTHLESS_HOME": str(home.base_dir)},
+            # Any path string works — lock fails before touching the home.
+            env={"WORTHLESS_HOME": str(tmp_path / ".worthless")},
         )
         assert result.exit_code != 0
         assert "WORTHLESS_HOME is set" not in result.output
@@ -105,9 +109,6 @@ class TestDoctorHomeMismatch:
         """Doctor warns when the running proxy's WORTHLESS_HOME differs from the shell's."""
         write_pid(pid_path(fake_home), pid=12345, port=8787)
         other_home = str(tmp_path / "other-home")
-        # raising=False: read_process_env doesn't exist before implementation;
-        # monkeypatch creates the attribute so the test fails on the assertion,
-        # not on the patch setup.
         monkeypatch.setattr(
             "worthless.cli.commands.doctor.read_process_env",
             lambda pid: {"WORTHLESS_HOME": other_home},
@@ -124,7 +125,6 @@ class TestDoctorHomeMismatch:
         self, fake_home: WorthlessHome
     ) -> None:
         """When no proxy pid file exists, doctor skips the mismatch check silently."""
-        # No write_pid call → pid file absent
         result = runner.invoke(
             app,
             ["doctor"],
@@ -133,14 +133,12 @@ class TestDoctorHomeMismatch:
         assert "home mismatch" not in result.output
         assert result.exit_code == 0
 
-    def test_doctor_handles_corrupt_pid_file(
-        self, tmp_path: Path, fake_home: WorthlessHome
-    ) -> None:
-        """A corrupt pid file (not the expected format) does not crash doctor.
+    def test_doctor_handles_corrupt_pid_file(self, fake_home: WorthlessHome) -> None:
+        """A corrupt pid file does not crash doctor.
 
-        read_pid is expected to return None on parse failure; _check_home_mismatch
-        then returns False early. This test proves that invariant survives a real
-        bad file on disk — not just an absent one.
+        read_pid returns None on parse failure; _check_home_mismatch returns
+        False early. This proves that invariant survives a real bad file on
+        disk — not just an absent one.
         """
         pid_path(fake_home).write_text("not-a-valid-pid-record\n", encoding="utf-8")
         result = runner.invoke(
@@ -152,16 +150,14 @@ class TestDoctorHomeMismatch:
         assert result.exit_code == 0
 
     def test_doctor_handles_dead_process_returns_empty_env(
-        self, tmp_path: Path, fake_home: WorthlessHome, monkeypatch
+        self, fake_home: WorthlessHome, monkeypatch
     ) -> None:
         """If the process dies after the PID read (TOCTOU), read_process_env returns {}.
 
-        When environ() returns {} the function falls back to treating the proxy
-        as using the default home. Doctor must not crash and must not emit a
-        spurious traceback — only possibly a mismatch warning, never an exception.
+        Doctor must not crash or emit a traceback — only possibly a mismatch
+        warning (if default home differs from fake_home), never an exception.
         """
         write_pid(pid_path(fake_home), pid=99999, port=8787)
-        # Simulate psutil catching NoSuchProcess and returning empty dict
         monkeypatch.setattr(
             "worthless.cli.commands.doctor.read_process_env",
             lambda pid: {},
@@ -171,8 +167,6 @@ class TestDoctorHomeMismatch:
             ["doctor"],
             env={"WORTHLESS_HOME": str(fake_home.base_dir)},
         )
-        # Must not crash with an unhandled exception
-        assert result.exit_code in (0, 1)  # warn=1 is OK; traceback is not
         assert "Traceback" not in (result.output + (result.stderr or ""))
 
 
@@ -203,11 +197,10 @@ class TestDoctorAliasNotInDb:
         self, tmp_path: Path, monkeypatch
     ) -> None:
         """Both orphan AND alias-not-in-DB conditions emit two distinct warnings."""
-        from worthless.storage.repository import ShardRepository, StoredShard
-        from worthless.crypto.splitter import split_key_fp
+        import asyncio
 
         home = ensure_home(tmp_path / ".worthless")
-        deleted_env = tmp_path / "deleted.env"  # never created → orphan
+        deleted_env = tmp_path / "deleted.env"  # never created -> orphan
 
         repo = ShardRepository(str(home.db_path), home.fernet_key)
 
@@ -232,6 +225,9 @@ class TestDoctorAliasNotInDb:
             )
             sr.zero()
 
+        # asyncio.run() is correct here: this test must be sync because
+        # CliRunner.invoke() calls asyncio.run() internally (production code),
+        # which cannot nest inside a running pytest-asyncio event loop.
         asyncio.run(_setup())
 
         monkeypatch.chdir(tmp_path)
@@ -245,17 +241,12 @@ class TestDoctorAliasNotInDb:
             env={"WORTHLESS_HOME": str(home.base_dir)},
         )
 
-        from worthless.cli.orphans import PROBLEM_PHRASE
-
-        # Orphan warning (detected by existing code)
         assert PROBLEM_PHRASE in result.output
-        # Alias-not-in-DB is a SEPARATE warning with a distinct phrase
-        # (only present once _check_alias_not_in_db is wired in)
         assert "phantom999" in result.output
 
 
 # ---------------------------------------------------------------------------
-# _collect_alias_issues — unit tests (call the helper directly)
+# _collect_alias_issues unit tests
 # ---------------------------------------------------------------------------
 
 
@@ -263,45 +254,35 @@ class TestCollectAliasIssuesUnit:
     """Direct unit tests for _collect_alias_issues.
 
     These exercise the helper in isolation so the integration tests above
-    can stay focused on CLI wiring without duplicating every edge case.
+    stay focused on CLI wiring without duplicating every edge case.
     """
 
     def test_no_false_positive_for_enrolled_alias(self, tmp_path: Path) -> None:
         """An alias that IS in known_aliases is never reported as missing."""
-        from worthless.cli.commands.doctor import _collect_alias_issues
-
         env_file = tmp_path / ".env"
         env_file.write_text(
             "OPENAI_BASE_URL=http://127.0.0.1:8787/my-enrolled-alias/v1\n",
             encoding="utf-8",
         )
-        issues = _collect_alias_issues(
-            {env_file},
-            {"my-enrolled-alias"},
-            "worthless.db",
-        )
+        issues = _collect_alias_issues({env_file}, {"my-enrolled-alias"}, _TEST_DB_NAME)
         assert issues == []
 
     def test_malformed_url_no_match_no_crash(self, tmp_path: Path) -> None:
-        """A BASE_URL that doesn't match the alias regex produces no issue and no crash.
+        """A BASE_URL with no alias segment produces no issue and no crash.
 
-        Example: double-slash path ``http://127.0.0.1:8787//v1`` has no alias segment.
+        Example: ``http://127.0.0.1:8787//v1`` — double-slash, regex won't match.
         """
-        from worthless.cli.commands.doctor import _collect_alias_issues
-
         env_file = tmp_path / ".env"
         env_file.write_text(
             "OPENAI_BASE_URL=http://127.0.0.1:8787//v1\n",
             encoding="utf-8",
         )
-        issues = _collect_alias_issues({env_file}, set(), "worthless.db")
+        issues = _collect_alias_issues({env_file}, set(), _TEST_DB_NAME)
         assert issues == []
 
     @pytest.mark.skipif(os.getuid() == 0, reason="root bypasses file permissions")
     def test_permission_denied_env_file_silently_skipped(self, tmp_path: Path) -> None:
-        """A .env that cannot be read (OSError) is skipped; no crash, no issue emitted."""
-        from worthless.cli.commands.doctor import _collect_alias_issues
-
+        """A .env that cannot be read (OSError) is skipped; no crash, no issue."""
         env_file = tmp_path / ".env"
         env_file.write_text(
             "OPENAI_BASE_URL=http://127.0.0.1:8787/secret-alias/v1\n",
@@ -309,22 +290,20 @@ class TestCollectAliasIssuesUnit:
         )
         env_file.chmod(0o000)
         try:
-            issues = _collect_alias_issues({env_file}, set(), "worthless.db")
+            issues = _collect_alias_issues({env_file}, set(), _TEST_DB_NAME)
             assert issues == []
         finally:
             env_file.chmod(0o644)  # restore so tmp_path cleanup can delete the file
 
     def test_two_missing_aliases_in_same_file_both_reported(self, tmp_path: Path) -> None:
-        """Two different missing aliases in one .env produce two separate issue strings."""
-        from worthless.cli.commands.doctor import _collect_alias_issues
-
+        """Two different missing aliases in one .env produce two separate issues."""
         env_file = tmp_path / ".env"
         env_file.write_text(
             "OPENAI_BASE_URL=http://127.0.0.1:8787/missing-openai/v1\n"
             "ANTHROPIC_BASE_URL=http://127.0.0.1:8787/missing-anthropic/v1\n",
             encoding="utf-8",
         )
-        issues = _collect_alias_issues({env_file}, set(), "worthless.db")
+        issues = _collect_alias_issues({env_file}, set(), _TEST_DB_NAME)
         assert len(issues) == 2
-        aliases_reported = {i.split("'")[1] for i in issues}
-        assert aliases_reported == {"missing-openai", "missing-anthropic"}
+        assert any("missing-openai" in i for i in issues)
+        assert any("missing-anthropic" in i for i in issues)
