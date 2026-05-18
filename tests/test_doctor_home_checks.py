@@ -6,16 +6,24 @@ TDD-first: all tests are written before any implementation. They must all fail
 Coverage:
 * Lock warns when WORTHLESS_HOME is set (test 1)
 * Lock stays silent when using the default home (test 2)
-* Doctor detects a running proxy using a different WORTHLESS_HOME (test 3)
-* Doctor skips the mismatch check gracefully when no proxy is running (test 4)
-* Doctor warns when a .env BASE_URL references an alias absent from the DB (test 5)
+* Lock does NOT warn when the lock itself fails (test 3)
+* Doctor detects a running proxy using a different WORTHLESS_HOME (test 4)
+* Doctor skips the mismatch check gracefully when no proxy is running (test 5)
+* Doctor handles a corrupt / unreadable pid file without crashing (test 6)
+* Doctor handles a dead process (read_process_env returns {}) without crashing (test 7)
+* Doctor warns when a .env BASE_URL references an alias absent from the DB (test 8)
 * Doctor emits two distinct warnings when both orphan AND alias-not-in-DB
-  conditions are present (test 6)
+  conditions are present (test 9)
+* _collect_alias_issues: no false positive for an enrolled alias (unit, test 10)
+* _collect_alias_issues: malformed BASE_URL that doesn't match the regex (unit, test 11)
+* _collect_alias_issues: permission-denied .env is silently skipped (unit, test 12)
+* _collect_alias_issues: two missing aliases in same file → two issues (unit, test 13)
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -67,6 +75,23 @@ class TestLockHomeMismatchWarning:
         assert result.exit_code == 0, result.output
         assert "WORTHLESS_HOME is set" not in result.output
 
+    def test_lock_no_warning_on_failed_lock(self, tmp_path: Path) -> None:
+        """When lock fails (missing .env), the non-default-home warning is never printed.
+
+        The warning is gated inside the success branch of _lock_keys. If the lock
+        itself errors out, we must never reach that branch — even when WORTHLESS_HOME
+        is set — so the user doesn't see a spurious warning alongside a failure message.
+        """
+        home = ensure_home(tmp_path / ".worthless")
+        missing_env = tmp_path / "nonexistent.env"
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(missing_env)],
+            env={"WORTHLESS_HOME": str(home.base_dir)},
+        )
+        assert result.exit_code != 0
+        assert "WORTHLESS_HOME is set" not in result.output
+
 
 # ---------------------------------------------------------------------------
 # Doctor: home mismatch check
@@ -107,6 +132,48 @@ class TestDoctorHomeMismatch:
         )
         assert "home mismatch" not in result.output
         assert result.exit_code == 0
+
+    def test_doctor_handles_corrupt_pid_file(
+        self, tmp_path: Path, fake_home: WorthlessHome
+    ) -> None:
+        """A corrupt pid file (not the expected format) does not crash doctor.
+
+        read_pid is expected to return None on parse failure; _check_home_mismatch
+        then returns False early. This test proves that invariant survives a real
+        bad file on disk — not just an absent one.
+        """
+        pid_path(fake_home).write_text("not-a-valid-pid-record\n", encoding="utf-8")
+        result = runner.invoke(
+            app,
+            ["doctor"],
+            env={"WORTHLESS_HOME": str(fake_home.base_dir)},
+        )
+        assert "home mismatch" not in result.output
+        assert result.exit_code == 0
+
+    def test_doctor_handles_dead_process_returns_empty_env(
+        self, tmp_path: Path, fake_home: WorthlessHome, monkeypatch
+    ) -> None:
+        """If the process dies after the PID read (TOCTOU), read_process_env returns {}.
+
+        When environ() returns {} the function falls back to treating the proxy
+        as using the default home. Doctor must not crash and must not emit a
+        spurious traceback — only possibly a mismatch warning, never an exception.
+        """
+        write_pid(pid_path(fake_home), pid=99999, port=8787)
+        # Simulate psutil catching NoSuchProcess and returning empty dict
+        monkeypatch.setattr(
+            "worthless.cli.commands.doctor.read_process_env",
+            lambda pid: {},
+        )
+        result = runner.invoke(
+            app,
+            ["doctor"],
+            env={"WORTHLESS_HOME": str(fake_home.base_dir)},
+        )
+        # Must not crash with an unhandled exception
+        assert result.exit_code in (0, 1)  # warn=1 is OK; traceback is not
+        assert "Traceback" not in (result.output + (result.stderr or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -185,3 +252,79 @@ class TestDoctorAliasNotInDb:
         # Alias-not-in-DB is a SEPARATE warning with a distinct phrase
         # (only present once _check_alias_not_in_db is wired in)
         assert "phantom999" in result.output
+
+
+# ---------------------------------------------------------------------------
+# _collect_alias_issues — unit tests (call the helper directly)
+# ---------------------------------------------------------------------------
+
+
+class TestCollectAliasIssuesUnit:
+    """Direct unit tests for _collect_alias_issues.
+
+    These exercise the helper in isolation so the integration tests above
+    can stay focused on CLI wiring without duplicating every edge case.
+    """
+
+    def test_no_false_positive_for_enrolled_alias(self, tmp_path: Path) -> None:
+        """An alias that IS in known_aliases is never reported as missing."""
+        from worthless.cli.commands.doctor import _collect_alias_issues
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "OPENAI_BASE_URL=http://127.0.0.1:8787/my-enrolled-alias/v1\n",
+            encoding="utf-8",
+        )
+        issues = _collect_alias_issues(
+            {env_file},
+            {"my-enrolled-alias"},
+            "worthless.db",
+        )
+        assert issues == []
+
+    def test_malformed_url_no_match_no_crash(self, tmp_path: Path) -> None:
+        """A BASE_URL that doesn't match the alias regex produces no issue and no crash.
+
+        Example: double-slash path ``http://127.0.0.1:8787//v1`` has no alias segment.
+        """
+        from worthless.cli.commands.doctor import _collect_alias_issues
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "OPENAI_BASE_URL=http://127.0.0.1:8787//v1\n",
+            encoding="utf-8",
+        )
+        issues = _collect_alias_issues({env_file}, set(), "worthless.db")
+        assert issues == []
+
+    @pytest.mark.skipif(os.getuid() == 0, reason="root bypasses file permissions")
+    def test_permission_denied_env_file_silently_skipped(self, tmp_path: Path) -> None:
+        """A .env that cannot be read (OSError) is skipped; no crash, no issue emitted."""
+        from worthless.cli.commands.doctor import _collect_alias_issues
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "OPENAI_BASE_URL=http://127.0.0.1:8787/secret-alias/v1\n",
+            encoding="utf-8",
+        )
+        env_file.chmod(0o000)
+        try:
+            issues = _collect_alias_issues({env_file}, set(), "worthless.db")
+            assert issues == []
+        finally:
+            env_file.chmod(0o644)  # restore so tmp_path cleanup can delete the file
+
+    def test_two_missing_aliases_in_same_file_both_reported(self, tmp_path: Path) -> None:
+        """Two different missing aliases in one .env produce two separate issue strings."""
+        from worthless.cli.commands.doctor import _collect_alias_issues
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "OPENAI_BASE_URL=http://127.0.0.1:8787/missing-openai/v1\n"
+            "ANTHROPIC_BASE_URL=http://127.0.0.1:8787/missing-anthropic/v1\n",
+            encoding="utf-8",
+        )
+        issues = _collect_alias_issues({env_file}, set(), "worthless.db")
+        assert len(issues) == 2
+        aliases_reported = {i.split("'")[1] for i in issues}
+        assert aliases_reported == {"missing-openai", "missing-anthropic"}
