@@ -746,7 +746,11 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
         if not _doctor_confirm(orphans, synced, yes, console):
             return
 
-        _doctor_apply(orphans, synced, repo, home, console)
+        # Fresh repo instance: asyncio.run() closes the event loop after
+        # _list_orphans; reusing the same repo in a second asyncio.run()
+        # call fails on Linux. A new instance avoids the closed-loop error.
+        fix_repo = ShardRepository(str(home.db_path), home.fernet_key)
+        _doctor_apply(orphans, synced, fix_repo, home, console)
 
 
 def register_doctor_commands(app: typer.Typer) -> None:
