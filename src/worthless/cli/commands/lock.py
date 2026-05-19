@@ -895,8 +895,10 @@ def _lock_keys(
                 f"a usable secret."
             )
             env_home = os.environ.get("WORTHLESS_HOME")
-            if env_home:
-                typer.echo(f"Warning: using non-default home {env_home} (WORTHLESS_HOME is set)")
+            if env_home and home.base_dir.resolve() != (Path.home() / ".worthless").resolve():
+                typer.echo(
+                    f"Warning: using non-default home {home.base_dir} (WORTHLESS_HOME is set)"
+                )
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
             )
