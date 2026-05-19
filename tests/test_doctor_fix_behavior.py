@@ -1,5 +1,5 @@
-"""WOR-456 supplemental tests — coverage for paths not exercised by the primary
-test files added in this PR (test_doctor_icloud.py, test_keystore_macos.py).
+"""Supplemental doctor tests — coverage for paths not exercised by the primary
+test files (test_doctor_keychain_migration.py, test_keystore_macos.py).
 
 Covers:
 * WorthlessHome.recovery_dir property (bootstrap.py)
@@ -879,8 +879,11 @@ class TestDoctorRunIntegration:
         monkeypatch.setattr(
             doctor_module, "_list_synced_keychain_entries", lambda: ["fernet-key-X"]
         )
-        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns([]))
+        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+        monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
         monkeypatch.setattr(
             doctor_module,
             "_doctor_apply",
@@ -905,8 +908,11 @@ class TestDoctorRunIntegration:
         (fake_home.recovery_dir / "key.recover").write_bytes(b"v")
 
         monkeypatch.setattr(doctor_module, "_list_synced_keychain_entries", lambda: [])
-        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns([]))
+        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+        monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
         # Simulate successful recovery import.
         monkeypatch.setattr(doctor_module, "_import_recovery_files", lambda _files: 1)
 
@@ -927,8 +933,11 @@ class TestDoctorRunIntegration:
         (fake_home.recovery_dir / "key.recover").write_bytes(b"v")
 
         monkeypatch.setattr(doctor_module, "_list_synced_keychain_entries", lambda: [])
-        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns([]))
+        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+        monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
         monkeypatch.setattr(doctor_module, "_import_recovery_files", lambda _files: 2)
 
         result = runner.invoke(app, ["doctor"])
@@ -946,8 +955,11 @@ class TestDoctorRunIntegration:
     ) -> None:
         """No recovery files, no orphans, no synced → 'No issues found.' exactly."""
         monkeypatch.setattr(doctor_module, "_list_synced_keychain_entries", lambda: [])
-        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns([]))
+        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+        monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
 
         result = runner.invoke(app, ["doctor"])
 
@@ -967,8 +979,11 @@ class TestDoctorRunIntegration:
         monkeypatch.setattr(
             doctor_module, "_list_synced_keychain_entries", lambda: ["fernet-key-X"]
         )
-        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns([]))
+        monkeypatch.setattr(doctor_module, "_list_orphans", _async_returns(([], [])))
         monkeypatch.setattr(doctor_module, "get_home", lambda: fake_home)
+        monkeypatch.setattr(doctor_module, "_check_openclaw_section", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_home_mismatch", lambda *a, **kw: False)
+        monkeypatch.setattr(doctor_module, "_check_alias_not_in_db", lambda *a, **kw: False)
         monkeypatch.setattr(
             doctor_module,
             "_doctor_apply",

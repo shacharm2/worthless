@@ -32,21 +32,25 @@ Design seams (foreseen extensions, NOT in this PR):
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import re
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from collections.abc import Iterator
+from collections.abc import Coroutine, Iterator
+from typing import Any
 
 if sys.platform != "win32":
     import fcntl
 
 import typer
 
-from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
-from worthless.cli.process import resolve_port
+from dotenv import dotenv_values
+from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home, _DEFAULT_BASE
+from worthless.cli.platform import read_process_env
+from worthless.cli.process import pid_path, read_pid, resolve_port
 from worthless.cli.commands.revoke import _revoke_async
 from worthless.cli.console import WorthlessConsole, get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
@@ -73,6 +77,9 @@ logger = logging.getLogger(__name__)
 ICLOUD_LEAK_PHRASE = "stored in iCloud Keychain"
 ICLOUD_FIX_PHRASE = "worthless doctor --fix"
 RECOVERY_IMPORT_PHRASE = "Recovered"
+HOME_MISMATCH_PHRASE = "home mismatch"
+ALIAS_NOT_IN_DB_PHRASE = "has no shard in the current DB"
+_PROXY_ALIAS_URL_RE = re.compile(r"https?://[^/]+/([a-zA-Z0-9_-]+)/v1\b")
 
 # Multi-device safety warning shown in the --fix consent prompt. Verbatim
 # substrings are AND-bound by tests so future copy-paste cleanups don't
@@ -90,13 +97,36 @@ _MULTI_DEVICE_WARNING = (
 )
 
 
-async def _list_orphans(repo: ShardRepository) -> list[EnrollmentRecord]:
-    """Initialize the repo and return all orphan enrollments. Uses
-    ``find_orphans`` so each shared ``.env`` is parsed at most once.
+def _run_async(coro: Coroutine[Any, Any, Any]) -> Any:
+    """Run *coro* safely regardless of whether an event loop is already running.
+
+    ``asyncio.run()`` raises ``RuntimeError`` when called from within a running
+    event loop (e.g. pytest-asyncio test context).  In that case we dispatch to
+    a fresh event loop in a worker thread, which is the same pattern used by
+    ``worthless.cli.bootstrap`` for ``migrate_db``.
+    """
+    try:
+        asyncio.get_running_loop()
+        # Already inside a running loop — spin up a thread with its own loop.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
+    except RuntimeError:
+        # No running loop — safe to call asyncio.run() directly.
+        return asyncio.run(coro)
+
+
+async def _list_orphans(
+    repo: ShardRepository,
+) -> tuple[list[EnrollmentRecord], list[EnrollmentRecord]]:
+    """Initialize the repo and return ``(all_enrollments, orphans)``.
+
+    Returns both so callers can reuse the already-fetched enrollment list
+    without a second ``asyncio.run`` on the same repo (which fails on Linux
+    when the event loop is closed between calls).
     """
     await repo.initialize()
-    enrollments = await repo.list_enrollments()
-    return find_orphans(enrollments)
+    all_enrollments = await repo.list_enrollments()
+    return all_enrollments, find_orphans(all_enrollments)
 
 
 async def _purge_all(
@@ -261,7 +291,7 @@ def _check_providers(
 
 
 def _check_openclaw_section(
-    repo: ShardRepository,
+    enrollments: list[EnrollmentRecord],
     *,
     fix: bool,
     dry_run: bool,
@@ -280,12 +310,6 @@ def _check_openclaw_section(
         return False
 
     skill_issues, fixed_items = _check_skill(state, fix=fix, dry_run=dry_run)
-
-    try:
-        enrollments = asyncio.run(repo.list_enrollments())
-    except Exception:
-        enrollments = []
-        skill_issues.append("could not read enrollment DB — provider check skipped")
 
     healthy = [e for e in enrollments if not is_orphan(e)]
     port = resolve_port(None)
@@ -338,6 +362,68 @@ def _list_recovery_files(home: WorthlessHome) -> list[Path]:
     if not home.recovery_dir.exists():
         return []
     return sorted(home.recovery_dir.glob("*.recover"))
+
+
+def _check_home_mismatch(home: WorthlessHome) -> bool:
+    """Check if the running proxy uses a different home. Prints and returns True on mismatch."""
+    pid_result = read_pid(pid_path(home))
+    if pid_result is None:
+        return False
+    pid, _port = pid_result
+    env = read_process_env(pid)
+    proxy_home_str = env.get("WORTHLESS_HOME")
+    proxy_home = Path(proxy_home_str) if proxy_home_str else _DEFAULT_BASE
+    if proxy_home.resolve() == home.base_dir.resolve():
+        return False
+    typer.echo(f"WARNING: {HOME_MISMATCH_PHRASE}")
+    typer.echo(f"  proxy is using: {proxy_home / 'worthless.db'}")
+    typer.echo(f"  this shell sees: {home.base_dir / 'worthless.db'}")
+    typer.echo("  Fix: unset WORTHLESS_HOME, then restart the proxy.")
+    return True
+
+
+def _check_alias_not_in_db(home: WorthlessHome, enrollments: list[EnrollmentRecord]) -> bool:
+    """Returns True when a .env BASE_URL references a proxy alias absent from *enrollments*."""
+    known_aliases = {e.key_alias for e in enrollments}
+    env_paths: set[Path] = {Path(e.env_path) for e in enrollments if e.env_path}
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.exists():
+        env_paths.add(cwd_env)
+
+    issues = _collect_alias_issues(env_paths, known_aliases, home.db_path.name)
+    if not issues:
+        return False
+
+    typer.echo(f"WARNING: {len(issues)} .env BASE_URL alias(es) missing from DB:")
+    for issue in issues:
+        typer.echo(f"  • {issue}")
+    return True
+
+
+def _collect_alias_issues(env_paths: set[Path], known_aliases: set[str], db_name: str) -> list[str]:
+    """Scan env_paths for BASE_URL values referencing proxy aliases absent from DB."""
+    issues: list[str] = []
+    seen: set[str] = set()
+    for env_file in env_paths:
+        try:
+            parsed = dotenv_values(env_file)
+        except OSError:
+            continue
+        for key, value in parsed.items():
+            if not key.endswith("_BASE_URL") or not value:
+                continue
+            m = _PROXY_ALIAS_URL_RE.search(value)
+            if m is None:
+                continue
+            alias = m.group(1)
+            if alias in seen or alias in known_aliases:
+                continue
+            seen.add(alias)
+            issues.append(
+                f"alias '{alias}' is set in {env_file.name} BASE_URL "
+                f"but {ALIAS_NOT_IN_DB_PHRASE} ({db_name})"
+            )
+    return issues
 
 
 def _import_recovery_files(files: list[Path]) -> int:
@@ -605,13 +691,25 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
 
         # ----------- check 2: orphan DB rows -----------
         repo = ShardRepository(str(home.db_path), home.fernet_key)
-        orphans = asyncio.run(_list_orphans(repo))
-        openclaw_issues = _check_openclaw_section(repo, fix=fix, dry_run=dry_run)
+        all_enrollments, orphans = _run_async(_list_orphans(repo))
+        openclaw_issues = _check_openclaw_section(all_enrollments, fix=fix, dry_run=dry_run)
+
+        # ----------- check 3: home mismatch -----------
+        had_mismatch = _check_home_mismatch(home)
 
         # ----------- check 4: iCloud-synced keychain entries -----------
         synced = _list_synced_keychain_entries()
 
-        if not orphans and not openclaw_issues and not synced:
+        # ----------- check 5: alias-not-in-DB -----------
+        had_alias_issues = _check_alias_not_in_db(home, all_enrollments)
+
+        if (
+            not orphans
+            and not openclaw_issues
+            and not synced
+            and not had_mismatch
+            and not had_alias_issues
+        ):
             if not imported:
                 console.print_success("No issues found.")
             return
