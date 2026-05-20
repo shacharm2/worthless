@@ -17,21 +17,22 @@ the data.
 
 ```bash
 # Wipe any prior quest artifacts so this is truly fresh
-docker compose -f /tmp/wor514-docker/docker-compose.yml -p wor514 down -v --remove-orphans 2>/dev/null
+docker compose -p wor514 down -v --remove-orphans 2>/dev/null
 
-mkdir -p /tmp/wor514-docker && cd /tmp/wor514-docker
+# IMPORTANT: cd to the worktree's deploy dir so docker's build context
+# (`context: ..` in the compose file) resolves to the repo root, not /tmp.
 WT=/Users/shachar/Projects/worthless/worthless/.claude/worktrees/heuristic-ptolemy-2224e2
-cp "$WT/deploy/docker-compose.yml" .
-cp "$WT/deploy/docker-compose.env.example" docker-compose.env
+cd "$WT/deploy"
+cp -f docker-compose.env.example docker-compose.env
 
 # Fake-but-real-shaped key; no real credential at risk
 KEY="$(python3 -c "import base64,hashlib;print('sk-proj-'+base64.urlsafe_b64encode(hashlib.sha256(b'quest-seed').digest()).decode().rstrip('=')[:48])")"
 echo "KEY=$KEY"
 ```
 
-The compose file (commit `9b1b9c0`-ish, repo `deploy/docker-compose.yml`)
-is what `docs.wless.io` tells users to `curl`. We're using your local copy
-so the bytes are identical to what we'd ship.
+The compose file (`deploy/docker-compose.yml`) is what `docs.wless.io`
+tells users to `curl`. We run from the worktree's `deploy/` so the build
+context resolves to the repo root. Nothing here writes to your `~`.
 
 ---
 
