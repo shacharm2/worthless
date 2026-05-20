@@ -82,7 +82,7 @@ BASE="$WORK/base/.openclaw"
 mkdir -p "$BASE"
 docker run --rm -v "$BASE":/home/node/.openclaw -e OPENCLAW_ACCEPT_TERMS=yes \
     "$IMG" node openclaw.mjs onboard \
-    --non-interactive --accept-risk --mode local \
+    --non-interactive --accept-risk --mode local --skip-health \
     --auth-choice custom-api-key --custom-api-key "$KEY" \
     --custom-base-url "http://api.openai.com/v1" \
     --custom-model-id "gpt-4o" --custom-compatibility openai >/dev/null 2>&1

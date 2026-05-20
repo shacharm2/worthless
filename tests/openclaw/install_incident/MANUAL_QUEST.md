@@ -34,11 +34,13 @@ detects it like any live key; no real credentials at risk.
 docker run --rm -v "$Q/.openclaw":/home/node/.openclaw \
     -e OPENCLAW_ACCEPT_TERMS=yes ghcr.io/openclaw/openclaw:latest \
     node openclaw.mjs onboard \
-    --non-interactive --accept-risk --mode local \
+    --non-interactive --accept-risk --mode local --skip-health \
     --auth-choice custom-api-key --custom-api-key "$KEY" \
     --custom-base-url "http://api.openai.com/v1" \
     --custom-model-id "gpt-4o" --custom-compatibility openai \
     2>&1 | tail -5
+# Sanity: did the config land?
+ls "$Q/.openclaw/openclaw.json" >/dev/null 2>&1 || { echo "ERROR: onboard didn't write openclaw.json -- abort"; exit 1; }
 mkdir -p "$Q/.openclaw/agents/main/agent"
 printf '{"profiles":{"default":{"token":"%s"}}}\n' "$KEY" \
     > "$Q/.openclaw/agents/main/agent/auth-profiles.json"
