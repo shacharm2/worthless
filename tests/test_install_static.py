@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from tests._install_helpers import INSTALL_FIXTURES, INSTALL_SH
+from tests._install_helpers import INSTALL_FIXTURES, INSTALL_SH, REPO_ROOT
 
 
 @pytest.fixture(scope="module")
@@ -447,4 +447,32 @@ def test_smoke_test_uses_uv_run_version(install_text: str) -> None:
     smoke_body = smoke_match.group(1)
     assert "worthless lock" not in smoke_body, (
         "Do NOT smoke-test with 'worthless lock' — too stateful for an installer"
+    )
+
+
+def test_install_smoke_uploads_terminal_artifacts() -> None:
+    """WOR-441 live install proof must leave CI logs as downloadable artifacts."""
+    workflow = REPO_ROOT / ".github" / "workflows" / "install-smoke.yml"
+    text = workflow.read_text(encoding="utf-8")
+
+    assert "actions/upload-artifact" in text, (
+        "install-smoke.yml must upload terminal traces/artifacts so the PR proves "
+        "what live install.sh printed on each OS runner."
+    )
+    assert "install-smoke-traces" in text, (
+        "install-smoke.yml artifact name should be grep-able as install-smoke-traces."
+    )
+    assert "install-smoke-traces-${{ matrix.os }}-${{ github.run_id }}" in text, (
+        "live matrix artifact names must use matrix.os, not runner.os, so "
+        "macos-14/macos-15 and ubuntu-22.04/ubuntu-24.04 uploads do not collide."
+    )
+    assert "install-smoke-traces-${{ runner.os }}-${{ github.run_id }}" not in text, (
+        "runner.os collapses macos-14/macos-15 and ubuntu-22.04/ubuntu-24.04 "
+        "into duplicate artifact names under upload-artifact@v4."
+    )
+    assert "install-smoke-traces-proxy-${{ github.run_id }}" in text, (
+        "proxy install proof should upload a separate artifact from the OS matrix."
+    )
+    assert "tee install-smoke-traces/" in text, (
+        "live install steps must tee command output into install-smoke-traces/ before upload."
     )

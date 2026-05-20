@@ -18,6 +18,9 @@ For product review and manual UX traceability, see
 [`UX_PRODUCT_REPORT.md`](UX_PRODUCT_REPORT.md). For literal command output,
 `.env` before/after snapshots, and redacted terminal proof, see
 [`TERMINAL_TRACES.md`](TERMINAL_TRACES.md).
+The trace report also includes deterministic install/reinstall/manual-uninstall
+guidance evidence for `WOR-441`; live OS install proof comes from the GitHub
+`Install Smoke (live curl|sh)` workflow artifacts.
 For the follow-on destructive-state and platform stress backlog, see
 [`STRESS_TEST_MATRIX.md`](STRESS_TEST_MATRIX.md).
 

@@ -897,6 +897,11 @@ def _lock_keys(
                 f"{_shard_b_storage_label()} — {env_path.name} no longer contains "
                 f"a usable secret."
             )
+            env_home = os.environ.get("WORTHLESS_HOME")
+            if env_home and home.base_dir.resolve() != (Path.home() / ".worthless").resolve():
+                typer.echo(
+                    f"Warning: using non-default home {home.base_dir} (WORTHLESS_HOME is set)"
+                )
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
             )
