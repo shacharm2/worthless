@@ -1842,3 +1842,93 @@ class TestScannerProperties:
                 f"No finding for registered hostname {hostname!r} ({entry.name})"
             )
             src.unlink()
+
+
+# ---------------------------------------------------------------------------
+# WOR-504: re-lock surfaces "Already protected — re-verified." instead of
+# silently succeeding or falsely claiming a new split occurred.
+# ---------------------------------------------------------------------------
+
+
+class TestLockRerun:
+    """Re-locking an already-protected .env surfaces 'Already protected — re-verified.'
+
+    The commitment-verify path already proves the key is intact on re-lock —
+    it just doesn't say so. These tests pin the new output contract and guard
+    the DB invariants (no dup shards, no re-split).
+    """
+
+    def test_lock_prints_already_protected_on_rerun(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        """Second lock run on same .env prints 'Already protected — re-verified.'"""
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+
+        result = runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+
+        assert result.exit_code == 0, result.output
+        assert "already protected" in result.output.lower(), result.output
+        assert "re-verified" in result.output.lower(), result.output
+
+    def test_lock_rerun_does_not_create_duplicate_shard_row(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        """Second lock run on same .env leaves the DB shard count unchanged."""
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        count_before = len(asyncio.run(_repo(home_dir).list_keys()))
+
+        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        count_after = len(asyncio.run(_repo(home_dir).list_keys()))
+
+        assert count_after == count_before
+
+    def test_lock_rerun_does_not_resplit_key(self, home_dir: WorthlessHome, env_file: Path) -> None:
+        """Second lock run leaves shard_b byte-identical in the DB — key was not re-split."""
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+
+        repo = _repo(home_dir)
+        aliases = asyncio.run(repo.list_keys())
+        alias = aliases[0]
+        enc_before = asyncio.run(_repo(home_dir).fetch_encrypted(alias))
+        stored_before = _repo(home_dir).decrypt_shard(enc_before)
+        shard_b_before = bytes(stored_before.shard_b)
+        stored_before.zero()
+
+        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+
+        enc_after = asyncio.run(_repo(home_dir).fetch_encrypted(alias))
+        stored_after = _repo(home_dir).decrypt_shard(enc_after)
+        shard_b_after = bytes(stored_after.shard_b)
+        stored_after.zero()
+
+        assert shard_b_after == shard_b_before
+
+    def test_lock_rerun_fresh_project_same_key_creates_new_enrollment(
+        self, home_dir: WorthlessHome, tmp_path: Path
+    ) -> None:
+        """Same key in a second project dir creates a new enrollment row, not a new shard."""
+        key = fake_openai_key()
+        env_a = tmp_path / "proj_a" / ".env"
+        env_b = tmp_path / "proj_b" / ".env"
+        env_a.parent.mkdir()
+        env_b.parent.mkdir()
+        env_a.write_text(f"OPENAI_API_KEY={key}\n")
+        env_b.write_text(f"OPENAI_API_KEY={key}\n")
+
+        env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
+        r1 = runner.invoke(app, ["lock", "--env", str(env_a)], env=env_vars)
+        assert r1.exit_code == 0, r1.output
+        r2 = runner.invoke(app, ["lock", "--env", str(env_b)], env=env_vars)
+        assert r2.exit_code == 0, r2.output
+
+        # One shard row for the shared key — never duplicated.
+        aliases = asyncio.run(_repo(home_dir).list_keys())
+        assert len(aliases) == 1
+
+        # Two enrollment rows — one per project path.
+        enrollments = asyncio.run(_repo(home_dir).list_enrollments())
+        env_paths = {e.env_path for e in enrollments}
+        assert len(env_paths) == 2

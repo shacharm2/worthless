@@ -846,7 +846,7 @@ def _lock_keys(
     if not quiet:
         console.print_hint(f"Scanning {env_path} for API keys...")
 
-    async def _lock_async() -> tuple[int, bool, bool]:
+    async def _lock_async() -> tuple[int, int, bool]:
         from dotenv import dotenv_values  # noqa: PLC0415 — local import keeps test surface tight
 
         repo = ShardRepository(str(home.db_path), home.fernet_key)
@@ -855,23 +855,15 @@ def _lock_keys(
         env_str = str(env_path.resolve())
         all_enrollments = await repo.list_enrollments()
 
+        raw_scanned = scan_env_keys(env_path)
         scanned = await _filter_unprotected_candidates(
             repo,
-            scan_env_keys(env_path),
+            raw_scanned,
             all_enrollments,
             env_str,
         )
         if not scanned:
-            # Same-path re-lock: .env has already-locked keys. Emit a
-            # confirmation so the user knows the enrollment is up to date.
-            same_path = [e for e in all_enrollments if e.env_path == env_str]
-            if same_path and not quiet:
-                aliases_str = ", ".join(sorted({e.key_alias for e in same_path}))
-                console.print_hint(
-                    f"Re-lock: {aliases_str} already up to date (same path, no changes needed)."
-                )
-                return 0, False, True  # suppress the outer "No unprotected" message
-            return 0, False, False
+            return 0, len(raw_scanned), False
 
         # 8rqs Phase 7: snapshot the full .env so _pass1 can read existing
         # *_BASE_URL values and pull them into the DB row.
@@ -897,7 +889,7 @@ def _lock_keys(
                 repo, candidates, env_str, token_budget_daily, planned, env_values
             )
             if not planned:
-                return 0, False, False
+                return 0, 0, False
             _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
             # Phase 2.b: OpenClaw magic. Per L1 in
             # engineering/research/openclaw-WOR-431-phase-2-spec.md, this
@@ -906,7 +898,8 @@ def _lock_keys(
             # partial_failure=True so the caller can raise typer.Exit(73)
             # AFTER lock-core's .env/DB writes are fully committed.
             partial_failure = _apply_openclaw(planned, console, quiet, home)
-            return len(planned), partial_failure, False
+            fresh_count = sum(1 for p in planned if p.was_fresh_enroll)
+            return len(planned), fresh_count, partial_failure
         except Exception:
             if planned:
                 unwind_errors = await _compensating_unwind(repo, planned)
@@ -920,27 +913,33 @@ def _lock_keys(
             for p in planned:
                 p.zero()
 
-    count, partial_failure, suppress_no_keys = asyncio.run(_lock_async())
+    total, fresh_count, partial_failure = asyncio.run(_lock_async())
+    relock_count = total - fresh_count
 
-    if count and env_path.exists():
+    if fresh_count and env_path.exists():
         current = env_path.stat().st_mode
         if current & (stat.S_IRWXG | stat.S_IRWXO):
             env_path.chmod(current & ~(stat.S_IRWXG | stat.S_IRWXO))
 
     if not quiet:
-        if count:
-            # Storytelling shape (UX P1): tell the user keys are split
-            # between this machine and the OS keystore, name the .env so
-            # they know which file is now safe.
-            # Trust-fix accessibility (2026-05-08 verification gauntlet):
-            # lead with literal ``[OK]`` text prefix as the carrier for
-            # monochrome terminals + screen readers + CI log scrapers
-            # (color/glyph reinforce but is never the carrier).
-            console.print_success(
-                f"[OK] {count} key(s) split between this machine and "
-                f"{_shard_b_storage_label()} — {env_path.name} no longer contains "
-                f"a usable secret."
-            )
+        if fresh_count or relock_count:
+            if fresh_count:
+                # Storytelling shape (UX P1): tell the user keys are split
+                # between this machine and the OS keystore, name the .env so
+                # they know which file is now safe.
+                # Trust-fix accessibility (2026-05-08 verification gauntlet):
+                # lead with literal ``[OK]`` text prefix as the carrier for
+                # monochrome terminals + screen readers + CI log scrapers
+                # (color/glyph reinforce but is never the carrier).
+                console.print_success(
+                    f"[OK] {fresh_count} key(s) split between this machine and "
+                    f"{_shard_b_storage_label()} — {env_path.name} no longer contains "
+                    f"a usable secret."
+                )
+            if relock_count:
+                console.print_success(
+                    f"[OK] {relock_count} key(s) already protected — re-verified."
+                )
             env_home = os.environ.get("WORTHLESS_HOME")
             if env_home and home.base_dir.resolve() != (Path.home() / ".worthless").resolve():
                 typer.echo(
@@ -950,7 +949,7 @@ def _lock_keys(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
             )
             _maybe_prompt_code_scan(Path.cwd())
-        elif not suppress_no_keys:
+        else:
             console.print_warning("No unprotected API keys found.")
 
     # Trust-fix (2026-05-08 verification gauntlet): when OpenClaw was
@@ -963,7 +962,7 @@ def _lock_keys(
     if partial_failure:
         raise typer.Exit(code=73)
 
-    return count
+    return fresh_count + relock_count
 
 
 def _enroll_single(
