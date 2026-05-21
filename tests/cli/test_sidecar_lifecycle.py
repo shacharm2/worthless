@@ -866,33 +866,55 @@ def test_split_to_tmpfs_recovers_from_stale_run_dir(
 # ---------------------------------------------------------------------------
 
 
-def test_spawn_sidecar_rejects_oversized_socket_path(home: Path, key: bytearray) -> None:
+def test_spawn_sidecar_falls_back_when_socket_path_too_long(
+    home: Path, key: bytearray, caplog: pytest.LogCaptureFixture
+) -> None:
     """``sockaddr_un.sun_path`` is 104 bytes on macOS / 108 on Linux. A
-    long ``$HOME`` + ``run/<pid>/sidecar.sock`` can exceed this. Pre-fix:
-    sidecar's ``bind()`` fails with ``ENAMETOOLONG``, sidecar exits, and
-    ``_wait_for_ready`` returns False — surfaced as the misleading
-    WRTLS-114 "did not become ready". Post-fix: ``spawn_sidecar``
-    validates the path BEFORE ``Popen`` and raises WRTLS-114 with an
-    explicit "AF_UNIX path too long" message — no subprocess spawned,
-    no time wasted.
+    long ``$HOME`` + ``run/<pid>/sidecar.sock`` can exceed this — common
+    under pytest deep tmpdirs and dev sandboxes nested under cache dirs.
+
+    Pre-fix: ``spawn_sidecar`` raised WRTLS-114 immediately, breaking
+    ``worthless wrap`` on bare-metal Mac / CI runners with deep tmp
+    paths. The user-facing symptom was "failed to start sidecar".
+
+    Post-fix: ``spawn_sidecar`` falls back to ``$TMPDIR/wls-<hash>.sock``
+    keyed by hash of the original path and logs INFO with the rewrite.
+    Per-pid uniqueness is preserved because the natural path (and thus
+    the hash input) already embeds the pid.
     """
     shares = split_to_tmpfs(key, home)
-    # Construct a deliberately oversized path. We don't need the parent
-    # dirs to actually exist — the validation must happen BEFORE Popen.
     oversized_dir = Path("/tmp") / ("x" * 110)  # noqa: S108
     oversized_path = oversized_dir / "sidecar.sock"
     assert len(str(oversized_path).encode()) > 104, (
         f"test bug: oversized path is only {len(str(oversized_path).encode())} bytes"
     )
 
-    with pytest.raises(WorthlessError) as exc_info:
+    caplog.set_level("INFO", logger="worthless.cli.sidecar_lifecycle")
+
+    # spawn_sidecar still raises WRTLS-114 ("did not become ready") in
+    # this test env because there is no real proxy peer. The positive
+    # pin that proves the fallback fired is the INFO log: "falling
+    # back to <new path>". Asserting the rewrite happened via caplog
+    # is more durable than asserting what the error message does NOT
+    # contain.
+    with pytest.raises(WorthlessError):
         spawn_sidecar(oversized_path, shares, allowed_uid=os.getuid())
 
-    # Right error code + clear, actionable message.
-    assert exc_info.value.code == ErrorCode.SIDECAR_NOT_READY
-    msg = str(exc_info.value).lower()
-    assert "too long" in msg or "af_unix" in msg or "sun_path" in msg, (
-        f"Expected AF_UNIX-too-long message, got: {exc_info.value!s}"
+    rewrite_log = next(
+        (r for r in caplog.records if "falling back to" in r.message),
+        None,
+    )
+    assert rewrite_log is not None, (
+        "expected sidecar_lifecycle to log the AF_UNIX fallback; got: "
+        + "; ".join(r.message for r in caplog.records)
+    )
+    # The rewritten path lands under /tmp and is short enough for AF_UNIX.
+    new_path_str = rewrite_log.getMessage().rsplit(" ", 1)[-1]
+    assert new_path_str.startswith("/tmp/wls-"), (  # noqa: S108 — production fallback is pinned to /tmp
+        f"fallback should land under /tmp/wls-*, got: {new_path_str}"
+    )
+    assert len(new_path_str.encode()) < 104, (
+        f"fallback path itself overflows AF_UNIX: {new_path_str}"
     )
 
 

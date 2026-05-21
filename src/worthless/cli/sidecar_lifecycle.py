@@ -9,12 +9,15 @@ share bytes — only the run-dir path).
 
 from __future__ import annotations
 
+import atexit
+import hashlib
 import logging
 import os
 import shutil
 import socket
 import subprocess  # nosec B404 — required for sidecar subprocess lifecycle
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -175,6 +178,62 @@ _READY_POLL_INTERVAL_S = 0.05
 # Cap at the smaller (104) for portability. The string + null terminator
 # must fit, so usable strings are at most 103 bytes on macOS.
 _AF_UNIX_SUN_PATH_LIMIT = 104
+
+
+def _resolve_short_socket_path(socket_path: Path) -> Path:
+    """Return *socket_path* unchanged when it fits AF_UNIX, else a short fallback.
+
+    When the natural path (under WORTHLESS_HOME) exceeds the AF_UNIX
+    ``sun_path`` limit — pytest deep tmpdirs, dev sandboxes nested under
+    cache dirs — we relocate the socket into a 0o700-mode directory
+    under ``/tmp``. ``mkdtemp(0o700, dir="/tmp")`` rather than a bare
+    ``/tmp/wls-*.sock`` because the existing access-control model gates
+    the socket via PARENT-DIR mode (owner-only), not the socket inode
+    itself. mkdtemp is atomic and the random suffix makes the path
+    unguessable, defeating squat attacks on the world-writable /tmp.
+    The fallback dir is registered for ``atexit`` cleanup; if the
+    process is SIGKILLed the dir leaks but contents are 0o700 so
+    nothing sensitive is exposed.
+
+    Raises:
+        WorthlessError: WRTLS-114 if mkdtemp fails, or if the fallback
+            path itself exceeds the limit (degenerate TMPDIR case).
+    """
+    encoded_path = str(socket_path).encode()
+    if len(encoded_path) < _AF_UNIX_SUN_PATH_LIMIT:
+        return socket_path
+
+    digest = hashlib.sha256(encoded_path).hexdigest()[:8]
+    try:
+        fallback_dir = Path(
+            tempfile.mkdtemp(prefix=f"wls-{digest}-", dir="/tmp")  # noqa: S108
+        )
+    except OSError as exc:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"could not create AF_UNIX fallback dir under /tmp: {exc}",
+        ) from exc
+    # mkdtemp creates with mode 0o700 on POSIX. Pin explicitly in case of
+    # umask interference on exotic systems.
+    fallback_dir.chmod(0o700)
+    fallback = fallback_dir / "sidecar.sock"
+    if len(str(fallback).encode()) >= _AF_UNIX_SUN_PATH_LIMIT:
+        shutil.rmtree(fallback_dir, ignore_errors=True)
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"socket path too long for AF_UNIX even after fallback: "
+            f"{fallback} ({len(str(fallback).encode())} bytes; "
+            f"max {_AF_UNIX_SUN_PATH_LIMIT - 1})",
+        )
+    atexit.register(shutil.rmtree, str(fallback_dir), ignore_errors=True)
+    _logger.info(
+        "sidecar socket_path %s (%d bytes) exceeds AF_UNIX limit %d; falling back to %s",
+        socket_path,
+        len(encoded_path),
+        _AF_UNIX_SUN_PATH_LIMIT - 1,
+        fallback,
+    )
+    return fallback
 
 
 @dataclass
@@ -433,17 +492,7 @@ def spawn_sidecar(
             "Refusing to spawn — security claim would silently break.",
         )
 
-    # AF_UNIX sun_path is 104 on macOS, 108 on Linux. Eager check surfaces
-    # the real cause; otherwise the sidecar's bind() fails with ENAMETOOLONG
-    # and we'd report a misleading "did not become ready" timeout.
-    encoded_path = str(socket_path).encode()
-    if len(encoded_path) >= _AF_UNIX_SUN_PATH_LIMIT:
-        raise WorthlessError(
-            ErrorCode.SIDECAR_NOT_READY,
-            f"socket path too long for AF_UNIX "
-            f"({len(encoded_path)} bytes; max {_AF_UNIX_SUN_PATH_LIMIT - 1}): "
-            f"{socket_path}",
-        )
+    socket_path = _resolve_short_socket_path(socket_path)
 
     # A stale socket inode at the target path would make _wait_for_ready
     # return True against the leftover before the new sidecar binds.
