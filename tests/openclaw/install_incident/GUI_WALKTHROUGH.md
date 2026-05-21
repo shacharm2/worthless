@@ -21,9 +21,24 @@ OpenClaw's own audit says — by clicking, screenshotting, and pasting back.
 
 ---
 
+## Step 0 — Grab the gateway auth token
+
+OpenClaw auto-generates a `gateway.auth.token` on first boot and the
+Control UI requires it. Plain `http://localhost:18789/` will fail with
+"unauthorized: gateway token missing." Extract the token first:
+
+```bash
+docker exec wor514-openclaw-1 cat /home/node/.openclaw/openclaw.json \
+  | python3 -c "import sys, json; t=json.load(sys.stdin)['gateway']['auth']['token']; print(f'http://localhost:18789/#token={t}')"
+```
+
+Open the printed URL. The SPA consumes the `#token=...` fragment (not
+sent to server logs) and stores it in localStorage; subsequent visits to
+plain `http://localhost:18789/` work.
+
 ## Step 1 — Landing page
 
-Open `http://localhost:18789/`.
+Open the URL from Step 0.
 
 **📸 Screenshot 1** — the landing page. Look for: sidebar/menu (Skills? Providers? Secrets? Settings?), chat area, any onboarding wizard.
 
