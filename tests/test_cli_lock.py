@@ -1945,3 +1945,16 @@ class TestLockRerun:
         assert result.exit_code == 0, result.output
         assert "[OK]" not in result.output
         assert "already protected" not in result.output.lower()
+
+    def test_fresh_lock_does_not_print_already_protected(
+        self, home_dir: WorthlessHome, env_file: Path
+    ) -> None:
+        """First-time lock must not print 'already protected' — that message is re-lock only."""
+        result = runner.invoke(
+            app,
+            ["lock", "--env", str(env_file)],
+            env={"WORTHLESS_HOME": str(home_dir.base_dir)},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "already protected" not in result.output.lower(), result.output
