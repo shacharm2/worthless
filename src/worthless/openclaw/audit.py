@@ -25,6 +25,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from worthless.cli.key_patterns import KEY_PATTERN
 
@@ -41,9 +42,6 @@ ADVISORY_CODES: frozenset[str] = frozenset(["REF_UNRESOLVED", "REF_SHADOWED", "L
 
 #: jsonPath values that are out of worthless scope (OpenClaw internals).
 IGNORE_JSON_PATHS: frozenset[str] = frozenset(["gateway.auth.token"])
-
-#: Minimum OpenClaw version that supports ``secrets audit --json``.
-MIN_OPENCLAW_VERSION = "2026.5.3-1"
 
 #: Default subprocess timeout in seconds.
 _DEFAULT_TIMEOUT = 30.0
@@ -86,7 +84,7 @@ class BlockingFinding:
     json_path: str
     provider: str | None
     message: str
-    source: str  # "audit" | "auth-profiles-direct"
+    source: Literal["audit", "auth-profiles-direct"]
 
 
 @dataclass(frozen=True)
@@ -191,12 +189,17 @@ def run_audit(
     cmd = [str(openclaw_bin), "secrets", "audit", "--json"]
 
     def _attempt() -> AuditResult:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except FileNotFoundError as exc:
+            raise AuditGateError(
+                f"openclaw binary not found at {openclaw_bin} — set WORTHLESS_OPENCLAW_BIN"
+            ) from exc
         if proc.returncode != 0:
             raise AuditGateError(f"openclaw secrets audit exited {proc.returncode}")
         try:
@@ -255,7 +258,10 @@ def check_auth_profiles_direct(
         file_path: str,
         out: list[BlockingFinding],
         json_path: str = "",
+        depth: int = 0,
     ) -> None:
+        if depth > 20:
+            return
         if isinstance(obj, str):
             if KEY_PATTERN.search(obj):
                 out.append(
@@ -270,10 +276,10 @@ def check_auth_profiles_direct(
         elif isinstance(obj, dict):
             for k, v in obj.items():
                 child = f"{json_path}.{k}" if json_path else k
-                _walk(v, file_path, out, child)
+                _walk(v, file_path, out, child, depth + 1)
         elif isinstance(obj, list):
             for i, v in enumerate(obj):
-                _walk(v, file_path, out, f"{json_path}[{i}]")
+                _walk(v, file_path, out, f"{json_path}[{i}]", depth + 1)
 
     for path_str in files_scanned:
         p = Path(path_str)
@@ -317,12 +323,10 @@ def classify_findings(
     unknown_codes: list[str] = []
 
     for finding in result.findings:
-        # Advisory codes never block
         if finding.code in ADVISORY_CODES:
             advisory_count += 1
             continue
 
-        # Known ignored paths are advisory
         if finding.json_path in IGNORE_JSON_PATHS:
             advisory_count += 1
             continue
@@ -337,7 +341,6 @@ def classify_findings(
             if m:
                 provider = m.group("provider")
                 if provider in WORTHLESS_OWN_PROVIDERS:
-                    # Bootstrap paradox: worthless-own provider key is advisory
                     advisory_count += 1
                     continue
                 blocking.append(
@@ -350,10 +353,8 @@ def classify_findings(
                     )
                 )
             else:
-                # PLAINTEXT_FOUND for non-provider-apiKey path → advisory
                 advisory_count += 1
         else:
-            # Unknown finding code → default-deny posture
             unknown_codes.append(finding.code)
 
     return AuditClassification(
