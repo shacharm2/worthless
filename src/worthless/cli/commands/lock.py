@@ -44,6 +44,7 @@ from worthless.crypto.splitter import (
 )
 from worthless.crypto.types import zero_buf
 from worthless.exceptions import ShardTamperedError
+from worthless.openclaw import audit as _oc_audit
 from worthless.openclaw import integration as _openclaw_integration
 from worthless.openclaw.errors import OpenclawIntegrationError
 from worthless.storage.repository import ShardRepository, StoredShard
@@ -827,6 +828,89 @@ def _print_lock_result(
         console.print_warning("No unprotected API keys found.")
 
 
+@dataclass
+class _OpenclawGateState:
+    openclaw_bin: Path
+
+
+def _openclaw_audit_preflight(console) -> _OpenclawGateState | None:  # noqa: ANN001
+    """Run OpenClaw secrets audit pre-flight before worthless lock writes.
+
+    Returns None if OpenClaw is not detected on this host or binary is not
+    available (gate skipped, _apply_openclaw handles the partial-failure path).
+    Raises typer.Exit(73) if blocking plaintext findings are present.
+    Raises typer.Exit(87) on subprocess failure or unknown finding codes.
+    """
+    state = _openclaw_integration.detect()
+    if not state.present:
+        return None
+
+    try:
+        openclaw_bin = _oc_audit.resolve_openclaw_bin()
+    except _oc_audit.AuditGateError as exc:
+        if os.environ.get("WORTHLESS_OPENCLAW_BIN"):
+            # Explicit path configured but broken → hard fail
+            typer.echo(f"worthless lock: openclaw audit gate failed: {exc}", err=True)
+            raise typer.Exit(code=87) from exc
+        # Binary not found in PATH → skip gate, let _apply_openclaw surface it
+        logger.debug("openclaw audit gate skipped: %s", exc)
+        return None
+
+    try:
+        result = _oc_audit.run_audit(openclaw_bin)
+    except _oc_audit.AuditGateError as exc:
+        typer.echo(f"worthless lock: openclaw audit gate failed: {exc}", err=True)
+        raise typer.Exit(code=87) from exc
+
+    auth_blocking = _oc_audit.check_auth_profiles_direct(result.files_scanned)
+    classification = _oc_audit.classify_findings(result, auth_blocking)
+
+    if classification.unknown_codes:
+        typer.echo(
+            f"worthless lock: openclaw audit returned unknown finding codes "
+            f"{', '.join(classification.unknown_codes)} — exit 87",
+            err=True,
+        )
+        raise typer.Exit(code=87)
+
+    if classification.blocking:
+        typer.echo(_oc_audit.format_gate_error_message(classification.blocking), err=True)
+        raise typer.Exit(code=73)
+
+    return _OpenclawGateState(openclaw_bin=openclaw_bin)
+
+
+def _openclaw_audit_postflight(gate: _OpenclawGateState) -> None:
+    """Post-flight TOCTOU re-audit after lock-core write commits.
+
+    Raises typer.Exit(87) if new blocking findings appeared since pre-flight,
+    indicating the OpenClaw config was modified between the two audit passes.
+    """
+    try:
+        post_result = _oc_audit.run_audit(gate.openclaw_bin)
+    except _oc_audit.AuditGateError as exc:
+        typer.echo(f"worthless lock: post-flight audit failed: {exc}", err=True)
+        raise typer.Exit(code=87) from exc
+
+    auth_blocking = _oc_audit.check_auth_profiles_direct(post_result.files_scanned)
+    post_class = _oc_audit.classify_findings(post_result, auth_blocking)
+
+    if post_class.unknown_codes:
+        typer.echo(
+            f"worthless lock: post-flight audit returned unknown codes "
+            f"{', '.join(post_class.unknown_codes)} — exit 87",
+            err=True,
+        )
+        raise typer.Exit(code=87)
+
+    if post_class.blocking:
+        typer.echo(
+            "worthless lock: State changed under our feet; re-run worthless lock.",
+            err=True,
+        )
+        raise typer.Exit(code=87)
+
+
 def _lock_keys(
     env_path: Path,
     home: WorthlessHome,
@@ -918,6 +1002,8 @@ def _lock_keys(
         ]
         existing_env_keys = set(env_values.keys())
 
+        _oc_gate = _openclaw_audit_preflight(console)
+
         planned: list[_PlannedUpdate] = []
         try:
             if not quiet:
@@ -934,6 +1020,8 @@ def _lock_keys(
             if not planned:
                 return _LockResult(total=0, fresh_count=0, partial_failure=False)
             _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
+            if _oc_gate is not None:
+                _openclaw_audit_postflight(_oc_gate)
             # Phase 2.b: OpenClaw magic. Per L1 in
             # engineering/research/openclaw-WOR-431-phase-2-spec.md, this
             # NEVER rolls back lock-core success. Per L2 (revised 2026-05-08
