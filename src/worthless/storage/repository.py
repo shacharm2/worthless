@@ -358,10 +358,9 @@ class ShardRepository:
         alias: str,
         shard: StoredShard,
         *,
-        shard_a: bytearray,
-        prefix: str | None = None,
-        charset: str | None = None,
-        base_url: str | None = None,
+        prefix: str,
+        charset: str,
+        base_url: str,
     ) -> None:
         """Upsert a shard row, storing only shard-B (NOT shard-A) encrypted.
 
@@ -371,10 +370,13 @@ class ShardRepository:
         enrollment records for the alias — breaking the two-env-same-key case.
 
         On-conflict update keeps commitment, nonce, and shard-B in sync on
-        every lock/re-lock. The ``shard_a`` parameter is accepted for API
-        compatibility but is NOT stored server-side — shard-A lives only in
-        the client's .env file (as the format-preserving split value) and in
-        openclaw.json as the Bearer token the agent sends on each request.
+        every lock/re-lock.  shard-A is never stored server-side — it lives
+        only in the client's .env file (as the format-preserving split value).
+
+        ``prefix``, ``charset``, and ``base_url`` are required routing metadata.
+        Passing ``None`` is a hard error: a NULL value in any of these columns
+        breaks the proxy's reconstruction path and causes every request to fail
+        with "re-lock required".
 
         Post-16x2-revert: ``shard_a_enc`` is explicitly set to NULL on every
         upsert so old rows that previously stored it are cleared.
@@ -383,6 +385,20 @@ class ShardRepository:
         sidecar's ``seal`` verb so the proxy uid never touches Fernet key
         bytes. Same dispatch shape as :meth:`decrypt_shard`.
         """
+        if prefix is None:
+            raise ValueError(
+                "prefix is required routing metadata for upsert_locked_shard — "
+                "use an empty string '' for keys that have no format prefix."
+            )
+        if charset is None:
+            raise ValueError("charset is required routing metadata for upsert_locked_shard.")
+        if base_url is None:
+            raise ValueError(
+                "base_url is required routing metadata for upsert_locked_shard — "
+                "the proxy uses it to forward requests to the correct upstream."
+            )
+        # WOR-465 A3b: in IPC-only mode the encrypt round-trips through the
+        # sidecar's ``seal`` verb so the proxy uid never touches Fernet bytes.
         shard_b_bytes = memoryview(shard.shard_b).tobytes()
         if self._ipc is not None:
             shard_b_enc = await self._ipc.seal(shard_b_bytes)
@@ -589,6 +605,24 @@ class ShardRepository:
                 )
                 for r in rows
             ]
+
+    async def set_spend_cap(self, alias: str, spend_cap: int | None) -> bool:
+        """Update ``enrollment_config.spend_cap`` for *alias*.
+
+        Returns True if the row existed and was updated, False if the alias
+        has no enrollment_config row (call :meth:`store_enrolled` first).
+
+        *spend_cap* semantics:
+        - integer → set to that value
+        - ``None``  → unlimited (NULL in DB)
+        """
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "UPDATE enrollment_config SET spend_cap = ? WHERE key_alias = ?",
+                (spend_cap, alias),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
 
     async def delete_enrollment(self, alias: str, env_path: str | None) -> bool:
         """Delete a single enrollment row. Returns True if deleted."""
