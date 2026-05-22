@@ -90,6 +90,15 @@ OUTER_BUFFER_S = 30
 INSTALL_TIMEOUT = BUILD_S + RUN_S + RMI_S + OUTER_BUFFER_S
 LOCK_E2E_TIMEOUT = COMPOSE_UP_S + COMPOSE_LOGS_S + COMPOSE_DOWN_S + OUTER_BUFFER_S
 HOST_APP_TIMEOUT = 360
+HOST_PROXY_BIND_ATTEMPTS = 5
+HOST_PROXY_BIND_COLLISION_MARKERS = (
+    "address already in use",
+    "could not bind",
+    "couldn't bind",
+    "eaddrinuse",
+    "port_in_use",
+    "proxy already running",
+)
 
 APP_CONTAINER_CLIENT = r"""
 import json
@@ -162,6 +171,19 @@ def _wait_url(url: str, *, timeout_s: float = 30.0) -> None:
             last_error = repr(exc)
         time.sleep(0.5)
     raise AssertionError(f"{url} did not become healthy within {timeout_s}s: {last_error}")
+
+
+class HostProxyStartError(AssertionError):
+    """Host proxy could not become healthy; carries process diagnostics."""
+
+    def __init__(self, message: str, *, stdout: str = "", stderr: str = "") -> None:
+        super().__init__(message)
+        self.stdout = stdout
+        self.stderr = stderr
+
+    @property
+    def combined(self) -> str:
+        return f"{self.stdout}\n{self.stderr}\n{self}".lower()
 
 
 def _run_host_cli(
@@ -370,15 +392,37 @@ def _host_proxy(project: Path, *, env: dict[str, str], port: int) -> Iterator[No
         text=True,
     )
     try:
-        _wait_url(f"http://127.0.0.1:{port}/healthz", timeout_s=45.0)
+        try:
+            _wait_url(f"http://127.0.0.1:{port}/healthz", timeout_s=45.0)
+        except AssertionError as exc:
+            stdout, stderr = proxy.communicate(timeout=2) if proxy.poll() is not None else ("", "")
+            raise HostProxyStartError(
+                f"host proxy did not become healthy on port {port}: {exc}",
+                stdout=stdout,
+                stderr=stderr,
+            ) from exc
+
+        if proxy.poll() is not None:
+            stdout, stderr = proxy.communicate(timeout=2)
+            raise HostProxyStartError(
+                f"host proxy exited before app container used port {port}",
+                stdout=stdout,
+                stderr=stderr,
+            )
+
         yield
     finally:
-        proxy.terminate()
-        try:
-            proxy.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proxy.kill()
-            proxy.wait(timeout=5)
+        if proxy.poll() is None:
+            proxy.terminate()
+            try:
+                proxy.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proxy.kill()
+                proxy.wait(timeout=5)
+
+
+def _is_host_proxy_bind_collision(exc: HostProxyStartError) -> bool:
+    return any(marker in exc.combined for marker in HOST_PROXY_BIND_COLLISION_MARKERS)
 
 
 @pytest.mark.timeout(INSTALL_TIMEOUT)
@@ -543,87 +587,106 @@ def test_host_cli_locked_env_reaches_proxy_from_app_container(tmp_path: Path) ->
     host bridge. The container must receive only shard-A plus the proxy URL;
     the mock upstream must receive the reconstructed real key.
     """
-    project = tmp_path / "project"
-    project.mkdir()
-    proxy_port = _free_port()
-    cli_env = _isolated_cli_env(tmp_path, port=proxy_port)
-    real_key = fake_openai_key()
+    attempts: list[str] = []
 
     with _mock_upstream_container() as (app_image, mock_base_url):
-        upstream_url = f"{mock_base_url}/v1"
-        env_file = project / ".env"
-        env_file.write_text(
-            f"OPENAI_API_KEY={real_key}\nOPENAI_BASE_URL={upstream_url}\n",
-            encoding="utf-8",
-        )
-
-        register = _run_host_cli(
-            [
-                "providers",
-                "register",
-                "--name",
-                f"openai-mock-{uuid.uuid4().hex[:8]}",
-                "--url",
-                upstream_url,
-                "--protocol",
-                "openai",
-            ],
-            env=cli_env,
-            cwd=project,
-        )
-        assert register.returncode == 0, (
-            "host providers register failed:\n"
-            f"stdout:\n{register.stdout}\nstderr:\n{register.stderr}"
-        )
-
-        lock = _run_host_cli(["lock", "--env", str(env_file)], env=cli_env, cwd=project)
-        assert lock.returncode == 0, (
-            f"host lock failed:\nstdout:\n{lock.stdout}\nstderr:\n{lock.stderr}"
-        )
-
-        locked_env = _assert_lock_writes_host_loopback(
-            env_file=env_file,
-            real_key=real_key,
-            proxy_port=proxy_port,
-        )
-        _write_docker_bridge_env(
-            env_file,
-            locked_env=locked_env,
-            proxy_port=proxy_port,
-        )
-
-        with _host_proxy(project, env=cli_env, port=proxy_port):
-            clear = urllib.request.Request(  # noqa: S310
-                f"{mock_base_url}/captured-headers",
-                method="DELETE",
+        for attempt in range(1, HOST_PROXY_BIND_ATTEMPTS + 1):
+            project = tmp_path / f"project-{attempt}"
+            project.mkdir()
+            proxy_port = _free_port()
+            cli_env = _isolated_cli_env(tmp_path / f"home-{attempt}", port=proxy_port)
+            real_key = fake_openai_key()
+            upstream_url = f"{mock_base_url}/v1"
+            env_file = project / ".env"
+            env_file.write_text(
+                f"OPENAI_API_KEY={real_key}\nOPENAI_BASE_URL={upstream_url}\n",
+                encoding="utf-8",
             )
-            urllib.request.urlopen(clear, timeout=5).read()  # noqa: S310
 
-            app = _run_app_container(image=app_image, env_file=env_file)
+            register = _run_host_cli(
+                [
+                    "providers",
+                    "register",
+                    "--name",
+                    f"openai-mock-{uuid.uuid4().hex[:8]}",
+                    "--url",
+                    upstream_url,
+                    "--protocol",
+                    "openai",
+                ],
+                env=cli_env,
+                cwd=project,
+            )
+            assert register.returncode == 0, (
+                "host providers register failed:\n"
+                f"stdout:\n{register.stdout}\nstderr:\n{register.stderr}"
+            )
 
-        assert app.returncode == 0, (
-            f"app container could not use the locked .env through the host proxy:\n"
-            f"stdout:\n{app.stdout}\nstderr:\n{app.stderr}"
-        )
-        assert "APP_REQUEST_STATUS=200" in app.stdout, (
-            f"app container request did not complete through the proxy:\n"
-            f"stdout:\n{app.stdout}\nstderr:\n{app.stderr}"
-        )
-        assert real_key not in app.stdout
-        assert real_key not in app.stderr
+            lock = _run_host_cli(["lock", "--env", str(env_file)], env=cli_env, cwd=project)
+            assert lock.returncode == 0, (
+                f"host lock failed:\nstdout:\n{lock.stdout}\nstderr:\n{lock.stderr}"
+            )
 
-        captured = json.loads(
-            urllib.request.urlopen(  # noqa: S310
-                f"{mock_base_url}/captured-headers", timeout=5
-            ).read()
-        )
-        headers = captured.get("headers") or []
-        assert headers, "mock upstream never saw the container request"
-        received = headers[-1].get("authorization", "").replace("Bearer ", "")
-        assert received == real_key, (
-            "mock upstream did not receive the reconstructed real key from "
-            f"the host proxy; captured={captured!r}"
-        )
+            locked_env = _assert_lock_writes_host_loopback(
+                env_file=env_file,
+                real_key=real_key,
+                proxy_port=proxy_port,
+            )
+            _write_docker_bridge_env(
+                env_file,
+                locked_env=locked_env,
+                proxy_port=proxy_port,
+            )
+
+            try:
+                with _host_proxy(project, env=cli_env, port=proxy_port):
+                    clear = urllib.request.Request(  # noqa: S310
+                        f"{mock_base_url}/captured-headers",
+                        method="DELETE",
+                    )
+                    urllib.request.urlopen(clear, timeout=5).read()  # noqa: S310
+
+                    app = _run_app_container(image=app_image, env_file=env_file)
+            except HostProxyStartError as exc:
+                if not _is_host_proxy_bind_collision(exc):
+                    raise
+                attempts.append(
+                    f"attempt {attempt} port {proxy_port} bind collision:\n"
+                    f"stdout:\n{exc.stdout}\nstderr:\n{exc.stderr}"
+                )
+                time.sleep(0.05 * attempt)
+                continue
+
+            assert app.returncode == 0, (
+                "app container could not use the locked .env through the host proxy "
+                f"after {len(attempts) + 1} attempt(s):\n"
+                f"{chr(10).join(attempts)}\nstdout:\n{app.stdout}\nstderr:\n{app.stderr}"
+            )
+            assert "APP_REQUEST_STATUS=200" in app.stdout, (
+                f"app container request did not complete through the proxy:\n"
+                f"stdout:\n{app.stdout}\nstderr:\n{app.stderr}"
+            )
+            assert real_key not in app.stdout
+            assert real_key not in app.stderr
+
+            captured = json.loads(
+                urllib.request.urlopen(  # noqa: S310
+                    f"{mock_base_url}/captured-headers", timeout=5
+                ).read()
+            )
+            headers = captured.get("headers") or []
+            assert headers, "mock upstream never saw the container request"
+            received = headers[-1].get("authorization", "").replace("Bearer ", "")
+            assert received == real_key, (
+                "mock upstream did not receive the reconstructed real key from "
+                f"the host proxy; captured={captured!r}"
+            )
+            break
+        else:
+            raise AssertionError(
+                "host proxy could not start after bind-collision retries:\n"
+                f"{chr(10).join(attempts)}"
+            )
 
 
 @pytest.mark.timeout(HOST_APP_TIMEOUT)

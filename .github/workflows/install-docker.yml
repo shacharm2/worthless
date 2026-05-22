@@ -12,6 +12,9 @@ on:
       - "tests/test_install_*.py"
       - "tests/_install_helpers.py"
       - "tests/install_fixtures/**"
+      - "tests/openclaw/mock-upstream/**"
+      - "src/worthless/cli/**"
+      - "src/worthless/proxy/**"
       - ".github/workflows/install-docker.yml"
   push:
     branches:
@@ -21,6 +24,9 @@ on:
       - "tests/test_install_*.py"
       - "tests/_install_helpers.py"
       - "tests/install_fixtures/**"
+      - "tests/openclaw/mock-upstream/**"
+      - "src/worthless/cli/**"
+      - "src/worthless/proxy/**"
       - ".github/workflows/install-docker.yml"
 
 permissions:
