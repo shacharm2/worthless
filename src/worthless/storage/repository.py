@@ -320,8 +320,15 @@ class ShardRepository:
 
         Kept for backward compatibility. The proxy no longer reads this value;
         use of this method is deprecated post-16x2-revert.
+
+        WOR-465 A3b: in IPC-only mode the encrypt round-trips through the
+        sidecar's ``seal`` verb so the proxy uid never touches Fernet bytes.
         """
-        token_enc = self._get_fernet().encrypt(token.encode())
+        token_bytes = token.encode()
+        if self._ipc is not None:
+            token_enc = await self._ipc.seal(token_bytes)
+        else:
+            token_enc = self._get_fernet().encrypt(token_bytes)
         await self.set_metadata(self._AUTH_TOKEN_META_KEY, token_enc.decode())
 
     async def get_proxy_auth_token(self) -> str | None:
@@ -330,11 +337,17 @@ class ShardRepository:
         Kept for backward compatibility. The proxy no longer reads this value
         post-16x2-revert. Returns *None* if the token was encrypted with a
         different (rotated) Fernet key.
+
+        WOR-465 A3b: in IPC-only mode the decrypt round-trips through the
+        sidecar's ``open`` verb. An InvalidToken from the sidecar surfaces as
+        an IPC error path; we treat it the same as the legacy InvalidToken.
         """
         raw = await self.get_metadata(self._AUTH_TOKEN_META_KEY)
         if raw is None:
             return None
         try:
+            if self._ipc is not None:
+                return (await self._ipc.open(raw.encode())).decode()
             return self._get_fernet().decrypt(raw.encode()).decode()
         except InvalidToken:
             # Token was encrypted with a different (rotated) key — treat as absent.
@@ -365,11 +378,17 @@ class ShardRepository:
 
         Post-16x2-revert: ``shard_a_enc`` is explicitly set to NULL on every
         upsert so old rows that previously stored it are cleared.
+
+        WOR-465 A3b: in IPC-only mode the encrypt round-trips through the
+        sidecar's ``seal`` verb so the proxy uid never touches Fernet key
+        bytes. Same dispatch shape as :meth:`decrypt_shard`.
         """
-        fernet = self._get_fernet()
-        shard_b_enc = fernet.encrypt(
-            memoryview(shard.shard_b).tobytes()
-        )  # Fernet requires immutable bytes
+        shard_b_bytes = memoryview(shard.shard_b).tobytes()
+        if self._ipc is not None:
+            shard_b_enc = await self._ipc.seal(shard_b_bytes)
+        else:
+            fernet = self._get_fernet()
+            shard_b_enc = fernet.encrypt(shard_b_bytes)  # Fernet requires immutable bytes
         # shard_a parameter is intentionally NOT encrypted/stored — it stays
         # client-side only (in .env and openclaw.json).
         async with self._connect() as db:
