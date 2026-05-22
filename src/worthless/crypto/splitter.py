@@ -91,7 +91,7 @@ def _make_commitment(payload: bytes | bytearray) -> tuple[bytearray, bytearray]:
     # using the string form keeps static analyzers from misclassifying the HMAC keyed
     # construction as bare-SHA256 password hashing (CodeQL py/weak-cryptographic-algorithm).
     commitment = bytearray(
-        hmac.new(nonce, payload, "sha256").digest()  # nosec B303 — HMAC-SHA256
+        hmac.new(nonce, payload, "sha256").digest()  # nosec B303 — HMAC-SHA256  # lgtm[py/weak-sensitive-data-hashing]
     )
     return commitment, nonce
 
