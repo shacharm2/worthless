@@ -696,13 +696,12 @@ class TestAdversarial:
             findings=(evil_finding,),
         )
         classification = classify_findings(result)
-        # The finding is from a file NOT in filesScanned[] — must not block
-        # (file path traversal should not match any filesScanned entry)
-        # The implementation must only trust filesScanned paths
-        for b in classification.blocking:
-            # If it IS classified as blocking, the message must not echo the raw path
-            msg = format_gate_error_message((b,))
-            assert "etc/passwd" not in msg or "../../" not in msg
+        # The finding is from a file NOT in filesScanned[] — must not block.
+        # Explicit assertion first so the test cannot vacuously pass on an empty list.
+        assert len(classification.blocking) == 0, (
+            "Out-of-scope traversal path must not produce blocking findings; "
+            f"got: {classification.blocking}"
+        )
 
     def test_adversarial_control_chars_in_jsonpath_sanitised_in_message(self) -> None:
         """Adv 3: jsonPath with control chars → sanitised in error message."""

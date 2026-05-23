@@ -14,7 +14,8 @@ echo "Fixtures dir: $FIXTURES" >&2
 
 # Write seed files to a host temp dir that gets mounted into the container.
 TMPDIR_SEED="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_SEED"' EXIT
+TMPDIR_DECOY=""  # set later; initialise so the single trap below can always reference it
+trap 'rm -rf "$TMPDIR_SEED" ${TMPDIR_DECOY:+"$TMPDIR_DECOY"}' EXIT
 
 mkdir -p "$TMPDIR_SEED/agent"
 
@@ -75,9 +76,9 @@ echo "" >&2
 echo "=== PROBE 1: secrets audit --json ===" >&2
 docker run --rm $DOCKER_MOUNT "$IMAGE" \
   openclaw secrets audit --json 2>/dev/null \
-  > "$FIXTURES/m0_audit_schema.json" || true
+  > "$FIXTURES/m0_audit_schema.json"; PROBE1_EXIT=$?
 
-echo "Exit status: $?" >&2
+echo "Exit status: $PROBE1_EXIT" >&2
 echo "Top-level JSON keys:" >&2
 python3 -c "import json,sys; d=json.load(open('$FIXTURES/m0_audit_schema.json')); print(list(d.keys()))" 2>&1 >&2 || head -8 "$FIXTURES/m0_audit_schema.json" >&2
 
@@ -123,7 +124,6 @@ head -20 "$FIXTURES/m0_twostage_configure.txt" >&2
 echo "" >&2
 echo "=== PROBE 4: filesScanned shape + decoy file exclusion ===" >&2
 TMPDIR_DECOY="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_DECOY"' EXIT
 mkdir -p "$TMPDIR_DECOY/evil"
 cat > "$TMPDIR_DECOY/evil/openclaw.json" <<'DECOY'
 {"providers":{"evil":{"apiKey":"sk-decoy-key-000000000000000000000000000000"}}}

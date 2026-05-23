@@ -25,7 +25,7 @@ import json
 import os
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,11 +70,14 @@ _PROVIDER_APIKEY_RE = re.compile(r"^providers\.(?P<provider>[^.]+)\.apiKey$")
 #: zero-width/direction marks (U+200B–200F), bidi embeddings/overrides
 #: (U+202A–202E), bidi isolates (U+2066–2069), and BOM (U+FEFF).
 _SANITISE_RE = re.compile(
+    # Literal Unicode bidi/direction-override characters are written as \u escapes
+    # here to avoid embedding bidi control chars in the source file itself
+    # (Bandit B602, Semgrep bidi finding).
     "[\x00-\x1f\x7f\x80-\x9f"
-    "​-‏"  # zero-width space, ZWNJ, ZWJ, LRM, RLM
-    "‪-‮"  # LRE, RLE, PDF, LRO, RLO
-    "⁦-⁩"  # LRI, RLI, FSI, PDI
-    "﻿"  # BOM
+    "\u200b-\u200f"  # zero-width space, ZWNJ, ZWJ, LRM, RLM
+    "\u202a-\u202e"  # LRE, RLE, PDF, LRO, RLO
+    "\u2066-\u2069"  # LRI, RLI, FSI, PDI
+    "\ufeff"  # BOM
     "]"
 )
 
@@ -241,7 +244,7 @@ def run_audit(
 
     def _attempt() -> AuditResult:
         try:
-            proc = subprocess.run(
+            proc = subprocess.run(  # nosec B603 — cmd[0] validated absolute by resolve_openclaw_bin
                 cmd,
                 capture_output=True,
                 text=True,

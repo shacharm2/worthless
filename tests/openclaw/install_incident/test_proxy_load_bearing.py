@@ -25,7 +25,7 @@ def docker_available() -> bool:
             timeout=5,
         )
         return result.returncode == 0
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
         return False
 
 

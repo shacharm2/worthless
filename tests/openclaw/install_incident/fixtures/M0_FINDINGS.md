@@ -50,7 +50,9 @@ token, not a provider API key. Must be in the ignore list per WOR-515 design.
 
 - `openclaw secrets configure --apply --yes` → exits 124 (timeout, still prompts interactively)
 - `openclaw secrets configure --plan-out <path>` → exits 1 (`requires an interactive TTY`)
-- `openclaw secrets apply` (in 2026.5.3-1) → `--from` option does NOT exist
+- `openclaw secrets apply --from <path>` EXISTS in 2026.5.3-1 help output, but is unreachable
+  non-interactively: `configure --plan-out` (which produces the plan) always requires a TTY,
+  so the two-stage approach is also blocked.
 
 **Decision:** no non-interactive remediation path exists in 2026.5.3-1.
 The error message for exit 73 must tell the user to run `openclaw secrets configure`
