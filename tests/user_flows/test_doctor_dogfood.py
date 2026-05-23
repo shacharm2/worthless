@@ -56,7 +56,15 @@ def test_full_dogfood_lock_break_doctor_recover(
     .env and step 7 purges the DB, the cwd scan finds no BASE_URL entries
     and step 8 correctly reports "no issues found".
     """
+    # WOR-571: `doctor` is invoked below WITHOUT `--env`, so its
+    # BASE_URL-alias check (`_check_alias_not_in_db`) scans `Path.cwd()/.env`.
+    # Run in-process via CliRunner, that resolves to the pytest worker's CWD —
+    # shared across every test in an xdist worker. A sibling test that leaves a
+    # `.env` with a proxy BASE_URL there made the final "no issues found"
+    # assertion flake (a foreign alias looked like an orphan). Pin CWD to this
+    # test's own tmp_path so doctor only ever sees this test's `.env`.
     monkeypatch.chdir(tmp_path)
+
     home = tmp_path / ".worthless"
     env_file = tmp_path / ".env"
     env_file.write_text(f"OPENAI_API_KEY={fake_openai_key()}\n")
