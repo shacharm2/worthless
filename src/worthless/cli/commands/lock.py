@@ -947,6 +947,10 @@ def _lock_keys(
                 p.zero()
 
     total, fresh_count, partial_failure = asyncio.run(_lock_async())
+    assert total >= fresh_count >= 0, (  # noqa: S101
+        f"_lock_async invariant violated: total={total}, fresh_count={fresh_count}. "
+        "Check the return tuple order."
+    )
     relock_count = total - fresh_count
 
     if fresh_count and env_path.exists():
