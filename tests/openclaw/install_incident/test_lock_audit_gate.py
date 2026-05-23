@@ -444,32 +444,114 @@ class TestAC9ExplicitBinaryResolution:
 
 
 # --------------------------------------------------------------------------- #
-# AC 10 — doctor surface (tested via error code contracts)                     #
+# AC 10 — doctor surface: worthless doctor reports exit-73 and exit-87 states #
 # --------------------------------------------------------------------------- #
 
 
 class TestAC10DoctorSurface:
-    def test_audit_gate_error_has_reason_attribute(self) -> None:
-        """AC 10: AuditGateError carries .reason for doctor to display."""
-        exc = AuditGateError("subprocess failed: openclaw not found")
-        assert "openclaw" in exc.reason
+    """AC 10: worthless doctor reports audit gate exit-73 and exit-87 states.
 
-    def test_audit_gate_error_message_distinguishes_87_from_73(self) -> None:
-        """AC 10: gate errors name the exit code context in their message."""
-        subprocess_err = AuditGateError("audit subprocess failed — exit 87")
-        plaintext_err_msg = format_gate_error_message(
-            (
-                BlockingFinding(
-                    file="/f",
-                    json_path="models.providers.x.apiKey",
-                    provider="x",
-                    message="plaintext",
-                    source="audit",
-                ),
-            )
+    Tests call the actual doctor check function (checks/openclaw._audit_gate_findings)
+    with subprocess-layer mocks so no real openclaw binary is required.
+    """
+
+    def test_doctor_reports_exit_87_when_binary_unavailable(self) -> None:
+        """Doctor surfaces exit-87 state when openclaw binary cannot be resolved."""
+        from worthless.cli.commands.doctor.checks.openclaw import _audit_gate_findings
+
+        with patch(
+            "worthless.cli.commands.doctor.checks.openclaw._oc_audit.resolve_openclaw_bin",
+            side_effect=AuditGateError("openclaw binary not found — set WORTHLESS_OPENCLAW_BIN"),
+        ):
+            findings = _audit_gate_findings()
+
+        assert len(findings) == 1
+        assert findings[0]["exit_code"] == 87
+        assert "87" in findings[0]["issue"]
+        assert "WORTHLESS_OPENCLAW_BIN" in findings[0]["remediation"]
+
+    def test_doctor_reports_exit_87_when_audit_subprocess_fails(self) -> None:
+        """Doctor surfaces exit-87 state when audit subprocess returns non-zero."""
+        from worthless.cli.commands.doctor.checks.openclaw import _audit_gate_findings
+
+        with (
+            patch(
+                "worthless.cli.commands.doctor.checks.openclaw._oc_audit.resolve_openclaw_bin",
+                return_value=Path("/usr/local/bin/openclaw"),
+            ),
+            patch(
+                "worthless.cli.commands.doctor.checks.openclaw._oc_audit.run_and_classify",
+                side_effect=AuditGateError("openclaw secrets audit exited 1"),
+            ),
+        ):
+            findings = _audit_gate_findings()
+
+        assert len(findings) == 1
+        assert findings[0]["exit_code"] == 87
+        assert "87" in findings[0]["issue"]
+
+    def test_doctor_reports_exit_73_for_plaintext_provider_key(self) -> None:
+        """Doctor surfaces exit-73 state when plaintext API key is detected."""
+        from worthless.openclaw.audit import AuditClassification
+
+        from worthless.cli.commands.doctor.checks.openclaw import _audit_gate_findings
+
+        blocking = (
+            BlockingFinding(
+                file="/home/user/.openclaw/openclaw.json",
+                json_path="models.providers.anthropic.apiKey",
+                provider="anthropic",
+                message="plaintext key",
+                source="audit",
+            ),
         )
-        assert "87" in subprocess_err.reason or "subprocess" in subprocess_err.reason.lower()
-        assert "configure" in plaintext_err_msg
+        mock_classification = AuditClassification(
+            blocking=blocking,
+            advisory_count=0,
+            unknown_codes=(),
+        )
+        with (
+            patch(
+                "worthless.cli.commands.doctor.checks.openclaw._oc_audit.resolve_openclaw_bin",
+                return_value=Path("/usr/local/bin/openclaw"),
+            ),
+            patch(
+                "worthless.cli.commands.doctor.checks.openclaw._oc_audit.run_and_classify",
+                return_value=(MagicMock(), mock_classification),
+            ),
+        ):
+            findings = _audit_gate_findings()
+
+        assert len(findings) == 1
+        assert findings[0]["exit_code"] == 73
+        assert "73" in findings[0]["issue"]
+        assert findings[0]["json_path"] == "models.providers.anthropic.apiKey"
+        assert "openclaw secrets configure" in findings[0]["remediation"]
+
+    def test_doctor_returns_empty_findings_when_audit_clean(self) -> None:
+        """Doctor reports no audit findings when gate would pass clean."""
+        from worthless.openclaw.audit import AuditClassification
+
+        from worthless.cli.commands.doctor.checks.openclaw import _audit_gate_findings
+
+        mock_classification = AuditClassification(
+            blocking=(),
+            advisory_count=0,
+            unknown_codes=(),
+        )
+        with (
+            patch(
+                "worthless.cli.commands.doctor.checks.openclaw._oc_audit.resolve_openclaw_bin",
+                return_value=Path("/usr/local/bin/openclaw"),
+            ),
+            patch(
+                "worthless.cli.commands.doctor.checks.openclaw._oc_audit.run_and_classify",
+                return_value=(MagicMock(), mock_classification),
+            ),
+        ):
+            findings = _audit_gate_findings()
+
+        assert findings == []
 
 
 # --------------------------------------------------------------------------- #
