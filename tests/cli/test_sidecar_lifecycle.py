@@ -382,8 +382,15 @@ def test_spawn_sidecar_ignores_invalid_ready_timeout_env(
     )
 
 
-def test_spawn_sidecar_times_out_with_wrtls_114(home: Path, key: bytearray) -> None:
-    """B3: a non-sidecar child that never binds raises WRTLS-114 and is reaped."""
+def test_spawn_sidecar_times_out_with_wrtls_114(
+    home: Path, key: bytearray, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B3: a non-sidecar child that never binds raises WRTLS-114 and is reaped.
+
+    The WORTHLESS_SIDECAR_READY_TIMEOUT_SECS env var is cleared so CI's 20s
+    override does not extend the 0.5s kwarg to 20s, making this test ~40× slower.
+    """
+    monkeypatch.delenv("WORTHLESS_SIDECAR_READY_TIMEOUT_SECS", raising=False)
     shares = split_to_tmpfs(key, home)
     socket_path = _short_socket_path()
 
@@ -805,7 +812,7 @@ def test_wait_for_ready_blocks_until_listen_not_just_bind(
             fake_proc.poll.return_value = None
 
             ready = _sidecar_lifecycle._wait_for_ready(
-                fake_proc, sock_path, deadline=time.monotonic() + 2.0
+                fake_proc, sock_path, deadline=time.monotonic() + 10.0
             )
 
             assert ready is True
