@@ -886,7 +886,7 @@ def _openclaw_audit_postflight(gate: _oc_audit.AuditGateHandle) -> None:
     Raises typer.Exit(87) if new blocking findings appeared since pre-flight,
     indicating the OpenClaw config was modified between the two audit passes.
     """
-    post_hashes = _oc_audit.snapshot_hashes(list(gate.pre_hashes.keys()))
+    post_hashes = _oc_audit.snapshot_hashes(gate.pre_hashes.keys())
     if post_hashes == gate.pre_hashes:
         # Files unchanged — no need to re-run the 30s subprocess.
         return

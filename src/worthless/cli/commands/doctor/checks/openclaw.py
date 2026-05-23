@@ -126,7 +126,9 @@ def run(ctx: CheckContext) -> CheckResult:
     audit_findings = _audit_gate_findings()
 
     all_issues = skill_issues + provider_issues
-    findings = [{"issue": s} for s in all_issues] + audit_findings
+    # Promote plain-string integration issues to the same structured shape as
+    # audit_findings so all entries in findings[] have consistent keys.
+    findings: list[dict] = [{"issue": s, "exit_code": None} for s in all_issues] + audit_findings
 
     has_error = any(f.get("exit_code") == 87 for f in audit_findings)
     status: Literal["ok", "warn", "error"]

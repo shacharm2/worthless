@@ -26,7 +26,7 @@ import os
 import re
 import shutil
 import subprocess  # nosec B404
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -280,7 +280,7 @@ def run_audit(
     raise last_exc  # type: ignore[misc]  # always an AuditGateError after 2 attempts
 
 
-def snapshot_hashes(files_scanned: Sequence[str]) -> dict[str, str]:
+def snapshot_hashes(files_scanned: Iterable[str]) -> dict[str, str]:
     """SHA-256 each file in files_scanned for TOCTOU pre-filter.
 
     Files that cannot be read are recorded with sentinel ``"UNREADABLE"``
@@ -291,8 +291,14 @@ def snapshot_hashes(files_scanned: Sequence[str]) -> dict[str, str]:
     result: dict[str, str] = {}
     for path_str in files_scanned:
         try:
-            data = Path(path_str).read_bytes()
-            result[path_str] = hashlib.sha256(data).hexdigest()
+            # Chunked read — never load the full file into memory.
+            # filesScanned is attacker-influenced output from the openclaw binary
+            # and could theoretically point at a large or infinite file.
+            h = hashlib.sha256()
+            with open(path_str, "rb") as fh:  # noqa: PTH123
+                for chunk in iter(lambda: fh.read(65536), b""):
+                    h.update(chunk)
+            result[path_str] = h.hexdigest()
         except OSError:
             result[path_str] = "UNREADABLE"
     return result
@@ -370,7 +376,10 @@ def classify_findings(
     - gateway.auth.token jsonPath
     - worthless-own-provider jsonPaths (WORTHLESS_OWN_PROVIDERS)
 
-    Default-deny: unknown codes → AuditGateError (exit 87, not 73).
+    Default-deny: unknown codes are returned in ``AuditClassification.unknown_codes``
+    rather than raising here — callers (lock pre-flight, doctor check) map them
+    to exit 87. This keeps classify_findings pure so doctor and lock can surface
+    unknown codes differently.
 
     Args:
         result: parsed audit result.
