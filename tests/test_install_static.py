@@ -328,35 +328,98 @@ def test_idempotency_marker_matches_python_dict() -> None:
     )
 
 
-def test_worthless_version_resolution(install_text: str) -> None:
-    """Resolve-latest pattern (Ollama / Bun / Deno style):
+def test_worthless_version_pinned(install_text: str) -> None:
+    """WOR-559: default install pins a baked version — never unpinned latest.
 
-    install.sh does NOT hardcode a `WORTHLESS_VERSION="x.y.z"` literal —
-    uv resolves the latest from PyPI at install time. The user-pin escape
-    hatch is `WORTHLESS_VERSION=x.y.z curl … | sh`, validated against a
-    PEP-440-ish charset before reaching `uv tool install`. See README
-    "Versioning" section for the rationale.
+    install.sh declares `WORTHLESS_VERSION_PIN="x.y.z"` (bumped per release,
+    vouched for by the signed tag at deploy) and installs `worthless==<that>`.
+    The `WORTHLESS_VERSION` env var still overrides. Both sources are
+    validated against a PEP-440-ish charset before reaching `uv tool install`.
     """
-    # Negative: no hardcoded x.y.z constant.
-    assert not re.search(
-        r'^\s*WORTHLESS_VERSION\s*=\s*"\d+\.\d+\.\d+"', install_text, re.MULTILINE
-    ), (
-        "install.sh must NOT hardcode WORTHLESS_VERSION — version resolves "
-        "from PyPI at install time. Use `${WORTHLESS_VERSION:+==…}` instead."
+    # Positive: a concrete baked pin literal exists.
+    assert re.search(r'^WORTHLESS_VERSION_PIN="\d+\.\d+\.\d+', install_text, re.MULTILINE), (
+        'install.sh must declare a concrete WORTHLESS_VERSION_PIN="x.y.z" '
+        "default (WOR-559) so the default install is pinned, not latest."
     )
-    # Positive: env-var-pin escape hatch via POSIX `${VAR:+…}` expansion.
+    # Positive: the spec installed is always pinned with `==`.
+    assert re.search(r'spec="worthless==\$\{?effective_version\}?"', install_text), (
+        'install.sh must build a pinned spec: spec="worthless==${effective_version}"'
+    )
+    # Positive: override precedence — WORTHLESS_VERSION wins over the pin.
     assert re.search(
-        r"worthless\$\{WORTHLESS_VERSION:\+==\$\{?WORTHLESS_VERSION\}?\}",
+        r'effective_version="\$\{WORTHLESS_VERSION:-\$WORTHLESS_VERSION_PIN\}"',
         install_text,
     ), (
-        "install.sh must use the env-var-pin escape hatch: "
-        "`worthless${WORTHLESS_VERSION:+==${WORTHLESS_VERSION}}`"
+        "install.sh must resolve effective_version as "
+        "${WORTHLESS_VERSION:-$WORTHLESS_VERSION_PIN} (override beats pin)."
     )
-    # Positive: input validator on user-supplied env var (defends against
-    # shell metachars and arg-confusion before `uv tool install` is invoked).
+    # Negative: never installs or upgrades an unpinned `worthless` IN CODE.
+    # (Comments legitimately mention the old `uv tool install worthless` /
+    # `uv tool upgrade` patterns to explain why they're forbidden.)
+    code_lines = "\n".join(
+        line for line in install_text.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert not re.search(r"uv tool install[^\n]*\bworthless\b(?!==)", code_lines), (
+        "install.sh must never `uv tool install worthless` without `==<version>`."
+    )
+    assert "uv tool upgrade" not in code_lines, (
+        "install.sh must not run `uv tool upgrade` — it resolves PyPI latest, "
+        "re-opening the supply-chain window. Use `uv tool install --force`."
+    )
+    # Positive: input validator (defends against shell metachars and
+    # arg-confusion before `uv tool install` is invoked).
     assert re.search(r"\[\!0-9A-Za-z\.\+\!-\]", install_text), (
-        "install.sh must validate WORTHLESS_VERSION against a PEP-440-ish "
+        "install.sh must validate the effective version against a PEP-440-ish "
         "charset (POSIX case pattern with bracket negation)."
+    )
+    # Positive: fail-closed on an empty/unset pin (no silent latest fallback).
+    assert re.search(r"Refusing to install an unpinned", install_text), (
+        "install.sh must FAIL CLOSED when no version is pinned — never fall "
+        "back to unpinned latest."
+    )
+
+
+def test_pin_matches_pyproject_version() -> None:
+    """The baked install.sh pin must equal the pyproject [project] version.
+
+    Chain of trust: pyproject version == install.sh pin == signed tag
+    (deploy gate) == PyPI-resolvable (deploy gate). This test pins the first
+    link — fast PR feedback so a release bump can't land in pyproject while
+    install.sh still pins the previous version.
+    """
+    import sys
+
+    if sys.version_info >= (3, 11):
+        import tomllib
+    else:
+        import tomli as tomllib
+
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject_version = pyproject["project"]["version"]
+
+    match = re.search(
+        r'^WORTHLESS_VERSION_PIN="([^"]*)"',
+        INSTALL_SH.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert match, "install.sh must declare WORTHLESS_VERSION_PIN"
+    pin = match.group(1)
+    assert pin == pyproject_version, (
+        f"install.sh pin {pin!r} != pyproject version {pyproject_version!r}. "
+        "Bump both together at release time (the deploy gate then ties them "
+        "to the signed tag)."
+    )
+
+
+def test_pin_is_valid_pep440(install_text: str) -> None:
+    """The baked pin must itself satisfy the same PEP-440-ish charset the
+    script validates against — a malformed pin should never ship."""
+    match = re.search(r'^WORTHLESS_VERSION_PIN="([^"]*)"', install_text, re.MULTILINE)
+    assert match, "install.sh must declare WORTHLESS_VERSION_PIN"
+    pin = match.group(1)
+    assert pin, "baked pin must be non-empty (fail-closed default is dev-only)"
+    assert re.fullmatch(r"[0-9A-Za-z.+!-]+", pin), (
+        f"baked pin {pin!r} contains characters outside [0-9A-Za-z.+!-]"
     )
 
 
@@ -428,9 +491,21 @@ def test_curl_fail_retry(install_text: str) -> None:
     assert "--retry" in install_text, "curl must use --retry for transient failures"
 
 
-def test_idempotent_upgrade_path(install_text: str) -> None:
-    assert "uv tool upgrade" in install_text, (
-        "install.sh must support idempotent re-runs via 'uv tool upgrade'"
+def test_idempotent_install_path(install_text: str) -> None:
+    """Re-runs stay idempotent without ever resolving latest.
+
+    Mechanism (WOR-559): a fast-path that short-circuits when the installed
+    version already equals the resolved version, plus `uv tool install
+    --force` for the pin-bump case. The old `uv tool upgrade` path resolved
+    PyPI latest and was removed.
+    """
+    assert "uv tool install --force" in install_text, (
+        "install.sh must use `uv tool install --force` for idempotent re-runs "
+        "and pin bumps (stays pinned, unlike `uv tool upgrade`)."
+    )
+    assert "already installed" in install_text, (
+        "install.sh must keep the fast-path that short-circuits when the "
+        "resolved version is already installed (idempotency)."
     )
 
 

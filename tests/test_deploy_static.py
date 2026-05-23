@@ -557,6 +557,84 @@ class TestCrossConfigConsistency:
 # ------------------------------------------------------------------
 
 
+class TestVerifyPinScript:
+    """WOR-559 — .github/scripts/verify-pin.sh fails closed on pin/tag drift.
+
+    This is the deploy gate that ties the served install.sh pin to the signed
+    release tag. The leftover-#1 spirit (prove the gate fails closed, not just
+    the happy path) applied to this new gate.
+    """
+
+    VERIFY_PIN = REPO_ROOT / ".github" / "scripts" / "verify-pin.sh"
+
+    def _run(self, install_sh_text: str, tag_version: str | None, tmp_path: Path):
+        script = tmp_path / "install.sh"
+        script.write_text(install_sh_text, encoding="utf-8")
+        env = {"INSTALL_SH_PATH": str(script)}
+        if tag_version is not None:
+            env["TAG_VERSION"] = tag_version
+        return subprocess.run(
+            ["bash", str(self.VERIFY_PIN)],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_matching_pin_passes(self, tmp_path: Path):
+        result = self._run('WORTHLESS_VERSION_PIN="0.3.7"\n', "0.3.7", tmp_path)
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "matches release tag" in result.stdout
+
+    def test_mismatched_pin_fails_closed(self, tmp_path: Path):
+        result = self._run('WORTHLESS_VERSION_PIN="0.3.6"\n', "0.3.7", tmp_path)
+        assert result.returncode != 0, "pin/tag mismatch must fail the deploy"
+        assert "!=" in result.stderr
+
+    def test_empty_pin_fails_closed(self, tmp_path: Path):
+        result = self._run('WORTHLESS_VERSION_PIN=""\n', "0.3.7", tmp_path)
+        assert result.returncode != 0, "empty pin must fail the deploy"
+        assert "unpinned" in result.stderr.lower()
+
+    def test_missing_tag_version_fails_closed(self, tmp_path: Path):
+        result = self._run('WORTHLESS_VERSION_PIN="0.3.7"\n', None, tmp_path)
+        assert result.returncode != 0, "missing TAG_VERSION must fail the deploy"
+
+
+class TestWorkerDeployPinGate:
+    """WOR-559 — deploy-worker.yml wires the pin↔tag gate and PyPI-availability
+    self-DoS guard before flipping the served bundle."""
+
+    @pytest.fixture(scope="class")
+    def deploy_text(self) -> str:
+        return (REPO_ROOT / ".github" / "workflows" / "deploy-worker.yml").read_text(
+            encoding="utf-8"
+        )
+
+    def test_calls_verify_pin_script(self, deploy_text: str):
+        assert ".github/scripts/verify-pin.sh" in deploy_text, (
+            "deploy must run verify-pin.sh to assert the served pin == signed tag."
+        )
+
+    def test_waits_for_pypi_before_deploy(self, deploy_text: str):
+        assert "pypi.org/pypi/worthless/" in deploy_text, (
+            "deploy must poll PyPI for the pinned version before deploying "
+            "(self-DoS guard — publish.yml runs in parallel with no coordination)."
+        )
+        # The wait must precede the wrangler deploy, or the guard is useless.
+        wait_idx = deploy_text.find("pypi.org/pypi/worthless/")
+        deploy_idx = deploy_text.find("wrangler deploy")
+        assert 0 <= wait_idx < deploy_idx, (
+            "PyPI-availability wait must come BEFORE `wrangler deploy`."
+        )
+
+    def test_pin_gate_precedes_pypi_wait(self, deploy_text: str):
+        """verify-pin (bound to the signed tag) must run before the PyPI wait
+        and the deploy — fail fast on a wrong pin before polling/shipping."""
+        pin_idx = deploy_text.find("verify-pin.sh")
+        pypi_idx = deploy_text.find("pypi.org/pypi/worthless/")
+        assert 0 <= pin_idx < pypi_idx, "verify-pin.sh must run BEFORE the PyPI-availability wait."
+
+
 class TestEdgeCaseAwareness:
     """Tests that document what MUST be present -- catch regressions if removed."""
 

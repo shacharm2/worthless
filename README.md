@@ -56,7 +56,7 @@ Native-Windows support is tracked in [WOR-237](https://linear.app/plumbusai/issu
 
 ## Versioning
 
-PyPI version, signed git tag (`vX.Y.Z`), and the `X-Worthless-Script-Tag` header on `worthless.sh` are kept aligned — CI fails fast if `pyproject.toml` and the tag disagree. `install.sh` resolves the latest `worthless` from PyPI at install time; pin via `WORTHLESS_VERSION=x.y.z curl -sSL https://worthless.sh | sh`.
+PyPI version, signed git tag (`vX.Y.Z`), the `X-Worthless-Script-Tag` header on `worthless.sh`, and the version `install.sh` pins are kept aligned — CI fails fast if `pyproject.toml` and the tag disagree, and the Worker deploy refuses to ship unless `install.sh`'s pin matches the signed tag *and* that version is already live on PyPI. By default `install.sh` installs the exact `worthless==<release>` the signed build vouched for (not PyPI `latest`), so a release compromised *after* yours cannot land on fresh installs. Override with `WORTHLESS_VERSION=x.y.z curl -sSL https://worthless.sh | sh`.
 
 ## Documentation
 

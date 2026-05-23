@@ -92,7 +92,17 @@ jobs:
             echo "::error title=Tag/pyproject drift at tag::pyproject@${LATEST_TAG} = ${PYPROJECT_AT_TAG}, tag = ${LATEST_VERSION}"
             exit 1
           fi
-          echo "OK: PyPI = tag = pyproject@tag = $LATEST_VERSION"
+          # WOR-559: the version install.sh PINS by default (the default
+          # `curl|sh` resolves) must also equal the tag. The deploy gate
+          # (verify-pin.sh) enforces this at deploy; re-checking the LIVE
+          # release here catches a tag force-pushed around the gate.
+          INSTALL_PIN_AT_TAG=$(git show "${LATEST_TAG}:install.sh" \
+            | sed -n 's/^WORTHLESS_VERSION_PIN="\([^"]*\)".*/\1/p' | head -n1)
+          if [ "$INSTALL_PIN_AT_TAG" != "$LATEST_VERSION" ]; then
+            echo "::error title=install.sh pin drift at tag::WORTHLESS_VERSION_PIN@${LATEST_TAG} = '${INSTALL_PIN_AT_TAG}', tag = ${LATEST_VERSION}. The default install would pin a version the tag did not vouch for."
+            exit 1
+          fi
+          echo "OK: PyPI = tag = pyproject@tag = install.sh pin@tag = $LATEST_VERSION"
 
       # ===== Assertion 2a: worthless.sh content negotiation (curl) ==========
       - name: A2a — worthless.sh curl-UA serves install.sh @ latest tag
