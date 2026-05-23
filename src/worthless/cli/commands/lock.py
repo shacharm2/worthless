@@ -10,6 +10,7 @@ import re
 import stat
 import sys
 from dataclasses import dataclass
+from typing import NamedTuple
 from pathlib import Path
 
 import typer
@@ -819,7 +820,7 @@ def _print_lock_result(
             )
         _maybe_prompt_code_scan(Path.cwd())
     else:
-        console.print_warning("[OK] No unprotected API keys found.")
+        console.print_warning("No unprotected API keys found.")
 
 
 def _lock_keys(
@@ -880,7 +881,12 @@ def _lock_keys(
     if not quiet:
         console.print_hint(f"Scanning {env_path} for API keys...")
 
-    async def _lock_async() -> tuple[int, int, bool]:
+    class _LockResult(NamedTuple):
+        total: int
+        fresh_count: int
+        partial_failure: bool
+
+    async def _lock_async() -> _LockResult:
         from dotenv import dotenv_values  # noqa: PLC0415 — local import keeps test surface tight
 
         repo = ShardRepository(str(home.db_path), home.fernet_key)
@@ -897,7 +903,7 @@ def _lock_keys(
             env_str,
         )
         if not scanned:
-            return len(raw_scanned), 0, False
+            return _LockResult(total=len(raw_scanned), fresh_count=0, partial_failure=False)
 
         # Snapshot .env so _pass1 can pull *_BASE_URL values into the DB row.
         env_values = dict(dotenv_values(env_path))
@@ -922,7 +928,7 @@ def _lock_keys(
                 repo, candidates, env_str, token_budget_daily, planned, env_values
             )
             if not planned:
-                return 0, 0, False
+                return _LockResult(total=0, fresh_count=0, partial_failure=False)
             _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
             # Phase 2.b: OpenClaw magic. Per L1 in
             # engineering/research/openclaw-WOR-431-phase-2-spec.md, this
@@ -932,7 +938,9 @@ def _lock_keys(
             # AFTER lock-core's .env/DB writes are fully committed.
             partial_failure = _apply_openclaw(planned, console, quiet, home)
             fresh_count = sum(1 for p in planned if p.was_fresh_enroll)
-            return len(planned), fresh_count, partial_failure
+            return _LockResult(
+                total=len(planned), fresh_count=fresh_count, partial_failure=partial_failure
+            )
         except Exception:
             if planned:
                 unwind_errors = await _compensating_unwind(repo, planned)
@@ -946,20 +954,16 @@ def _lock_keys(
             for p in planned:
                 p.zero()
 
-    total, fresh_count, partial_failure = asyncio.run(_lock_async())
-    assert total >= fresh_count >= 0, (  # noqa: S101
-        f"_lock_async invariant violated: total={total}, fresh_count={fresh_count}. "
-        "Check the return tuple order."
-    )
-    relock_count = total - fresh_count
+    result = asyncio.run(_lock_async())
+    relock_count = result.total - result.fresh_count
 
-    if fresh_count and env_path.exists():
+    if result.fresh_count and env_path.exists():
         current = env_path.stat().st_mode
         if current & (stat.S_IRWXG | stat.S_IRWXO):
             env_path.chmod(current & ~(stat.S_IRWXG | stat.S_IRWXO))
 
     if not quiet:
-        _print_lock_result(console, fresh_count, relock_count, env_path, home)
+        _print_lock_result(console, result.fresh_count, relock_count, env_path, home)
 
     # Trust-fix (2026-05-08 verification gauntlet): when OpenClaw was
     # detected on this host AND the integration stage failed, the user is
@@ -968,10 +972,10 @@ def _lock_keys(
     # lock-core writes have committed (L1 binding contract preserved).
     # Exit code 73 = EX_CANTCREAT (POSIX), distinguishable from 1.
     # The [FAIL] block is already printed by _apply_openclaw.
-    if partial_failure:
+    if result.partial_failure:
         raise typer.Exit(code=73)
 
-    return fresh_count + relock_count
+    return result.fresh_count + relock_count
 
 
 def _enroll_single(
