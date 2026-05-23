@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -54,6 +55,7 @@ def _stub_sidecar_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
             shares=shares,
             allowed_uid=allowed_uid,
             drain_timeout=5.0,
+            stderr_buf=collections.deque(),
         )
 
     monkeypatch.setattr("worthless.cli.commands.up.split_to_tmpfs", _fake_split)

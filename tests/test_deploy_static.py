@@ -471,9 +471,12 @@ class TestEntrypoint:
             "WOR-465 A4: entrypoint must chmod fernet.key to 0400 (owner-only) "
             "after creation. The proxy uid is not in gid 10002; kernel rejects open()."
         )
-        assert re.search(r"chown\s+worthless-crypto:worthless-crypto", entrypoint_text), (
-            "WOR-465 A4: fernet.key must be chowned to worthless-crypto:worthless-crypto "
-            "so the sidecar owns and reads via owner bit; proxy is denied."
+        assert re.search(
+            r'chown\s+worthless-crypto:worthless-crypto\s+["\']*\$FERNET_PATH',
+            entrypoint_text,
+        ), (
+            "WOR-465 A4: fernet.key chown must target $FERNET_PATH — "
+            "a generic chown on any arbitrary path is insufficient."
         )
 
     def test_fernet_key_chmod_unconditional_crypto_owner(self, entrypoint_text: str):
@@ -499,10 +502,14 @@ class TestEntrypoint:
             "WOR-465 A4: WORTHLESS_FERNET_IPC_ONLY='1' gate must be removed "
             "from entrypoint.sh. A4 makes the chmod unconditional."
         )
-        # Unconditional chown to sidecar uid — anchored to full owner:group pair.
-        assert re.search(r"chown\s+worthless-crypto:worthless-crypto", entrypoint_text), (
+        # Unconditional chown to sidecar uid — anchored to $FERNET_PATH target.
+        assert re.search(
+            r'chown\s+worthless-crypto:worthless-crypto\s+["\']*\$FERNET_PATH',
+            entrypoint_text,
+        ), (
             "WOR-465 A4: entrypoint must unconditionally chown fernet.key to "
-            "worthless-crypto:worthless-crypto (sidecar owns, proxy denied)."
+            "worthless-crypto:worthless-crypto targeting $FERNET_PATH — "
+            "a generic chown on any path is insufficient."
         )
         assert "chmod 0400" in entrypoint_text, (
             "WOR-465 A4: entrypoint must chmod fernet.key to 0400 (owner-only). "

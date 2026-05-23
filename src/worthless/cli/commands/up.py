@@ -392,7 +392,10 @@ def _supervise_proxy_with_sidecar(
             proxy.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proxy.kill()
-            proxy.wait(timeout=2)  # reap after kill to prevent zombies
+            try:
+                proxy.wait(timeout=2)  # reap after kill to prevent zombies
+            except subprocess.TimeoutExpired:
+                pass
         pid_file.unlink(missing_ok=True)
 
         # A sidecar crash during the health-poll window also surfaces as

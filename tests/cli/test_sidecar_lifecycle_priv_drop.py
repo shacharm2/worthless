@@ -437,6 +437,7 @@ def test_no_new_privs_called_before_setresuid(monkeypatch: pytest.MonkeyPatch) -
         lambda: calls.append("no_new_privs"),
     )
     monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", lambda: None)
+    monkeypatch.setattr(_hardening, "set_capbset_drop_or_log", lambda: None)
 
     uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
     _sidecar_lifecycle._make_priv_drop_preexec(uids)()
@@ -797,6 +798,7 @@ def test_chaos_setresgid_eperm_halts_preexec_no_partial_drop(
     monkeypatch.setattr(_sidecar_lifecycle.os, "setresuid", _track("setresuid"), raising=False)
     monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", _track("no_new_privs"))
     monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", _track("dumpable"))
+    monkeypatch.setattr(_hardening, "set_capbset_drop_or_log", lambda: None)
 
     uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
     preexec = _sidecar_lifecycle._make_priv_drop_preexec(uids)
@@ -838,6 +840,7 @@ def test_chaos_setgroups_eperm_halts_before_setresuid(
     monkeypatch.setattr(_sidecar_lifecycle.os, "setresuid", _track("setresuid"), raising=False)
     monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", _track("no_new_privs"))
     monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", _track("dumpable"))
+    monkeypatch.setattr(_hardening, "set_capbset_drop_or_log", lambda: None)
 
     uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
     with pytest.raises(OSError):
@@ -879,6 +882,7 @@ def test_chaos_setresuid_eperm_halts_before_dumpable(
     )
     monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", _track("no_new_privs"))
     monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", _track("dumpable"))
+    monkeypatch.setattr(_hardening, "set_capbset_drop_or_log", lambda: None)
 
     uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
     with pytest.raises(OSError):
@@ -915,6 +919,7 @@ def test_chaos_no_new_privs_failure_does_not_halt_drop(
         lambda: calls.append("no_new_privs (logged-failure)"),
     )
     monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", _track("dumpable"))
+    monkeypatch.setattr(_hardening, "set_capbset_drop_or_log", lambda: None)
 
     uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
     _sidecar_lifecycle._make_priv_drop_preexec(uids)()  # must not raise
@@ -946,6 +951,7 @@ def test_chaos_dumpable_failure_does_not_break_caller(
     monkeypatch.setattr(_hardening, "set_no_new_privs_or_log", lambda: None)
     # Real ``set_dumpable_zero_or_log`` would log here; we simulate by no-op.
     monkeypatch.setattr(_hardening, "set_dumpable_zero_or_log", lambda: None)
+    monkeypatch.setattr(_hardening, "set_capbset_drop_or_log", lambda: None)
 
     uids = ServiceUids(proxy_uid=10001, crypto_uid=10002, worthless_gid=10001)
     # No exception, no return value.

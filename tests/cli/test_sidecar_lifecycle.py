@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import base64
 import importlib
 import logging
@@ -513,6 +514,7 @@ def test_shutdown_sidecar_sigkills_after_grace_window(home: Path, key: bytearray
         shares=shares,
         allowed_uid=os.getuid(),
         drain_timeout=0.25,
+        stderr_buf=collections.deque(),
     )
     shutdown_sidecar(handle)
     assert handle.proc.terminate_called  # type: ignore[attr-defined]
@@ -533,6 +535,7 @@ def test_shutdown_sidecar_zeroes_share_bytearrays(home: Path, key: bytearray) ->
         shares=shares,
         allowed_uid=os.getuid(),
         drain_timeout=5.0,
+        stderr_buf=collections.deque(),
     )
     # Pre-shutdown sanity: both shards carry non-zero content.
     assert any(b != 0 for b in handle.shares.shard_a)
@@ -553,6 +556,7 @@ def test_shutdown_sidecar_is_idempotent(home: Path, key: bytearray) -> None:
         shares=shares,
         allowed_uid=os.getuid(),
         drain_timeout=5.0,
+        stderr_buf=collections.deque(),
     )
     shutdown_sidecar(handle)
     # Second call must not raise.
@@ -674,7 +678,7 @@ def test_spawn_sidecar_reaps_child_on_keyboardinterrupt_during_wait(
     shares = split_to_tmpfs(key, home)
     socket_path = _short_socket_path()
 
-    # Track kill + communicate on a fake Popen.
+    # Track kill + wait on a fake Popen.
     class _SpawnFakeProc:
         def __init__(self) -> None:
             self.pid = 33333
@@ -682,7 +686,7 @@ def test_spawn_sidecar_reaps_child_on_keyboardinterrupt_during_wait(
             self.stderr: object = None
             self._exit_code: int | None = None
             self.kill_called = False
-            self.communicate_called = False
+            self.wait_called = False
 
         def poll(self) -> int | None:
             return self._exit_code
@@ -691,13 +695,13 @@ def test_spawn_sidecar_reaps_child_on_keyboardinterrupt_during_wait(
             self.kill_called = True
             self._exit_code = -9
 
-        def wait(self, timeout: float | None = None) -> int:  # pragma: no cover
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_called = True
             return self._exit_code or 0
 
         def communicate(
             self, input: object = None, timeout: float | None = None
-        ) -> tuple[bytes, bytes]:
-            self.communicate_called = True
+        ) -> tuple[bytes, bytes]:  # pragma: no cover
             return (b"", b"")
 
     fake_proc = _SpawnFakeProc()
@@ -722,9 +726,9 @@ def test_spawn_sidecar_reaps_child_on_keyboardinterrupt_during_wait(
         "spawn_sidecar leaked the child Popen on KeyboardInterrupt during wait — "
         "kill() was never called, child PID is now an orphan"
     )
-    assert fake_proc.communicate_called, (
-        "spawn_sidecar killed the child but did not communicate() to drain "
-        "pipes / reap — could leave a zombie"
+    assert fake_proc.wait_called, (
+        "spawn_sidecar killed the child but did not wait() to reap it — "
+        "pipes are drained by background threads; wait() prevents zombie"
     )
 
 

@@ -86,11 +86,17 @@ def reconstruct_key_fp(
     prefix_bytes = prefix.encode("utf-8")
     key = bytearray(len(prefix_bytes) + len(a_body))
     key[: len(prefix_bytes)] = prefix_bytes
-    for i, (a_char, b_char) in enumerate(zip(a_body, b_body, strict=True)):
-        original_idx = (char_to_idx[a_char] + char_to_idx[b_char]) % n
-        key[len(prefix_bytes) + i] = ord(charset[original_idx])
 
+    # Issue 6 (SR-02): a tampered shard may contain chars outside charset,
+    # causing KeyError mid-loop with partial key material in `key`. The
+    # try/finally ensures `key` is zeroed before the exception propagates,
+    # regardless of whether the failure is a KeyError in the loop or an
+    # HMAC mismatch in _verify_commitment.
     try:
+        for i, (a_char, b_char) in enumerate(zip(a_body, b_body, strict=True)):
+            original_idx = (char_to_idx[a_char] + char_to_idx[b_char]) % n
+            key[len(prefix_bytes) + i] = ord(charset[original_idx])
+
         _verify_commitment(key, commitment, nonce)
     except Exception:
         zero_buf(key)

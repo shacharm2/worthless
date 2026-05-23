@@ -27,6 +27,14 @@ def _drain_run_sync_workers():
         if not alive:
             return
         time.sleep(0.02)
+    # Deadline exceeded — fail loudly rather than silently leaving stuck workers
+    # that can poison subsequent tests (BPO-34394 single-threaded-entry check).
+    stuck = [t for t in threading.enumerate() if t.name == "worthless-run_sync"]
+    if stuck:
+        raise RuntimeError(
+            f"worthless-run_sync worker(s) still alive after 5 s drain window: "
+            f"{[t.ident for t in stuck]}. These threads will poison later tests."
+        )
 
 
 class TestRunSyncTimeout:

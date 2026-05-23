@@ -1,3 +1,8 @@
+---
+title: "IPC Contract"
+description: "Wire protocol between the Worthless proxy and the Fernet sidecar: framing, envelope schema, ops (seal/open/attest), error codes, and the no-fallback rule."
+---
+
 # IPC Contract: Proxy ↔ Sidecar
 
 *Internal architecture doc. Audience: future v2.0 Rust/MPC reimplementers, security auditors.

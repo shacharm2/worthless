@@ -223,13 +223,16 @@ def _fernet_key_present(home: WorthlessHome) -> bool:
     return False
 
 
-def _provision_keystore_path(home: WorthlessHome) -> None:
+def _provision_keystore_path(home: WorthlessHome) -> bool:
     """Run the bare-metal keystore cascade for ``ensure_home``.
 
     Split out so ``ensure_home`` itself stays under xenon's rank-C
     cyclomatic ceiling. Handles three states discriminated by the
     ``.bootstrapped`` marker: first-run probe-and-generate, post-
     bootstrap env-or-file pre-populate, and keyring-only fallthrough.
+
+    Returns ``True`` on first run (marker not yet written) so the
+    caller can write the marker after ``_init_db()`` succeeds.
     """
     # Validate custom fernet key path if set via env var
     fernet_path = home.fernet_key_path
@@ -243,10 +246,16 @@ def _provision_keystore_path(home: WorthlessHome) -> None:
 
     if not home.bootstrapped_marker.exists():
         _first_run_keystore(home)
-        home.bootstrapped_marker.touch(mode=0o600, exist_ok=True)
-    elif _fernet_key_present(home):
+        # Do NOT write .bootstrapped here — _init_db() runs in the caller
+        # (ensure_home) after we return.  Writing the marker before _init_db
+        # succeeds means a failed DB init leaves the marker in place, causing
+        # every subsequent boot to skip bootstrap entirely.  The caller writes
+        # the marker only after _init_db() returns without raising.
+        return True
+    if _fernet_key_present(home):
         _seed_cache_from_advisory_source(home)
     # else: keyring-only post-bootstrap → skip; lazy fetch later.
+    return False
 
 
 def _first_run_keystore(home: WorthlessHome) -> None:
@@ -353,7 +362,7 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
             # the sidecar, so the socket does not yet exist.  Fall through to key
             # generation below (as root, before priv-drop).
 
-        _provision_keystore_path(home)
+        first_run = _provision_keystore_path(home)
     except WorthlessError:
         raise
     except OSError as exc:
@@ -379,6 +388,11 @@ def ensure_home(base_dir: Path | None = None) -> WorthlessHome:
             sanitize_exception(exc, generic="failed to initialise database"),
         ) from exc
 
+    # Write .bootstrapped AFTER _init_db() succeeds.  Writing it before
+    # risks a scenario where _init_db() fails and the marker is already
+    # present, causing every subsequent boot to skip bootstrap entirely.
+    if first_run:
+        home.bootstrapped_marker.touch(mode=0o600, exist_ok=True)
     return home
 
 

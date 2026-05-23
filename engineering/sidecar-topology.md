@@ -88,7 +88,7 @@ Socket activation + `User=`/`Group=` directives give the same two-uid shape (pro
 | 1 | Proxy RCE reads Fernet key | Key never leaves crypto uid process | `tests/ipc/test_failure_matrix.py::test_bound_socket_is_mode_0660_not_world_accessible` + container two-uid topology in `tests/docker/test_container_smoke.py` |
 | 2 | Malicious Python dep in proxy | Only path out is IPC verbs | `tests/ipc/test_failure_matrix.py::test_client_module_has_no_crypto_fallback_path` |
 | 3 | `/proc/<proxy-pid>/mem` dump | Key is in crypto process, not proxy | Two-uid container asserts process split; no crypto symbol imported in proxy client (`tests/ipc/test_failure_matrix.py::test_client_module_has_no_crypto_fallback_path`) |
-| 4 | Read shared volume | Socket is rendezvous only | Dockerfile `chmod 0750 /var/run/worthless`, 0660 socket (see row 6) |
+| 4 | Read shared volume | Socket is rendezvous only | Dockerfile `chmod 0770 /run/worthless`, 0660 socket (see row 6) |
 | 5 | Cold-boot memory dump (host) | **Out of scope — documented limit** | `engineering/ipc-contract.md` + §7 below |
 | 6 | Connect from random uid | `require_peer_uid` | `tests/ipc/test_peercred.py::TestRequirePeerUid::test_disallowed_uid_raises`, `::test_empty_allowlist_always_rejects`, `::test_multi_uid_allowlist`; AF_UNIX bypass closed in `TestGetPeerCredentials::test_raises_on_non_unix_socket` |
 | 7 | Malformed IPC payload | `FrameError` + envelope validation | `tests/ipc/test_framing.py` (oversized, truncated, non-map body, missing fields) + `tests/ipc/test_failure_matrix.py::test_connect_to_stale_socket_file_raises_protocol_error` |

@@ -18,6 +18,7 @@ runner integration is covered by the existing ``test_cli_up.py``.
 
 from __future__ import annotations
 
+import collections
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -137,6 +138,7 @@ def _make_handle(sidecar_proc: _FakeSidecarProc, run_dir: Path) -> SidecarHandle
         shares=_make_share_files(run_dir),
         allowed_uid=1000,
         drain_timeout=5.0,
+        stderr_buf=collections.deque(),
     )
 
 

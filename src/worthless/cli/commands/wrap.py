@@ -225,6 +225,12 @@ def register_wrap_commands(app: typer.Typer) -> None:
             shares = split_to_tmpfs(home.fernet_key, home.base_dir)
             socket_path = shares.run_dir / "sidecar.sock"
             sidecar = spawn_sidecar(socket_path, shares, allowed_uid=os.getuid())
+        except WorthlessError:
+            # Issue 2: re-raise WorthlessError directly — don't overwrite
+            # SIDECAR_NOT_READY or other structured error codes with a
+            # generic PROXY_UNREACHABLE.
+            _cleanup_lifecycle(proxy=None, write_fd=None, sidecar=sidecar)
+            raise
         except Exception as exc:
             _cleanup_lifecycle(proxy=None, write_fd=None, sidecar=sidecar)
             raise WorthlessError(
@@ -232,12 +238,25 @@ def register_wrap_commands(app: typer.Typer) -> None:
                 sanitize_exception(exc, generic="failed to start sidecar"),
             ) from exc
 
-        # Create liveness pipe
-        read_fd, write_fd = create_liveness_pipe()
+        # Issue 3: wrap pipe creation and env build in try/finally so the
+        # sidecar is torn down if either step raises (e.g. OS fd exhaustion
+        # or keyring error in build_proxy_env).
+        try:
+            # Create liveness pipe
+            read_fd, write_fd = create_liveness_pipe()
 
-        # Build proxy environment with the sidecar socket path threaded in.
-        proxy_env = build_proxy_env(home)
-        proxy_env["WORTHLESS_SIDECAR_SOCKET"] = str(sidecar.socket_path)
+            # Build proxy environment with the sidecar socket path threaded in.
+            proxy_env = build_proxy_env(home)
+            proxy_env["WORTHLESS_SIDECAR_SOCKET"] = str(sidecar.socket_path)
+
+            # Issue 4: In IPC-only mode the sidecar holds the Fernet key;
+            # the proxy must NOT receive it in its environment. Scrub it
+            # unconditionally here — the proxy uses the sidecar socket
+            # (WORTHLESS_SIDECAR_SOCKET above) for all key material.
+            proxy_env.pop("WORTHLESS_FERNET_KEY", None)
+        except Exception:
+            _cleanup_lifecycle(proxy=None, write_fd=None, sidecar=sidecar)
+            raise
 
         # Spawn proxy on the same port `lock` wrote to .env so the child's
         # *_BASE_URL values resolve. (v0.3.4 fix: pre-fix this was port=0,
@@ -267,6 +286,7 @@ def register_wrap_commands(app: typer.Typer) -> None:
         if _port_in_use(target_port):
             os.close(read_fd)
             os.close(write_fd)
+            _cleanup_lifecycle(proxy=None, write_fd=None, sidecar=sidecar)
             raise WorthlessError(
                 ErrorCode.PROXY_UNREACHABLE,
                 _diagnose_proxy_failure(
@@ -345,21 +365,25 @@ def register_wrap_commands(app: typer.Typer) -> None:
         watcher = threading.Thread(target=_watch_proxy, daemon=True)
         watcher.start()
 
-        # Wait for child
-        exit_code = _run_child_and_wait(child)
-
-        # Print post-run summary before cleanup. Uses the same canonical
-        # health probe as ``_diagnose_proxy_failure`` above and ``status``.
+        # Issue 5: wrap child wait + summary + cleanup in try/finally so
+        # KeyboardInterrupt and unexpected exceptions still tear down proxy
+        # and sidecar rather than leaving orphaned processes.
         try:
-            info = check_proxy_health(port)
-            count = info.get("requests_proxied", 0)
-            if count:
-                sys.stderr.write(f"worthless: proxied {count} requests\n")
-                sys.stderr.flush()
-        except Exception:  # noqa: S110 — best-effort summary  # nosec B110
-            pass
+            # Wait for child
+            exit_code = _run_child_and_wait(child)
 
-        # Clean up proxy first, then sidecar (mirrors ``up.py`` ordering).
-        _cleanup_lifecycle(proxy=proxy, write_fd=write_fd, sidecar=sidecar)
+            # Print post-run summary before cleanup. Uses the same canonical
+            # health probe as ``_diagnose_proxy_failure`` above and ``status``.
+            try:
+                info = check_proxy_health(port)
+                count = info.get("requests_proxied", 0)
+                if count:
+                    sys.stderr.write(f"worthless: proxied {count} requests\n")
+                    sys.stderr.flush()
+            except Exception:  # noqa: S110 — best-effort summary  # nosec B110
+                pass
+        finally:
+            # Clean up proxy first, then sidecar (mirrors ``up.py`` ordering).
+            _cleanup_lifecycle(proxy=proxy, write_fd=write_fd, sidecar=sidecar)
 
         raise typer.Exit(code=exit_code)

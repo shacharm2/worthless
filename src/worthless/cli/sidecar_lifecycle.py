@@ -10,6 +10,7 @@ share bytes — only the run-dir path).
 from __future__ import annotations
 
 import atexit
+import collections
 import hashlib
 import logging
 import os
@@ -18,6 +19,7 @@ import socket
 import subprocess  # nosec B404 — required for sidecar subprocess lifecycle
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -172,6 +174,52 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
 # ---------------------------------------------------------------------------
 
 
+def _drain_pipe(pipe: subprocess.IO[bytes]) -> None:
+    """Read and discard bytes from *pipe* until EOF.
+
+    Used for stdout — the sidecar's one ready-line to stdout is not needed
+    for readiness detection (socket polling is used instead).  Runs in a
+    daemon thread so the 64 KiB kernel pipe buffer never fills and blocks
+    the sidecar process.
+    """
+    try:
+        while pipe.read(4096):
+            pass
+    except OSError:
+        pass
+
+
+# Maximum bytes of stderr we keep in the rolling buffer for error diagnostics.
+_STDERR_CAPTURE_LIMIT = 4096
+
+
+def _collect_stderr(
+    pipe: subprocess.IO[bytes],
+    buf: collections.deque[bytes],
+) -> None:
+    """Read stderr chunks into a bounded deque for crash diagnostics.
+
+    Runs in a daemon thread so the 64 KiB kernel pipe buffer never fills
+    and blocks the sidecar.  The deque is bounded by ``_STDERR_CAPTURE_LIMIT``
+    total bytes (dropping the oldest chunks) so the buffer cannot grow
+    unboundedly in a hypothetical chatty failure path.
+    """
+    total = 0
+    try:
+        while True:
+            chunk = pipe.read(256)
+            if not chunk:
+                break
+            buf.append(chunk)
+            total += len(chunk)
+            # Trim oldest chunks once we exceed the cap.
+            while total > _STDERR_CAPTURE_LIMIT and buf:
+                dropped = buf.popleft()
+                total -= len(dropped)
+    except OSError:
+        pass
+
+
 _READY_POLL_INTERVAL_S = 0.05
 
 # AF_UNIX ``sockaddr_un.sun_path`` is char[104] on macOS, char[108] on Linux.
@@ -253,6 +301,7 @@ class SidecarHandle:
     shares: ShareFiles
     allowed_uid: int
     drain_timeout: float
+    stderr_buf: collections.deque[bytes]
 
 
 def _can_connect(socket_path: Path) -> bool:
@@ -388,23 +437,24 @@ def _make_priv_drop_preexec(uids: ServiceUids) -> Callable[[], None]:
     return _drop_in_child
 
 
-def _format_ready_timeout_message(proc: subprocess.Popen[bytes], ready_timeout: float) -> str:
+def _format_ready_timeout_message(
+    proc: subprocess.Popen[bytes],
+    ready_timeout: float,
+    stderr_buf: collections.deque[bytes],
+) -> str:
     """Build the WRTLS-114 message with sidecar exit code + stderr tail.
 
     A bare "did not become ready within Ns" hides the actual cause.
     If the sidecar already exited (e.g. raised WRTLS-NNN at startup),
-    drain its captured stderr (already piped via ``stderr=PIPE``) and
-    fold it in. If it's still running, say so explicitly so the
-    operator knows the bind itself was slow rather than a crash.
+    fold in the last bytes captured by the background stderr-drainer
+    thread.  If it's still running, say so explicitly so the operator
+    knows the bind itself was slow rather than a crash.
     """
     exit_code = proc.poll()
     if exit_code is None:
         tail = " (sidecar still running; suspect slow bind)"
     else:
-        try:
-            _, stderr_bytes = proc.communicate(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            stderr_bytes = b""
+        stderr_bytes = b"".join(stderr_buf)
         captured = stderr_bytes.decode("utf-8", errors="replace").strip() if stderr_bytes else ""
         tail = f" (sidecar exited rc={exit_code}; stderr={captured!r})"
     return f"sidecar did not become ready within {ready_timeout}s{tail}"
@@ -527,15 +577,32 @@ def spawn_sidecar(
     # would otherwise be readable from the sidecar's address space, defeating the
     # uid-wall security claim before it starts. Defense in depth on bare metal too,
     # where the sidecar shares the parent uid.
+    # stdout=DEVNULL: readiness detection uses a socket connect-probe, not
+    # the sidecar's ready-line.  DEVNULL eliminates the 64 KiB stdout pipe
+    # buffer that would otherwise block the sidecar if it ever grew chatty.
+    # stderr=PIPE: kept so a crash before bind gives a useful error message.
+    # A background thread collects the last _STDERR_CAPTURE_LIMIT bytes into
+    # stderr_buf; _format_ready_timeout_message reads the buf (never the pipe
+    # directly) so the drainer and the error path never race.
+    stderr_buf: collections.deque[bytes] = collections.deque()
     proc = subprocess.Popen(  # noqa: S603  # nosec B603 — args are static, no shell
         [sys.executable, "-m", "worthless.sidecar"],
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         close_fds=True,
         pass_fds=(),
         preexec_fn=preexec_fn,
     )
+
+    # Start the stderr drainer immediately — before the ready-poll — so the
+    # pipe buffer never fills even if the sidecar crashes with verbose output.
+    if proc.stderr is not None:
+        threading.Thread(
+            target=_collect_stderr,
+            args=(proc.stderr, stderr_buf),
+            daemon=True,
+        ).start()
 
     # Reap the child on ANY BaseException — WRTLS-114 timeout, KeyboardInterrupt
     # from the poll loop, signal-mapped-to-KbdInt — otherwise the spawned
@@ -546,16 +613,17 @@ def spawn_sidecar(
         if not ready:
             raise WorthlessError(
                 ErrorCode.SIDECAR_NOT_READY,
-                _format_ready_timeout_message(proc, ready_timeout),
+                _format_ready_timeout_message(proc, ready_timeout, stderr_buf),
             )
         _verify_socket_inode(socket_path)
     except BaseException:
-        # Kill the child, drain stdout+stderr with a deadline (one call,
-        # no SIGPIPE risk), unlink any half-formed socket inode.
+        # Kill the child and wait for the kernel to reap it; the drainer
+        # thread will see EOF and exit cleanly.  Unlink any half-formed
+        # socket inode so a retry does not hit a stale inode.
         if proc.poll() is None:
             proc.kill()
         try:
-            proc.communicate(timeout=2.0)
+            proc.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
             pass
         try:
@@ -572,6 +640,7 @@ def spawn_sidecar(
         shares=shares,
         allowed_uid=allowed_uid,
         drain_timeout=drain_timeout,
+        stderr_buf=stderr_buf,
     )
 
 

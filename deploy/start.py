@@ -27,6 +27,7 @@ inheritance subtlety needed.
 
 from __future__ import annotations
 
+import logging
 import os
 import pwd
 import threading
@@ -282,8 +283,23 @@ def main() -> None:
         zero_buf(shares.shard_b)
         raise
 
-    # Sidecar has read the share files from disk; in-memory shard buffers
-    # in this process are redundant. Zero before exec replaces the process.
+    # Sidecar has read the share files from disk; unlink them now so they
+    # do not persist as readable files on the tmpfs for the sidecar's entire
+    # lifetime.  The sidecar holds the key material in memory (and zeroes it
+    # via FernetBackend.__del__ / explicit close); it does not re-read the
+    # files after startup.  Unlink failures are best-effort — a non-writable
+    # tmpfs mount is unusual but should not abort the start sequence.
+    for _share_path in (shares.share_a_path, shares.share_b_path):
+        try:
+            _share_path.unlink(missing_ok=True)
+        except OSError as _exc:
+            # Log but do not abort — the sidecar is already running.
+            logging.getLogger("worthless.start").warning(
+                "could not unlink share file %s after sidecar ready: %s", _share_path, _exc
+            )
+
+    # In-memory shard buffers in this process are also redundant now.
+    # Zero before exec replaces the process.
     zero_buf(shares.shard_a)
     zero_buf(shares.shard_b)
 
