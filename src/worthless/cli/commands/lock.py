@@ -247,7 +247,11 @@ async def _select_unlocked_keys(
                 )
                 still_protected = True
                 break
-            except (ShardTamperedError, ValueError, KeyError):
+            except (ShardTamperedError, ValueError, KeyError, UnicodeDecodeError, IndexError):
+                # UnicodeDecodeError: corrupt UTF-8 shard bytes in DB row.
+                # IndexError: mismatched shard lengths past the explicit check.
+                # Both are safe-fail — treat the enrollment as not still-protected
+                # and let the caller re-lock the key.
                 continue
             finally:
                 zero_buf(shard_a)
@@ -794,7 +798,7 @@ def _print_lock_result(
     fresh_count: int,
     relock_count: int,
     env_path: Path,
-    home: WorthlessHome,
+    home_base_dir: Path,
 ) -> None:
     """Emit the post-lock user-facing summary (called only when quiet=False)."""
     if fresh_count or relock_count:
@@ -812,8 +816,8 @@ def _print_lock_result(
             noun = "key" if relock_count == 1 else "keys"
             console.print_success(f"[OK] {relock_count} {noun} still protected.")
         env_home = os.environ.get("WORTHLESS_HOME")
-        if env_home and home.base_dir.resolve() != (Path.home() / ".worthless").resolve():
-            typer.echo(f"Warning: using non-default home {home.base_dir} (WORTHLESS_HOME is set)")
+        if env_home and home_base_dir.resolve() != (Path.home() / ".worthless").resolve():
+            typer.echo(f"Warning: using non-default home {home_base_dir} (WORTHLESS_HOME is set)")
         if fresh_count:
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
@@ -963,7 +967,7 @@ def _lock_keys(
             env_path.chmod(current & ~(stat.S_IRWXG | stat.S_IRWXO))
 
     if not quiet:
-        _print_lock_result(console, result.fresh_count, relock_count, env_path, home)
+        _print_lock_result(console, result.fresh_count, relock_count, env_path, home.base_dir)
 
     # Trust-fix (2026-05-08 verification gauntlet): when OpenClaw was
     # detected on this host AND the integration stage failed, the user is
