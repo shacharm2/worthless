@@ -12,6 +12,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -1938,6 +1939,16 @@ class TestLockRerun:
         env_paths = {e.env_path for e in enrollments}
         assert len(env_paths) == 2
 
+        # Both .env files must be rewritten — the real key must not remain in either.
+        from dotenv import dotenv_values
+
+        shard_a_a = dotenv_values(env_a)["OPENAI_API_KEY"]
+        shard_a_b = dotenv_values(env_b)["OPENAI_API_KEY"]
+        assert shard_a_a != key, "env_a still contains the real key after lock"
+        assert shard_a_b != key, "env_b still contains the real key after second-project lock"
+        assert shard_a_a.startswith("sk-proj-"), "env_a shard-A must preserve key prefix"
+        assert shard_a_b.startswith("sk-proj-"), "env_b shard-A must preserve key prefix"
+
     def test_lock_rerun_quiet_suppresses_still_protected(
         self, home_dir: WorthlessHome, env_file: Path
     ) -> None:
@@ -1986,3 +1997,127 @@ class TestLockRerun:
         assert result.exit_code == 0, result.output
         assert "split between" in result.output.lower(), result.output
         assert "still protected" in result.output.lower(), result.output
+
+
+# ---------------------------------------------------------------------------
+# WOR-504: _select_unlocked_keys exception-swallow paths
+# ---------------------------------------------------------------------------
+
+
+class TestSelectUnlockedKeys:
+    """Unit tests for the _select_unlocked_keys re-lock guard.
+
+    This function decides which scanned keys need (re-)locking by calling
+    ``reconstruct_key_fp`` to verify a shard-A value is still intact.  When
+    reconstruction raises ``UnicodeDecodeError`` (corrupt UTF-8 shard bytes)
+    or ``IndexError`` (length mismatch), the enrollment is treated as unusable
+    and the key is returned as a re-lock candidate.  These tests target those
+    error branches directly via mock so the CLI URL-registration check and
+    .env rewriter do not interfere with the assertions.
+    """
+
+    @staticmethod
+    def _enrollment(env_path: str, var_name: str, alias: str):
+        e = MagicMock()
+        e.env_path = env_path
+        e.var_name = var_name
+        e.key_alias = alias
+        return e
+
+    @staticmethod
+    def _repo():
+        encrypted = MagicMock()
+        encrypted.prefix = "sk-proj-"
+        encrypted.charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        stored = MagicMock()
+        stored.shard_b = bytearray(32)
+        stored.zero = MagicMock()
+        repo = MagicMock()
+        repo.fetch_encrypted = AsyncMock(return_value=encrypted)
+        repo.decrypt_shard = MagicMock(return_value=stored)
+        return repo
+
+    def test_unicode_error_returns_key_as_candidate(self) -> None:
+        """UnicodeDecodeError during reconstruction → key treated as not-still-protected.
+
+        Drives the UnicodeDecodeError branch of the except clause in
+        ``_select_unlocked_keys``.  A corrupt UTF-8 shard in the DB must not
+        silently suppress the key — the caller must be able to re-lock it.
+        """
+        from worthless.cli.commands.lock import _select_unlocked_keys
+
+        env_path = "/project/.env"
+        var_name = "OPENAI_API_KEY"
+        value = "sk-proj-abc123fakefakefakefakefakefakefakefakefakefake"
+        provider = "openai"
+
+        with patch(
+            "worthless.cli.commands.lock.reconstruct_key_fp",
+            side_effect=UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte"),
+        ):
+            candidates = asyncio.run(
+                _select_unlocked_keys(
+                    self._repo(),
+                    [(var_name, value, provider)],
+                    [self._enrollment(env_path, var_name, "openai-deadbeef")],
+                    env_path,
+                )
+            )
+
+        assert candidates == [(var_name, value, provider)]
+
+    def test_index_error_returns_key_as_candidate(self) -> None:
+        """IndexError during reconstruction → key treated as not-still-protected.
+
+        Drives the IndexError branch of the same except clause.  A
+        length-mismatched shard must not suppress the key from re-locking.
+        """
+        from worthless.cli.commands.lock import _select_unlocked_keys
+
+        env_path = "/project/.env"
+        var_name = "OPENAI_API_KEY"
+        value = "sk-proj-abc123fakefakefakefakefakefakefakefakefakefake"
+        provider = "openai"
+
+        with patch(
+            "worthless.cli.commands.lock.reconstruct_key_fp",
+            side_effect=IndexError("shard length mismatch"),
+        ):
+            candidates = asyncio.run(
+                _select_unlocked_keys(
+                    self._repo(),
+                    [(var_name, value, provider)],
+                    [self._enrollment(env_path, var_name, "openai-deadbeef")],
+                    env_path,
+                )
+            )
+
+        assert candidates == [(var_name, value, provider)]
+
+    def test_successful_reconstruct_excludes_key_from_candidates(self) -> None:
+        """Successful reconstruction → key is still-protected and NOT returned.
+
+        Happy-path complement: a healthy DB shard means the .env value is
+        already shard-A and the key must not be re-locked.
+        """
+        from worthless.cli.commands.lock import _select_unlocked_keys
+
+        env_path = "/project/.env"
+        var_name = "OPENAI_API_KEY"
+        value = "sk-proj-abc123fakefakefakefakefakefakefakefakefakefake"
+        provider = "openai"
+
+        with patch(
+            "worthless.cli.commands.lock.reconstruct_key_fp",
+            return_value=bytearray(b"reconstructed-key"),
+        ):
+            candidates = asyncio.run(
+                _select_unlocked_keys(
+                    self._repo(),
+                    [(var_name, value, provider)],
+                    [self._enrollment(env_path, var_name, "openai-deadbeef")],
+                    env_path,
+                )
+            )
+
+        assert candidates == []
