@@ -45,9 +45,12 @@ def install_sh_with_pin(dest_dir: Path, pin_value: str) -> Path:
     without mutating the real install.sh on disk.
     """
     src = INSTALL_SH.read_text(encoding="utf-8")
+    # Callable replacement: a string replacement would let a backslash in
+    # pin_value act as a regex backreference (re.error or wrong output). A
+    # lambda inserts pin_value literally.
     patched, n = re.subn(
         r'^WORTHLESS_VERSION_PIN="[^"]*"',
-        f'WORTHLESS_VERSION_PIN="{pin_value}"',
+        lambda _m: f'WORTHLESS_VERSION_PIN="{pin_value}"',
         src,
         count=1,
         flags=re.MULTILINE,
