@@ -365,15 +365,41 @@ class TestAC7SubprocessFailClosed:
             with pytest.raises(AuditGateError):
                 run_audit(fake_bin)
 
-    def test_timeout_raises_audit_gate_error(self, tmp_path: Path) -> None:
-        """AC 7: subprocess timeout → AuditGateError."""
+    def test_subprocess_failure_retries_exactly_once(self, tmp_path: Path) -> None:
+        """AC 7: transient failure retried exactly once before raising.
+
+        subprocess.run must be called exactly 2 times — first attempt fails,
+        second attempt fails, then AuditGateError is raised. Not 1 (no retry),
+        not 3+ (over-retry).
+        """
+        fake_bin = tmp_path / "openclaw"
+        fake_bin.write_text("#!/bin/sh\n")
+        fake_bin.chmod(0o755)
+        proc = _make_proc(stdout="", returncode=1)
+        with patch("subprocess.run", return_value=proc) as mock_run:
+            with pytest.raises(AuditGateError):
+                run_audit(fake_bin)
+        assert mock_run.call_count == 2, (
+            f"Expected exactly 1 retry (2 total calls), got {mock_run.call_count}"
+        )
+
+    def test_timeout_raises_audit_gate_error_without_retry(self, tmp_path: Path) -> None:
+        """AC 7: subprocess timeout → AuditGateError with no retry.
+
+        Timeouts are never retried — doubling the wait on a hung binary
+        is worse than surfacing the failure immediately.
+        subprocess.run must be called exactly once.
+        """
         fake_bin = tmp_path / "openclaw"
         fake_bin.write_text("#!/bin/sh\n")
         fake_bin.chmod(0o755)
         expired = subprocess.TimeoutExpired(cmd="openclaw", timeout=5)
-        with patch("subprocess.run", side_effect=expired):
+        with patch("subprocess.run", side_effect=expired) as mock_run:
             with pytest.raises(AuditGateError):
                 run_audit(fake_bin, timeout=0.001)
+        assert mock_run.call_count == 1, (
+            f"Timeout must not be retried — expected 1 call, got {mock_run.call_count}"
+        )
 
     def test_unparseable_stdout_raises_audit_gate_error(self, tmp_path: Path) -> None:
         """AC 7: garbage stdout → AuditGateError."""
@@ -744,15 +770,54 @@ class TestAdversarial:
     def test_adversarial_toctou_post_flight_catches_inserted_plaintext(
         self, tmp_path: Path
     ) -> None:
-        """Adv 7: file hash changes between pre-flight and post-flight → TOCTOU detected."""
+        """Adv 7: plaintext injected between pre-flight and apply_lock → exit 87.
+
+        Tests the full _openclaw_audit_postflight path:
+        1. Pre-flight snapshots file hash (clean)
+        2. File is modified after pre-flight (attacker/race condition)
+        3. Post-flight detects hash change, re-runs audit
+        4. Audit returns blocking finding → postflight raises typer.Exit(87)
+        """
+        import typer
+
+        from worthless.cli.commands.lock import (  # noqa: PLC2701
+            _openclaw_audit_postflight,
+        )
+        from worthless.openclaw.audit import AuditClassification, AuditGateHandle
+
         f = tmp_path / "openclaw.json"
         f.write_text('{"version": 1}')
-        pre_hashes = snapshot_hashes([str(f)])
-        # Simulate attacker writing plaintext after pre-flight
+
+        # Pre-flight snapshot (clean file)
+        gate = AuditGateHandle(
+            openclaw_bin=Path("/usr/local/bin/openclaw"),
+            pre_hashes=snapshot_hashes([str(f)]),
+        )
+
+        # Attacker injects plaintext after pre-flight snapshot
         f.write_text('{"version": 1, "injected": "sk-proj-evil000000000000000000000"}')
-        post_hashes = snapshot_hashes([str(f)])
-        # Pre and post hashes must differ — caller uses this to trigger post-flight audit
-        assert pre_hashes[str(f)] != post_hashes[str(f)]
+
+        # Post-flight runs audit and finds the injected key
+        blocking = (
+            BlockingFinding(
+                file=str(f),
+                json_path="models.providers.evil.apiKey",
+                provider="evil",
+                message="plaintext key injected",
+                source="audit",
+            ),
+        )
+        mock_classification = AuditClassification(
+            blocking=blocking, advisory_count=0, unknown_codes=()
+        )
+        with patch(
+            "worthless.cli.commands.lock._oc_audit.run_and_classify",
+            return_value=(MagicMock(), mock_classification),
+        ):
+            with pytest.raises(typer.Exit) as exc_info:
+                _openclaw_audit_postflight(gate)
+
+        assert exc_info.value.exit_code == 87
 
     def test_adversarial_audit_clean_but_nonzero_exit_fails_closed(self, tmp_path: Path) -> None:
         """Adv 8: valid JSON 'no findings' but subprocess exits non-zero → AuditGateError.
