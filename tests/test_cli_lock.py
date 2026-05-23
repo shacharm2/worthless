@@ -2037,12 +2037,12 @@ class TestSelectUnlockedKeys:
         repo.decrypt_shard = MagicMock(return_value=stored)
         return repo
 
-    def test_unicode_error_returns_key_as_candidate(self) -> None:
-        """UnicodeDecodeError during reconstruction → key treated as not-still-protected.
+    def test_value_error_returns_key_as_candidate(self) -> None:
+        """ValueError (including UnicodeDecodeError subclass) → key treated as not-still-protected.
 
-        Drives the UnicodeDecodeError branch of the except clause in
-        ``_select_unlocked_keys``.  A corrupt UTF-8 shard in the DB must not
-        silently suppress the key — the caller must be able to re-lock it.
+        UnicodeDecodeError IS a ValueError subclass, so testing ValueError directly
+        is the minimal mutation-killing form.  Drives the ValueError branch of the
+        except clause in ``_select_unlocked_keys``.
         """
         from worthless.cli.commands.lock import _select_unlocked_keys
 
@@ -2053,7 +2053,7 @@ class TestSelectUnlockedKeys:
 
         with patch(
             "worthless.cli.commands.lock.reconstruct_key_fp",
-            side_effect=UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte"),
+            side_effect=ValueError("corrupt shard bytes"),
         ):
             candidates = asyncio.run(
                 _select_unlocked_keys(
