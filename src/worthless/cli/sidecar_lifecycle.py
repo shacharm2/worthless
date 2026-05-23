@@ -174,21 +174,6 @@ def split_to_tmpfs(fernet_key: bytearray, home_dir: Path) -> ShareFiles:
 # ---------------------------------------------------------------------------
 
 
-def _drain_pipe(pipe: IO[bytes]) -> None:
-    """Read and discard bytes from *pipe* until EOF.
-
-    Used for stdout — the sidecar's one ready-line to stdout is not needed
-    for readiness detection (socket polling is used instead).  Runs in a
-    daemon thread so the 64 KiB kernel pipe buffer never fills and blocks
-    the sidecar process.
-    """
-    try:
-        while pipe.read(4096):
-            pass
-    except OSError:
-        pass
-
-
 # Maximum bytes of stderr we keep in the rolling buffer for error diagnostics.
 _STDERR_CAPTURE_LIMIT = 4096
 
@@ -460,6 +445,84 @@ def _format_ready_timeout_message(
     return f"sidecar did not become ready within {ready_timeout}s{tail}"
 
 
+def _apply_ready_timeout_override(default: float) -> float:
+    """Return *default* unless ``WORTHLESS_SIDECAR_READY_TIMEOUT_SECS`` is set.
+
+    CI override: a slow runner can blow past 5 s on cold-start before
+    asyncio is even up. The env var lets the workflow extend the deadline
+    without touching the production default.
+    """
+    raw = os.environ.get("WORTHLESS_SIDECAR_READY_TIMEOUT_SECS")
+    if not raw:
+        return default
+    try:
+        override = float(raw)
+    except ValueError:
+        return default
+    return override if override > 0 else default
+
+
+def _validate_service_uids(uids: ServiceUids) -> None:
+    """Raise :class:`WorthlessError` WRTLS-114 if *uids* is unsafe to use.
+
+    Two invariants checked:
+    - All ids must be non-root (> 0): dropping to uid 0 is a no-op that
+      silently voids the security claim.  Catches future Dockerfile drift
+      or a shadowed /etc/passwd before Popen runs.
+    - proxy_uid != crypto_uid: equal uids collapse the uid-wall — both
+      processes share same-uid ptrace/proc-mem access.
+    """
+    if uids.proxy_uid < 1 or uids.crypto_uid < 1 or uids.worthless_gid < 1:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"service_uids must have non-root ids "
+            f"(proxy={uids.proxy_uid}, crypto={uids.crypto_uid}, "
+            f"gid={uids.worthless_gid}); refusing to spawn",
+        )
+    if uids.proxy_uid == uids.crypto_uid:
+        raise WorthlessError(
+            ErrorCode.SIDECAR_NOT_READY,
+            f"service_uids.proxy_uid == service_uids.crypto_uid == "
+            f"{uids.proxy_uid}; uid wall requires distinct uids. "
+            "Refusing to spawn — security claim would silently break.",
+        )
+
+
+def _kill_and_close_proc(
+    proc: subprocess.Popen[bytes],
+    socket_path: Path,
+) -> None:
+    """Kill *proc*, wait for exit, close stderr, and unlink *socket_path*.
+
+    Called from the ``except BaseException`` path of :func:`spawn_sidecar`
+    so the sidecar never leaks as an orphan on any failure mode.
+
+    After ``proc.kill()`` + ``proc.wait()`` the kernel closes the WRITE end
+    of the stderr pipe (child exited).  Explicitly closing the READ end
+    (``proc.stderr``) here ensures the background drainer thread sees EOF
+    immediately rather than waiting for GC.  Without this close the fd
+    lives until the ``Popen`` object is collected, which CPython defers long
+    enough that accumulated leaks across many test invocations caused the
+    97%-completion CI hang (10-min timeout).
+    """
+    if proc.poll() is None:
+        proc.kill()
+    try:
+        proc.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        pass
+    if proc.stderr is not None:
+        try:
+            proc.stderr.close()
+        except OSError:
+            pass
+    try:
+        if socket_path.exists():
+            socket_path.unlink()
+    except OSError:
+        pass
+
+
 def spawn_sidecar(
     socket_path: Path,
     shares: ShareFiles,
@@ -485,8 +548,7 @@ def spawn_sidecar(
         service_uids: When set (Docker root-entry path), the sidecar is
             spawned via a ``preexec_fn`` that drops privs to
             ``service_uids.crypto_uid``. ``None`` (bare metal, dev) preserves
-            the current single-uid behavior. Phase C2 wires the actual
-            preexec_fn; Phase C1 only plumbs the kwarg through.
+            the current single-uid behavior.
 
     Raises:
         WorthlessError: WRTLS-114 if the path is too long for AF_UNIX,
@@ -495,52 +557,15 @@ def spawn_sidecar(
 
     Environment:
         ``WORTHLESS_SIDECAR_READY_TIMEOUT_SECS``: when set to a positive
-            float, overrides *ready_timeout*. Required for slow CI
-            runners (GitHub Actions Ubuntu can exceed 5s for cold-start
-            Python + asyncio + bind under xdist load); unused in prod
-            where startup is reliably <2s.
+            float, overrides *ready_timeout*. Required for slow CI runners
+            (GitHub Actions Ubuntu can exceed 5 s for cold-start Python +
+            asyncio + bind under xdist load); unused in prod where startup
+            is reliably <2 s.
     """
-    # CI override: a slow runner can blow past 5s on cold-start before
-    # asyncio is even up. Env var lets the workflow extend the deadline
-    # without touching the prod default.
-    ready_env = os.environ.get("WORTHLESS_SIDECAR_READY_TIMEOUT_SECS")
-    if ready_env:
-        try:
-            override = float(ready_env)
-        except ValueError:
-            override = 0.0
-        if override > 0:
-            ready_timeout = override
+    ready_timeout = _apply_ready_timeout_override(ready_timeout)
 
-    # If the caller asked for a privilege drop, the ids must be non-root.
-    # ``pw_uid == 0`` means "drop to root" — a no-op that silently breaks
-    # the v1.1 security claim. Validating here so a future Dockerfile
-    # drift / shadowed /etc/passwd that resolves worthless-proxy to uid 0
-    # is caught before we Popen the sidecar.  C2 wires the preexec_fn that
-    # actually consumes ``service_uids``.
-    if service_uids is not None and (
-        service_uids.proxy_uid < 1 or service_uids.crypto_uid < 1 or service_uids.worthless_gid < 1
-    ):
-        raise WorthlessError(
-            ErrorCode.SIDECAR_NOT_READY,
-            f"service_uids must have non-root ids "
-            f"(proxy={service_uids.proxy_uid}, crypto={service_uids.crypto_uid}, "
-            f"gid={service_uids.worthless_gid}); refusing to spawn",
-        )
-
-    # Brutus's distinctness check: if proxy_uid == crypto_uid the entire
-    # uid-wall security claim collapses — both processes share memory
-    # access via same-uid ptrace/proc-mem and can signal each other via
-    # kill(2). The Dockerfile creates them as 10001 and 10002; this
-    # guard catches a future Dockerfile drift OR a misconfigured
-    # pwd.getpwnam shadowing that returns the same uid for both.
-    if service_uids is not None and service_uids.proxy_uid == service_uids.crypto_uid:
-        raise WorthlessError(
-            ErrorCode.SIDECAR_NOT_READY,
-            f"service_uids.proxy_uid == service_uids.crypto_uid == "
-            f"{service_uids.proxy_uid}; uid wall requires distinct uids. "
-            "Refusing to spawn — security claim would silently break.",
-        )
+    if service_uids is not None:
+        _validate_service_uids(service_uids)
 
     socket_path = _resolve_short_socket_path(socket_path)
 
@@ -550,8 +575,6 @@ def spawn_sidecar(
         try:
             socket_path.unlink()
         except OSError:
-            # Couldn't clear the stale socket; bail before we spawn a child
-            # that would race against an unmovable inode.
             raise WorthlessError(
                 ErrorCode.SIDECAR_NOT_READY,
                 f"stale socket at {socket_path} could not be removed",
@@ -617,20 +640,7 @@ def spawn_sidecar(
             )
         _verify_socket_inode(socket_path)
     except BaseException:
-        # Kill the child and wait for the kernel to reap it; the drainer
-        # thread will see EOF and exit cleanly.  Unlink any half-formed
-        # socket inode so a retry does not hit a stale inode.
-        if proc.poll() is None:
-            proc.kill()
-        try:
-            proc.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            pass
-        try:
-            if socket_path.exists():
-                socket_path.unlink()
-        except OSError:
-            pass
+        _kill_and_close_proc(proc, socket_path)
         raise
 
     _logger.debug("spawn_sidecar: pid=%d socket=%s", proc.pid, socket_path)
@@ -691,6 +701,16 @@ def shutdown_sidecar(handle: SidecarHandle) -> None:
                 # Kernel didn't reap; the up.py supervisor surfaces this as
                 # WRTLS-113 if the runaway persists.
                 pass
+
+    # Close the read end of the stderr pipe so the background drainer thread
+    # sees EOF immediately.  The write end is already closed (child exited);
+    # leaving the read end open delays GC-collected fd release, which can
+    # accumulate across many test teardowns and cause CI-level hangs.
+    if proc.stderr is not None:
+        try:
+            proc.stderr.close()
+        except OSError:
+            pass
 
     for path in (
         handle.shares.share_a_path,
