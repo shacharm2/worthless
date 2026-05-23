@@ -885,6 +885,14 @@ def _openclaw_audit_postflight(gate: _oc_audit.AuditGateHandle) -> None:
 
     Raises typer.Exit(87) if new blocking findings appeared since pre-flight,
     indicating the OpenClaw config was modified between the two audit passes.
+
+    Recovery note: if this raises, ``_batch_rewrite`` has already committed
+    shard-A values to the .env, but ``_compensating_unwind`` (in the caller's
+    except block) rewinds the DB rows. The .env may therefore contain shard-A
+    values while DB rows are gone. Re-running ``worthless lock`` recovers: the
+    next pre-flight will see the same shard-A values as a PLAINTEXT_FOUND for
+    ``worthless-openai`` (allowlisted) and proceed normally once the user
+    fixes the OpenClaw plaintext that caused this exit.
     """
     post_hashes = _oc_audit.snapshot_hashes(gate.pre_hashes.keys())
     if post_hashes == gate.pre_hashes:

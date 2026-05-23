@@ -618,11 +618,12 @@ class TestAC11RealAuditFixture:
             findings=findings,
         )
         classification = classify_findings(result)
-        # gateway.auth.token is advisory; openai and anthropic are blocking
+        # gateway.auth.token is advisory; exactly the two provider keys are blocking
         blocking_paths = {b.json_path for b in classification.blocking}
-        assert "providers.custom-api-openai-com.apiKey" in blocking_paths
-        assert "providers.anthropic.apiKey" in blocking_paths
-        assert "gateway.auth.token" not in blocking_paths
+        assert blocking_paths == {
+            "providers.custom-api-openai-com.apiKey",
+            "providers.anthropic.apiKey",
+        }
 
     def test_m0_audit_schema_has_correct_structure(self) -> None:
         """AC 11: m0_audit_schema.json has required top-level keys."""

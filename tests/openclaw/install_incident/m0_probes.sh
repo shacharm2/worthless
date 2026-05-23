@@ -74,9 +74,10 @@ DOCKER_MOUNT="-v $TMPDIR_SEED/agent:$CONTAINER_AGENT_DIR"
 # ── PROBE 1: secrets audit --json schema ─────────────────────────────────────
 echo "" >&2
 echo "=== PROBE 1: secrets audit --json ===" >&2
+PROBE1_EXIT=0
 docker run --rm $DOCKER_MOUNT "$IMAGE" \
   openclaw secrets audit --json 2>/dev/null \
-  > "$FIXTURES/m0_audit_schema.json"; PROBE1_EXIT=$?
+  > "$FIXTURES/m0_audit_schema.json" || PROBE1_EXIT=$?
 
 echo "Exit status: $PROBE1_EXIT" >&2
 echo "Top-level JSON keys:" >&2
