@@ -815,7 +815,9 @@ def _print_lock_result(
             console.print_success(f"[OK] {relock_count} {noun} still protected.")
         env_home = os.environ.get("WORTHLESS_HOME")
         if env_home and home_base_dir.resolve() != (Path.home() / ".worthless").resolve():
-            typer.echo(f"Warning: using non-default home {home_base_dir} (WORTHLESS_HOME is set)")
+            typer.echo(
+                f"Warning: using non-default home {home_base_dir} (WORTHLESS_HOME is set)", err=True
+            )
         if fresh_count:
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
