@@ -92,7 +92,18 @@ jobs:
             echo "::error title=Tag/pyproject drift at tag::pyproject@${LATEST_TAG} = ${PYPROJECT_AT_TAG}, tag = ${LATEST_VERSION}"
             exit 1
           fi
-          echo "OK: PyPI = tag = pyproject@tag = $LATEST_VERSION"
+          # WOR-559: the version install.sh PINS by default (what the default
+          # `curl|sh` actually installs) must equal the latest PUBLISHED
+          # release. The pin is hand-bumped per release like UV_VERSION; this
+          # is the deploy-decoupled guard that fails if a release shipped
+          # without bumping the pin — so new installs never silently lag on an
+          # old version. Reads the current repo install.sh.
+          INSTALL_PIN=$(sed -n 's/^WORTHLESS_VERSION_PIN="\([^"]*\)".*/\1/p' install.sh | head -n1)
+          if [ "$INSTALL_PIN" != "$PYPI_VERSION" ]; then
+            echo "::error title=install.sh pin drift::WORTHLESS_VERSION_PIN = '${INSTALL_PIN}' but latest PyPI = ${PYPI_VERSION}. Bump WORTHLESS_VERSION_PIN in install.sh to ${PYPI_VERSION} — default curl|sh installs are stuck on '${INSTALL_PIN}' until you do."
+            exit 1
+          fi
+          echo "OK: PyPI = tag = pyproject@tag = install.sh pin = $LATEST_VERSION"
 
       # ===== Assertion 2a: worthless.sh content negotiation (curl) ==========
       - name: A2a — worthless.sh curl-UA serves install.sh @ latest tag
@@ -266,7 +277,7 @@ jobs:
           # Worker deploy lag: last successful run of deploy-worker.yml on a
           # `v*` tag, compared to that tag's creation time. If a tag exists
           # but no deploy ran successfully within the threshold, flag.
-          LAST_DEPLOY=$(gh run list --workflow="Deploy worker (worthless.sh)" --status=success --limit=1 --json updatedAt --jq '.[0].updatedAt' 2>/dev/null || echo "")
+          LAST_DEPLOY=$(gh run list --workflow=deploy-worker.yml --status=success --limit=1 --json updatedAt --jq '.[0].updatedAt' 2>/dev/null || echo "")
           if [ -z "$LAST_DEPLOY" ]; then
             echo "::warning title=Worker deploy-lag check incomplete::Could not query deploy-worker workflow runs. Skipping."
           else
