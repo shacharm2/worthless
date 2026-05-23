@@ -1863,7 +1863,8 @@ class TestLockRerun:
     ) -> None:
         """Second lock run on same .env prints '[OK] N keys still protected.'"""
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
-        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        first = runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        assert first.exit_code == 0, first.output
 
         result = runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
 
@@ -1876,10 +1877,12 @@ class TestLockRerun:
     ) -> None:
         """Second lock run on same .env leaves the DB shard count unchanged."""
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
-        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        first = runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        assert first.exit_code == 0, first.output
         count_before = len(asyncio.run(_repo(home_dir).list_keys()))
 
-        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        second = runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        assert second.exit_code == 0, second.output
         count_after = len(asyncio.run(_repo(home_dir).list_keys()))
 
         assert count_after == count_before
@@ -1887,7 +1890,8 @@ class TestLockRerun:
     def test_lock_rerun_does_not_resplit_key(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """Second lock run leaves shard_b byte-identical in the DB — key was not re-split."""
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
-        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        first = runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        assert first.exit_code == 0, first.output
 
         repo = _repo(home_dir)
         aliases = asyncio.run(repo.list_keys())
@@ -1897,7 +1901,8 @@ class TestLockRerun:
         shard_b_before = bytes(stored_before.shard_b)
         stored_before.zero()
 
-        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        second = runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        assert second.exit_code == 0, second.output
 
         enc_after = asyncio.run(_repo(home_dir).fetch_encrypted(alias))
         stored_after = _repo(home_dir).decrypt_shard(enc_after)
@@ -1938,7 +1943,8 @@ class TestLockRerun:
     ) -> None:
         """-q on re-lock produces no output, consistent with -q on fresh lock."""
         env_vars = {"WORTHLESS_HOME": str(home_dir.base_dir)}
-        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        first = runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        assert first.exit_code == 0, first.output
 
         result = runner.invoke(app, ["-q", "lock", "--env", str(env_file)], env=env_vars)
 
@@ -1970,7 +1976,8 @@ class TestLockRerun:
 
         # Lock just the old key first.
         env_file.write_text(f"OPENAI_API_KEY={key_old}\n")
-        runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        first = runner.invoke(app, ["lock", "--env", str(env_file)], env=env_vars)
+        assert first.exit_code == 0, first.output
 
         # Add a fresh key and re-lock — mixed run.
         env_file.write_text(f"OPENAI_API_KEY={key_old}\nANTHROPIC_API_KEY={key_new}\n")
