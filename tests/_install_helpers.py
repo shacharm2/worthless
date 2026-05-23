@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -31,8 +32,6 @@ _UV_VERSION = "0.11.7"
 
 def read_install_pin() -> str:
     """Return the WORTHLESS_VERSION_PIN literal baked into install.sh."""
-    import re
-
     text = INSTALL_SH.read_text(encoding="utf-8")
     match = re.search(r'^WORTHLESS_VERSION_PIN="([^"]*)"', text, re.MULTILINE)
     assert match, 'install.sh must declare WORTHLESS_VERSION_PIN="..."'
@@ -45,8 +44,6 @@ def install_sh_with_pin(dest_dir: Path, pin_value: str) -> Path:
     Used to exercise the empty-pin fail-closed path (and any other pin value)
     without mutating the real install.sh on disk.
     """
-    import re
-
     src = INSTALL_SH.read_text(encoding="utf-8")
     patched, n = re.subn(
         r'^WORTHLESS_VERSION_PIN="[^"]*"',
