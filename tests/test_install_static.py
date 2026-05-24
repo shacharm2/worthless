@@ -574,3 +574,52 @@ def test_install_smoke_uploads_terminal_artifacts() -> None:
     assert "tee install-smoke-traces/" in text, (
         "live install steps must tee command output into install-smoke-traces/ before upload."
     )
+
+
+# --- WOR-568: public install proof must not be overclaimed -------------------
+
+
+def test_install_smoke_name_matches_checkout_local_proof() -> None:
+    """Per-PR install smoke runs checkout-local install.sh, not public curl.
+
+    `sh ./install.sh` is valuable proof for the proposed PR script, but it is
+    not the same user journey as `curl https://worthless.sh | sh`, which hits
+    the deployed Worker and currently remains a release/manual gate. Keep the
+    workflow label honest so PR readers don't mistake local-script proof for
+    public-domain proof.
+    """
+    workflow = REPO_ROOT / ".github" / "workflows" / "install-smoke.yml"
+    text = workflow.read_text(encoding="utf-8")
+
+    runs_public_curl = bool(re.search(r"curl\s+-sSL\s+https://worthless\.sh\s*\|\s*sh", text))
+    workflow_name = re.search(r"^name:\s*(.+)$", text, re.MULTILINE)
+    assert workflow_name is not None, "install-smoke.yml must have a workflow name"
+
+    if not runs_public_curl:
+        assert "curl|sh" not in workflow_name.group(1), (
+            "install-smoke.yml runs checkout-local `sh ./install.sh`, not "
+            "public `curl https://worthless.sh | sh`; rename the workflow so "
+            "it does not overclaim public-domain install proof."
+        )
+
+
+def test_public_curl_manual_gate_requires_terminal_evidence() -> None:
+    """The public worthless.sh gate must require pasteable terminal output.
+
+    A checked box that says "I ran curl" is weak product proof. The manual
+    release gate should preserve the actual install output, version output,
+    and any failure wording so a top-down UX review can trace the public
+    journey back to evidence.
+    """
+    manual = INSTALL_FIXTURES / "MANUAL_SMOKE.md"
+    text = manual.read_text(encoding="utf-8").lower()
+
+    assert "curl -ssl https://worthless.sh | sh" in text
+    assert "terminal output" in text or "terminal transcript" in text, (
+        "MANUAL_SMOKE.md must require copy-pasted terminal output/transcript "
+        "for public `curl https://worthless.sh | sh` release proof."
+    )
+    assert "linear" in text or "pull request" in text or "pr" in text, (
+        "public curl proof must say where the terminal evidence is recorded "
+        "(Linear, PR, or release notes), not just local memory."
+    )

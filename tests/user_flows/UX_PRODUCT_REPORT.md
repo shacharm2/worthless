@@ -85,14 +85,14 @@ normal and abnormal states, and finally test app-specific integrations.
 
 | Journey step | Current automated proof | Terminal trace proof | Live / CI proof | Residual gap | Owning ticket |
 | --- | --- | --- | --- | --- | --- |
-| 1. Discover and install Worthless on a supported host | Installer static/logic tests plus install Docker matrix: `tests/test_install_static.py`, `tests/test_install_logic.py`, `tests/test_install_docker.py` | `TERMINAL_TRACES.md` now starts with deterministic install/reinstall/manual-uninstall traces | `install-smoke.yml` runs live `sh ./install.sh` on macOS 15/14 and Ubuntu 24.04/22.04, plus Ubuntu proxy | **Needs live/manual proof:** published `curl https://worthless.sh \| sh` smoke is still a release-gate proof, not a per-PR pytest | `WOR-446` |
-| 2. Verify the installed CLI exists and prints a version | Install smoke runs `uv run --no-project worthless --version`; static tests assert installer smoke-test behavior | Install lifecycle trace includes successful installer output | `install-smoke.yml` uploads `verify-version-*` artifacts | **Covered** for repo checkout installer; published-domain proof remains release-gated | `WOR-441`, `WOR-446` |
+| 1. Discover and install Worthless on a supported host | Installer static/logic tests plus install Docker matrix: `tests/test_install_static.py`, `tests/test_install_logic.py`, `tests/test_install_docker.py` | `TERMINAL_TRACES.md` starts with deterministic install/reinstall/manual-uninstall traces | `install-smoke.yml` runs checkout-local `sh ./install.sh` on macOS 15/14 and Ubuntu 24.04/22.04, plus Ubuntu proxy | **Being clarified by `WOR-568`:** published `curl https://worthless.sh \| sh` is a public-domain release/manual proof with required terminal evidence, not a per-PR pytest | `WOR-568`, `WOR-446` |
+| 2. Verify the installed CLI exists and prints a version | Install smoke runs `uv run --no-project worthless --version`; static tests assert installer smoke-test behavior | Install lifecycle trace includes successful installer output | `install-smoke.yml` uploads `verify-version-*` artifacts | **Covered** for repo checkout installer; public `worthless.sh` version proof is required in the release/manual transcript | `WOR-441`, `WOR-568` |
 | 3. Protect the first project `.env` with the default command | `test_native_cli_journeys.py::test_default_command_yes_detects_and_locks_project_env` | Covered indirectly by lock/status/scan/unlock trace; default command output is not rendered today | User-flow CI runs on Ubuntu 24.04 and macOS 15 | **Needs trace only:** add a rendered default-command trace when output review matters | `WOR-544` |
 | 4. Protect one key with explicit `lock --env` | `test_native_cli_journeys.py::test_lock_status_scan_unlock_round_trip_restores_original_key` | `Lock, Status, Scan, Unlock` trace shows `.env` before/after and stderr | User-flow CI runs on Ubuntu 24.04 and macOS 15 | **Covered** | `WOR-440` |
 | 5. Verify protection with `status` and `scan` | `test_native_cli_journeys.py::test_scan_and_status_empty_states_are_plain_english` plus the round-trip test | `Lock, Status, Scan, Unlock` trace shows protected status and scan summary | User-flow CI runs on Ubuntu 24.04 and macOS 15 | **Covered** for native local projects; multi-project status wording still has a stress gap | `WOR-440`, `WOR-500` |
 | 6. Run an app through the proxy | `test_wrap_magic_moment.py::test_wrap_child_reaches_proxy_via_env_url` | No full app trace; terminal proof focuses on CLI and `.env` state | User-flow CI runs the wrap journey | **Needs trace only** if product review wants copy-pasted app-output proof | `WOR-440` |
 | 7. Unlock and restore the original key | Round-trip test restores exact fake key | `Lock, Status, Scan, Unlock` trace shows restore and post-unlock empty status | User-flow CI runs on Ubuntu 24.04 and macOS 15 | **Covered** | `WOR-440` |
-| 8. Reinstall safely | Installer logic/static tests and deterministic trace tests cover idempotency paths | Install lifecycle trace includes pinned reinstall no-op | `install-smoke.yml` re-runs installer on macOS and Ubuntu | **Covered** for installer idempotency; published-domain curl proof remains outside per-PR CI | `WOR-441`, `WOR-446` |
+| 8. Reinstall safely | Installer logic/static tests and deterministic trace tests cover idempotency paths | Install lifecycle trace includes pinned reinstall no-op | `install-smoke.yml` re-runs checkout-local installer on macOS and Ubuntu | **Covered** for installer idempotency; published-domain curl proof remains a release/manual transcript | `WOR-441`, `WOR-568` |
 | 9. Uninstall / leave the machine clean | Trace documents current manual `uv tool uninstall worthless` limitation | Install lifecycle trace includes manual uninstall command output | No live cleanup proof beyond install smoke runner disposal | **Needs user-flow test / feature:** first-class `worthless uninstall` is still future work | `WOR-435` |
 | 10. Teammate receives only a locked `.env` | `test_recovery_journeys.py::test_teammate_handoff_locked_env_without_db_fails_with_hint` | `Teammate Handoff Failure` trace shows safe failure and recovery wording | User-flow CI runs on Ubuntu 24.04 and macOS 15 | **Covered** | `WOR-445` |
 | 11. Rotate a key and re-lock | `test_recovery_journeys.py::test_rotation_relock_restores_new_raw_key` and `test_rotation_relock_accepts_different_shape_raw_key` | `Rotation Relock` trace shows old/new key transitions | User-flow CI runs on Ubuntu 24.04 and macOS 15 | **Covered** | `WOR-445` |
@@ -113,13 +113,14 @@ normal and abnormal states, and finally test app-specific integrations.
 | Done | `WOR-445` | Recovery, teammate handoff, rotation, multi-project flows |
 | Done | `WOR-500` | Native destructive-state stress journeys |
 | Done | `WOR-441` | Install, reinstall, manual uninstall proof |
-| In progress | `WOR-544` | Second-pass top-down audit and gap routing |
-| In progress | `WOR-567` | Adversarial native/recovery gaps: DB loss/corruption and surgical repair |
+| Done | `WOR-544` | Second-pass top-down audit and gap routing |
+| Done | `WOR-567` | Adversarial native/recovery gaps: DB loss/corruption and surgical repair |
 | Open | `WOR-514`, PR #201 | OpenClaw install incident reproduction proof, not the fix |
 | Open | `WOR-515` | OpenClaw cached token bypass fix |
 | Open | `WOR-516` | OpenClaw config corruption / restore safety fix |
 | Open | `WOR-517` | Gateway lifecycle: restart, autostart, verification |
-| In progress | `WOR-442` | Docker clean distro / host-Worthless app-container journeys |
+| Done | `WOR-442` | Docker clean distro / host-Worthless app-container journeys |
+| In progress | `WOR-568` | Adversarial install proof: public curl/manual evidence, partial install/PATH/uninstall truth |
 | Backlog | `WOR-443` | OpenClaw end-to-end user journey lane |
 | Backlog | `WOR-444` | Agent/MCP user journey lane |
 | Backlog | `WOR-446` | CI matrix governance, Windows, WSL, nightly/full sweep |
@@ -130,9 +131,10 @@ normal and abnormal states, and finally test app-specific integrations.
   unlock, teammate failure, rotation, multi-project isolation, refused rewrite,
   and tamper handling from product promise to pytest and terminal output.
 - Install proof is better than unit tests but not identical to the public user
-  command. Per-PR CI runs `sh ./install.sh` from checkout; the public
-  `curl https://worthless.sh | sh` path remains a release-gate/manual proof
-  unless `WOR-446` adds a dedicated published-domain smoke.
+  command. Per-PR CI runs `sh ./install.sh` from checkout; `WOR-568` makes
+  the public `curl https://worthless.sh | sh` path an explicit release/manual
+  proof with copy-pasted terminal output until `WOR-446` adds a dedicated
+  published-domain smoke.
 - Windows and WSL are not proven by the current suite. The Windows job is an
   explicit deferral marker, and WSL needs either a real WSL runner or a manual
   release gate.
