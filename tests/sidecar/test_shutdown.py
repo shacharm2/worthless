@@ -20,6 +20,7 @@ import asyncio
 import base64
 import os
 import secrets
+import select
 import signal
 import subprocess
 import sys
@@ -37,7 +38,7 @@ from worthless.sidecar.backends.base import Backend
 from worthless.sidecar.backends.fernet import FernetBackend
 from worthless.sidecar.server import start_sidecar
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.xdist_group("real_sidecar")]
 
 _SUN_PATH_MAX = 104
 _READY_TIMEOUT_S = 5.0
@@ -58,13 +59,26 @@ def _spawn_sidecar(env: dict[str, str]) -> subprocess.Popen[str]:
 def _wait_for_ready(proc: subprocess.Popen[str], timeout: float = _READY_TIMEOUT_S) -> str:
     """Block until the sidecar prints its ``sidecar: ready …`` line or dies.
 
-    Returns the ready line on success. On timeout or early exit, terminates
-    the process and fails the test with the captured stderr so the failure
-    mode is legible.
+    Uses ``select.select`` before each ``readline()`` call so the loop honours
+    its timeout even when the child stalls before writing to stdout.
+
+    A plain ``readline()`` blocks at the C-library level; Python 3's PEP 475
+    EINTR-retry means a SIGALRM-based timeout (pytest-timeout signal mode)
+    does not reliably interrupt it.  Under xdist this caused workers to hang
+    for up to 30 s × (tests + reruns) per module, exceeding the 20-minute CI
+    job budget.  ``select`` with a short poll interval is interruptible and
+    keeps the effective timeout at ``_READY_TIMEOUT_S``.
+
+    Returns the ready line on success. On timeout or early exit, kills the
+    process and fails the test with the captured stderr so the failure mode
+    is legible.
     """
     deadline = time.monotonic() + timeout
     assert proc.stdout is not None
-    while time.monotonic() < deadline:
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         if proc.poll() is not None:
             out = proc.stdout.read() if proc.stdout else ""
             err = proc.stderr.read() if proc.stderr else ""
@@ -72,6 +86,11 @@ def _wait_for_ready(proc: subprocess.Popen[str], timeout: float = _READY_TIMEOUT
                 f"sidecar exited before ready (rc={proc.returncode})\n"
                 f"stdout:\n{out}\nstderr:\n{err}"
             )
+        # Poll for stdout data before calling readline().  select() is
+        # interruptible; a raw readline() at C level is not (PEP 475).
+        ready, _, _ = select.select([proc.stdout], [], [], min(0.1, remaining))
+        if not ready:
+            continue
         line = proc.stdout.readline()
         if line.startswith("sidecar: ready"):
             return line
