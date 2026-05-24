@@ -7,6 +7,7 @@ Docker-gated tests live in test_lock_audit_gate_docker.py.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -440,6 +441,18 @@ class TestAC8TOCTOUPostFlight:
         """
         hashes = snapshot_hashes(["/nonexistent/file.json"])
         assert hashes["/nonexistent/file.json"] == "UNREADABLE"
+
+    def test_snapshot_hashes_treats_non_regular_file_as_unreadable(self, tmp_path: Path) -> None:
+        """AC 8 / CR: snapshot_hashes must not open FIFOs or device files.
+
+        Opening a FIFO without a writer blocks forever. The stat.S_ISREG guard
+        must detect non-regular files and record the UNREADABLE sentinel instead
+        of calling open(), preventing the audit gate from hanging indefinitely.
+        """
+        fifo = tmp_path / "openclaw.json"
+        os.mkfifo(fifo)
+        hashes = snapshot_hashes([str(fifo)])
+        assert hashes[str(fifo)] == "UNREADABLE"
 
 
 # --------------------------------------------------------------------------- #

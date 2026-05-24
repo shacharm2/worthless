@@ -25,6 +25,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess  # nosec B404
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -291,9 +292,14 @@ def snapshot_hashes(files_scanned: Iterable[str]) -> dict[str, str]:
     result: dict[str, str] = {}
     for path_str in files_scanned:
         try:
+            # Reject non-regular files (FIFOs, devices, sockets) before opening.
+            # filesScanned is attacker-influenced output from the openclaw binary;
+            # a rogue path pointing at /dev/zero or a FIFO with no writer would
+            # block the chunked read loop forever.
+            if not stat.S_ISREG(Path(path_str).stat().st_mode):
+                result[path_str] = "UNREADABLE"
+                continue
             # Chunked read — never load the full file into memory.
-            # filesScanned is attacker-influenced output from the openclaw binary
-            # and could theoretically point at a large or infinite file.
             h = hashlib.sha256()
             with open(path_str, "rb") as fh:  # noqa: PTH123
                 for chunk in iter(lambda: fh.read(65536), b""):
