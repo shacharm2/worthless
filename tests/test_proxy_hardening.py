@@ -2185,3 +2185,129 @@ class TestBadHeaderCharsCompleteness:
             assert not _ALIAS_RE.fullmatch(f"alias{char}evil"), (
                 f"_ALIAS_RE accepts dangerous character: {char!r}"
             )
+
+
+# ==================================================================
+# Phase 1c: fail-closed streaming accounting (worthless-dupf.4)
+# ==================================================================
+
+
+class TestFailClosedSpendAccounting:
+    """When usage extraction fails (truncated/malformed response), charge the
+    spend reservation rather than releasing free (worthless-dupf.4).
+
+    An attacker who truncates the upstream response to dodge the spend cap
+    must be charged the conservative max_tokens estimate instead of 0.
+    """
+
+    @pytest.fixture()
+    async def accounting_client(self, proxy_settings: ProxySettings, repo):
+        """Proxy client wired with a real SpendCapRule for accounting tests."""
+        app = create_app(proxy_settings)
+        db = await aiosqlite.connect(proxy_settings.db_path)
+        app.state.db = db
+        app.state.repo = repo
+        app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
+        app.state.rules_engine = RulesEngine(
+            rules=[
+                SpendCapRule(db=db),
+                RateLimitRule(default_rps=proxy_settings.default_rate_limit_rps),
+            ]
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
+        await app.state.httpx_client.aclose()
+        await db.close()
+
+    @respx.mock
+    async def test_non_streaming_no_usage_charges_reservation(
+        self, accounting_client, enrolled_alias
+    ):
+        """Non-streaming response with no usage field charges _spend_reservation, not 0.
+
+        The request body has max_tokens=50; upstream returns JSON with no usage field.
+        record_spend must be called with 50 tokens (the reservation), not 0.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+
+        # Upstream returns success but no usage field — extraction returns None
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "ok"}}]},  # no "usage" key
+            )
+        )
+
+        recorded: list[tuple] = []
+
+        async def capture_spend(db_path, alias, tokens, model, provider):
+            recorded.append((alias, tokens, model, provider))
+
+        with patch("worthless.proxy.app.record_spend", side_effect=capture_spend):
+            resp = await accounting_client.post(
+                f"/{alias}/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {shard_a_utf8}",
+                    "content-type": "application/json",
+                },
+                content=b'{"model": "gpt-4o", "messages": [], "max_tokens": 50}',
+            )
+
+        assert resp.status_code == 200
+        assert len(recorded) == 1, "record_spend must be called exactly once"
+        _, tokens, _, _ = recorded[0]
+        assert tokens == 50, (
+            f"Fail-closed: should charge reservation (50), got {tokens}. "
+            "Charging 0 allows attackers to avoid the spend cap."
+        )
+
+    @respx.mock
+    async def test_streaming_truncated_charges_reservation(self, accounting_client, enrolled_alias):
+        """Streaming response with no usage in SSE charges _spend_reservation, not 0.
+
+        The request body has max_tokens=75; upstream streams content but never
+        sends a usage chunk. record_spend must be called with 75 tokens.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+
+        # SSE stream with NO usage chunk — truncated/truncated stream
+        sse_no_usage = (
+            b"data: "
+            + json.dumps({"choices": [{"delta": {"content": "Hi"}}], "model": "gpt-4o"}).encode()
+            + b"\n\n"
+            b"data: [DONE]\n\n"
+        )
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200,
+                content=sse_no_usage,
+                headers={"content-type": "text/event-stream"},
+            )
+        )
+
+        recorded: list[tuple] = []
+
+        async def capture_spend(db_path, alias, tokens, model, provider):
+            recorded.append((alias, tokens, model, provider))
+
+        with patch("worthless.proxy.app.record_spend", side_effect=capture_spend):
+            resp = await accounting_client.post(
+                f"/{alias}/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {shard_a_utf8}",
+                    "content-type": "application/json",
+                },
+                content=b'{"model": "gpt-4o", "messages": [], "max_tokens": 75}',
+            )
+            # Drain stream
+            _ = resp.content
+
+        assert resp.status_code == 200
+        assert len(recorded) == 1, "record_spend must be called exactly once"
+        _, tokens, _, _ = recorded[0]
+        assert tokens == 75, (
+            f"Fail-closed: should charge reservation (75), got {tokens}. "
+            "Charging 0 on truncated stream lets attackers bypass the spend cap."
+        )

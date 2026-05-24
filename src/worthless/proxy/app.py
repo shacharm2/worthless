@@ -440,13 +440,17 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             provider = encrypted.provider
 
             async def _do_record_spend(data: bytes):
-                """Extract usage and record spend — shared by streaming and non-streaming."""
+                """Extract usage and record spend — shared by streaming and non-streaming.
+
+                Fail-closed (worthless-dupf.4): when usage extraction returns None
+                (truncated or malformed response), we charge _spend_reservation tokens
+                rather than 0. An attacker who truncates the upstream response to zero
+                out spend tracking is instead charged the conservative max we reserved.
+                """
                 if provider == "anthropic":
                     usage = extract_usage_anthropic(data)
                 else:
                     usage = extract_usage_openai(data)
-                tokens = usage.total_tokens if usage else 0
-                model = usage.model if usage else None
                 if usage is None:
                     # Renamed from "Token extraction failed" — Semgrep's
                     # python-logger-credential-disclosure rule fires on
@@ -455,10 +459,17 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     # not an auth token. Renaming clears the rule
                     # without needing a # nosemgrep annotation.
                     logger.warning(
-                        "Usage extraction failed for alias=%s provider=%s",
+                        "Usage extraction failed for alias=%s provider=%s; "
+                        "charging reservation %d tokens (fail-closed)",
                         alias,
                         provider,
+                        _spend_reservation,
                     )
+                    tokens: int = _spend_reservation
+                    model: str | None = None
+                else:
+                    tokens = usage.total_tokens
+                    model = usage.model
                 try:
                     await record_spend(settings.db_path, alias, tokens, model, provider)
                 except Exception:
@@ -493,22 +504,28 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 async def _record_metering():
                     usage = usage_collector.result()
                     if usage is not None:
-                        await record_spend(
-                            settings.db_path,
-                            alias,
-                            usage.total_tokens,
-                            usage.model,
-                            encrypted.provider,
-                        )
+                        tokens_to_record = usage.total_tokens
+                        model_to_record = usage.model
                     else:
-                        # Zero friction: if we can't extract usage (provider
-                        # changed SSE format, etc.), log a warning but don't
-                        # penalize the user with phantom spend.
+                        # Fail-closed (worthless-dupf.4): charge the reserved estimate
+                        # rather than recording 0 and releasing free. A client who
+                        # truncates the stream (disconnect, timeout, injection) cannot
+                        # zero out their spend tracking this way.
                         logger.warning(
                             "Could not extract usage from streaming response "
-                            "for alias=%s; spend not recorded",
+                            "for alias=%s; charging reservation %d tokens (fail-closed)",
                             alias,
+                            _spend_reservation,
                         )
+                        tokens_to_record = _spend_reservation
+                        model_to_record = None
+                    await record_spend(
+                        settings.db_path,
+                        alias,
+                        tokens_to_record,
+                        model_to_record,
+                        encrypted.provider,
+                    )
                     # Release the spend reservation (WOR-242).
                     await rules_engine.release_spend_reservation(alias, _spend_reservation)
 
