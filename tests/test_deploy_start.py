@@ -42,6 +42,23 @@ def deploy_start_module():
     sys.modules.pop("_deploy_start_under_test", None)
 
 
+@pytest.fixture(autouse=True)
+def _pin_single_threaded_entry(deploy_start_module, monkeypatch: pytest.MonkeyPatch):
+    """Pin ``threading.active_count() -> 1`` for every test in this module.
+
+    These tests mock ``spawn_sidecar`` — no real fork ever happens, so the
+    BPO-34394 single-threaded-entry guard in ``main()`` is moot here. But
+    under pytest-xdist the worker process carries background threads (incl.
+    leaked ``worthless-run_sync`` workers from ``test_async.py``), which would
+    trip the guard and fail these unrelated tests nondeterministically by
+    scheduling order. Pinning the count to 1 makes them order-independent.
+
+    The dedicated guard test re-patches ``active_count`` to >1 in its own body
+    (which runs after this autouse fixture), so guard coverage is preserved.
+    """
+    monkeypatch.setattr(deploy_start_module.threading, "active_count", lambda: 1)
+
+
 def _make_fake_shares(shard_a_seed: bytes, shard_b_seed: bytes) -> MagicMock:
     """Build a ShareFiles-shaped mock with mutable bytearray shards."""
     return MagicMock(
