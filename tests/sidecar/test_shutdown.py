@@ -86,8 +86,6 @@ def _wait_for_ready(proc: subprocess.Popen[str], timeout: float = _READY_TIMEOUT
                 f"sidecar exited before ready (rc={proc.returncode})\n"
                 f"stdout:\n{out}\nstderr:\n{err}"
             )
-        # Poll for stdout data before calling readline().  select() is
-        # interruptible; a raw readline() at C level is not (PEP 475).
         ready, _, _ = select.select([proc.stdout], [], [], min(0.1, remaining))
         if not ready:
             continue
