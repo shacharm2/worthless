@@ -810,6 +810,27 @@
       white-space: nowrap;
     }
 
+    .waitlist-mode {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      max-width: 100%;
+      margin-top: 0.95rem;
+      padding: 0.68rem 0.86rem;
+      border: 1px solid oklch(78% 0.05 205 / 0.68);
+      border-radius: 12px;
+      color: oklch(36% 0.075 208);
+      background: oklch(96% 0.025 205 / 0.58);
+      font-size: 0.88rem;
+      font-weight: 760;
+      letter-spacing: -0.01em;
+    }
+
+    .waitlist-mode strong {
+      color: var(--accent-dark);
+      font-weight: 880;
+    }
+
     .waitlist .note {
       display: flex;
       align-items: flex-start;
@@ -1604,13 +1625,14 @@
     <section class="waitlist" aria-label="Worthless Hosted API waitlist">
       <div class="waitlist-inner">
         <div>
-          <p class="eyebrow">Next: Hosted Worthless</p>
+          <p class="eyebrow">Next: Hosted Worthless API</p>
           <h2>Protect every key your AI might leak.</h2>
           <p>For teams shipping AI-built apps: keep production working, make leaked secrets hit a dead end.</p>
           <div class="waitlist-actions">
             <a class="button waitlist-cta" href="https://tally.so/r/WOpNVL" target="_blank" rel="noopener">Join the Hosted waitlist</a>
             <span class="waitlist-badge">Early access</span>
           </div>
+          <div class="waitlist-mode"><strong>Zero-key mode</strong> Your app calls Worthless, not the provider key.</div>
           <div class="note">Current Worthless protects your LLM key path. Hosted is the next layer.</div>
         </div>
         <div class="env-panel" aria-hidden="true">
