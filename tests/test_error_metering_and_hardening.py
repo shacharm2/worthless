@@ -248,10 +248,16 @@ class TestErrorResponseMetering:
         assert tokens_arg == 42
 
     @respx.mock
-    async def test_empty_body_records_zero_tokens(
+    async def test_empty_body_records_reservation_tokens(
         self, proxy_client: httpx.AsyncClient, enrolled_alias, proxy_settings
     ):
-        """Error with empty body should still call record_spend with 0 tokens (audit trail)."""
+        """Error with empty upstream body uses fail-closed spend accounting (worthless-dupf.4).
+
+        When the upstream returns 500 with an empty body, usage extraction returns None.
+        The fail-closed policy (Phase 1c) charges _spend_reservation tokens instead of 0.
+        This prevents an attacker from truncating responses to zero out spend tracking.
+        The old test asserted tokens=0; that was the vulnerable behavior this phase fixed.
+        """
         alias, shard_a_utf8, _ = enrolled_alias
         respx.post(OPENAI_COMPLETIONS).mock(return_value=httpx.Response(500, text=""))
 
@@ -265,7 +271,11 @@ class TestErrorResponseMetering:
         assert resp.status_code == 500
         mock_record.assert_called_once()
         tokens_arg = mock_record.call_args[0][2]
-        assert tokens_arg == 0
+        # Fail-closed: charge the conservative reservation (≥ 1 token) instead of 0.
+        # A 0-token record would let an attacker evade the spend cap via truncated responses.
+        assert tokens_arg > 0, (
+            f"Empty-body 500 must charge >0 tokens (fail-closed, dupf.4), got {tokens_arg}"
+        )
 
     @respx.mock
     async def test_timeout_does_not_meter(self, proxy_client: httpx.AsyncClient, enrolled_alias):
