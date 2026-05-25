@@ -160,8 +160,17 @@ def install(target_dir: Path) -> Path:
             # two concurrent processes (e.g. xdist workers) both run
             # install() at the same time — the winner already placed a valid
             # skill directory at ``final``.  Accept the result and discard
-            # our staging copy; we're idempotent, not last-writer-wins.
-            if _exc.errno == _errno_mod.ENOTEMPTY and final.is_dir():
+            # our staging copy — but only after verifying the winner wrote
+            # the SAME asset content we would have written.  If final is
+            # missing SKILL.md or contains stale content (e.g. rmtree silently
+            # failed to delete an old version), re-raise so the caller sees a
+            # real failure rather than silently keeping wrong content.
+            _installed = final / _SKILL_FILE
+            if (
+                _exc.errno == _errno_mod.ENOTEMPTY
+                and _installed.is_file()
+                and _installed.read_text(encoding="utf-8") == _read_skill_asset()
+            ):
                 shutil.rmtree(staging, ignore_errors=True)
                 staging = None
             else:
