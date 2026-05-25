@@ -29,7 +29,7 @@ Worthless can lock it, tell me what happened, recover it, and avoid corrupting
 nearby projects." `WOR-441` extends that proof to "I am a new user starting
 from installation": deterministic install traces exercise installer messaging,
 reinstall/idempotency, failure diagnostics, and the current manual uninstall
-guidance; GitHub install-smoke CI remains the live Ubuntu/macOS proof.
+guidance; GitHub install-smoke CI remains the checkout-local Ubuntu/macOS proof.
 `WOR-442` starts the Docker proof lane: a host-native Worthless CLI locks a
 project, the host proxy runs outside Docker, and an app container consumes the
 locked `.env` through Docker's host bridge without receiving the raw key.

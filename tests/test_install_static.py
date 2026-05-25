@@ -601,6 +601,15 @@ def test_install_smoke_name_matches_checkout_local_proof() -> None:
             "public `curl https://worthless.sh | sh`; rename the workflow so "
             "it does not overclaim public-domain install proof."
         )
+    else:
+        assert any(
+            phrase in workflow_name.group(1).lower()
+            for phrase in ("public", "worthless.sh", "curl|sh")
+        ), (
+            "if install-smoke.yml is changed to run public "
+            "`curl -sSL https://worthless.sh | sh`, the workflow name should "
+            "say that explicitly."
+        )
 
 
 def test_public_curl_manual_gate_requires_terminal_evidence() -> None:
@@ -612,14 +621,18 @@ def test_public_curl_manual_gate_requires_terminal_evidence() -> None:
     journey back to evidence.
     """
     manual = INSTALL_FIXTURES / "MANUAL_SMOKE.md"
-    text = manual.read_text(encoding="utf-8").lower()
+    text = manual.read_text(encoding="utf-8")
+    normalized = text.lower()
 
-    assert "curl -ssl https://worthless.sh | sh" in text
-    assert "terminal output" in text or "terminal transcript" in text, (
+    assert "curl -sSL https://worthless.sh | sh" in text, (
+        "MANUAL_SMOKE.md must preserve the canonical copy-paste public "
+        "install command with curl's case-sensitive `-sSL` flags."
+    )
+    assert "terminal output" in normalized or "terminal transcript" in normalized, (
         "MANUAL_SMOKE.md must require copy-pasted terminal output/transcript "
         "for public `curl https://worthless.sh | sh` release proof."
     )
-    assert "linear" in text or "pull request" in text or "pr" in text, (
+    assert "linear" in normalized or "pull request" in normalized or "pr" in normalized, (
         "public curl proof must say where the terminal evidence is recorded "
         "(Linear, PR, or release notes), not just local memory."
     )
