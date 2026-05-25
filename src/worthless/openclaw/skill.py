@@ -16,6 +16,7 @@ F30, F31, F33, F34, F35.
 
 from __future__ import annotations
 
+import errno as _errno_mod
 import functools
 import os
 import re
@@ -151,8 +152,21 @@ def install(target_dir: Path) -> Path:
 
         # ``os.replace`` (not ``Path.replace``) is patchable at the module
         # level so failure-injection tests can simulate disk-full / EACCES.
-        os.replace(staging, final)  # noqa: PTH105
-        staging = None  # replace consumed it
+        try:
+            os.replace(staging, final)  # noqa: PTH105
+        except OSError as _exc:
+            # ENOTEMPTY (macOS errno 66, Linux errno 39): rename(2) refuses
+            # to replace a non-empty directory.  This is a benign race when
+            # two concurrent processes (e.g. xdist workers) both run
+            # install() at the same time — the winner already placed a valid
+            # skill directory at ``final``.  Accept the result and discard
+            # our staging copy; we're idempotent, not last-writer-wins.
+            if _exc.errno == _errno_mod.ENOTEMPTY and final.is_dir():
+                shutil.rmtree(staging, ignore_errors=True)
+                staging = None
+            else:
+                raise
+        staging = None  # replace consumed it (or we cleaned it above)
     except Exception as exc:
         # Any failure (mkdtemp failure, EACCES, ENOSPC, simulated rename
         # failures) is wrapped as SKILL_INSTALL_FAILED so callers in
