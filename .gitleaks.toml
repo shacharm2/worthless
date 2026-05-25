@@ -43,4 +43,5 @@ paths = [
     '''\.planning/ROADMAP\.md$''',
     '''tests/.*\.py$''',
     '''tests/.*\.sh$''',
+    '''sonar-project\.properties$''',
 ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -19,7 +20,10 @@ from worthless.storage.repository import ShardRepository, StoredShard
 
 from tests.helpers import fake_openai_key
 
+logger = logging.getLogger(__name__)
+
 # Disable the real OS keyring for the entire test session.
+
 #
 # Context: on macOS, concurrent ``SecItemAdd`` calls from multiple pytest-xdist
 # workers can hang indefinitely on the Keychain API. ``pytest-timeout`` then
@@ -327,3 +331,101 @@ def _isolate_default_command_proxy(request, monkeypatch):
         "poll_health",
         lambda port, timeout=10.0: True,
     )
+
+
+@pytest.fixture(autouse=True)
+def detect_thread_leak(request):
+    """Detect and fail on background thread leaks during test run.
+
+    This catches leaked background threads (e.g. from async runners or leaked loops)
+    before they can escape, pollute other tests, or cause xdist worker crashes.
+    """
+    if request.node.get_closest_marker("integration") or request.node.get_closest_marker("docker"):
+        yield
+        return
+
+    import threading
+    import gc
+    import time
+
+    # Capture initial threads
+    initial_threads = {t.ident for t in threading.enumerate() if t.ident is not None}
+
+    yield
+
+    # Give background threads a brief moment to clean up (e.g. exit loops, close connections)
+    time.sleep(0.05)
+    gc.collect()
+
+    # Check threads now
+    current_threads = threading.enumerate()
+    leaked = []
+
+    for t in current_threads:
+        if t.ident is None or t.ident in initial_threads:
+            continue
+        name = t.name or ""
+        # Filter out common benign pytest/xdist worker control or thread pool threads
+        if any(b in name.lower() for b in ("pytest", "xdist", "pool", "dummy", "mainthread")):
+            continue
+        if t.is_alive():
+            leaked.append(t)
+
+    if leaked:
+        leak_details = ", ".join(f"'{t.name}' (repr={t!r})" for t in leaked)
+        raise AssertionError(
+            f"Thread leak detected: {len(leaked)} thread(s) leaked during test. "
+            f"Leaked threads: {leak_details}. Fail-fast to prevent subsequent worker crashes."
+        )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Mark tests in tests/quarantined_tests.txt with @pytest.mark.quarantine."""
+    quarantine_file = Path(config.rootdir) / "tests" / "quarantined_tests.txt"
+    if not quarantine_file.exists():
+        return
+
+    try:
+        quarantined = set()
+        for line in quarantine_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            quarantined.add(line)
+    except Exception as exc:
+        logger.warning(f"Failed to read quarantined_tests.txt: {exc}")
+        return
+
+    if not quarantined:
+        return
+
+    quarantine_marker = pytest.mark.quarantine
+    for item in items:
+        if item.nodeid in quarantined or item.name in quarantined:
+            item.add_marker(quarantine_marker)
+
+
+def pytest_runtest_logreport(report):
+    """Auto-detect flaky tests (failed once, then passed on rerun) and quarantine them."""
+    if report.when != "call":
+        return
+
+    if report.outcome == "passed" and getattr(report, "rerun", 0) > 0:
+        nodeid = report.nodeid
+        logger.warning(f"worthless-quarantine: Flaky test detected: {nodeid}")
+
+        try:
+            quarantine_path = Path(__file__).parent / "quarantined_tests.txt"
+            existing = set()
+            if quarantine_path.exists():
+                text_content = quarantine_path.read_text(encoding="utf-8")
+                existing = {line.strip() for line in text_content.splitlines()}
+
+            if nodeid not in existing:
+                with quarantine_path.open("a", encoding="utf-8") as f:
+                    f.write(f"\n{nodeid}\n")
+                logger.warning(
+                    f"worthless-quarantine: Automatically added {nodeid} to quarantined_tests.txt"
+                )
+        except Exception as exc:
+            logger.error(f"Failed to auto-quarantine flaky test {nodeid}: {exc}")
