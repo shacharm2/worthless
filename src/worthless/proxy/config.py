@@ -151,6 +151,12 @@ class ProxySettings:
             os.environ.get("WORTHLESS_MAX_RESPONSE_BYTES", str(8 * 1024 * 1024))
         )
     )
+    # worthless-bi7h: timing oracle defence — minimum ms before any 401 response.
+    # All 401 paths sleep the remainder of this floor so known-alias and unknown-alias
+    # responses arrive in the same latency band.
+    min_response_ms: float = field(
+        default_factory=lambda: float(os.environ.get("WORTHLESS_MIN_RESPONSE_MS", "100.0"))
+    )
     deploy_mode: DeployMode = field(default_factory=_read_deploy_mode)
     host: str = field(default="")
     trusted_proxies: tuple[str, ...] = field(default_factory=_read_trusted_proxies)

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
@@ -50,6 +51,7 @@ from worthless.proxy.rules import (
     RateLimitRule,
     RulesEngine,
     SpendCapRule,
+    TimeWindowRule,
     TokenBudgetRule,
     _estimate_tokens,
 )
@@ -101,6 +103,21 @@ def _validate_upstream_url(url: str) -> bool:
     except Exception:
         logger.warning("SSRF check failed unexpectedly for url=%r; blocking", url)
         return False
+
+
+async def _await_response_floor(t0: float, floor_ms: float) -> None:
+    """Enforce a minimum response time before returning a 401.
+
+    worthless-bi7h: all 401 paths sleep the remainder of floor_ms so that
+    "alias exists, wrong shard-A" and "alias unknown" are indistinguishable
+    by timing. The floor is configurable via WORTHLESS_MIN_RESPONSE_MS.
+
+    This is a coroutine so it yields to the event loop even when elapsed > floor —
+    the asyncio.sleep(0) call prevents starvation on high-RPS paths.
+    """
+    elapsed_ms = (time.monotonic() - t0) * 1000.0
+    remaining_ms = floor_ms - elapsed_ms
+    await asyncio.sleep(max(0.0, remaining_ms / 1000.0))
 
 
 _BAD_HEADER_CHARS = frozenset("\x00\r\n")
@@ -263,6 +280,9 @@ async def _lifespan(app: FastAPI):
     rules_engine = RulesEngine(
         rules=[
             TokenBudgetRule(db=db),
+            # worthless-dupf.8: TimeWindowRule was previously never registered.
+            # It reads time_window JSON from enrollment_config per-alias.
+            TimeWindowRule(db=db),
             RateLimitRule(
                 default_rps=settings.default_rate_limit_rps,
                 db_path=settings.db_path,
@@ -362,25 +382,33 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         rules_engine: RulesEngine = request.app.state.rules_engine
         httpx_client: httpx.AsyncClient = request.app.state.httpx_client
 
+        # worthless-bi7h: record request start time so every 401 path can enforce
+        # a minimum response time floor, preventing alias-existence timing oracles.
+        _t0 = time.monotonic()
+
         raw_path = "/" + path.split("?")[0].lstrip("/")
 
         # Extract alias from URL path: /<alias>/v1/chat/completions
         parsed = _extract_alias_and_path(raw_path)
         if parsed is None:
+            await _await_response_floor(_t0, settings.min_response_ms)
             return _uniform_401()
         alias, clean_path = parsed
 
         if not _scheme_is_trusted(request, settings):
+            await _await_response_floor(_t0, settings.min_response_ms)
             return _uniform_401()
 
         # Reject null/CR/LF in header keys or values
         for key, value in request.headers.items():
             if _BAD_HEADER_CHARS.intersection(key) or _BAD_HEADER_CHARS.intersection(value):
+                await _await_response_floor(_t0, settings.min_response_ms)
                 return _uniform_401()
 
         # Fetch encrypted shard (gate-before-decrypt: no Fernet yet)
         encrypted = await repo.fetch_encrypted(alias)
         if encrypted is None:
+            await _await_response_floor(_t0, settings.min_response_ms)
             return _uniform_401()
 
         # SR-03: gate before reconstruct. Refuse legacy rows missing
@@ -402,6 +430,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 "operator should run `worthless relock`",
                 alias,
             )
+            await _await_response_floor(_t0, settings.min_response_ms)
             return _uniform_401()
 
         # worthless-q8sm (SSRF): reject base_url pointing to loopback, link-local,
@@ -425,6 +454,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         # after re-lock because the DB shard-B (and commitment) have changed.
         shard_a: bytearray | None = _extract_shard_a(request)
         if shard_a is None:
+            await _await_response_floor(_t0, settings.min_response_ms)
             return _uniform_401()
 
         # Pre-read body ONCE before rules engine (WOR-182: eliminates
@@ -473,6 +503,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         if adapter is None:
             shard_a[:] = b"\x00" * len(shard_a)
             await rules_engine.release_spend_reservation(alias, _spend_reservation)
+            await _await_response_floor(_t0, settings.min_response_ms)
             return _uniform_401()
 
         # Decrypt now that the gate has passed
@@ -481,6 +512,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         except Exception:
             shard_a[:] = b"\x00" * len(shard_a)
             await rules_engine.release_spend_reservation(alias, _spend_reservation)
+            await _await_response_floor(_t0, settings.min_response_ms)
             return _uniform_401()
 
         # Reconstruct key inside secure_key context (body already read above)
@@ -506,6 +538,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             stored.zero()
             await rules_engine.release_spend_reservation(alias, _spend_reservation)
             asyncio.create_task(_check_and_alert_decoy(repo, _shard_a_sha256, alias))
+            await _await_response_floor(_t0, settings.min_response_ms)
             return _uniform_401()
 
         # Build and send with stream=True for SSE support

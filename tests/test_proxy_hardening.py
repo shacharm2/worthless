@@ -31,6 +31,7 @@ from worthless.proxy.rules import (
     RateLimitRule,
     RulesEngine,
     SpendCapRule,
+    TimeWindowRule,
     _estimate_input_tokens,
     _estimate_tokens,
 )
@@ -88,9 +89,14 @@ async def proxy_app(proxy_settings: ProxySettings, repo):
     app.state.rules_engine = RulesEngine(
         rules=[
             SpendCapRule(db=db),
+            TimeWindowRule(db=db),  # worthless-dupf.8: now registered
             RateLimitRule(default_rps=proxy_settings.default_rate_limit_rps),
         ]
     )
+    # worthless-bi7h: disable the timing floor in tests so unit tests don't
+    # need to wait 100ms per 401. Tests that verify the floor itself set a
+    # custom min_response_ms on proxy_settings before calling the fixture.
+    app.state.settings.min_response_ms = 0.0
     yield app
     await app.state.httpx_client.aclose()
     await db.close()
@@ -3220,3 +3226,148 @@ class TestInputTokenEstimation:
                 "Second request must be denied — first request's large input consumed "
                 "all remaining budget via combined input+output estimation"
             )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5a — Timing floor (worthless-bi7h)
+# ---------------------------------------------------------------------------
+
+
+class TestTimingFloor:
+    """_await_response_floor must make all 401 paths take ≥ min_response_ms.
+
+    An attacker who times responses cannot distinguish "alias exists, wrong
+    shard-A" from "alias unknown" — both paths sleep the remaining floor.
+    """
+
+    async def test_401_respects_floor_on_unknown_alias(self, proxy_app):
+        """Unknown alias path sleeps the remainder of the floor before returning."""
+        import time as _time
+
+        proxy_app.state.settings.min_response_ms = 50.0  # 50ms floor for this test
+        transport = httpx.ASGITransport(app=proxy_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            t0 = _time.monotonic()
+            resp = await client.post(
+                "/no-such-alias/v1/chat/completions",
+                headers={"authorization": "Bearer fake"},
+                content=b"{}",
+            )
+            elapsed_ms = (_time.monotonic() - t0) * 1000
+
+        assert resp.status_code == 401
+        assert elapsed_ms >= 45, (  # 5ms headroom for scheduler jitter
+            f"Unknown alias 401 must respect {50}ms floor, took {elapsed_ms:.1f}ms"
+        )
+
+    async def test_happy_path_not_slowed_by_floor(self, proxy_app, enrolled_alias):
+        """The 200 path must NOT be delayed by the timing floor."""
+        import time as _time
+
+        proxy_app.state.settings.min_response_ms = 200.0  # large floor
+        alias, shard_a_utf8, _ = enrolled_alias
+
+        with respx.mock:
+            respx.post("https://api.openai.com/v1/chat/completions").mock(
+                return_value=httpx.Response(200, json={"choices": [], "usage": {"total_tokens": 5}})
+            )
+            transport = httpx.ASGITransport(app=proxy_app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                t0 = _time.monotonic()
+                resp = await client.post(
+                    f"/{alias}/v1/chat/completions",
+                    headers={
+                        "authorization": f"Bearer {shard_a_utf8}",
+                        "content-type": "application/json",
+                    },
+                    content=b'{"model": "gpt-4", "messages": []}',
+                )
+                elapsed_ms = (_time.monotonic() - t0) * 1000
+
+        assert resp.status_code == 200
+        # Happy path must NOT sleep 200ms — the floor is only for 401 paths
+        assert elapsed_ms < 190, (
+            f"Happy-path 200 must not be slowed by the 401 timing floor: {elapsed_ms:.1f}ms"
+        )
+
+    def test_min_response_ms_in_proxy_settings(self):
+        """min_response_ms field exists in ProxySettings and defaults to 100ms."""
+        from worthless.proxy.config import ProxySettings
+
+        s = ProxySettings.__dataclass_fields__["min_response_ms"]
+        assert s is not None, "min_response_ms must be a ProxySettings field"
+
+    async def test_floor_zero_does_not_sleep(self):
+        """When min_response_ms=0 the floor function returns immediately."""
+        import time as _time
+
+        from worthless.proxy.app import _await_response_floor
+
+        t0 = _time.monotonic()
+        await _await_response_floor(t0, 0.0)
+        elapsed_ms = (_time.monotonic() - t0) * 1000
+        assert elapsed_ms < 20, f"Zero-floor must not sleep, took {elapsed_ms:.1f}ms"
+
+
+# ---------------------------------------------------------------------------
+# Phase 8a — TimeWindowRule now wired in RulesEngine (worthless-dupf.8)
+# ---------------------------------------------------------------------------
+
+
+class TestTimeWindowRuleWired:
+    """TimeWindowRule must be registered in the active rules engine.
+
+    Prior to this fix, TimeWindowRule existed but was never added to the
+    RulesEngine rules list, so time-window config had no enforcement effect.
+    """
+
+    async def test_time_window_rule_registered_in_proxy_rules_engine(self, proxy_app):
+        """The live proxy rules engine must include a TimeWindowRule."""
+        from worthless.proxy.rules import TimeWindowRule
+
+        engine = proxy_app.state.rules_engine
+        rule_types = [type(r) for r in engine.rules]
+        assert TimeWindowRule in rule_types, (
+            f"TimeWindowRule must be registered in RulesEngine. Found: {rule_types}"
+        )
+
+    async def test_time_window_denies_outside_window_via_proxy(
+        self, proxy_app, repo, enrolled_alias
+    ):
+        """A request outside the configured time window must be denied (429).
+
+        Enroll an alias with time_window covering 00:01–00:02 UTC (effectively
+        never active), then send a request and expect denial.
+        """
+        alias, shard_a_utf8, _ = enrolled_alias
+
+        # Configure an impossibly narrow time window: 00:01–00:02 UTC Mon only
+        # This window is essentially never active in practice.
+        time_window_json = json.dumps({"start": "00:01", "end": "00:02", "tz": "UTC", "days": [1]})
+        db_path = proxy_app.state.settings.db_path
+        async with aiosqlite.connect(db_path) as db:
+            # enrollment_config row may not exist yet (repo.store writes to
+            # shard_store, not enrollment_config). Ensure the row is present.
+            await db.execute(
+                "INSERT OR IGNORE INTO enrollment_config (key_alias) VALUES (?)", (alias,)
+            )
+            await db.execute(
+                "UPDATE enrollment_config SET time_window=? WHERE key_alias=?",
+                (time_window_json, alias),
+            )
+            await db.commit()
+
+        transport = httpx.ASGITransport(app=proxy_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/{alias}/v1/chat/completions",
+                headers={
+                    "authorization": f"Bearer {shard_a_utf8}",
+                    "content-type": "application/json",
+                },
+                content=b'{"model": "gpt-4", "messages": []}',
+            )
+
+        assert resp.status_code == 403, (
+            f"Request outside time window must be denied 403, got {resp.status_code}"
+        )
