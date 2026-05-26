@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import os
 from pathlib import Path
+import threading
+import time
 
 import keyring
 import keyring.backends.null
 import pytest
 from cryptography.fernet import Fernet
 from hypothesis import HealthCheck, settings
+
 
 from worthless.cli import default_command  # used by _isolate_default_command_proxy autouse fixture
 from worthless.cli.bootstrap import WorthlessHome, ensure_home
@@ -344,29 +348,37 @@ def detect_thread_leak(request):
         yield
         return
 
-    import threading
-    import gc
-    import time
-
     # Capture initial threads
     initial_threads = {t.ident for t in threading.enumerate() if t.ident is not None}
 
     yield
 
-    # Give background threads a brief moment to clean up (e.g. exit loops, close connections)
-    time.sleep(0.05)
-    gc.collect()
-
-    # Check threads now
+    # Short-circuit if there are no new thread IDs at all. Avoids sleep tax on clean tests.
     current_threads = threading.enumerate()
-    leaked = []
+    has_mismatch = any(
+        t.ident is not None and t.ident not in initial_threads for t in current_threads
+    )
 
+    if has_mismatch:
+        # Give temporary/exiting threads a brief polling window to clean up (up to 50ms)
+        for _ in range(5):
+            time.sleep(0.01)
+            gc.collect()
+            current_threads = threading.enumerate()
+            has_mismatch = any(
+                t.ident is not None and t.ident not in initial_threads for t in current_threads
+            )
+            if not has_mismatch:
+                break
+
+    # Final check for real leaks
+    leaked = []
     for t in current_threads:
         if t.ident is None or t.ident in initial_threads:
             continue
         name = t.name or ""
-        # Filter out common benign pytest/xdist worker control or thread pool threads
-        if any(b in name.lower() for b in ("pytest", "xdist", "pool", "dummy", "mainthread")):
+        # Filter out common benign pytest/xdist worker control or standard worker threads
+        if any(b in name.lower() for b in ("pytest", "xdist", "mainthread")):
             continue
         if t.is_alive():
             leaked.append(t)
@@ -401,31 +413,19 @@ def pytest_collection_modifyitems(config, items):
 
     quarantine_marker = pytest.mark.quarantine
     for item in items:
-        if item.nodeid in quarantined or item.name in quarantined:
+        # Match nodeid only (item.name match is too broad)
+        if item.nodeid in quarantined:
             item.add_marker(quarantine_marker)
 
 
 def pytest_runtest_logreport(report):
-    """Auto-detect flaky tests (failed once, then passed on rerun) and quarantine them."""
+    """Auto-detect flaky tests (failed once, then passed on rerun) and warn/annotate."""
     if report.when != "call":
         return
 
     if report.outcome == "passed" and getattr(report, "rerun", 0) > 0:
         nodeid = report.nodeid
-        logger.warning(f"worthless-quarantine: Flaky test detected: {nodeid}")
-
-        try:
-            quarantine_path = Path(__file__).parent / "quarantined_tests.txt"
-            existing = set()
-            if quarantine_path.exists():
-                text_content = quarantine_path.read_text(encoding="utf-8")
-                existing = {line.strip() for line in text_content.splitlines()}
-
-            if nodeid not in existing:
-                with quarantine_path.open("a", encoding="utf-8") as f:
-                    f.write(f"\n{nodeid}\n")
-                logger.warning(
-                    f"worthless-quarantine: Automatically added {nodeid} to quarantined_tests.txt"
-                )
-        except Exception as exc:
-            logger.error(f"Failed to auto-quarantine flaky test {nodeid}: {exc}")
+        logger.warning(
+            f"worthless-quarantine: Flaky test detected: {nodeid}. "
+            f"Please investigate the root cause instead of dismissing it as flaky."
+        )

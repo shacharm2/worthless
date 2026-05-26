@@ -45,50 +45,69 @@ def test_leaky():
             test_file.unlink()
 
 
-def test_quarantine_collection():
+def test_quarantine_collection(tmp_path):
     """Verify that tests listed in quarantined_tests.txt are marked as quarantine."""
-    quarantine_file = Path(__file__).parent / "quarantined_tests.txt"
-    backup_content = ""
-    if quarantine_file.exists():
-        backup_content = quarantine_file.read_text(encoding="utf-8")
+    # Create the tests directory inside tmp_path to mock the config rootdir structure
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    quarantine_file = tests_dir / "quarantined_tests.txt"
+    quarantine_file.write_text("tests/test_dummy.py::dummy_quarantined_test\n", encoding="utf-8")
 
-    try:
-        # Add a dummy test name to quarantine
-        quarantine_file.write_text("dummy_quarantined_test\n", encoding="utf-8")
+    # We can dynamically run pytest collection or verify using a mock config
+    from tests.conftest import pytest_collection_modifyitems
 
-        # We can dynamically run pytest collection or verify using a mock config
-        from tests.conftest import pytest_collection_modifyitems
+    class MockConfig:
+        def __init__(self, rootdir):
+            self.rootdir = rootdir
 
-        class MockConfig:
-            def __init__(self, rootdir):
-                self.rootdir = rootdir
+    class MockItem:
+        def __init__(self, nodeid, name):
+            self.nodeid = nodeid
+            self.name = name
+            self.markers = []
 
-        class MockItem:
-            def __init__(self, nodeid, name):
-                self.nodeid = nodeid
-                self.name = name
-                self.markers = []
+        def add_marker(self, marker):
+            self.markers.append(marker)
 
-            def add_marker(self, marker):
-                self.markers.append(marker)
+    config = MockConfig(tmp_path)
+    # The collection logic matches by nodeid only, so we provide nodeid matching what we quarantined
+    item1 = MockItem("tests/test_dummy.py::dummy_quarantined_test", "dummy_quarantined_test")
+    item2 = MockItem("tests/test_dummy.py::healthy_test", "healthy_test")
 
-        config = MockConfig(Path(__file__).parent.parent)
-        item1 = MockItem("tests/test_dummy.py::dummy_quarantined_test", "dummy_quarantined_test")
-        item2 = MockItem("tests/test_dummy.py::healthy_test", "healthy_test")
+    items = [item1, item2]
+    pytest_collection_modifyitems(config, items)
 
-        items = [item1, item2]
-        pytest_collection_modifyitems(config, items)
+    # Verify item1 got marked as quarantine
+    assert len(item1.markers) > 0
+    assert item1.markers[0].name == "quarantine"
+    # Verify item2 did not
+    assert len(item2.markers) == 0
 
-        # Verify item1 got marked as quarantine
-        assert len(item1.markers) > 0
-        assert item1.markers[0].name == "quarantine"
-        # Verify item2 did not
-        assert len(item2.markers) == 0
 
-    finally:
-        # Restore backup
-        if backup_content:
-            quarantine_file.write_text(backup_content, encoding="utf-8")
-        else:
-            if quarantine_file.exists():
-                quarantine_file.unlink()
+def test_flaky_test_warning(caplog):
+    """Verify that flaky tests (outcome passed, rerun > 0) log a warning message."""
+    from tests.conftest import pytest_runtest_logreport
+    import logging
+
+    class MockReport:
+        def __init__(self, when, outcome, rerun, nodeid):
+            self.when = when
+            self.outcome = outcome
+            self.rerun = rerun
+            self.nodeid = nodeid
+
+    # Normal clean pass should not warn
+    clean_report = MockReport("call", "passed", 0, "tests/test_foo.py::test_clean")
+    with caplog.at_level(logging.WARNING):
+        pytest_runtest_logreport(clean_report)
+    assert not any("worthless-quarantine" in record.message for record in caplog.records)
+
+    # Flaky pass (rerun > 0) should warn
+    caplog.clear()
+    flaky_report = MockReport("call", "passed", 1, "tests/test_foo.py::test_flaky")
+    with caplog.at_level(logging.WARNING):
+        pytest_runtest_logreport(flaky_report)
+
+    warnings = [r.message for r in caplog.records if "worthless-quarantine" in r.message]
+    assert len(warnings) == 1
+    assert "Flaky test detected: tests/test_foo.py::test_flaky" in warnings[0]
