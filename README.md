@@ -2,6 +2,12 @@
 
 **Make leaked API keys worthless.**
 
+<p align="center">
+  <img src="website/meme-llm-tower.png" alt="All modern LLM ecosystem balanced on a .env file" width="380">
+  <br>
+  <sub style="color: #6c7e95;">Based on <a href="https://xkcd.com/2347/">XKCD #2347</a> by Randall Munroe (CC BY-NC 2.5)</sub>
+</p>
+
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Tests](https://github.com/shacharm2/worthless/actions/workflows/tests.yml/badge.svg)](https://github.com/shacharm2/worthless/actions/workflows/tests.yml)
