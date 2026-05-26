@@ -1,4 +1,10 @@
-"""Security property tests — Hypothesis-powered invariant checks for crypto primitives.
+"""Security property tests — Phase 6 shard-A signing + Hypothesis crypto invariants.
+
+Phase 6 signing tests: TestShardASigning, TestEnvelopeConstruction,
+TestRejectionPaths, TestSigningKeyManagement (all near the bottom of this file).
+
+Original invariants (below):
+
 
 These tests verify that security-critical properties hold across arbitrary
 inputs: split/reconstruct roundtrip, shard independence, zero-after-use,
@@ -9,9 +15,12 @@ upstream error sanitization.
 from __future__ import annotations
 
 import ast
+import base64
 import inspect
 import json
+import struct
 import textwrap
+import time as _time
 from pathlib import Path
 
 from hypothesis import given, assume, settings as hsettings
@@ -774,3 +783,344 @@ class TestSR08CSPRNGOnly:
             "No crypto/ files use secrets.token_bytes/token_hex/token_urlsafe — "
             "randomness source is unknown (SR-08 violation)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — Shard-A signing (worthless-1pua)
+#
+# Design:
+#   envelope = prefix + base64url(nonce_16 || expiry_4 || hmac_truncated_16) + shard_a_body
+#   - 36 overhead bytes → 48 base64url chars (no padding; 36 % 3 == 0)
+#   - base64url charset (A-Za-z0-9-_) is a subset of all provider key charsets
+#   - Envelope is 48 chars longer than raw shard_a — verified harmless (providers
+#     return 401 not 400 for variable-length keys with correct prefix)
+#   - signing_key lives in ~/.worthless/signing.key; 32 random bytes; never leaves host
+#   - Nonce is per-enrollment (16 bytes); valid until expiry (default 1 year)
+#   - SQLite signing_nonces(nonce_hex, alias, expires_at) stores valid nonces
+# ---------------------------------------------------------------------------
+
+
+class TestPhase6EnvelopeConstruction:
+    """Envelope format: correct prefix, correct charset, 48 chars longer."""
+
+    def test_signed_shard_a_has_same_prefix_as_original(self):
+        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
+
+        prefix = "sk-proj-"
+        shard_a = bytearray(("sk-proj-" + "A" * 60).encode())
+        key = generate_signing_key()
+        envelope, _, _ = sign_shard_a(shard_a, "openai-test", key, prefix=prefix)
+        assert envelope.decode().startswith(prefix)
+
+    def test_signed_shard_a_is_exactly_48_chars_longer(self):
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            sign_shard_a,
+            OVERHEAD_CHARS,
+        )
+
+        assert OVERHEAD_CHARS == 48  # 36 bytes → 48 base64url chars
+        prefix = "sk-proj-"
+        shard_a = bytearray(("sk-proj-" + "B" * 60).encode())
+        key = generate_signing_key()
+        envelope, _, _ = sign_shard_a(shard_a, "alias", key, prefix=prefix)
+        assert len(envelope) == len(shard_a) + OVERHEAD_CHARS
+
+    def test_overhead_uses_only_base64url_charset(self):
+        """Overhead bytes encoded as base64url — subset of all provider key charsets."""
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            sign_shard_a,
+            OVERHEAD_CHARS,
+        )
+        import string
+
+        prefix = "sk-proj-"
+        shard_a = bytearray(("sk-proj-" + "C" * 60).encode())
+        key = generate_signing_key()
+        envelope, _, _ = sign_shard_a(shard_a, "alias", key, prefix=prefix)
+        valid = set(string.ascii_letters + string.digits + "-_")
+        overhead_section = envelope.decode()[len(prefix) : len(prefix) + OVERHEAD_CHARS]
+        assert all(c in valid for c in overhead_section)
+
+    def test_anthropic_prefix_preserved(self):
+        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
+
+        prefix = "sk-ant-api03-"
+        shard_a = bytearray(("sk-ant-api03-" + "D" * 80).encode())
+        key = generate_signing_key()
+        envelope, _, _ = sign_shard_a(shard_a, "ant-test", key, prefix=prefix)
+        assert envelope.decode().startswith(prefix)
+
+    def test_nonce_is_16_bytes(self):
+        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
+
+        shard_a = bytearray(("sk-proj-" + "E" * 60).encode())
+        key = generate_signing_key()
+        _, nonce, _ = sign_shard_a(shard_a, "alias", key, prefix="sk-proj-")
+        assert len(nonce) == 16
+
+    def test_nonce_space_is_128_bits(self):
+        """128-bit nonce → birthday attack requires 2^64 attempts."""
+        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
+
+        shard_a = bytearray(("sk-proj-" + "F" * 60).encode())
+        key = generate_signing_key()
+        _, nonce, _ = sign_shard_a(shard_a, "alias", key, prefix="sk-proj-")
+        assert len(nonce) * 8 >= 128
+
+    def test_two_enrollments_produce_different_nonces(self):
+        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
+
+        shard_a1 = bytearray(("sk-proj-" + "G" * 60).encode())
+        shard_a2 = bytearray(("sk-proj-" + "G" * 60).encode())
+        key = generate_signing_key()
+        _, nonce1, _ = sign_shard_a(shard_a1, "alias1", key, prefix="sk-proj-")
+        _, nonce2, _ = sign_shard_a(shard_a2, "alias2", key, prefix="sk-proj-")
+        assert nonce1 != nonce2
+
+    def test_expiry_is_in_the_future(self):
+        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
+
+        shard_a = bytearray(("sk-proj-" + "H" * 60).encode())
+        key = generate_signing_key()
+        _, _, expires_at = sign_shard_a(shard_a, "alias", key, prefix="sk-proj-", ttl_days=1)
+        assert expires_at > int(_time.time())
+
+    def test_ttl_days_controls_expiry(self):
+        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
+
+        key = generate_signing_key()
+        shard_a = bytearray(("sk-proj-" + "I" * 60).encode())
+        _, _, exp_30 = sign_shard_a(bytearray(shard_a), "a", key, prefix="sk-proj-", ttl_days=30)
+        _, _, exp_365 = sign_shard_a(bytearray(shard_a), "a", key, prefix="sk-proj-", ttl_days=365)
+        assert exp_365 > exp_30 + 300 * 86400
+
+
+class TestPhase6Roundtrip:
+    """sign → verify → extract recovers byte-identical original shard_a."""
+
+    def test_roundtrip_openai_key(self):
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            sign_shard_a,
+            verify_and_extract,
+        )
+
+        prefix = "sk-proj-"
+        original = bytearray(("sk-proj-" + "J" * 60).encode())
+        key = generate_signing_key()
+        envelope, _, _ = sign_shard_a(bytearray(original), "alias", key, prefix=prefix)
+        recovered, _, _ = verify_and_extract(envelope, "alias", key, prefix=prefix)
+        assert bytes(recovered) == bytes(original)
+
+    def test_roundtrip_anthropic_key(self):
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            sign_shard_a,
+            verify_and_extract,
+        )
+
+        prefix = "sk-ant-api03-"
+        original = bytearray(("sk-ant-api03-" + "K" * 80).encode())
+        key = generate_signing_key()
+        envelope, _, _ = sign_shard_a(bytearray(original), "ant", key, prefix=prefix)
+        recovered, _, _ = verify_and_extract(envelope, "ant", key, prefix=prefix)
+        assert bytes(recovered) == bytes(original)
+
+    def test_recovery_is_byte_identical(self):
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            sign_shard_a,
+            verify_and_extract,
+        )
+
+        prefix = "sk-proj-"
+        original = bytearray(("sk-proj-" + "L" * 124).encode())
+        key = generate_signing_key()
+        envelope, _, _ = sign_shard_a(bytearray(original), "alias", key, prefix=prefix)
+        recovered, _, _ = verify_and_extract(envelope, "alias", key, prefix=prefix)
+        assert recovered == original
+
+
+class TestPhase6RejectionPaths:
+    """Rejection: wrong key, wrong alias, expired, tampered, unsigned."""
+
+    def test_raw_unsigned_shard_a_is_rejected(self):
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            verify_and_extract,
+            ShardSigningError,
+        )
+
+        prefix = "sk-proj-"
+        raw = bytearray(("sk-proj-" + "M" * 60).encode())
+        key = generate_signing_key()
+        with pytest.raises(ShardSigningError):
+            verify_and_extract(raw, "alias", key, prefix=prefix)
+
+    def test_wrong_signing_key_is_rejected(self):
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            sign_shard_a,
+            verify_and_extract,
+            ShardSigningError,
+        )
+
+        prefix = "sk-proj-"
+        key1 = generate_signing_key()
+        key2 = generate_signing_key()
+        shard_a = bytearray(("sk-proj-" + "N" * 60).encode())
+        envelope, _, _ = sign_shard_a(shard_a, "alias", key1, prefix=prefix)
+        with pytest.raises(ShardSigningError):
+            verify_and_extract(envelope, "alias", key2, prefix=prefix)
+
+    def test_wrong_alias_is_rejected(self):
+        """HMAC binds to alias; presenting under different alias fails."""
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            sign_shard_a,
+            verify_and_extract,
+            ShardSigningError,
+        )
+
+        prefix = "sk-proj-"
+        key = generate_signing_key()
+        shard_a = bytearray(("sk-proj-" + "O" * 60).encode())
+        envelope, _, _ = sign_shard_a(shard_a, "openai-abc123", key, prefix=prefix)
+        with pytest.raises(ShardSigningError):
+            verify_and_extract(envelope, "openai-different", key, prefix=prefix)
+
+    def test_expired_envelope_is_rejected(self):
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            sign_shard_a,
+            verify_and_extract,
+            ShardSigningError,
+            OVERHEAD_CHARS,
+        )
+
+        prefix = "sk-proj-"
+        key = generate_signing_key()
+        shard_a = bytearray(("sk-proj-" + "P" * 60).encode())
+        envelope, _, _ = sign_shard_a(shard_a, "alias", key, prefix=prefix, ttl_days=1)
+        # Rewrite expiry to 1 second in the past
+        _rewrite_expiry_to_past(envelope, prefix, OVERHEAD_CHARS)
+        with pytest.raises(ShardSigningError, match="expired"):
+            verify_and_extract(envelope, "alias", key, prefix=prefix)
+
+    def test_tampered_body_is_rejected(self):
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            sign_shard_a,
+            verify_and_extract,
+            ShardSigningError,
+            OVERHEAD_CHARS,
+        )
+
+        prefix = "sk-proj-"
+        key = generate_signing_key()
+        shard_a = bytearray(("sk-proj-" + "Q" * 60).encode())
+        envelope, _, _ = sign_shard_a(shard_a, "alias", key, prefix=prefix)
+        # Flip one char in the body (after prefix + overhead)
+        idx = len(prefix) + OVERHEAD_CHARS + 1
+        b = bytearray(envelope)
+        b[idx] = ord("Z") if chr(b[idx]) != "Z" else ord("A")
+        with pytest.raises(ShardSigningError):
+            verify_and_extract(bytearray(b), "alias", key, prefix=prefix)
+
+    def test_tampered_overhead_is_rejected(self):
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            sign_shard_a,
+            verify_and_extract,
+            ShardSigningError,
+        )
+
+        prefix = "sk-proj-"
+        key = generate_signing_key()
+        shard_a = bytearray(("sk-proj-" + "R" * 60).encode())
+        envelope, _, _ = sign_shard_a(shard_a, "alias", key, prefix=prefix)
+        # Flip one char deep in the overhead section
+        idx = len(prefix) + 10
+        b = bytearray(envelope)
+        b[idx] = ord("Z") if chr(b[idx]) != "Z" else ord("A")
+        with pytest.raises(ShardSigningError):
+            verify_and_extract(bytearray(b), "alias", key, prefix=prefix)
+
+    def test_prefix_mismatch_is_rejected(self):
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            sign_shard_a,
+            verify_and_extract,
+            ShardSigningError,
+        )
+
+        prefix = "sk-proj-"
+        key = generate_signing_key()
+        shard_a = bytearray(("sk-proj-" + "S" * 60).encode())
+        envelope, _, _ = sign_shard_a(shard_a, "alias", key, prefix=prefix)
+        with pytest.raises(ShardSigningError, match="prefix"):
+            verify_and_extract(envelope, "alias", key, prefix="sk-ant-api03-")
+
+    def test_envelope_too_short_is_rejected(self):
+        from worthless.crypto.shard_signing import (
+            generate_signing_key,
+            verify_and_extract,
+            ShardSigningError,
+        )
+
+        key = generate_signing_key()
+        with pytest.raises(ShardSigningError):
+            verify_and_extract(bytearray(b"sk-proj-short"), "alias", key, prefix="sk-proj-")
+
+
+class TestPhase6SigningKeyManagement:
+    """Signing key: 32 bytes, restricted permissions, idempotent creation."""
+
+    def test_generate_signing_key_is_32_bytes(self):
+        from worthless.crypto.shard_signing import generate_signing_key
+
+        assert len(generate_signing_key()) == 32
+
+    def test_two_generated_keys_differ(self):
+        from worthless.crypto.shard_signing import generate_signing_key
+
+        assert generate_signing_key() != generate_signing_key()
+
+    def test_load_or_create_creates_key_file(self, tmp_path):
+        from worthless.crypto.shard_signing import load_or_create_signing_key
+
+        key = load_or_create_signing_key(tmp_path)
+        assert (tmp_path / "signing.key").exists()
+        assert len(key) == 32
+
+    def test_load_or_create_is_idempotent(self, tmp_path):
+        from worthless.crypto.shard_signing import load_or_create_signing_key
+
+        key1 = load_or_create_signing_key(tmp_path)
+        key2 = load_or_create_signing_key(tmp_path)
+        assert key1 == key2
+
+    def test_signing_key_file_has_restricted_permissions(self, tmp_path):
+        import stat as stat_mod
+        from worthless.crypto.shard_signing import load_or_create_signing_key
+
+        load_or_create_signing_key(tmp_path)
+        mode = (tmp_path / "signing.key").stat().st_mode
+        assert not (mode & stat_mod.S_IRGRP)
+        assert not (mode & stat_mod.S_IROTH)
+
+
+# Helpers for Phase 6 tests
+
+
+def _rewrite_expiry_to_past(envelope: bytearray, prefix: str, overhead_chars: int) -> None:
+    """Rewrite the expiry field in the overhead to 1 second ago, in-place."""
+    prefix_len = len(prefix)
+    overhead_b64 = envelope[prefix_len : prefix_len + overhead_chars].decode("ascii")
+    overhead = bytearray(base64.urlsafe_b64decode(overhead_b64))
+    past_ts = int(_time.time()) - 1
+    overhead[16:20] = struct.pack(">I", past_ts)
+    new_b64 = base64.urlsafe_b64encode(bytes(overhead)).decode("ascii")
+    envelope[prefix_len : prefix_len + overhead_chars] = new_b64.encode("ascii")
