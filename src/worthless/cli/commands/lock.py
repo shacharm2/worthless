@@ -47,6 +47,7 @@ from worthless.crypto.splitter import (
 )
 from worthless.crypto.types import zero_buf
 from worthless.exceptions import ShardTamperedError
+from worthless.openclaw import audit as _oc_audit
 from worthless.openclaw import integration as _openclaw_integration
 from worthless.openclaw.errors import OpenclawIntegrationError
 from worthless.storage.repository import ShardRepository, StoredShard
@@ -65,7 +66,8 @@ logger = logging.getLogger(__name__)
 # registry name to its protocol via ``lookup_by_name`` before checking
 # this map. ``worthless-9t74`` will promote that translation into a
 # structural ``provider name`` vs ``protocol`` separation post-merge.
-_CTRL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# sanitise_for_message (from _oc_audit) covers C0/C1 + bidi overrides + BOM —
+# a strict superset of the old _CTRL_RE; no separate regex needed here.
 
 _PROVIDER_ENV_MAP: dict[str, str] = {
     "openai": "OPENAI_BASE_URL",
@@ -830,6 +832,100 @@ def _print_lock_result(
         console.print_warning("No unprotected API keys found.")
 
 
+def _openclaw_audit_preflight() -> _oc_audit.AuditGateHandle | None:
+    """Run OpenClaw secrets audit pre-flight before worthless lock writes.
+
+    Returns None if OpenClaw is not detected on this host or binary is not
+    available (gate skipped, _apply_openclaw handles the partial-failure path).
+    Raises typer.Exit(73) if blocking plaintext findings are present.
+    Raises typer.Exit(87) on subprocess failure or unknown finding codes.
+    """
+    state = _openclaw_integration.detect()
+    if not state.present:
+        return None
+
+    try:
+        openclaw_bin = _oc_audit.resolve_openclaw_bin()
+    except _oc_audit.AuditGateError as exc:
+        if os.environ.get("WORTHLESS_OPENCLAW_BIN"):
+            # Explicit path configured but broken → hard fail
+            typer.echo(f"worthless lock: openclaw audit gate failed: {exc}", err=True)
+            raise typer.Exit(code=87) from exc
+        # Binary not found in PATH → skip gate, let _apply_openclaw surface it
+        logger.debug("openclaw audit gate skipped: %s", exc)
+        return None
+
+    try:
+        result, classification = _oc_audit.run_and_classify(openclaw_bin)
+    except _oc_audit.AuditGateError as exc:
+        typer.echo(f"worthless lock: openclaw audit gate failed: {exc}", err=True)
+        raise typer.Exit(code=87) from exc
+
+    if classification.unknown_codes:
+        typer.echo(
+            f"worthless lock: openclaw audit returned unknown finding codes "
+            f"{', '.join(classification.unknown_codes)} — exit 87",
+            err=True,
+        )
+        raise typer.Exit(code=87)
+
+    if classification.blocking:
+        typer.echo(_oc_audit.format_gate_error_message(classification.blocking), err=True)
+        raise typer.Exit(code=73)
+
+    return _oc_audit.AuditGateHandle(
+        openclaw_bin=openclaw_bin,
+        pre_hashes=_oc_audit.snapshot_hashes(result.files_scanned),
+    )
+
+
+def _openclaw_audit_postflight(gate: _oc_audit.AuditGateHandle) -> None:
+    """Post-flight TOCTOU re-audit after lock-core write commits.
+
+    Skips the second subprocess entirely if file hashes are unchanged since
+    pre-flight (covers the 99.99% case where no external process touched the
+    OpenClaw config during the lock write).
+
+    Raises typer.Exit(87) if new blocking findings appeared since pre-flight,
+    indicating the OpenClaw config was modified between the two audit passes.
+
+    Recovery note: if this raises, ``_batch_rewrite`` has already committed
+    shard-A values to the .env, but ``_compensating_unwind`` (in the caller's
+    except block) rewinds the DB rows. The .env may therefore contain shard-A
+    values while DB rows are gone. Re-running ``worthless lock`` recovers: the
+    next pre-flight will see the same shard-A values as a PLAINTEXT_FOUND for
+    ``worthless-openai`` (allowlisted) and proceed normally once the user
+    fixes the OpenClaw plaintext that caused this exit.
+    """
+    post_hashes = _oc_audit.snapshot_hashes(gate.pre_hashes.keys())
+    if post_hashes == gate.pre_hashes:
+        # Files unchanged — no need to re-run the 30s subprocess.
+        return
+
+    try:
+        _, post_class = _oc_audit.run_and_classify(gate.openclaw_bin)
+    except _oc_audit.AuditGateError as exc:
+        typer.echo(f"worthless lock: post-flight audit failed: {exc}", err=True)
+        raise typer.Exit(code=87) from exc
+
+    if post_class.unknown_codes:
+        typer.echo(
+            f"worthless lock: post-flight audit returned unknown codes "
+            f"{', '.join(post_class.unknown_codes)} — exit 87",
+            err=True,
+        )
+        raise typer.Exit(code=87)
+
+    if post_class.blocking:
+        detail = _oc_audit.format_gate_error_message(post_class.blocking)
+        typer.echo(
+            f"worthless lock: state changed between pre-flight and post-flight "
+            f"— new plaintext detected, re-run worthless lock.\n{detail}",
+            err=True,
+        )
+        raise typer.Exit(code=87)
+
+
 def _lock_keys(
     env_path: Path,
     home: WorthlessHome,
@@ -858,8 +954,8 @@ def _lock_keys(
         header = "worthless: hardcoded provider URLs detected — these bypass the proxy:"
         detail_lines = [header]
         for f in bypass_findings:
-            safe_file = _CTRL_RE.sub("", f.file)
-            safe_url = _CTRL_RE.sub("", f.url)
+            safe_file = _oc_audit.sanitise_for_message(f.file)
+            safe_url = _oc_audit.sanitise_for_message(f.url)
             detail_lines.append(f"  {safe_file}:{f.line}  {safe_url}  ({f.provider})")
         findings_text = "\n".join(detail_lines)
 
@@ -921,6 +1017,12 @@ def _lock_keys(
             ]
             existing_env_keys = set(env_values.keys())
 
+            # #210 OpenClaw secrets-audit gate: pre-flight runs BEFORE any
+            # DB/.env write so blocking plaintext findings abort the lock with
+            # zero side effects (gate-before-write). Orthogonal to the
+            # sidecar-IPC repo above — placement here is load-bearing.
+            _oc_gate = _openclaw_audit_preflight()
+
             planned: list[_PlannedUpdate] = []
             try:
                 if not quiet:
@@ -937,6 +1039,8 @@ def _lock_keys(
                 if not planned:
                     return _LockResult(total=0, fresh_count=0, partial_failure=False)
                 _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
+                if _oc_gate is not None:
+                    _openclaw_audit_postflight(_oc_gate)
                 # Phase 2.b: OpenClaw magic. Per L1 in
                 # engineering/research/openclaw-WOR-431-phase-2-spec.md, this
                 # NEVER rolls back lock-core success. Per L2 (revised 2026-05-08
@@ -978,8 +1082,15 @@ def _lock_keys(
     # is not gated. Surface this LOUDLY by exiting non-zero AFTER the
     # lock-core writes have committed (L1 binding contract preserved).
     # Exit code 73 = EX_CANTCREAT (POSIX), distinguishable from 1.
-    # The [FAIL] block is already printed by _apply_openclaw.
+    # The [FAIL] block is already printed by _apply_openclaw; this final
+    # LOCK FAILED line disambiguates the mixed [FAIL]+[OK] output so the
+    # user cannot mistake a partial failure for overall success (WOR-551).
     if result.partial_failure:
+        console.print_failure(
+            "LOCK FAILED — .env key is split but OpenClaw integration did not complete.\n"
+            "Your agent traffic is NOT gated through the Worthless proxy.\n"
+            "Run `worthless doctor` to diagnose, `worthless unlock` to roll back."
+        )
         raise typer.Exit(code=73)
 
     return result.fresh_count + relock_count
