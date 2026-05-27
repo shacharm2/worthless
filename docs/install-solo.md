@@ -1,18 +1,19 @@
 # Install -- Solo Developer
 
-> [!NOTE]
-> **Not yet available.** The one-line installer requires a PyPI package and domain
-> that are not yet published. Install from source -- see the [README](../README.md).
+[Back to wless.io](https://wless.io/)
 
-## Target-state install (coming soon)
+## Standard install
 
 ```bash
-pip install worthless
-worthless lock
-worthless wrap python your_app.py
+curl -sSL https://worthless.sh | sh
+cd your-project
+worthless
 ```
 
-This will:
+The installer bootstraps Worthless and puts the `worthless` CLI on your PATH.
+Then `worthless` scans the current project and walks you through locking keys.
+
+What it does:
 
 1. Scan your `.env` for API keys
 2. Split each key into two shards (one local, one encrypted in the proxy DB)
@@ -22,13 +23,12 @@ This will:
 
 Your existing code works identically. Your key is now split and budget-protected.
 
-## Current install (from source)
+## Manual fallback (from source)
 
 ```bash
 git clone https://github.com/shacharm2/worthless && cd worthless
 uv pip install -e .
-worthless lock
-worthless wrap python your_app.py
+worthless
 ```
 
 See the [README quickstart](../README.md#quickstart) for full walkthrough.
