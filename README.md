@@ -12,7 +12,9 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Tests](https://github.com/shacharm2/worthless/actions/workflows/tests.yml/badge.svg)](https://github.com/shacharm2/worthless/actions/workflows/tests.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/shacharm2/worthless/badge)](https://securityscorecards.dev/projects/github.com/shacharm2/worthless)
+<!-- SonarCloud quality-gate badge — held until the existing issues are triaged. Re-enable when ready:
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=shacharm2_worthless&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=shacharm2_worthless)
+-->
 
 
 
