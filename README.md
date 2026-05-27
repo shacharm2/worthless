@@ -2,10 +2,20 @@
 
 **Make leaked API keys worthless.**
 
+<p align="center">
+  <img src="website/meme-llm-tower.png" alt="All modern LLM ecosystem balanced on a .env file" width="380">
+  <br>
+  <sub style="color: #6c7e95;">Based on <a href="https://xkcd.com/2347/">XKCD #2347</a> by Randall Munroe (CC BY-NC 2.5)</sub>
+</p>
+
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![Tests](https://github.com/shacharm2/worthless/actions/workflows/tests.yml/badge.svg)](https://github.com/shacharm2/worthless/actions/workflows/tests.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/shacharm2/worthless/badge)](https://securityscorecards.dev/projects/github.com/shacharm2/worthless)
 [![Known Vulnerabilities](https://snyk.io/test/github/shacharm2/worthless/badge.svg?targetFile=requirements.txt)](https://snyk.io/test/github/shacharm2/worthless?targetFile=requirements.txt)
+<!-- SonarCloud quality-gate badge — held until the existing issues are triaged. Re-enable when ready:
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=shacharm2_worthless&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=shacharm2_worthless)
+-->
 
 When your `.env` leaks, the keys inside are placeholders. The real key never sits in your repo, your shell history, or your laptop's memory.
 
@@ -72,6 +82,13 @@ uv run pytest
 ```
 
 Internal developer documentation lives in [`engineering/`](engineering/). Security invariants are in [`SECURITY.md`](SECURITY.md).
+
+### Test Hardening & Repo Health
+
+To maintain codebase health and prevent CI instability, the repository implements automated guards:
+* **Thread Leak Detector**: Any unit test that leaks an active background thread will fail immediately. This prevents leaked threads from contaminating subsequent tests or causing runner crashes under `pytest-xdist`.
+* **Flaky-Test Quarantine**: Flaky tests are detected at runtime and log high-visibility warnings to ensure root causes are investigated instead of swept under the rug. Quarantining a test requires a conscious human commit to `tests/quarantined_tests.txt`. Quarantined tests are excluded from the main blocking CI run and executed in a separate, non-blocking job.
+
 
 ## Contributing
 
