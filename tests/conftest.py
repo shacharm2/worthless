@@ -452,16 +452,20 @@ def detect_thread_leak(request):
         yield
         return
 
-    # Capture initial threads
-    initial_threads = {t.ident for t in threading.enumerate() if t.ident is not None}
+    # Capture initial threads. Track by Thread *object*, not by ``ident``:
+    # the OS recycles thread ids, so a thread spawned during the test can be
+    # handed an ident that belonged to an already-exited thread present at
+    # setup. Ident-based tracking then mistakes a real leak for a pre-existing
+    # thread and silently skips it (a non-deterministic false negative). Object
+    # identity is unique per live thread, so it is reuse-proof. Holding the
+    # references for the test's duration is a negligible, bounded cost.
+    initial_threads = set(threading.enumerate())
 
     yield
 
-    # Short-circuit if there are no new thread IDs at all. Avoids sleep tax on clean tests.
+    # Short-circuit if there are no new threads at all. Avoids sleep tax on clean tests.
     current_threads = threading.enumerate()
-    has_mismatch = any(
-        t.ident is not None and t.ident not in initial_threads for t in current_threads
-    )
+    has_mismatch = any(t not in initial_threads for t in current_threads)
 
     if has_mismatch:
         # Give exiting threads a polling window to clean up (up to 250ms under heavy load).
@@ -471,16 +475,21 @@ def detect_thread_leak(request):
             time.sleep(0.01)
             gc.collect()
             current_threads = threading.enumerate()
-            has_mismatch = any(
-                t.ident is not None and t.ident not in initial_threads for t in current_threads
-            )
+            has_mismatch = any(t not in initial_threads for t in current_threads)
             if not has_mismatch:
                 break
 
     # Final check for real leaks
     leaked = []
     for t in current_threads:
-        if t.ident is None or t.ident in initial_threads:
+        if t in initial_threads:
+            continue
+        # Daemon threads are killed at interpreter exit and cannot keep a
+        # process (or xdist worker) alive, so they are not leaks in the sense
+        # this detector guards against. The codebase intentionally uses daemon
+        # threads for fire-and-forget work (sidecar stderr collectors, stream
+        # readers, the run_sync worker); flagging them is a false positive.
+        if t.daemon:
             continue
         name = t.name or ""
         # Filter out common benign pytest/xdist worker control or standard worker threads

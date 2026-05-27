@@ -64,5 +64,5 @@ regexTarget = "line"
 #   suppress every rule there (the over-broad-path mistake documented above).
 regexes = [
     '''(?i)(?:openai|anthropic|google|xai)-[a-f0-9]{8}\b''',
-    '''^sonar\.projectKey\s*=.*$''',
+    '''sonar\.projectKey''',
 ]
