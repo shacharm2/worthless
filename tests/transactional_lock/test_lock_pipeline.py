@@ -132,11 +132,14 @@ class TestBatchLockHappyPath:
         # .env: each original key replaced with shard-A
         from dotenv import dotenv_values
 
+        from worthless.crypto.shard_signing import OVERHEAD_CHARS
+
         parsed = dotenv_values(three_key_env)
         for var in ("OPENAI_API_KEY_A", "OPENAI_API_KEY_B", "ANTHROPIC_API_KEY"):
             assert parsed[var] != original_keys[var], f"{var} not rewritten"
             assert parsed[var] is not None
-            assert len(parsed[var]) == len(original_keys[var])
+            # Signed envelope is OVERHEAD_CHARS (48) longer than raw shard_a
+            assert len(parsed[var]) == len(original_keys[var]) + OVERHEAD_CHARS
 
         # At least one OPENAI_BASE_URL and one ANTHROPIC_BASE_URL must exist
         content = three_key_env.read_text()

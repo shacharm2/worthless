@@ -36,6 +36,7 @@ from worthless.cli.errors import (
 from worthless.cli.key_patterns import CANONICAL_KEY_VAR_RE, detect_prefix
 from worthless.cli.keystore import keyring_available
 from worthless.cli.providers import lookup_by_name, lookup_by_url
+from worthless.crypto.shard_signing import OVERHEAD_CHARS, load_or_create_signing_key, sign_shard_a
 from worthless.crypto.splitter import (
     _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
     derive_shard_a_fp,
@@ -146,7 +147,8 @@ class _PlannedUpdate:
     var_name: str
     env_path_str: str
     provider: str
-    shard_a: bytearray
+    shard_a: bytearray  # signed envelope — written to .env and openclaw.json
+    shard_a_raw: bytearray  # raw (pre-signing) shard_a — used only by verify hook
     shard_b: bytearray
     commitment: bytearray
     nonce: bytearray
@@ -160,7 +162,7 @@ class _PlannedUpdate:
     base_url_var: str = ""
 
     def zero(self) -> None:
-        for buf in (self.shard_a, self.shard_b, self.commitment, self.nonce):
+        for buf in (self.shard_a, self.shard_a_raw, self.shard_b, self.commitment, self.nonce):
             buf[:] = b"\x00" * len(buf)
 
 
@@ -177,7 +179,7 @@ def _build_verify_hook(planned: list[_PlannedUpdate]):
             reconstructed: bytearray | None = None
             try:
                 reconstructed = reconstruct_key_fp(
-                    p.shard_a,
+                    p.shard_a_raw,  # raw shard_a — not the signed envelope
                     p.shard_b,
                     p.commitment,
                     p.nonce,
@@ -234,27 +236,46 @@ async def _select_unlocked_keys(
             if encrypted is None or encrypted.prefix is None or encrypted.charset is None:
                 continue
             stored = repo.decrypt_shard(encrypted)
+            # Strip the 48-char signing overhead if the .env value is a signed
+            # envelope (Phase 6c+). Raw format: prefix + shard_body.
+            # Signed format: prefix + overhead_48 + shard_body.
+            # We try signed-stripped first; fall through to raw on failure.
+            prefix_str = encrypted.prefix or ""
+            if len(value) > len(prefix_str) + OVERHEAD_CHARS:
+                body_after_overhead = value[len(prefix_str) + OVERHEAD_CHARS :]
+                raw_candidate = bytearray((prefix_str + body_after_overhead).encode("utf-8"))
+            else:
+                raw_candidate = None
             shard_a = bytearray(value.encode("utf-8"))
             reconstructed: bytearray | None = None
             try:
-                reconstructed = reconstruct_key_fp(
-                    shard_a,
-                    stored.shard_b,
-                    stored.commitment,
-                    stored.nonce,
-                    encrypted.prefix,
-                    encrypted.charset,
-                )
-                still_protected = True
-                break
-            except (ShardTamperedError, ValueError, KeyError, UnicodeDecodeError, IndexError):
-                # UnicodeDecodeError: corrupt UTF-8 shard bytes in DB row.
-                # IndexError: mismatched shard lengths past the explicit check.
-                # Both are safe-fail — treat the enrollment as not still-protected
-                # and let the caller re-lock the key.
-                continue
+                # Prefer stripped (signed) form; fall back to full value (legacy).
+                for candidate in filter(None, [raw_candidate, shard_a]):
+                    try:
+                        reconstructed = reconstruct_key_fp(
+                            candidate,
+                            stored.shard_b,
+                            stored.commitment,
+                            stored.nonce,
+                            encrypted.prefix,
+                            encrypted.charset,
+                        )
+                        still_protected = True
+                        break
+                    except (
+                        ShardTamperedError,
+                        ValueError,
+                        KeyError,
+                        UnicodeDecodeError,
+                        IndexError,
+                    ):
+                        continue
+                if still_protected:
+                    break
             finally:
                 zero_buf(shard_a)
+                if raw_candidate is not None:
+                    zero_buf(raw_candidate)
                 if reconstructed is not None:
                     zero_buf(reconstructed)
                 stored.zero()
@@ -292,6 +313,7 @@ async def _pass1_db_writes(
     token_budget_daily: int | None,
     planned_out: list[_PlannedUpdate],
     env_values: dict[str, str | None],
+    signing_key: bytes,
 ) -> None:
     """Do every DB write; append each ``_PlannedUpdate`` to *planned_out*.
 
@@ -398,6 +420,16 @@ async def _pass1_db_writes(
                     db_shard.prefix,
                     db_shard.charset,
                 )
+                # Sign the shard-A so the .env value is an HMAC-bound envelope.
+                # The signing key is server-side; re-lock revokes the old nonce.
+                signed_shard_a, env_nonce, env_expires_at = sign_shard_a(
+                    derived_shard_a,
+                    alias,
+                    signing_key,
+                    prefix=db_shard.prefix or "",
+                )
+                await repo.store_signing_nonce(alias, env_nonce, env_expires_at)
+
                 # INSERT OR REPLACE keeps shard_a_enc in sync with the auth token
                 # written to openclaw.json.  INSERT OR IGNORE would leave the old
                 # shard_b in DB on re-lock, causing XOR reconstruction to fail permanently.
@@ -421,7 +453,8 @@ async def _pass1_db_writes(
                         var_name=var_name,
                         env_path_str=env_str,
                         provider=provider,
-                        shard_a=derived_shard_a,
+                        shard_a=signed_shard_a,
+                        shard_a_raw=derived_shard_a,
                         shard_b=bytearray(stored_decrypted.shard_b),
                         commitment=bytearray(stored_decrypted.commitment),
                         nonce=bytearray(stored_decrypted.nonce),
@@ -431,6 +464,7 @@ async def _pass1_db_writes(
                         base_url_var=base_url_var,
                     )
                 )
+                # shard_a_raw is now owned by _PlannedUpdate.zero() — don't zero here
             finally:
                 zero_buf(verify_payload)
                 stored_decrypted.zero()
@@ -443,6 +477,14 @@ async def _pass1_db_writes(
             prefix = ""
         sr = split_key_fp(value, prefix, provider)
         try:
+            # Sign the raw shard-A so the .env value is an HMAC-bound envelope.
+            # Raw shard-A (without a valid HMAC) is rejected at proxy ingress.
+            signed_shard_a, env_nonce, env_expires_at = sign_shard_a(
+                sr.shard_a,
+                alias,
+                signing_key,
+                prefix=sr.prefix,
+            )
             stored = StoredShard(
                 shard_b=sr.shard_b,
                 commitment=sr.commitment,
@@ -468,13 +510,15 @@ async def _pass1_db_writes(
                 charset=sr.charset,
                 base_url=upstream_base_url,
             )
+            await repo.store_signing_nonce(alias, env_nonce, env_expires_at)
             planned_out.append(
                 _PlannedUpdate(
                     alias=alias,
                     var_name=var_name,
                     env_path_str=env_str,
                     provider=provider,
-                    shard_a=bytearray(sr.shard_a),
+                    shard_a=signed_shard_a,
+                    shard_a_raw=bytearray(sr.shard_a),
                     shard_b=bytearray(sr.shard_b),
                     commitment=bytearray(sr.commitment),
                     nonce=bytearray(sr.nonce),
@@ -926,10 +970,14 @@ def _lock_keys(
                 # was opaque about which secrets just changed.
                 key_names = ", ".join(var_name for var_name, _, _ in candidates)
                 console.print_hint(f"  Protecting {key_names}...")
+            # Load (or create) the server-side signing key used to wrap shard-A
+            # in an HMAC envelope. The key lives in ~/.worthless/signing.key.
+            signing_key = load_or_create_signing_key(home.base_dir)
+
             # 8rqs Phase 7: env_values flows through so _pass1_db_writes can
             # read each key's matching *_BASE_URL from .env at lock time.
             await _pass1_db_writes(
-                repo, candidates, env_str, token_budget_daily, planned, env_values
+                repo, candidates, env_str, token_budget_daily, planned, env_values, signing_key
             )
             if not planned:
                 return _LockResult(total=0, fresh_count=0, partial_failure=False)
@@ -1014,6 +1062,15 @@ def _enroll_single(
                 f"Alias {alias!r} is already enrolled",
             )
 
+        # Sign shard-A so the enrolled value carries the HMAC envelope.
+        signing_key = load_or_create_signing_key(home.base_dir)
+        signed_shard_a, env_nonce, env_expires_at = sign_shard_a(
+            sr.shard_a,
+            alias,
+            signing_key,
+            prefix=sr.prefix,
+        )
+
         stored = StoredShard(
             shard_b=sr.shard_b,
             commitment=sr.commitment,
@@ -1033,6 +1090,8 @@ def _enroll_single(
             charset=sr.charset,
             base_url=base_url,
         )
+        await repo.store_signing_nonce(alias, env_nonce, env_expires_at)
+        zero_buf(signed_shard_a)
 
     try:
         asyncio.run(_enroll_async())

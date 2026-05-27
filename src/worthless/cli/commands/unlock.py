@@ -30,6 +30,7 @@ from worthless.cli.commands.lock import _PROVIDER_ENV_MAP
 from worthless.cli.dotenv_rewriter import rewrite_env_keys, scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.orphans import format_orphan_error
+from worthless.crypto.shard_signing import OVERHEAD_CHARS
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp
 from worthless.crypto.types import zero_buf
 from worthless.exceptions import ShardTamperedError
@@ -112,6 +113,12 @@ def _load_shard_a(
                     EnrollmentRecord(key_alias=alias, var_name=var_name, env_path=str(env_path))
                 ),
             )
+        # Strip the 48-char signing overhead from the envelope to recover the
+        # raw shard_a: envelope = prefix + overhead_48 + body → raw = prefix + body
+        prefix_str = encrypted.prefix or ""
+        if len(shard_a_value) > len(prefix_str) + OVERHEAD_CHARS:
+            body_after_overhead = shard_a_value[len(prefix_str) + OVERHEAD_CHARS :]
+            return bytearray((prefix_str + body_after_overhead).encode("utf-8"))
         return bytearray(shard_a_value.encode("utf-8"))
 
     # Legacy: shard_a is a file on disk

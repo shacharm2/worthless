@@ -76,8 +76,14 @@ class TestLock:
 
         parsed = dotenv_values(env_file)
         shard_a = parsed["OPENAI_API_KEY"]
+        from worthless.crypto.shard_signing import OVERHEAD_CHARS
+
         assert shard_a.startswith("sk-proj-"), "Shard must preserve prefix"
-        assert len(shard_a) == len(original_key), "Shard must preserve length"
+        # Signed envelope is OVERHEAD_CHARS (48) chars longer than the raw shard_a,
+        # which has the same length as the original key.
+        assert len(shard_a) == len(original_key) + OVERHEAD_CHARS, (
+            "Shard must be original + 48 chars"
+        )
         assert shard_a != original_key, "Shard must differ from original"
 
     def test_lock_adds_base_url_with_v1_suffix(
@@ -298,16 +304,18 @@ class TestMultiKey:
 
         parsed = dotenv_values(multi_env_file)
 
-        # OpenAI shard preserves prefix and length
+        from worthless.crypto.shard_signing import OVERHEAD_CHARS
+
+        # OpenAI shard preserves prefix; signed envelope is OVERHEAD_CHARS longer
         openai_shard = parsed["OPENAI_API_KEY"]
         assert openai_shard.startswith("sk-proj-")
-        assert len(openai_shard) == len(original_openai)
+        assert len(openai_shard) == len(original_openai) + OVERHEAD_CHARS
         assert openai_shard != original_openai
 
-        # Anthropic shard preserves prefix and length
+        # Anthropic shard preserves prefix; signed envelope is OVERHEAD_CHARS longer
         anthropic_shard = parsed["ANTHROPIC_API_KEY"]
         assert anthropic_shard.startswith("sk-ant-api03-")
-        assert len(anthropic_shard) == len(original_anthropic)
+        assert len(anthropic_shard) == len(original_anthropic) + OVERHEAD_CHARS
         assert anthropic_shard != original_anthropic
 
     def test_unlock_one_key_by_alias_other_stays_locked(

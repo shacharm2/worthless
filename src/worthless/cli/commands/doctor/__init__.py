@@ -62,6 +62,7 @@ from worthless.openclaw.errors import OpenclawIntegrationError
 from worthless.openclaw.integration import IntegrationState
 from worthless.storage.repository import EnrollmentRecord, ShardRepository
 from worthless.crypto.splitter import reconstruct_key_fp
+from worthless.crypto.shard_signing import OVERHEAD_CHARS
 
 # WOR-456: top-level conditional import so tests can monkeypatch the
 # module attribute directly. Local imports inside functions resolve via
@@ -413,7 +414,14 @@ def _check_openclaw_apikey_consistency(
         shard_a_buf = None
         try:
             stored = repo.decrypt_shard(encrypted)
-            shard_a_buf = bytearray(api_key_str, "utf-8")
+            # api_key_str may be a signed envelope (prefix + 48 overhead chars + body).
+            # Strip the overhead before reconstruction so the raw shard-A is used.
+            prefix_str = encrypted.prefix or ""
+            if len(api_key_str) > len(prefix_str) + OVERHEAD_CHARS:
+                body_after_overhead = api_key_str[len(prefix_str) + OVERHEAD_CHARS :]
+                shard_a_buf = bytearray((prefix_str + body_after_overhead).encode("utf-8"))
+            else:
+                shard_a_buf = bytearray(api_key_str, "utf-8")
             reconstruct_key_fp(
                 shard_a_buf,
                 stored.shard_b,

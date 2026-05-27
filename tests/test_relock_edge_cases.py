@@ -321,6 +321,7 @@ async def test_relock_openclaw_write_failure_exits_73_db_updated(
             env_path_str=str(tmp_path / ".env"),
             provider=_PROVIDER,
             shard_a=bytearray(shard_a_bytes),
+            shard_a_raw=bytearray(shard_a_bytes),  # same for test purposes
             shard_b=shard_b_placeholder,
             commitment=commitment_placeholder,
             nonce=nonce_placeholder,

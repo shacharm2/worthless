@@ -120,12 +120,15 @@ class TestLockFormatPreserving:
 
         parsed = dotenv_values(env_file)
         new_value = parsed["OPENAI_API_KEY"]
+        from worthless.crypto.shard_signing import OVERHEAD_CHARS
+
         # Shard-A must preserve the prefix
         assert new_value.startswith("sk-proj-")
         # Shard-A must differ from original key (it's a random share)
         assert new_value != original_key
-        # Shard-A must have the same length as original key
-        assert len(new_value) == len(original_key)
+        # Signed envelope is exactly OVERHEAD_CHARS (48) chars longer than the raw shard_a,
+        # which is the same length as the original key.
+        assert len(new_value) == len(original_key) + OVERHEAD_CHARS
 
     def test_lock_writes_base_url_to_env(self, home_dir: WorthlessHome, env_file: Path) -> None:
         """After lock, .env should contain OPENAI_BASE_URL pointing to proxy."""
@@ -633,11 +636,13 @@ class TestLockCommand:
 
         from dotenv import dotenv_values
 
+        from worthless.crypto.shard_signing import OVERHEAD_CHARS
+
         parsed = dotenv_values(env_file)
         shard_a = parsed["OPENAI_API_KEY"]
         assert shard_a.startswith("sk-proj-")
-        # Format-preserving: shard-A has same length as original
-        assert len(shard_a) == len(original_key)
+        # Signed envelope is OVERHEAD_CHARS (48) longer than raw shard_a (= original key length)
+        assert len(shard_a) == len(original_key) + OVERHEAD_CHARS
 
     def test_lock_multiple_keys(self, home_dir: WorthlessHome, multi_env_file: Path) -> None:
         """Lock should process all API keys in .env."""
@@ -688,9 +693,11 @@ class TestLockCommand:
             "re-lock left the real key in the .env — silent secret leak. "
             f"env_b still contains: {shard_a_second[:12]}..."
         )
+        from worthless.crypto.shard_signing import OVERHEAD_CHARS
+
         # shard-A must still be format-preserving (prefix + length match).
         assert shard_a_second.startswith("sk-proj-")
-        assert len(shard_a_second) == len(key)
+        assert len(shard_a_second) == len(key) + OVERHEAD_CHARS
 
     def test_relock_same_key_new_env_reconstructs_correctly(
         self, home_dir: WorthlessHome, tmp_path: Path
@@ -716,6 +723,7 @@ class TestLockCommand:
 
         from dotenv import dotenv_values
 
+        from worthless.crypto.shard_signing import OVERHEAD_CHARS
         from worthless.crypto.splitter import reconstruct_key_fp
 
         shard_a_str = dotenv_values(env_b)["OPENAI_API_KEY"]
@@ -726,8 +734,14 @@ class TestLockCommand:
         assert encrypted is not None
         stored = repo.decrypt_shard(encrypted)
 
+        # The .env value is now a signed envelope: prefix + overhead_48 + body.
+        # Strip the 48-char signing overhead to recover the raw shard_a before reconstruction.
+        prefix_str = encrypted.prefix or ""
+        body_after_overhead = shard_a_str[len(prefix_str) + OVERHEAD_CHARS :]
+        raw_shard_a = bytearray((prefix_str + body_after_overhead).encode())
+
         reconstructed = reconstruct_key_fp(
-            bytearray(shard_a_str.encode()),
+            raw_shard_a,
             stored.shard_b,
             stored.commitment,
             stored.nonce,

@@ -17,7 +17,6 @@ These tests are RED on the current (16x2) code because:
 from __future__ import annotations
 
 import json
-import re
 import secrets
 from pathlib import Path
 from unittest.mock import patch
@@ -422,21 +421,19 @@ def test_lock_writes_shard_a_not_stable_token_to_openclaw(tmp_path: Path) -> Non
     provider_entry = next(iter(providers.values()))
     api_key_in_openclaw = provider_entry.get("apiKey", "")
 
-    # In target state: apiKey must be the shard-A value (starts with "sk-",
-    # same length as original key, format-preserving).
-    # In 16x2 state: apiKey is a URL-safe base64 stable token (no "sk-" prefix,
-    # 43+ chars of [A-Za-z0-9_-]).
-    _stable_token_pattern = re.compile(r"^[A-Za-z0-9_-]{40,}$")
-    assert not _stable_token_pattern.match(api_key_in_openclaw), (
-        f"openclaw.json apiKey must NOT be a stable opaque token.\n"
-        f"Got: {api_key_in_openclaw!r}\n"
-        "SHOULD FAIL on 16x2: lock writes secrets.token_urlsafe(32) as apiKey, "
-        "which is a URL-safe base64 string matching [A-Za-z0-9_-]{43}."
-    )
+    from worthless.crypto.shard_signing import OVERHEAD_CHARS
+
+    # Post-worthless-1pua: apiKey is a signed envelope — format-preserving shard-A
+    # wrapped with a 48-char HMAC overhead. Must start with the provider prefix
+    # and be OVERHEAD_CHARS (48) longer than the original key.
+    # (Old 16x2 behavior: apiKey was secrets.token_urlsafe(32) — no provider prefix.)
     assert api_key_in_openclaw.startswith("sk-"), (
-        f"openclaw.json apiKey must be a format-preserving shard-A (starts with 'sk-').\n"
-        f"Got: {api_key_in_openclaw!r}\n"
-        "SHOULD FAIL on 16x2: stable token does not start with 'sk-'."
+        f"openclaw.json apiKey must be a format-preserving signed shard-A (starts with 'sk-').\n"
+        f"Got: {api_key_in_openclaw!r}"
+    )
+    assert len(api_key_in_openclaw) == len(api_key) + OVERHEAD_CHARS, (
+        f"openclaw.json apiKey must be original-key-length + 48 (signed envelope).\n"
+        f"Got len={len(api_key_in_openclaw)}, expected {len(api_key) + OVERHEAD_CHARS}"
     )
 
 
