@@ -49,7 +49,6 @@ TESTING.md
 # private and are symlinked back in via worthless-cloud/config/worthless/link.sh.
 /security-audit
 /engineering/modules.md
-/engineering/superpowers
 
 # Project management (local-only)
 ccpm/
