@@ -1,5 +1,7 @@
 """Tests for thread leak detector and flaky test auto-quarantine."""
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -24,14 +26,20 @@ def test_leaky():
     )
 
     try:
-        # Run pytest on the temporary test file in a subprocess
-        import subprocess
+        # The outer suite runs under `-n auto` (xdist), so this process has
+        # PYTEST_XDIST_WORKER set. If the inner pytest inherits it, the leak
+        # detector silently no-ops and the assertion below fails ("1 passed").
+        # Strip the worker env so the inner run is a clean, isolated session.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_XDIST")}
 
+        # Run pytest on the temporary test file in a subprocess
         result = subprocess.run(
             [sys.executable, "-m", "pytest", str(test_file), "-vv", "-o", "addopts="],
             capture_output=True,
             text=True,
             cwd=str(Path(__file__).parent.parent),  # Run from project root so conftest.py is loaded
+            timeout=30,
+            env=env,
         )
 
         assert (
