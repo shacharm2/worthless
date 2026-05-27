@@ -47,9 +47,9 @@ TESTING.md
 # Internal security docs — symlinked from private worthless-cloud (WOR-593).
 # Public repo: these enumerate threat models / attack surface, so they live
 # private and are symlinked back in via worthless-cloud/config/worthless/link.sh.
-/security-audit/
+/security-audit
 /engineering/modules.md
-/engineering/superpowers/
+/engineering/superpowers
 
 # Project management (local-only)
 ccpm/
