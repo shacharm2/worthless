@@ -825,8 +825,7 @@ def _apply_lock_rollback(
                 code=OpenclawErrorCode.WRITE_FAILED,
                 level="error",
                 detail=(
-                    f"rollback of {config_path} also failed: {rb_exc} — "
-                    "manual recovery required; see OpenClaw .bak file if present"
+                    f"rollback of {config_path} also failed: {rb_exc} — manual recovery required"
                 ),
                 extra={"path": str(config_path)},
             )
@@ -1214,39 +1213,6 @@ def apply_unlock(
                     code=OpenclawErrorCode.SKILL_INSTALL_FAILED,
                     level="error",
                     detail=f"skill uninstall failed: {exc}",
-                )
-            )
-
-    # ---- Stage C: delete .bak file (minimal shard-A hygiene) ---------------
-    # OpenClaw daemon writes ~/.openclaw/openclaw.json.bak on every config
-    # write — this file contains shard-A in plaintext and persists after
-    # worthless unlock. Delete it opportunistically. Per L1/L2 failures here
-    # NEVER block unlock-core: emit a warn event and continue.
-    # WOR-516 / future WOR: a stricter zero-residue policy is tracked separately.
-    if not config_missing and config_path is not None:
-        bak_path = config_path.parent / (config_path.name + ".bak")
-        try:
-            bak_path.unlink()
-            events.append(
-                OpenclawIntegrationEvent(
-                    code=OpenclawErrorCode.CONFIG_UPDATED,
-                    level="info",
-                    detail=f"deleted shard-A residue at {bak_path}",
-                    extra={"path": str(bak_path)},
-                )
-            )
-        except FileNotFoundError:
-            pass  # no .bak — nothing to clean up
-        except OSError as exc:
-            events.append(
-                OpenclawIntegrationEvent(
-                    code=OpenclawErrorCode.WRITE_FAILED,
-                    level="warn",
-                    detail=(
-                        f"could not delete {bak_path}: {exc} — "
-                        "shard-A residue remains; delete manually"
-                    ),
-                    extra={"path": str(bak_path)},
                 )
             )
 

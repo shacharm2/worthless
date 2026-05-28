@@ -116,7 +116,7 @@ class BlockingFinding:
     json_path: str
     provider: str | None
     message: str
-    source: Literal["audit", "auth-profiles-direct", "bak-direct"]
+    source: Literal["audit", "auth-profiles-direct"]
 
 
 @dataclass(frozen=True)
@@ -367,64 +367,6 @@ def check_auth_profiles_direct(
     return findings
 
 
-def check_bak_direct(
-    bak_path: Path | None = None,
-) -> list[BlockingFinding]:
-    """Read openclaw.json.bak directly and detect plaintext API keys.
-
-    OpenClaw audit never lists .bak files in filesScanned[] — the daemon
-    writes ``~/.openclaw/openclaw.json.bak`` on every config write, and the
-    file persists after ``worthless unlock`` with shard-A still in plaintext.
-
-    Args:
-        bak_path: path to the .bak file.  Defaults to
-            ``~/.openclaw/openclaw.json.bak``.  Pass an explicit path in
-            tests to avoid touching the real home directory.
-
-    Returns:
-        List of :class:`BlockingFinding` for each plaintext key found.
-        Empty list if the file does not exist or cannot be parsed — the
-        lock gate must not fail closed on a missing backup file.
-    """
-    if bak_path is None:
-        bak_path = Path.home() / ".openclaw" / "openclaw.json.bak"
-
-    findings: list[BlockingFinding] = []
-    try:
-        data = json.loads(bak_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return findings
-    except (OSError, json.JSONDecodeError):
-        return findings
-
-    bak_str = str(bak_path)
-
-    def _walk(obj: object, json_path: str = "", depth: int = 0) -> None:
-        if depth > _AUTH_PROFILES_MAX_DEPTH:
-            return
-        if isinstance(obj, str):
-            if KEY_PATTERN.search(obj):
-                findings.append(
-                    BlockingFinding(
-                        file=bak_str,
-                        json_path=json_path or "<root>",
-                        provider=None,
-                        message=f"Plaintext API key found in openclaw.json.bak at {json_path}",
-                        source="bak-direct",
-                    )
-                )
-        elif isinstance(obj, dict):
-            for k, v in obj.items():
-                child = f"{json_path}.{k}" if json_path else k
-                _walk(v, child, depth + 1)
-        elif isinstance(obj, list):
-            for i, v in enumerate(obj):
-                _walk(v, f"{json_path}[{i}]", depth + 1)
-
-    _walk(data)
-    return findings
-
-
 def classify_findings(
     result: AuditResult,
     auth_profiles_blocking: list[BlockingFinding] | None = None,
@@ -506,27 +448,22 @@ def classify_findings(
 def run_and_classify(
     openclaw_bin: Path,
     timeout: float = _DEFAULT_TIMEOUT,
-    bak_path: Path | None = None,
 ) -> tuple[AuditResult, AuditClassification]:
     """Run the audit and classify findings in one call.
 
     Convenience wrapper used by both pre-flight and post-flight so callers
     don't duplicate the ``run_audit → check_auth_profiles_direct →
-    check_bak_direct → classify_findings`` sequence.
+    classify_findings`` sequence.
 
     Args:
         openclaw_bin: absolute path to the openclaw binary.
         timeout: subprocess timeout passed to :func:`run_audit`.
-        bak_path: override for the .bak path passed to
-            :func:`check_bak_direct`; ``None`` uses the default
-            ``~/.openclaw/openclaw.json.bak``.
 
     Raises:
         AuditGateError: on subprocess failure (propagated from :func:`run_audit`).
     """
     result = run_audit(openclaw_bin, timeout=timeout)
     direct_blocking: list[BlockingFinding] = check_auth_profiles_direct(result.files_scanned)
-    direct_blocking += check_bak_direct(bak_path)
     classification = classify_findings(result, direct_blocking)
     return result, classification
 

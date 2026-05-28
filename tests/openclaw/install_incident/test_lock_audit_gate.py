@@ -22,7 +22,6 @@ from worthless.openclaw.audit import (
     BlockingFinding,
     _AUTH_PROFILES_MAX_DEPTH,
     check_auth_profiles_direct,
-    check_bak_direct,
     classify_findings,
     format_gate_error_message,
     parse_audit_result,
@@ -1219,86 +1218,3 @@ class TestNonProviderPlaintextScope:
         assert len(classification.blocking) == 0
         assert classification.advisory_count == 1
         assert len(classification.unknown_codes) == 0
-
-
-# --------------------------------------------------------------------------- #
-# check_bak_direct — openclaw.json.bak shard-A residue detection               #
-# --------------------------------------------------------------------------- #
-
-# Synthetic shard-A value that matches KEY_PATTERN (sk-ant- prefix + 10+ chars).
-_BAK_SHARD_A = "sk-ant-api03realcachedkey0000000000000000000000000"
-
-
-class TestCheckBakDirect:
-    def test_no_bak_file_returns_empty(self, tmp_path: Path) -> None:
-        """check_bak_direct returns [] when .bak does not exist — never blocks on absence."""
-        findings = check_bak_direct(bak_path=tmp_path / "openclaw.json.bak")
-        assert findings == []
-
-    def test_plaintext_shard_a_in_bak_is_blocking(self, tmp_path: Path) -> None:
-        """Shard-A value in .bak triggers a bak-direct BlockingFinding."""
-        bak = tmp_path / "openclaw.json.bak"
-        bak.write_text(
-            json.dumps({"providers": {"worthless-openai": {"apiKey": _BAK_SHARD_A}}}),
-            encoding="utf-8",
-        )
-        findings = check_bak_direct(bak_path=bak)
-        assert len(findings) == 1
-        assert findings[0].source == "bak-direct"
-        assert str(bak) in findings[0].file
-        assert "providers.worthless-openai.apiKey" == findings[0].json_path
-
-    def test_clean_bak_returns_empty(self, tmp_path: Path) -> None:
-        """A .bak with SecretRef values (no raw key) is not blocking."""
-        bak = tmp_path / "openclaw.json.bak"
-        bak.write_text(
-            json.dumps({"providers": {"worthless-openai": {"apiKey": "ref://vault/shard-a"}}}),
-            encoding="utf-8",
-        )
-        findings = check_bak_direct(bak_path=bak)
-        assert findings == []
-
-    def test_malformed_json_bak_silently_skipped(self, tmp_path: Path) -> None:
-        """A .bak that is not valid JSON is silently ignored — lock must not fail closed on it."""
-        bak = tmp_path / "openclaw.json.bak"
-        bak.write_text("{not: valid json}", encoding="utf-8")
-        findings = check_bak_direct(bak_path=bak)
-        assert findings == []
-
-    def test_multiple_keys_in_bak_all_reported(self, tmp_path: Path) -> None:
-        """Every plaintext key in .bak produces a separate BlockingFinding."""
-        bak = tmp_path / "openclaw.json.bak"
-        bak.write_text(
-            json.dumps(
-                {
-                    "providers": {
-                        "worthless-openai": {"apiKey": _BAK_SHARD_A},
-                        "worthless-anthropic": {"apiKey": _BAK_SHARD_A},
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-        findings = check_bak_direct(bak_path=bak)
-        assert len(findings) == 2
-        assert all(f.source == "bak-direct" for f in findings)
-
-    def test_run_and_classify_includes_bak_findings(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """run_and_classify propagates bak-direct blocking through to AuditClassification."""
-        bak = tmp_path / "openclaw.json.bak"
-        bak.write_text(
-            json.dumps({"providers": {"worthless-openai": {"apiKey": _BAK_SHARD_A}}}),
-            encoding="utf-8",
-        )
-        fake_bin = tmp_path / "openclaw"
-        fake_bin.write_text("#!/bin/sh\necho '{}'\n")
-        fake_bin.chmod(0o755)
-
-        clean_stdout = _audit_json(findings=[])
-        with patch("subprocess.run", return_value=_make_proc(clean_stdout)):
-            _, classification = run_and_classify(fake_bin, bak_path=bak)
-
-        assert len(classification.blocking) == 1
-        assert classification.blocking[0].source == "bak-direct"
