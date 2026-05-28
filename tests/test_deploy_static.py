@@ -34,6 +34,7 @@ ENTRYPOINT = DEPLOY_DIR / "entrypoint.sh"
 RAILWAY_TOML = DEPLOY_DIR / "railway.toml"
 RENDER_YAML = DEPLOY_DIR / "render.yaml"
 RELEASE_SYNC_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-sync-check.yml"
+PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish.yml"
 
 
 # ------------------------------------------------------------------
@@ -75,6 +76,18 @@ def compose_data() -> dict:
 def railway_data() -> dict:
     """Parsed railway.toml."""
     return tomllib.loads(RAILWAY_TOML.read_text())
+
+
+@pytest.fixture(scope="module")
+def publish_text() -> str:
+    """Raw publish.yml workflow content."""
+    return PUBLISH_WORKFLOW.read_text()
+
+
+@pytest.fixture(scope="module")
+def publish_data() -> dict:
+    """Parsed publish.yml workflow."""
+    return yaml.safe_load(PUBLISH_WORKFLOW.read_text())
 
 
 @pytest.fixture(scope="module")
@@ -1248,4 +1261,77 @@ class TestReleaseSyncResolutionBehaviour:
         assert not out.stdout.startswith("2020"), (
             f"tag date {out.stdout!r} is the commit date (2020), not the tag "
             "creation date — A5 must use creatordate, not commit date"
+        )
+
+
+# ------------------------------------------------------------------
+# publish.yml: signed-tag verification before publish (WOR-598)
+# ------------------------------------------------------------------
+
+
+class TestPublishTagVerification:
+    """publish.yml must verify the maintainer's GPG-signed tag BEFORE it
+    parses pyproject.toml or builds.
+
+    Today publish.yml builds + Trusted-Publishes to PyPI on ANY pushed `v*`
+    tag, while deploy-worker.yml already fail-closes on an unsigned tag — an
+    asymmetry where anyone who can push a tag gets a PyPI release. The verify
+    must be the FIRST step after checkout: the next step parses
+    attacker-controlled pyproject.toml and the build step runs its build
+    hooks (RCE surface), so the gate has to precede both.
+    """
+
+    def test_build_verifies_signed_tag_first(self, publish_data: dict):
+        steps = publish_data["jobs"]["build"]["steps"]
+        checkout_idx = next(
+            (i for i, s in enumerate(steps) if "checkout" in str(s.get("uses", "")).lower()),
+            None,
+        )
+        verify_idx = next(
+            (i for i, s in enumerate(steps) if "verify-tag.sh" in str(s.get("run", ""))),
+            None,
+        )
+        assert checkout_idx is not None, "publish.yml build job must check out the repo"
+        assert verify_idx is not None, (
+            "publish.yml build job must run .github/scripts/verify-tag.sh — PyPI "
+            "must publish only from a maintainer-GPG-signed tag (WOR-598)."
+        )
+        assert verify_idx == checkout_idx + 1, (
+            "verify-tag must be the FIRST step after checkout. Anything between "
+            "checkout and verify (the pyproject parse + build hooks) would run "
+            "against an unverified, attacker-pushable tag."
+        )
+
+    def test_verify_precedes_pyproject_parse(self, publish_data: dict):
+        steps = publish_data["jobs"]["build"]["steps"]
+        verify_idx = next(
+            (i for i, s in enumerate(steps) if "verify-tag.sh" in str(s.get("run", ""))),
+            None,
+        )
+        version_idx = next(
+            (
+                i
+                for i, s in enumerate(steps)
+                if "matches pyproject" in str(s.get("name", "")).lower()
+            ),
+            None,
+        )
+        assert verify_idx is not None
+        if version_idx is not None:
+            assert verify_idx < version_idx, (
+                "tag-signature verify must precede the pyproject.toml parse, which "
+                "reads attacker-controlled file contents."
+            )
+
+    def test_no_skip_path_triggers(self, publish_data: dict):
+        # PyYAML parses the bare `on:` key as the boolean True, so check both.
+        on_block = publish_data.get("on", publish_data.get(True))
+        assert isinstance(on_block, dict), "publish.yml must have an on: trigger mapping"
+        triggers = set(on_block.keys())
+        # workflow_dispatch / workflow_call would let the `if: event_name ==
+        # 'push'` guard on the verify step be skipped — publishing without a
+        # signature check. Triggers must stay push-tags-only.
+        assert triggers == {"push"}, (
+            f"publish.yml triggers must be push-only (got {sorted(triggers)}); "
+            "workflow_dispatch/workflow_call would bypass the signed-tag verify."
         )
