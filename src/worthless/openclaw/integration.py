@@ -1176,26 +1176,50 @@ def apply_unlock(
             events=tuple(events),
         )
 
-    # RT-03: config was deleted between lock and unlock. detect()'s
-    # presence verdict is OR(config, workspace) — a missing config alone
-    # leaves us with present=True (workspace still there). Surface the
-    # named event so doctor / --json can report it; skip Stage A but
-    # continue to Stage B since skill removal is still useful.
-    config_missing = not config_path.exists()
-    if config_missing:
+    # WOR-516 (symmetric guard): detect Docker two-UID topology before any
+    # writes, same as apply_lock. Unlike apply_lock, unlock must NOT raise
+    # (L1/L2 contract: unlock-core failures never abort the unlock).
+    # Surface a CONFIG_UNREADABLE event, skip Stage A, continue to Stage B
+    # (skill removal is still safe and useful regardless of config ownership).
+    config_state_unlock = _classify_config_state(config_path)
+    if config_state_unlock == "unreadable":
         events.append(
             OpenclawIntegrationEvent(
-                code=OpenclawErrorCode.CONFIG_MISSING,
-                level="warn",
+                code=OpenclawErrorCode.CONFIG_UNREADABLE,
+                level="error",
                 detail=(
-                    f"openclaw.json not found at {config_path} — provider entries "
-                    "already absent; skipping Stage A"
+                    f"openclaw.json at {config_path} is owned by a different user "
+                    "(Docker two-UID topology) — skipping provider removal"
                 ),
                 extra={"path": str(config_path)},
             )
         )
-        for provider, _alias in aliases:
-            providers_skipped.append((f"worthless-{provider}", "config_missing"))
+        for provider, alias in aliases:
+            providers_skipped.append((alias or f"worthless-{provider}", "config_unreadable"))
+        # Fall through to Stage B — skill removal doesn't touch the config.
+        config_missing = True  # prevents Stage A from running
+
+    else:
+        # RT-03: config was deleted between lock and unlock. detect()'s
+        # presence verdict is OR(config, workspace) — a missing config alone
+        # leaves us with present=True (workspace still there). Surface the
+        # named event so doctor / --json can report it; skip Stage A but
+        # continue to Stage B since skill removal is still useful.
+        config_missing = not config_path.exists()
+        if config_missing:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=OpenclawErrorCode.CONFIG_MISSING,
+                    level="warn",
+                    detail=(
+                        f"openclaw.json not found at {config_path} — provider entries "
+                        "already absent; skipping Stage A"
+                    ),
+                    extra={"path": str(config_path)},
+                )
+            )
+            for provider, _alias in aliases:
+                providers_skipped.append((f"worthless-{provider}", "config_missing"))
 
     # ---- Stage A: remove worthless-* provider entries --------------------
     # Skipped entirely when config_missing — providers_skipped already
@@ -1225,6 +1249,27 @@ def apply_unlock(
                     code=OpenclawErrorCode.SKILL_INSTALL_FAILED,
                     level="error",
                     detail=f"skill uninstall failed: {exc}",
+                )
+            )
+
+    # ---- Stage C: delete .bak (shard-A residue hygiene) ------------------
+    # The OpenClaw daemon writes openclaw.json.bak on every config write.
+    # After worthless lock, that backup contains shard-A in plaintext and
+    # persists indefinitely — the audit gate (filesScanned[]) never scans
+    # .bak paths.  Deleting it on unlock is minimal defense; a zero-residue
+    # guarantee requires the audit gate to also scan .bak (worthless-ca3m).
+    if config_path is not None:
+        bak_path = config_path.parent / (config_path.name + ".bak")
+        try:
+            bak_path.unlink()
+        except FileNotFoundError:
+            pass  # no .bak → nothing to do
+        except OSError as exc:
+            events.append(
+                OpenclawIntegrationEvent(
+                    code=OpenclawErrorCode.WRITE_FAILED,
+                    level="warn",
+                    detail=f"could not delete {bak_path}: {exc} — remove manually",
                 )
             )
 

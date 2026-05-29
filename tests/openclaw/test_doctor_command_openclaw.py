@@ -392,3 +392,63 @@ class TestSkillInstalledVersion:
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("No version here.\n", encoding="utf-8")
         assert _skill_installed_version(skill_dir) is None
+
+
+# ---------------------------------------------------------------------------
+# SP6 — recovery_note schema: every findings entry must have a str "issue"
+# ---------------------------------------------------------------------------
+
+
+class TestRecoveryNoteSchema:
+    """SP6: the recovery_note appended to every doctor findings list must have
+    ``"issue"`` as a non-None string so any consumer doing ``f["issue"].lower()``
+    doesn't crash on the last entry.
+    """
+
+    def test_all_findings_have_string_issue_field(self, tmp_path) -> None:
+        """Every entry in the findings list returned by the openclaw doctor check
+        must have ``issue`` as a str (possibly empty), never None.
+
+        Catches the bug where recovery_note was appended with ``"issue": None``
+        while all other findings have ``"issue": str``.
+        """
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        from worthless.cli.commands.doctor.checks.openclaw import run  # noqa: PLC0415
+
+        ctx = MagicMock()
+        ctx.dry_run = False
+        ctx.fix = False
+
+        # run() imports _check_skill, _check_providers, is_orphan from the
+        # parent doctor package at call-time, so patches must target that module.
+        with (
+            patch(
+                "worthless.cli.commands.doctor.checks.openclaw._audit_gate_findings",
+                return_value=[],
+            ),
+            patch(
+                "worthless.cli.commands.doctor.checks.openclaw._oc_integration.detect",
+                return_value=_make_state(present=True, workspace_path=tmp_path),
+            ),
+            patch(
+                "worthless.cli.commands.doctor._check_skill",
+                return_value=([], []),
+            ),
+            patch(
+                "worthless.cli.commands.doctor._check_providers",
+                return_value=[],
+            ),
+            patch(
+                "worthless.cli.commands.doctor.is_orphan",
+                return_value=False,
+            ),
+        ):
+            result = run(ctx)
+
+        # CheckResult is a TypedDict — access via subscript, not attribute
+        for i, finding in enumerate(result["findings"]):
+            assert "issue" in finding, f"finding[{i}] missing 'issue' key: {finding}"
+            assert isinstance(finding["issue"], str), (
+                f"finding[{i}]['issue'] must be str, got {type(finding['issue'])!r}: {finding}"
+            )

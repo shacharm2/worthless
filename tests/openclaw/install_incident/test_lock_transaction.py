@@ -5,6 +5,7 @@ All tests MUST FAIL before implementation (no LockPlan, no config_state, no roll
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -547,6 +548,53 @@ def test_sp3_unreadable_error_message_names_uid_cause(openclaw_config, mock_stat
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# SP-UL  apply_unlock symmetric UID guard
+# ---------------------------------------------------------------------------
+
+
+def test_sp_ul_apply_unlock_skips_gracefully_on_uid_mismatch(openclaw_config, mock_state):
+    """apply_unlock must skip provider removal (not raise) when openclaw.json
+    is owned by a different UID — symmetric with apply_lock's guard.
+
+    apply_lock raises OpenclawConfigUnreadableError (hard abort, user-facing).
+    apply_unlock must NOT raise (unlock-core contract: L1/L2 say failures here
+    never cause unlock to fail) — instead it surfaces a CONFIG_UNREADABLE event
+    and skips Stage A, leaving the config untouched.
+    """
+    from worthless.openclaw.errors import OpenclawErrorCode
+
+    real_st = openclaw_config.stat()
+    sha_before = hashlib.sha256(openclaw_config.read_bytes()).hexdigest()
+
+    class _FakeStat:
+        st_uid = os.geteuid() + 999
+        st_mode = real_st.st_mode
+
+    aliases = [("openai", "worthless-openai"), ("anthropic", "worthless-anthropic")]
+
+    with (
+        patch("os.stat", return_value=_FakeStat()),
+        patch("os.access", return_value=True),
+        patch.object(_integration, "detect", return_value=mock_state),
+    ):
+        result = _integration.apply_unlock(aliases)
+
+    # Must not raise — unlock-core L1/L2 contract
+    sha_after = hashlib.sha256(openclaw_config.read_bytes()).hexdigest()
+    assert sha_before == sha_after, (
+        "apply_unlock must not touch openclaw.json when config is unreadable"
+    )
+    assert result.has_failure, "UID mismatch must set has_failure on the result"
+    event_codes = [e.code for e in result.events]
+    assert OpenclawErrorCode.CONFIG_UNREADABLE in event_codes, (
+        f"expected CONFIG_UNREADABLE event, got: {event_codes}"
+    )
+    assert all(reason == "config_unreadable" for _, reason in result.providers_skipped), (
+        "all providers must be skipped with reason='config_unreadable'"
+    )
+
+
 def test_sp5_rollback_noop_when_original_was_absent(tmp_path):
     """SP5 (regression): rollback_config with empty original_config must NOT
     write {} to disk.
@@ -576,4 +624,76 @@ def test_sp5_rollback_noop_when_original_was_absent(tmp_path):
     rollback_config(absent_path, {})
     assert not absent_path.exists(), (
         "rollback_config({}) must delete any partial file created during the failed lock"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stage C: .bak cleanup on apply_unlock
+# ---------------------------------------------------------------------------
+
+
+def test_stage_c_bak_deleted_on_unlock(openclaw_config, mock_state):
+    """Stage C: apply_unlock deletes openclaw.json.bak when it exists.
+
+    The OpenClaw daemon writes .bak on every config change.  After worthless
+    lock, that backup contains shard-A in plaintext.  Stage C removes it on
+    unlock so it doesn't linger as residue after the key is restored.
+    """
+    bak_path = openclaw_config.parent / (openclaw_config.name + ".bak")
+    bak_path.write_text('{"residue": "shard-A-here"}')
+    assert bak_path.exists(), "pre-condition: .bak must exist before unlock"
+
+    with patch.object(_integration, "detect", return_value=mock_state):
+        result = _integration.apply_unlock(aliases=[])
+
+    assert result.detected
+    assert not bak_path.exists(), (
+        "Stage C must delete openclaw.json.bak on unlock; shard-A residue must not persist"
+    )
+
+
+def test_stage_c_bak_missing_is_noop(openclaw_config, mock_state):
+    """Stage C: apply_unlock succeeds cleanly when .bak does not exist.
+
+    FileNotFoundError must be silently swallowed — no .bak means nothing
+    to clean up, and unlock-core must never fail because of this.
+    """
+    bak_path = openclaw_config.parent / (openclaw_config.name + ".bak")
+    assert not bak_path.exists(), "pre-condition: no .bak"
+
+    with patch.object(_integration, "detect", return_value=mock_state):
+        result = _integration.apply_unlock(aliases=[])
+
+    assert result.detected
+    assert not any("bak" in e.detail.lower() for e in result.events), (
+        "no error events when .bak is simply absent"
+    )
+
+
+def test_stage_c_bak_oserror_emits_warn_does_not_block(openclaw_config, mock_state):
+    """Stage C: an OSError on .bak deletion emits a WRITE_FAILED warn but
+    unlock-core still returns success (exit 0).
+
+    The L1/L2 contract is that unlock-core always succeeds.  A warn event
+    is emitted so doctor can surface it, but the provider removal already
+    committed before Stage C runs.
+    """
+    bak_path = openclaw_config.parent / (openclaw_config.name + ".bak")
+    bak_path.write_text("residue")
+
+    original_unlink = Path.unlink
+
+    def _raise_on_bak(self, missing_ok=False):
+        if self == bak_path:
+            raise OSError("permission denied")
+        original_unlink(self, missing_ok=missing_ok)
+
+    with patch.object(_integration, "detect", return_value=mock_state):
+        with patch.object(Path, "unlink", _raise_on_bak):
+            result = _integration.apply_unlock(aliases=[])
+
+    assert result.detected, "unlock must still report detected=True"
+    warn_codes = [e.code.value for e in result.events if e.level == "warn"]
+    assert any("write_failed" in c.lower() or "WRITE_FAILED" in c for c in warn_codes), (
+        "Stage C OSError must emit a WRITE_FAILED warn event"
     )

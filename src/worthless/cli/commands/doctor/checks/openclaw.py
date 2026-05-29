@@ -144,7 +144,7 @@ def run(ctx: CheckContext) -> CheckResult:
     # The note is low-signal when everything is healthy (status=ok) but
     # critical when a write-failed event appears in the findings list.
     recovery_note = {
-        "issue": None,
+        "issue": "",
         "note": (
             "If openclaw.json is damaged, recover from the OpenClaw "
             "backup file: ~/.openclaw/openclaw.json.bak "
