@@ -505,3 +505,75 @@ def test_a10_uid_mismatch_triggers_unreadable_without_permission_error(openclaw_
     assert state == "unreadable", (
         "UID mismatch must trigger 'unreadable' even when os.access returns True"
     )
+
+
+# ---------------------------------------------------------------------------
+# SP3  OpenclawConfigUnreadableError message names the root cause
+# ---------------------------------------------------------------------------
+
+
+def test_sp3_unreadable_error_message_names_uid_cause(openclaw_config, mock_state):
+    """SP3: the error message surfaced to the user must be actionable.
+
+    The message must reference the root cause (uid / different user / docker
+    topology) so the user knows how to fix it, not just that something failed.
+    Verified by probe-uid-gate.py at runtime; this test keeps it green through
+    future refactors of the error string.
+    """
+    from worthless.openclaw.errors import OpenclawConfigUnreadableError
+
+    real_st = openclaw_config.stat()
+
+    class _FakeStat:
+        st_uid = os.geteuid() + 999
+        st_mode = real_st.st_mode
+
+    with (
+        patch("os.stat", return_value=_FakeStat()),
+        patch("os.access", return_value=True),
+        patch.object(_integration, "detect", return_value=mock_state),
+    ):
+        with pytest.raises(OpenclawConfigUnreadableError) as exc_info:
+            _integration.apply_lock(PLANNED, proxy_base_url=PROXY_URL)
+
+    msg = str(exc_info.value).lower()
+    assert any(kw in msg for kw in ("uid", "different user", "docker", "owner")), (
+        f"error message must name the cause — got: {exc_info.value!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# SP5  rollback_config({}) — fresh-install case must not write {} to disk
+# ---------------------------------------------------------------------------
+
+
+def test_sp5_rollback_noop_when_original_was_absent(tmp_path):
+    """SP5 (regression): rollback_config with empty original_config must NOT
+    write {} to disk.
+
+    When config_state=='missing' the original file was absent. On write failure
+    the rollback must clean up any partial file, not create a new {} file.
+
+    Before the WOR-516 fix, _atomic_write_json was called unconditionally,
+    leaving an empty-dict file where no config should exist — corrupting a
+    fresh OpenClaw install on next daemon start.
+    """
+    from worthless.openclaw.integration import rollback_config
+
+    absent_path = tmp_path / ".openclaw" / "openclaw.json"
+    absent_path.parent.mkdir()
+
+    # Case A: file was never created — rollback must not create it.
+    assert not absent_path.exists()
+    rollback_config(absent_path, {})
+    assert not absent_path.exists(), (
+        "rollback_config({}) must not create a file when original was absent"
+    )
+
+    # Case B: a partial file was written before the failure — rollback must remove it.
+    absent_path.write_text('{"models": {"providers": {"partial-entry": {}}}}')
+    assert absent_path.exists()
+    rollback_config(absent_path, {})
+    assert not absent_path.exists(), (
+        "rollback_config({}) must delete any partial file created during the failed lock"
+    )

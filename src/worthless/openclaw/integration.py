@@ -681,10 +681,22 @@ def rollback_config(config_path: Path | None, original_config: dict) -> None:
     (:func:`worthless.openclaw.config._atomic_write_json`) that ``set_provider``
     itself uses.
 
+    If ``original_config`` is empty (the file was absent before the failed
+    lock attempt), any partial file created during the attempt is removed
+    rather than writing an empty ``{}`` to disk.
+
     Raises :class:`OSError` on disk-full or permission failure — the caller
     surfaces both the original write error and the rollback error via events.
     """
     if config_path is None:
+        return
+    if not original_config:
+        # File was absent before this lock attempt — delete any partial file
+        # written before the failure rather than leaving {} on disk.
+        try:
+            config_path.unlink()
+        except FileNotFoundError:
+            pass  # never created; nothing to clean up
         return
     _config_mod._atomic_write_json(config_path, original_config)
 
