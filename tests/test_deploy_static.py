@@ -1335,3 +1335,32 @@ class TestPublishTagVerification:
             f"publish.yml triggers must be push-only (got {sorted(triggers)}); "
             "workflow_dispatch/workflow_call would bypass the signed-tag verify."
         )
+
+
+# ------------------------------------------------------------------
+# install.sh pin ↔ pyproject version invariant (WOR-598, option iii guard)
+# ------------------------------------------------------------------
+
+
+class TestInstallPinMatchesPyproject:
+    """`install.sh`'s baked `WORTHLESS_VERSION_PIN` must equal pyproject's version.
+
+    The PR install-smoke override (`WORTHLESS_VERSION` on `pull_request`) installs
+    the latest *published* version so a release PR's not-yet-published pin doesn't
+    fail CI. This static guard ensures that convenience can't mask drift: the
+    baked pin must always match the package version this repo ships, so the
+    default `curl … | sh` installs exactly what we publish.
+    """
+
+    def test_pin_equals_pyproject_version(self):
+        install_text = (REPO_ROOT / "install.sh").read_text()
+        m = re.search(r'^WORTHLESS_VERSION_PIN="([^"]*)"', install_text, re.MULTILINE)
+        assert m, 'install.sh must declare WORTHLESS_VERSION_PIN="..."'
+        pin = m.group(1)
+        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+        version = pyproject["project"]["version"]
+        assert pin == version, (
+            f"install.sh pin {pin!r} != pyproject version {version!r}. "
+            "The default `curl | sh` must install the version this repo ships — "
+            "bump them together (scripts/bump-version.sh)."
+        )
