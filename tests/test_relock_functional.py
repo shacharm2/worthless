@@ -29,6 +29,7 @@ from typer.testing import CliRunner
 
 from worthless.cli.app import app as cli_app
 from worthless.cli.bootstrap import ensure_home
+from worthless.crypto.shard_signing import sign_shard_a
 from worthless.crypto.splitter import split_key_fp
 from worthless.proxy.app import create_app
 from worthless.proxy.config import ProxySettings
@@ -56,6 +57,7 @@ async def _build_proxy_app_with_token(
     settings: ProxySettings,
     repo: ShardRepository,
     auth_token: str | None,
+    signing_key_bytes: bytes | None = None,
 ):
     """Build proxy app pre-wired with a stable auth token (current 16x2 behavior)."""
     app = create_app(settings)
@@ -63,6 +65,8 @@ async def _build_proxy_app_with_token(
     app.state.db = db
     app.state.repo = repo
     app.state.proxy_auth_token = auth_token
+    if signing_key_bytes is not None:
+        app.state.signing_key = signing_key_bytes
     app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
     app.state.rules_engine = RulesEngine(
         rules=[
@@ -108,6 +112,42 @@ async def _enroll_16x2(
         sr.zero()
 
 
+async def _enroll_signed(
+    repo: ShardRepository,
+    alias: str,
+    api_key: str,
+    signing_key_bytes: bytes,
+    provider: str = "openai",
+    base_url: str = "https://api.openai.com/v1",
+) -> str:
+    """Enroll via target-state path: sign shard-A and store the signing nonce.
+
+    Returns the signed envelope as a UTF-8 string, ready to use as Bearer.
+    """
+    sr = split_key_fp(api_key, prefix="sk-", provider=provider)
+    try:
+        stored = StoredShard(
+            shard_b=bytearray(sr.shard_b),
+            commitment=bytearray(sr.commitment),
+            nonce=bytearray(sr.nonce),
+            provider=provider,
+        )
+        await repo.upsert_locked_shard(
+            alias,
+            stored,
+            prefix=sr.prefix,
+            charset=sr.charset,
+            base_url=base_url,
+        )
+        signed_env, env_nonce, env_expires = sign_shard_a(
+            sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+        )
+        await repo.store_signing_nonce(alias, env_nonce, env_expires)
+        return signed_env.decode("utf-8")
+    finally:
+        sr.zero()
+
+
 # ---------------------------------------------------------------------------
 # Test 1 — shard-A from openclaw.json works as Bearer (target state)
 # ---------------------------------------------------------------------------
@@ -118,6 +158,7 @@ async def test_relock_shard_a_in_openclaw_is_usable_as_bearer(
     tmp_db_path: str,
     fernet_key: bytes,
     tmp_path: Path,
+    signing_key_bytes: bytes,
 ) -> None:
     """Contract: shard-A is accepted as Bearer token (no stable-token mediation).
 
@@ -136,14 +177,15 @@ async def test_relock_shard_a_in_openclaw_is_usable_as_bearer(
     api_key = "sk-test-openclaw-key-abcdef1234"
     auth_token = secrets.token_urlsafe(32)
 
-    # Enroll via 16x2 path (current lock behavior) — writes shard_a_enc
-    shard_a_bytes = await _enroll_16x2(repo, alias, api_key)
-    shard_a_str = shard_a_bytes.decode("utf-8")
+    # Enroll via target-state path — signs shard_a and stores signing nonce.
+    shard_a_str = await _enroll_signed(repo, alias, api_key, signing_key_bytes)
 
     # In the target state openclaw.json would carry shard-A as apiKey.
     # An agent reads apiKey and sends it as Bearer.
     # Set proxy_auth_token so the proxy is in its current (16x2) operational state.
-    app, db = await _build_proxy_app_with_token(settings, repo, auth_token=auth_token)
+    app, db = await _build_proxy_app_with_token(
+        settings, repo, auth_token=auth_token, signing_key_bytes=signing_key_bytes
+    )
     try:
         with respx.mock:
             respx.post("https://api.openai.com/v1/chat/completions").respond(
@@ -157,7 +199,7 @@ async def test_relock_shard_a_in_openclaw_is_usable_as_bearer(
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                # Target state: send shard-A as Bearer — proxy must accept it.
+                # Target state: send signed shard-A envelope as Bearer — proxy must accept it.
                 resp = await client.post(
                     f"/{alias}/v1/chat/completions",
                     json={"model": "gpt-4", "messages": [{"role": "user", "content": "hi"}]},
@@ -182,12 +224,17 @@ async def test_relock_shard_a_in_openclaw_is_usable_as_bearer(
 async def test_relock_old_shard_a_rejected_after_relock(
     tmp_db_path: str,
     fernet_key: bytes,
+    signing_key_bytes: bytes,
 ) -> None:
     """After re-lock, shard-A₁ must return 401; shard-A₂ must return 200.
 
     Target-state mechanism: proxy verifies shard-A by reconstructing the key
     (XOR + commitment). After re-lock the DB has shard-B₂; XOR(shard-A₁,
     shard-B₂) fails the commitment check → 401. shard-A₂ passes → 200.
+
+    Phase 6 (worthless-1pua): signed envelopes are required. Re-lock also
+    generates a new signing nonce, invalidating shard-A₁'s envelope at
+    the nonce-check gate before the commitment check even fires.
 
     FAILS on 16x2 code: proxy validates the STABLE TOKEN, not shard-A.
     Both shard-A₁ and shard-A₂ produce 401 because they're not the stable
@@ -201,31 +248,21 @@ async def test_relock_old_shard_a_rejected_after_relock(
     api_key = "sk-relock-rotation-test-0123456789ab"
     auth_token = secrets.token_urlsafe(32)
 
-    # Lock 1: enroll, get shard-A₁
-    shard_a1_bytes = await _enroll_16x2(repo, alias, api_key)
-    shard_a1_str = shard_a1_bytes.decode("utf-8")
+    # Lock 1: enroll with signed envelope — nonce₁ stored in DB.
+    shard_a1_str = await _enroll_signed(repo, alias, api_key, signing_key_bytes)
 
-    # Lock 2: re-split and overwrite with upsert_locked_shard (what lock does on re-lock).
-    sr2 = split_key_fp(api_key, prefix="sk-", provider="openai")
-    try:
-        stored2 = StoredShard(
-            shard_b=bytearray(sr2.shard_b),
-            commitment=bytearray(sr2.commitment),
-            nonce=bytearray(sr2.nonce),
-            provider="openai",
-        )
-        await repo.upsert_locked_shard(
-            alias,
-            stored2,
-            prefix=sr2.prefix,
-            charset=sr2.charset,
-            base_url="https://api.openai.com/v1",
-        )
-        shard_a2_str = sr2.shard_a.decode("utf-8")
-    finally:
-        sr2.zero()
+    # Lock 2: re-enroll — new split, new signing nonce₂ replaces nonce₁ in DB.
+    # Phase 6 mechanism: shard-A₁'s envelope now fails the nonce check because
+    # nonce₁ is no longer the current nonce for this alias.
+    shard_a2_str = await _enroll_signed(repo, alias, api_key, signing_key_bytes)
 
-    app, db = await _build_proxy_app_with_token(settings, repo, auth_token=auth_token)
+    assert shard_a1_str != shard_a2_str, (
+        "test setup: two re-locks must produce different signed envelopes"
+    )
+
+    app, db = await _build_proxy_app_with_token(
+        settings, repo, auth_token=auth_token, signing_key_bytes=signing_key_bytes
+    )
     try:
         with respx.mock:
             respx.post("https://api.openai.com/v1/chat/completions").respond(
@@ -239,7 +276,7 @@ async def test_relock_old_shard_a_rejected_after_relock(
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                # Old shard-A₁ must be rejected (post-relock DB has shard-B₂)
+                # Old shard-A₁ must be rejected (nonce₁ revoked by lock 2)
                 resp_old = await client.post(
                     f"/{alias}/v1/chat/completions",
                     json={"model": "gpt-4", "messages": []},
@@ -247,6 +284,7 @@ async def test_relock_old_shard_a_rejected_after_relock(
                 )
                 assert resp_old.status_code == 401, (
                     f"Old shard-A₁ must be rejected after re-lock; got {resp_old.status_code}.\n"
+                    "Phase 6: nonce₁ is revoked when lock 2 stores nonce₂.\n"
                     "SHOULD FAIL on 16x2: stable-token path accepts auth_token regardless of "
                     "shard-A mismatch — shard-A isn't validated at all."
                 )

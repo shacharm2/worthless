@@ -235,6 +235,16 @@ def fernet_key() -> bytes:
 
 
 @pytest.fixture()
+def signing_key_bytes() -> bytes:
+    """A freshly generated 32-byte HMAC signing key for shard-A envelope tests.
+
+    Proxy test fixtures that bypass _lifespan must inject this into
+    app.state.signing_key so the Phase-6 envelope verification succeeds.
+    """
+    return os.urandom(32)
+
+
+@pytest.fixture()
 def sample_split_result(sample_api_key_bytes: bytes) -> SplitResult:
     """A real SplitResult produced from the sample API key."""
     return split_key(sample_api_key_bytes)

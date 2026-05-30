@@ -34,6 +34,7 @@ import httpx
 import pytest
 import respx
 
+from worthless.crypto.shard_signing import sign_shard_a
 from worthless.crypto.splitter import split_key_fp
 from worthless.proxy.app import _AUTH_BODY, create_app
 from worthless.proxy.config import ProxySettings
@@ -74,7 +75,7 @@ def _make_settings(tmp_db_path: str, fernet_key: bytes) -> ProxySettings:
     )
 
 
-async def _make_proxy_app(settings: ProxySettings, repo: ShardRepository):
+async def _make_proxy_app(settings: ProxySettings, repo: ShardRepository, signing_key_bytes: bytes):
     """Build a proxy app with state pre-initialised (ASGITransport skips lifespan).
 
     Sets proxy_auth_token = None to indicate target state (no stable token).
@@ -84,6 +85,7 @@ async def _make_proxy_app(settings: ProxySettings, repo: ShardRepository):
     db = await aiosqlite.connect(settings.db_path)
     app.state.db = db
     app.state.repo = repo
+    app.state.signing_key = signing_key_bytes
     app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
     app.state.rules_engine = RulesEngine(
         rules=[
@@ -105,9 +107,10 @@ async def _lock_alias(
     repo: ShardRepository,
     alias: str,
     api_key: str,
+    signing_key_bytes: bytes,
     base_url: str = _BASE_URL,
 ) -> str:
-    """Split *api_key* and upsert into DB. Returns shard-A as UTF-8 string."""
+    """Split *api_key* and upsert into DB. Returns signed shard-A envelope as UTF-8 string."""
     sr = split_key_fp(api_key, prefix="sk-", provider="openai")
     shard = StoredShard(
         shard_b=bytearray(sr.shard_b),
@@ -122,7 +125,11 @@ async def _lock_alias(
         charset=sr.charset,
         base_url=base_url,
     )
-    return sr.shard_a.decode("utf-8")
+    _signed_env, _env_nonce, _env_expires = sign_shard_a(
+        sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+    )
+    await repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+    return _signed_env.decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -138,17 +145,19 @@ async def attack_repo(tmp_db_path: str, fernet_key: bytes) -> ShardRepository:
 
 
 @pytest.fixture()
-async def attack_app(tmp_db_path: str, fernet_key: bytes, attack_repo: ShardRepository):
+async def attack_app(
+    tmp_db_path: str, fernet_key: bytes, attack_repo: ShardRepository, signing_key_bytes: bytes
+):
     settings = _make_settings(tmp_db_path, fernet_key)
-    app, db = await _make_proxy_app(settings, attack_repo)
-    yield app, attack_repo
+    app, db = await _make_proxy_app(settings, attack_repo, signing_key_bytes)
+    yield app, attack_repo, signing_key_bytes
     await app.state.httpx_client.aclose()
     await db.close()
 
 
 @pytest.fixture()
 async def attack_client(attack_app):
-    app, _ = attack_app
+    app, _repo, _signing_key = attack_app
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
@@ -171,8 +180,8 @@ async def test_bit_flipped_shard_a_rejected(attack_app, attack_client):
     16x2 stable-token check never authenticates any shard-A as Bearer → 401.
     The commitment check doesn't exist in 16x2; ALL shard-A values are blocked.
     """
-    _, repo = attack_app
-    shard_a_str = await _lock_alias(repo, _ALIAS_A, _API_KEY_A)
+    _, repo, signing_key_bytes = attack_app
+    shard_a_str = await _lock_alias(repo, _ALIAS_A, _API_KEY_A, signing_key_bytes)
     shard_a_bytes = bytearray(shard_a_str.encode("utf-8"))
 
     # Flip the last bit of the first byte
@@ -227,8 +236,8 @@ async def test_truncated_shard_a_rejected(attack_app, attack_client):
     because 16x2 validates the stable token, not shard-A. Both truncated and
     valid shard-A are indistinguishable to the current proxy.
     """
-    _, repo = attack_app
-    shard_a_str = await _lock_alias(repo, _ALIAS_A, _API_KEY_A)
+    _, repo, signing_key_bytes = attack_app
+    shard_a_str = await _lock_alias(repo, _ALIAS_A, _API_KEY_A, signing_key_bytes)
     truncated = shard_a_str[:-4]
 
     with respx.mock:
@@ -277,9 +286,9 @@ async def test_shard_a_from_different_alias_rejected(attack_app, attack_client):
     FAILS on 16x2: positive assertion fails — alias-B's own shard-A also gets
     401 because the 16x2 stable-token path is what authenticates, not shard-A.
     """
-    _, repo = attack_app
-    shard_a_for_a = await _lock_alias(repo, _ALIAS_A, _API_KEY_A)
-    shard_a_for_b = await _lock_alias(repo, _ALIAS_B, _API_KEY_B)
+    _, repo, signing_key_bytes = attack_app
+    shard_a_for_a = await _lock_alias(repo, _ALIAS_A, _API_KEY_A, signing_key_bytes)
+    shard_a_for_b = await _lock_alias(repo, _ALIAS_B, _API_KEY_B, signing_key_bytes)
 
     with respx.mock:
         respx.post(_UPSTREAM_CHAT).mock(return_value=httpx.Response(200, content=_OPENAI_SUCCESS))
@@ -327,12 +336,12 @@ async def test_replay_old_shard_a_after_relock_rejected(attack_app, attack_clien
     FAILS on 16x2: positive assertion fails — shard-A₂ also returns 401 because
     the 16x2 proxy never validates shard-A directly. Both are indistinguishable.
     """
-    _, repo = attack_app
+    _, repo, signing_key_bytes = attack_app
 
-    shard_a1 = await _lock_alias(repo, _ALIAS_A, _API_KEY_A)
+    shard_a1 = await _lock_alias(repo, _ALIAS_A, _API_KEY_A, signing_key_bytes)
 
     api_key_2 = "sk-attack-relock-rotated-9999ab"
-    shard_a2 = await _lock_alias(repo, _ALIAS_A, api_key_2)
+    shard_a2 = await _lock_alias(repo, _ALIAS_A, api_key_2, signing_key_bytes)
 
     assert shard_a1 != shard_a2, "test setup: two locks must produce different shard-A values"
 
@@ -380,8 +389,8 @@ async def test_empty_bearer_rejected(attack_app, attack_client):
 
     FAILS on 16x2: positive assertion fails — valid shard-A also returns 401.
     """
-    _, repo = attack_app
-    shard_a_str = await _lock_alias(repo, _ALIAS_A, _API_KEY_A)
+    _, repo, signing_key_bytes = attack_app
+    shard_a_str = await _lock_alias(repo, _ALIAS_A, _API_KEY_A, signing_key_bytes)
 
     with respx.mock:
         respx.post(_UPSTREAM_CHAT).mock(return_value=httpx.Response(200, content=_OPENAI_SUCCESS))
@@ -426,8 +435,8 @@ async def test_bearer_with_null_bytes_rejected(attack_app, attack_client):
     The test additionally proves null bytes are caught before they can
     corrupt downstream processing (no 500).
     """
-    _, repo = attack_app
-    shard_a_str = await _lock_alias(repo, _ALIAS_A, _API_KEY_A)
+    _, repo, signing_key_bytes = attack_app
+    shard_a_str = await _lock_alias(repo, _ALIAS_A, _API_KEY_A, signing_key_bytes)
     poisoned = shard_a_str + "\x00\x00\x00"
 
     with respx.mock:
@@ -469,7 +478,7 @@ async def test_bearer_with_null_bytes_rejected(attack_app, attack_client):
 
 @pytest.mark.asyncio
 async def test_commitment_check_prevents_reconstruction_with_wrong_shard_b(
-    tmp_db_path: str, fernet_key: bytes
+    tmp_db_path: str, fernet_key: bytes, signing_key_bytes: bytes
 ):
     """Corrupt shard_b_enc in DB after valid lock. Correct shard-A → 401, never 500.
 
@@ -491,7 +500,7 @@ async def test_commitment_check_prevents_reconstruction_with_wrong_shard_b(
     """
     repo = ShardRepository(tmp_db_path, bytearray(fernet_key))
     await repo.initialize()
-    shard_a_str = await _lock_alias(repo, _ALIAS_A, _API_KEY_A)
+    shard_a_str = await _lock_alias(repo, _ALIAS_A, _API_KEY_A, signing_key_bytes)
 
     # Corrupt shard_b_enc — invalid Fernet ciphertext
     async with aiosqlite.connect(tmp_db_path) as db:
@@ -502,7 +511,7 @@ async def test_commitment_check_prevents_reconstruction_with_wrong_shard_b(
         await db.commit()
 
     settings = _make_settings(tmp_db_path, fernet_key)
-    app, db_conn = await _make_proxy_app(settings, repo)
+    app, db_conn = await _make_proxy_app(settings, repo, signing_key_bytes)
 
     # Remove proxy_auth_token from app.state entirely so there is no stable-token
     # shortcut available — the post-revert path must handle this correctly.
@@ -566,10 +575,10 @@ async def test_all_401s_are_byte_identical(attack_app, attack_client):
     FAILS on 16x2: positive arm returns 401 — valid shard-A is indistinguishable
     from a forged one under the stable-token model.
     """
-    _, repo = attack_app
+    _, repo, signing_key_bytes = attack_app
 
-    shard_a_a = await _lock_alias(repo, _ALIAS_A, _API_KEY_A)
-    await _lock_alias(repo, _ALIAS_B, _API_KEY_B)
+    shard_a_a = await _lock_alias(repo, _ALIAS_A, _API_KEY_A, signing_key_bytes)
+    await _lock_alias(repo, _ALIAS_B, _API_KEY_B, signing_key_bytes)
 
     # Bit-flip alias-A's shard-A
     buf = bytearray(shard_a_a.encode("utf-8"))

@@ -15,6 +15,7 @@ import httpx
 import pytest
 import respx
 
+from worthless.crypto.shard_signing import sign_shard_a
 from worthless.crypto.splitter import split_key_fp
 from worthless.proxy.app import create_app
 from worthless.proxy.config import ProxySettings
@@ -40,11 +41,12 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes) -> ProxySettings:
 
 
 @pytest.fixture()
-async def proxy_app(proxy_settings: ProxySettings, repo):
+async def proxy_app(proxy_settings: ProxySettings, repo, signing_key_bytes: bytes):
     app = create_app(proxy_settings)
     db = await aiosqlite.connect(proxy_settings.db_path)
     app.state.db = db
     app.state.repo = repo
+    app.state.signing_key = signing_key_bytes
     app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
     app.state.rules_engine = RulesEngine(
         rules=[
@@ -64,7 +66,14 @@ async def proxy_client(proxy_app):
         yield client
 
 
-async def _enroll(repo: ShardRepository, alias: str, api_key: str, prefix: str, provider: str):
+async def _enroll(
+    repo: ShardRepository,
+    alias: str,
+    api_key: str,
+    prefix: str,
+    provider: str,
+    signing_key_bytes: bytes,
+):
     """Enroll a key and return (alias, shard_a_utf8, raw_api_key)."""
     sr = split_key_fp(api_key, prefix=prefix, provider=provider)
     shard = StoredShard(
@@ -76,13 +85,19 @@ async def _enroll(repo: ShardRepository, alias: str, api_key: str, prefix: str, 
     await repo.store(
         alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
     )
-    shard_a_utf8 = sr.shard_a.decode("utf-8")
+    _signed_env, _env_nonce, _env_expires = sign_shard_a(
+        sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+    )
+    await repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+    shard_a_utf8 = _signed_env.decode("utf-8")
     return alias, shard_a_utf8, api_key
 
 
 @pytest.fixture()
-async def enrolled_alias(repo):
-    return await _enroll(repo, "test-key", "sk-test-key-1234567890abcdef", "sk-", "openai")
+async def enrolled_alias(repo, signing_key_bytes: bytes):
+    return await _enroll(
+        repo, "test-key", "sk-test-key-1234567890abcdef", "sk-", "openai", signing_key_bytes
+    )
 
 
 # ------------------------------------------------------------------
@@ -296,10 +311,14 @@ class TestCrossAliasAttack:
     """Sending one alias's shard-A to a different alias's endpoint must fail."""
 
     @pytest.fixture()
-    async def two_aliases(self, repo):
+    async def two_aliases(self, repo, signing_key_bytes: bytes):
         """Enroll two different keys under different aliases."""
-        a = await _enroll(repo, "alias-a", "sk-keyAAAAAAAAAAAAAAAA", "sk-", "openai")
-        b = await _enroll(repo, "alias-b", "sk-keyBBBBBBBBBBBBBBBB", "sk-", "openai")
+        a = await _enroll(
+            repo, "alias-a", "sk-keyAAAAAAAAAAAAAAAA", "sk-", "openai", signing_key_bytes
+        )
+        b = await _enroll(
+            repo, "alias-b", "sk-keyBBBBBBBBBBBBBBBB", "sk-", "openai", signing_key_bytes
+        )
         return a, b
 
     async def test_cross_alias_shard_a_rejected(self, proxy_client: httpx.AsyncClient, two_aliases):

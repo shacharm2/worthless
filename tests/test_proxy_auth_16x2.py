@@ -17,6 +17,7 @@ import httpx
 import pytest
 import respx
 
+from worthless.crypto.shard_signing import sign_shard_a
 from worthless.proxy.app import create_app
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
@@ -32,6 +33,7 @@ async def _make_proxy_app(
     proxy_settings: ProxySettings,
     repo: ShardRepository,
     auth_token: str | None = None,
+    signing_key_bytes: bytes | None = None,
 ) -> tuple:
     """Build a proxy app with state pre-initialized (ASGITransport skips lifespan)."""
     app = create_app(proxy_settings)
@@ -39,6 +41,7 @@ async def _make_proxy_app(
     app.state.db = db
     app.state.repo = repo
     app.state.proxy_auth_token = auth_token  # worthless-16x2
+    app.state.signing_key = signing_key_bytes
     app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
     app.state.rules_engine = RulesEngine(
         rules=[
@@ -70,12 +73,12 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes) -> ProxySettings:
 
 
 @pytest.fixture()
-async def enrolled_16x2(repo: ShardRepository):
+async def enrolled_16x2(repo: ShardRepository, signing_key_bytes: bytes):
     """Enroll a test key using upsert_locked_shard.
 
     Post-16x2-revert: returns (alias, shard_a_str, raw_api_key).
-    shard_a_str is the format-preserving shard-A value that the client
-    presents as Authorization: Bearer on every request.
+    shard_a_str is the signed envelope that the client presents as
+    Authorization: Bearer on every request.
     """
     from worthless.crypto.splitter import split_key_fp
 
@@ -83,8 +86,6 @@ async def enrolled_16x2(repo: ShardRepository):
     api_key = "sk-test-16x2-key-abcdef1234567890"
 
     sr = split_key_fp(api_key, prefix="sk-", provider="openai")
-    # Capture shard_a before zeroing — this is what lives in openclaw.json
-    shard_a_str = sr.shard_a.decode("utf-8")
     stored = StoredShard(
         shard_b=bytearray(sr.shard_b),
         commitment=bytearray(sr.commitment),
@@ -98,6 +99,11 @@ async def enrolled_16x2(repo: ShardRepository):
         charset=sr.charset,
         base_url="https://api.openai.com/v1",
     )
+    _signed_env, _env_nonce, _env_expires = sign_shard_a(
+        sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+    )
+    await repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+    shard_a_str = _signed_env.decode("utf-8")
     sr.zero()
     return alias, shard_a_str, api_key.encode()
 
@@ -109,7 +115,7 @@ async def enrolled_16x2(repo: ShardRepository):
 
 @pytest.mark.asyncio
 async def test_16x2_valid_shard_a_reaches_upstream(
-    enrolled_16x2, repo: ShardRepository, proxy_settings: ProxySettings
+    enrolled_16x2, repo: ShardRepository, proxy_settings: ProxySettings, signing_key_bytes: bytes
 ) -> None:
     """A request with shard-A as Bearer is forwarded to the upstream.
 
@@ -117,7 +123,9 @@ async def test_16x2_valid_shard_a_reaches_upstream(
     (reconstruct_key_fp) instead of comparing a stable opaque token.
     """
     alias, shard_a_str, raw_api_key = enrolled_16x2
-    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=None)
+    app, db = await _make_proxy_app(
+        proxy_settings, repo, auth_token=None, signing_key_bytes=signing_key_bytes
+    )
 
     try:
         with respx.mock:
@@ -147,11 +155,13 @@ async def test_16x2_valid_shard_a_reaches_upstream(
 
 @pytest.mark.asyncio
 async def test_16x2_wrong_token_returns_401(
-    enrolled_16x2, repo: ShardRepository, proxy_settings: ProxySettings
+    enrolled_16x2, repo: ShardRepository, proxy_settings: ProxySettings, signing_key_bytes: bytes
 ) -> None:
     """A request with an incorrect token is rejected — constant-time compare (SR-07)."""
     alias, auth_token, _ = enrolled_16x2
-    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=auth_token)
+    app, db = await _make_proxy_app(
+        proxy_settings, repo, auth_token=auth_token, signing_key_bytes=signing_key_bytes
+    )
 
     try:
         async with httpx.AsyncClient(
@@ -170,11 +180,13 @@ async def test_16x2_wrong_token_returns_401(
 
 @pytest.mark.asyncio
 async def test_16x2_missing_bearer_returns_401(
-    enrolled_16x2, repo: ShardRepository, proxy_settings: ProxySettings
+    enrolled_16x2, repo: ShardRepository, proxy_settings: ProxySettings, signing_key_bytes: bytes
 ) -> None:
     """A 16x2 alias with no Authorization header returns 401."""
     alias, auth_token, _ = enrolled_16x2
-    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=auth_token)
+    app, db = await _make_proxy_app(
+        proxy_settings, repo, auth_token=auth_token, signing_key_bytes=signing_key_bytes
+    )
 
     try:
         async with httpx.AsyncClient(
@@ -192,7 +204,7 @@ async def test_16x2_missing_bearer_returns_401(
 
 @pytest.mark.asyncio
 async def test_16x2_no_auth_token_in_proxy_returns_401(
-    enrolled_16x2, repo: ShardRepository, proxy_settings: ProxySettings
+    enrolled_16x2, repo: ShardRepository, proxy_settings: ProxySettings, signing_key_bytes: bytes
 ) -> None:
     """Alias has shard_a_enc but proxy has no auth_token loaded → 401.
 
@@ -202,7 +214,9 @@ async def test_16x2_no_auth_token_in_proxy_returns_401(
     """
     alias, auth_token, _ = enrolled_16x2
     # Proxy starts with no token loaded
-    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=None)
+    app, db = await _make_proxy_app(
+        proxy_settings, repo, auth_token=None, signing_key_bytes=signing_key_bytes
+    )
 
     try:
         async with httpx.AsyncClient(
@@ -221,7 +235,7 @@ async def test_16x2_no_auth_token_in_proxy_returns_401(
 
 @pytest.mark.asyncio
 async def test_16x2_shard_a_bearer_no_restart_needed(
-    enrolled_16x2, repo: ShardRepository, proxy_settings: ProxySettings
+    enrolled_16x2, repo: ShardRepository, proxy_settings: ProxySettings, signing_key_bytes: bytes
 ) -> None:
     """Proxy started before lock (no stable token) works with shard-A Bearer.
 
@@ -232,7 +246,9 @@ async def test_16x2_shard_a_bearer_no_restart_needed(
     alias, shard_a_str, _ = enrolled_16x2
 
     # No stable token written — post-revert lock doesn't write one.
-    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=None)
+    app, db = await _make_proxy_app(
+        proxy_settings, repo, auth_token=None, signing_key_bytes=signing_key_bytes
+    )
 
     try:
         with respx.mock:
@@ -508,6 +524,7 @@ async def test_16x2_wrong_shard_a_returns_401(
     enrolled_16x2,
     repo: ShardRepository,
     proxy_settings: ProxySettings,
+    signing_key_bytes: bytes,
 ) -> None:
     """A wrong shard-A presented as Bearer returns 401.
 
@@ -516,7 +533,9 @@ async def test_16x2_wrong_shard_a_returns_401(
     (ShardTamperedError) and the proxy returns the uniform 401.
     """
     alias, shard_a_str, _ = enrolled_16x2
-    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=None)
+    app, db = await _make_proxy_app(
+        proxy_settings, repo, auth_token=None, signing_key_bytes=signing_key_bytes
+    )
 
     try:
         async with httpx.AsyncClient(
@@ -543,6 +562,7 @@ async def test_16x2_corrupt_shard_a_enc_returns_401(
     enrolled_16x2,
     repo: ShardRepository,
     proxy_settings: ProxySettings,
+    signing_key_bytes: bytes,
 ) -> None:
     """Corrupt shard_a_enc in DB (garbled Fernet token) must yield 401, not 500.
 
@@ -553,7 +573,9 @@ async def test_16x2_corrupt_shard_a_enc_returns_401(
     from worthless.proxy.errors import auth_error_response
 
     alias, auth_token, _ = enrolled_16x2
-    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=auth_token)
+    app, db = await _make_proxy_app(
+        proxy_settings, repo, auth_token=auth_token, signing_key_bytes=signing_key_bytes
+    )
 
     # Corrupt the shard_a_enc field directly in SQLite.
     async with aiosqlite.connect(proxy_settings.db_path) as raw_db:
@@ -593,6 +615,7 @@ async def test_16x2_shard_a_none_after_decrypt_returns_401(
     enrolled_16x2,
     repo: ShardRepository,
     proxy_settings: ProxySettings,
+    signing_key_bytes: bytes,
 ) -> None:
     """When decrypt_shard returns StoredShard with shard_a=None, proxy returns 401.
 
@@ -601,7 +624,9 @@ async def test_16x2_shard_a_none_after_decrypt_returns_401(
     and returns the uniform 401.
     """
     alias, auth_token, _ = enrolled_16x2
-    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=auth_token)
+    app, db = await _make_proxy_app(
+        proxy_settings, repo, auth_token=auth_token, signing_key_bytes=signing_key_bytes
+    )
 
     # Build a valid-looking StoredShard whose shard_a is None.
     null_shard_a_stored = StoredShard(
@@ -638,6 +663,7 @@ async def test_16x2_unknown_endpoint_returns_401(
     enrolled_16x2,
     repo: ShardRepository,
     proxy_settings: ProxySettings,
+    signing_key_bytes: bytes,
 ) -> None:
     """A 16x2 alias hitting an unknown endpoint path returns 401 (anti-enumeration).
 
@@ -646,7 +672,9 @@ async def test_16x2_unknown_endpoint_returns_401(
     must not raise — shard_a is None on the 16x2 path at that point.
     """
     alias, auth_token, _ = enrolled_16x2
-    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=auth_token)
+    app, db = await _make_proxy_app(
+        proxy_settings, repo, auth_token=auth_token, signing_key_bytes=signing_key_bytes
+    )
 
     try:
         async with httpx.AsyncClient(
@@ -673,6 +701,7 @@ async def test_16x2_concurrent_shard_a_requests_all_succeed(
     enrolled_16x2,
     repo: ShardRepository,
     proxy_settings: ProxySettings,
+    signing_key_bytes: bytes,
 ) -> None:
     """Five concurrent requests with shard-A all succeed.
 
@@ -680,7 +709,9 @@ async def test_16x2_concurrent_shard_a_requests_all_succeed(
     independently via commitment check. Concurrency must not race.
     """
     alias, shard_a_str, _ = enrolled_16x2
-    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=None)
+    app, db = await _make_proxy_app(
+        proxy_settings, repo, auth_token=None, signing_key_bytes=signing_key_bytes
+    )
 
     async def _one_request(client: httpx.AsyncClient) -> int:
         with respx.mock:
@@ -720,6 +751,7 @@ async def test_upstream_receives_raw_api_key_not_shard_a(
     enrolled_16x2,
     repo: ShardRepository,
     proxy_settings: ProxySettings,
+    signing_key_bytes: bytes,
 ) -> None:
     """Upstream Authorization header must carry Bearer <raw_api_key>, not shard-A.
 
@@ -733,7 +765,9 @@ async def test_upstream_receives_raw_api_key_not_shard_a(
     forwarded shard-A verbatim (bypassing reconstruction entirely).
     """
     alias, shard_a_str, raw_api_key = enrolled_16x2
-    app, db = await _make_proxy_app(proxy_settings, repo, auth_token=None)
+    app, db = await _make_proxy_app(
+        proxy_settings, repo, auth_token=None, signing_key_bytes=signing_key_bytes
+    )
 
     captured_auth: list[str] = []
 

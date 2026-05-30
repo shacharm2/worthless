@@ -35,6 +35,7 @@ from worthless.proxy.rules import (
     _estimate_input_tokens,
     _estimate_tokens,
 )
+from worthless.crypto.shard_signing import sign_shard_a
 from worthless.storage.repository import EncryptedShard, StoredShard
 
 
@@ -56,7 +57,7 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettin
 
 
 @pytest.fixture()
-async def enrolled_alias(repo, proxy_settings: ProxySettings):
+async def enrolled_alias(repo, proxy_settings: ProxySettings, signing_key_bytes: bytes):
     """Enroll a test key and return (alias, shard_a_utf8, raw_api_key)."""
     alias = "test-key"
     api_key = "sk-test-key-1234567890abcdef"
@@ -72,16 +73,21 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings):
         alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
     )
 
-    shard_a_utf8 = sr.shard_a.decode("utf-8")
+    _signed_env, _env_nonce, _env_expires = sign_shard_a(
+        sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+    )
+    await repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+    shard_a_utf8 = _signed_env.decode("utf-8")
     return alias, shard_a_utf8, api_key.encode()
 
 
 @pytest.fixture()
-async def proxy_app(proxy_settings: ProxySettings, repo):
+async def proxy_app(proxy_settings: ProxySettings, repo, signing_key_bytes: bytes):
     app = create_app(proxy_settings)
     db = await aiosqlite.connect(proxy_settings.db_path)
     app.state.db = db
     app.state.repo = repo
+    app.state.signing_key = signing_key_bytes
     app.state.httpx_client = httpx.AsyncClient(
         follow_redirects=False,
         trust_env=False,  # dupf.1: mirror the production lifespan setting
@@ -924,7 +930,9 @@ class TestUpstreamSanitization:
 
 class TestUpstreamSanitizationAnthropic:
     @respx.mock
-    async def test_anthropic_error_body_sanitized(self, proxy_app, tmp_path, fernet_key):
+    async def test_anthropic_error_body_sanitized(
+        self, proxy_app, tmp_path, fernet_key, signing_key_bytes: bytes
+    ):
         """Upstream Anthropic error bodies are sanitized to Anthropic format."""
         # Enroll an Anthropic key
         alias = "anthropic-key"
@@ -943,7 +951,11 @@ class TestUpstreamSanitizationAnthropic:
             charset=sr.charset,
             base_url="https://api.anthropic.com/v1",
         )
-        shard_a_utf8 = sr.shard_a.decode("utf-8")
+        _signed_env, _env_nonce, _env_expires = sign_shard_a(
+            sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+        )
+        await proxy_app.state.repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+        shard_a_utf8 = _signed_env.decode("utf-8")
 
         respx.post("https://api.anthropic.com/v1/messages").mock(
             return_value=httpx.Response(
@@ -1165,7 +1177,7 @@ class TestAntiEnumeration:
             assert resp.content == reference.content, f"{label} body differs from {reference_label}"
 
     async def test_tls_enforcement_returns_identical_401(
-        self, proxy_settings: ProxySettings, repo, enrolled_alias
+        self, proxy_settings: ProxySettings, repo, signing_key_bytes: bytes, enrolled_alias
     ):
         """TLS enforcement failure returns the same 401 as other failure modes."""
         tls_settings = replace(
@@ -1180,6 +1192,7 @@ class TestAntiEnumeration:
         try:
             app.state.db = db
             app.state.repo = repo
+            app.state.signing_key = signing_key_bytes
             app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
             app.state.rules_engine = RulesEngine(rules=[])
 
@@ -1266,7 +1279,7 @@ class TestCORSDenial:
     """CORS is explicitly denied — no Access-Control-Allow-Origin in responses."""
 
     @pytest.fixture()
-    async def cors_client(self, proxy_settings: ProxySettings, repo):
+    async def cors_client(self, proxy_settings: ProxySettings, repo, signing_key_bytes: bytes):
         """Client for CORS testing."""
         import aiosqlite
 
@@ -1276,6 +1289,7 @@ class TestCORSDenial:
         db = await aiosqlite.connect(proxy_settings.db_path)
         app.state.db = db
         app.state.repo = repo
+        app.state.signing_key = signing_key_bytes
         app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
         app.state.rules_engine = RulesEngine(
             rules=[
@@ -1319,6 +1333,7 @@ async def attack_scenario(
     tmp_db_path: str,
     fernet_key: bytes,
     tmp_path,
+    signing_key_bytes: bytes,
 ):
     """Enrolled key in DB, secure defaults (TLS required)."""
     from worthless.crypto.splitter import split_key_fp
@@ -1348,10 +1363,16 @@ async def attack_scenario(
         alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
     )
 
+    _signed_env, _env_nonce, _env_expires = sign_shard_a(
+        sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+    )
+    await repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+
     app = create_app(settings)
     db = await aiosqlite.connect(tmp_db_path)
     app.state.db = db
     app.state.repo = repo
+    app.state.signing_key = signing_key_bytes
     app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
     app.state.rules_engine = RulesEngine(
         rules=[
@@ -1360,7 +1381,7 @@ async def attack_scenario(
         ]
     )
 
-    shard_a_utf8 = sr.shard_a.decode("utf-8")
+    shard_a_utf8 = _signed_env.decode("utf-8")
     yield app, alias, shard_a_utf8, settings
     await app.state.httpx_client.aclose()
     await db.close()
@@ -2216,12 +2237,15 @@ class TestFailClosedSpendAccounting:
     """
 
     @pytest.fixture()
-    async def accounting_client(self, proxy_settings: ProxySettings, repo):
+    async def accounting_client(
+        self, proxy_settings: ProxySettings, repo, signing_key_bytes: bytes
+    ):
         """Proxy client wired with a real SpendCapRule for accounting tests."""
         app = create_app(proxy_settings)
         db = await aiosqlite.connect(proxy_settings.db_path)
         app.state.db = db
         app.state.repo = repo
+        app.state.signing_key = signing_key_bytes
         app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
         app.state.rules_engine = RulesEngine(
             rules=[
@@ -2338,13 +2362,16 @@ class TestRequestBodyLimit:
     """
 
     @pytest.fixture()
-    async def limited_proxy_app(self, proxy_settings: ProxySettings, repo):
+    async def limited_proxy_app(
+        self, proxy_settings: ProxySettings, repo, signing_key_bytes: bytes
+    ):
         """Proxy app with a tiny 1 KB body limit for fast tests."""
         small_settings = replace(proxy_settings, max_request_bytes=1024)
         app = create_app(small_settings)
         db = await aiosqlite.connect(small_settings.db_path)
         app.state.db = db
         app.state.repo = repo
+        app.state.signing_key = signing_key_bytes
         app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
         app.state.rules_engine = RulesEngine(
             rules=[
@@ -2507,13 +2534,16 @@ class TestResponseBufferCap:
     """
 
     @pytest.fixture()
-    async def small_resp_limit_app(self, proxy_settings: ProxySettings, repo):
+    async def small_resp_limit_app(
+        self, proxy_settings: ProxySettings, repo, signing_key_bytes: bytes
+    ):
         """Proxy app with a 512-byte response body limit for fast tests."""
         small_settings = replace(proxy_settings, max_response_bytes=512)
         app = create_app(small_settings)
         db = await aiosqlite.connect(small_settings.db_path)
         app.state.db = db
         app.state.repo = repo
+        app.state.signing_key = signing_key_bytes
         app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
         app.state.rules_engine = RulesEngine(
             rules=[
@@ -2721,7 +2751,9 @@ class TestDecoyTripwire:
     """
 
     @pytest.fixture()
-    async def decoy_enrolled(self, repo, proxy_settings: ProxySettings, tmp_path):
+    async def decoy_enrolled(
+        self, repo, proxy_settings: ProxySettings, tmp_path, signing_key_bytes: bytes
+    ):
         """Enroll a decoy alias: valid shard_a, mismatched shard_b/commitment.
 
         The mismatch guarantees reconstruction always fails, so the proxy
@@ -2762,11 +2794,17 @@ class TestDecoyTripwire:
             base_url="https://api.openai.com/v1",
         )
 
+        # Sign shard_a so the proxy auth gate accepts it
+        _signed_env, _env_nonce, _env_expires = sign_shard_a(
+            sr1.shard_a, alias, signing_key_bytes, prefix=sr1.prefix
+        )
+        await repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+
         # Mark as decoy: store sha256(shard_a_bytes)
         shard_a_bytes = bytes(sr1.shard_a)
         await repo.set_decoy_hash(alias, str(env_path), shard_a_bytes)
 
-        shard_a_utf8 = sr1.shard_a.decode("utf-8")
+        shard_a_utf8 = _signed_env.decode("utf-8")
         return alias, shard_a_utf8, shard_a_bytes
 
     async def test_decoy_key_triggers_alert_not_just_401(
@@ -2940,11 +2978,11 @@ class TestSSRFProtection:
     """
 
     @pytest.fixture()
-    async def _enroll_with_base_url(self, repo, proxy_settings):
+    async def _enroll_with_base_url(self, repo, proxy_settings, signing_key_bytes: bytes):
         """Helper to enroll an alias with an arbitrary base_url."""
 
         async def _do(alias: str, base_url: str) -> str:
-            """Enroll alias with base_url; return shard_a_utf8."""
+            """Enroll alias with base_url; return signed shard_a_utf8."""
             api_key = f"sk-ssrf-test-{alias}-1234567890"
             sr = split_key_fp(api_key, prefix="sk-", provider="openai")
             shard = StoredShard(
@@ -2960,7 +2998,11 @@ class TestSSRFProtection:
                 charset=sr.charset,
                 base_url=base_url,
             )
-            return sr.shard_a.decode("utf-8")
+            _signed_env, _env_nonce, _env_expires = sign_shard_a(
+                sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+            )
+            await repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+            return _signed_env.decode("utf-8")
 
         return _do
 

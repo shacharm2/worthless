@@ -21,6 +21,7 @@ import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from urllib.parse import urlparse
 
 import aiosqlite
@@ -33,6 +34,11 @@ from starlette.middleware.cors import CORSMiddleware
 
 from worthless.adapters.registry import get_adapter
 from worthless.adapters.types import INTERNAL_HEADER_PREFIX
+from worthless.crypto.shard_signing import (
+    ShardSigningError,
+    load_or_create_signing_key,
+    verify_and_extract,
+)
 from worthless.crypto.splitter import reconstruct_key, reconstruct_key_fp, secure_key
 from worthless.proxy.config import DeployMode, ProxySettings
 from worthless.proxy.errors import (
@@ -264,6 +270,12 @@ async def _lifespan(app: FastAPI):
     await repo.initialize()
     app.state.repo = repo
 
+    # Phase 6 (worthless-1pua): load or create signing key for shard-A envelope
+    # verification.  The key lives alongside the DB (same directory), so custom
+    # db_path overrides are respected without additional config.
+    _home_dir = Path(settings.db_path).parent
+    app.state.signing_key = load_or_create_signing_key(_home_dir)
+
     client = httpx.AsyncClient(
         follow_redirects=False,
         trust_env=False,  # dupf.1: ignore HTTP_PROXY/HTTPS_PROXY/NO_PROXY env vars
@@ -456,6 +468,43 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         if shard_a is None:
             await _await_response_floor(_t0, settings.min_response_ms)
             return _uniform_401()
+
+        # Phase 6 (worthless-1pua): verify HMAC envelope and DB nonce before
+        # the rules engine runs.  This is the gate that makes raw (unsigned)
+        # shard-A bytes worthless to an attacker who obtained them from a
+        # leaked .env — they cannot present the raw shard-A without the
+        # server-side signing key.
+        #
+        # Insertion point: AFTER alias + encrypted row are available (needed for
+        # prefix) but BEFORE the body is read and BEFORE any key material is
+        # touched.  All failure branches return the same _uniform_401() to
+        # prevent distinguishing "bad HMAC" from "alias not found".
+        _signing_key: bytes = request.app.state.signing_key
+        try:
+            _raw_shard_a, _env_nonce, _ = verify_and_extract(
+                shard_a,
+                alias,
+                _signing_key,
+                prefix=encrypted.prefix or "",
+            )
+        except ShardSigningError:
+            shard_a[:] = b"\x00" * len(shard_a)
+            await _await_response_floor(_t0, settings.min_response_ms)
+            return _uniform_401()
+
+        # DB nonce check: rejects envelopes whose nonce was revoked by a
+        # subsequent `worthless lock` (re-lock generates a fresh nonce, so
+        # stolen envelopes from before the re-lock are immediately invalid).
+        _nonce_valid = await repo.is_valid_signing_nonce(alias, _env_nonce)
+        # Zero signed envelope; raw bytes take over for all downstream paths.
+        shard_a[:] = b"\x00" * len(shard_a)
+        if not _nonce_valid:
+            await _await_response_floor(_t0, settings.min_response_ms)
+            return _uniform_401()
+
+        # From here, `shard_a` refers to the raw (pre-signing) bytes.
+        # All existing zeroing paths below correctly zero this bytearray.
+        shard_a = _raw_shard_a
 
         # Pre-read body ONCE before rules engine (WOR-182: eliminates
         # Starlette body-caching coupling — rules receive bytes, not stream).

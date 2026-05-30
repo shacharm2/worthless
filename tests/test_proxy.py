@@ -15,6 +15,7 @@ import httpx
 import pytest
 import respx
 
+from worthless.crypto.shard_signing import sign_shard_a
 from worthless.proxy.app import create_app
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.errors import ErrorResponse
@@ -39,7 +40,7 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettin
 
 
 @pytest.fixture()
-async def enrolled_alias(repo, proxy_settings: ProxySettings):
+async def enrolled_alias(repo, proxy_settings: ProxySettings, signing_key_bytes: bytes):
     """Enroll a test key and return (alias, shard_a_utf8, raw_api_key)."""
     from worthless.crypto.splitter import split_key_fp
     from worthless.storage.repository import StoredShard
@@ -58,12 +59,16 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings):
         alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
     )
 
-    shard_a_utf8 = sr.shard_a.decode("utf-8")
+    _signed_env, _env_nonce, _env_expires = sign_shard_a(
+        sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+    )
+    await repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+    shard_a_utf8 = _signed_env.decode("utf-8")
     return alias, shard_a_utf8, api_key.encode()
 
 
 @pytest.fixture()
-async def proxy_app(proxy_settings: ProxySettings, repo):
+async def proxy_app(proxy_settings: ProxySettings, repo, signing_key_bytes: bytes):
     """A proxy app with state pre-initialized (ASGITransport skips lifespan)."""
 
     from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule
@@ -73,6 +78,7 @@ async def proxy_app(proxy_settings: ProxySettings, repo):
     db = await aiosqlite.connect(proxy_settings.db_path)
     app.state.db = db
     app.state.repo = repo
+    app.state.signing_key = signing_key_bytes
     app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
     app.state.rules_engine = RulesEngine(
         rules=[
@@ -380,7 +386,7 @@ class TestTransparentRouting:
 
     @respx.mock
     async def test_anthropic_path_routes_to_anthropic(
-        self, repo, proxy_settings: ProxySettings, proxy_app
+        self, repo, proxy_settings: ProxySettings, proxy_app, signing_key_bytes: bytes
     ):
         """Enroll an Anthropic key and verify routing."""
         from worthless.crypto.splitter import split_key_fp
@@ -403,7 +409,11 @@ class TestTransparentRouting:
             base_url="https://api.anthropic.com/v1",
         )
 
-        shard_a_utf8 = sr.shard_a.decode("utf-8")
+        _signed_env, _env_nonce, _env_expires = sign_shard_a(
+            sr.shard_a, "ant-key", signing_key_bytes, prefix=sr.prefix
+        )
+        await repo.store_signing_nonce("ant-key", _env_nonce, _env_expires)
+        shard_a_utf8 = _signed_env.decode("utf-8")
 
         route = respx.post("https://api.anthropic.com/v1/messages").mock(
             return_value=httpx.Response(
@@ -506,7 +516,13 @@ class TestKeyNotInResponse:
 
 class TestSecurity:
     async def test_tls_enforcement_when_not_insecure(
-        self, tmp_db_path, fernet_key, repo, enrolled_alias, proxy_settings
+        self,
+        tmp_db_path,
+        fernet_key,
+        repo,
+        enrolled_alias,
+        proxy_settings,
+        signing_key_bytes: bytes,
     ):
         """Without allow_insecure, non-TLS requests are rejected."""
         from worthless.proxy.rules import RulesEngine
@@ -519,6 +535,7 @@ class TestSecurity:
         app = create_app(settings)
         # Manually set state
         app.state.repo = repo
+        app.state.signing_key = signing_key_bytes
         app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
         app.state.rules_engine = RulesEngine(rules=[])
 
@@ -578,7 +595,7 @@ class TestSettingsValidation:
 
 
 @pytest.fixture()
-async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo):
+async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo, signing_key_bytes: bytes):
     """Proxy app with an openai key enrolled using the provider-hash alias format."""
 
     from worthless.crypto.splitter import split_key_fp
@@ -598,10 +615,17 @@ async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo):
         alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
     )
 
+    _signed_env, _env_nonce, _env_expires = sign_shard_a(
+        sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+    )
+    await repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+    signed_shard_a = _signed_env
+
     app = create_app(proxy_settings)
     db = await aiosqlite.connect(proxy_settings.db_path)
     app.state.db = db
     app.state.repo = repo
+    app.state.signing_key = signing_key_bytes
     app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
     app.state.rules_engine = RulesEngine(
         rules=[
@@ -609,7 +633,7 @@ async def openai_enrolled_proxy(proxy_settings: ProxySettings, repo):
             RateLimitRule(default_rps=100.0, db_path=proxy_settings.db_path),
         ]
     )
-    yield app, alias, sr.shard_a
+    yield app, alias, signed_shard_a
     await app.state.httpx_client.aclose()
     await db.close()
 

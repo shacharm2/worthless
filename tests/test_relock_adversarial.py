@@ -24,6 +24,7 @@ import httpx
 import pytest
 import respx
 
+from worthless.crypto.shard_signing import sign_shard_a
 from worthless.crypto.splitter import split_key_fp
 from worthless.proxy.app import _AUTH_BODY, create_app
 from worthless.proxy.config import ProxySettings
@@ -62,12 +63,13 @@ def _make_settings(tmp_db_path: str, fernet_key: bytes) -> ProxySettings:
     )
 
 
-async def _make_proxy_app(settings: ProxySettings, repo: ShardRepository):
+async def _make_proxy_app(settings: ProxySettings, repo: ShardRepository, signing_key_bytes: bytes):
     """Build a proxy app with state pre-initialised (ASGITransport skips lifespan)."""
     app = create_app(settings)
     db = await aiosqlite.connect(settings.db_path)
     app.state.db = db
     app.state.repo = repo
+    app.state.signing_key = signing_key_bytes
     app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
     app.state.rules_engine = RulesEngine(
         rules=[
@@ -88,6 +90,7 @@ async def _do_relock(
     alias: str,
     api_key: str,
     base_url: str,
+    signing_key_bytes: bytes,
 ) -> tuple[str, bytes]:
     """Simulate a re-lock: split the key and upsert both shards atomically.
 
@@ -115,7 +118,11 @@ async def _do_relock(
         charset=sr.charset,
         base_url=base_url,
     )
-    shard_a_utf8 = sr.shard_a.decode("utf-8")
+    _signed_env, _env_nonce, _env_expires = sign_shard_a(
+        sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+    )
+    await repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+    shard_a_utf8 = _signed_env.decode("utf-8")
     return shard_a_utf8, api_key.encode()
 
 
@@ -132,17 +139,19 @@ async def adv_repo(tmp_db_path: str, fernet_key: bytes) -> ShardRepository:
 
 
 @pytest.fixture()
-async def adv_app(tmp_db_path: str, fernet_key: bytes, adv_repo: ShardRepository):
+async def adv_app(
+    tmp_db_path: str, fernet_key: bytes, adv_repo: ShardRepository, signing_key_bytes: bytes
+):
     settings = _make_settings(tmp_db_path, fernet_key)
-    app, db = await _make_proxy_app(settings, adv_repo)
-    yield app, adv_repo
+    app, db = await _make_proxy_app(settings, adv_repo, signing_key_bytes)
+    yield app, adv_repo, signing_key_bytes
     await app.state.httpx_client.aclose()
     await db.close()
 
 
 @pytest.fixture()
 def adv_client(adv_app):
-    app, _ = adv_app
+    app, _repo, _signing_key = adv_app
     transport = httpx.ASGITransport(app=app)
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
@@ -162,15 +171,15 @@ async def test_old_shard_a_rejected_after_relock(adv_app, adv_client):
     The old shard-A₁ paired with new shard-B₂ produces a mismatched commitment
     → must fail with 401, not 200 or 500.
     """
-    _, repo = adv_app
+    _, repo, signing_key_bytes = adv_app
 
     # First lock — enroll the alias with a fresh split
-    shard_a1, _ = await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL)
+    shard_a1, _ = await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL, signing_key_bytes)
 
     # Second lock — re-lock with the SAME underlying key but a new split
     # (new shard-A₂, new shard-B₂, new nonce/commitment).
     api_key2 = "sk-adv-test-key-RELOCKED-9876543"
-    shard_a2, _ = await _do_relock(repo, _ALIAS, api_key2, _BASE_URL)
+    shard_a2, _ = await _do_relock(repo, _ALIAS, api_key2, _BASE_URL, signing_key_bytes)
 
     # shard_a1 is now stale — it was valid before re-lock but is no longer.
     # The commitment in the DB now corresponds to the second split.
@@ -202,8 +211,8 @@ async def test_forged_shard_a_returns_uniform_401(adv_app, adv_client):
     Proves: the proxy handles malformed shard-A gracefully without leaking
     internal state through a 500 or a divergent error body.
     """
-    _, repo = adv_app
-    await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL)
+    _, repo, signing_key_bytes = adv_app
+    await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL, signing_key_bytes)
 
     # Random bytes encoded as hex — definitely not a valid shard-A for this alias
     forged_token = secrets.token_hex(32)
@@ -235,8 +244,8 @@ async def test_commitment_mismatch_never_calls_upstream(adv_app, adv_client):
     Proves: gate-before-reconstruct is enforced — key material never flows
     upstream when shard-A is invalid (SR-03).
     """
-    _, repo = adv_app
-    await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL)
+    _, repo, signing_key_bytes = adv_app
+    await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL, signing_key_bytes)
 
     forged_token = secrets.token_hex(32)
     upstream_called = False
@@ -272,14 +281,14 @@ async def test_second_lock_invalidates_first_shard_a(adv_app, adv_client):
     If only shard-B were updated, the commitment would mismatch the new
     shard-A → old shard-A might still reconstruct the old key → security hole.
     """
-    _, repo = adv_app
+    _, repo, signing_key_bytes = adv_app
 
     # First lock
-    shard_a1, raw_key1 = await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL)
+    shard_a1, raw_key1 = await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL, signing_key_bytes)
 
     # Second lock — different underlying key to force a new commitment
     api_key2 = "sk-adv-second-lock-9876543210ab"
-    shard_a2, raw_key2 = await _do_relock(repo, _ALIAS, api_key2, _BASE_URL)
+    shard_a2, raw_key2 = await _do_relock(repo, _ALIAS, api_key2, _BASE_URL, signing_key_bytes)
 
     assert shard_a1 != shard_a2, "test setup: re-lock must produce different shard-A"
 
@@ -313,7 +322,9 @@ async def test_second_lock_invalidates_first_shard_a(adv_app, adv_client):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_requests_around_relock_never_500(tmp_db_path: str, fernet_key: bytes):
+async def test_concurrent_requests_around_relock_never_500(
+    tmp_db_path: str, fernet_key: bytes, signing_key_bytes: bytes
+):
     """Two concurrent requests straddling a re-lock must each get 200 or 401, never 500.
 
     Proves: the ON CONFLICT DO UPDATE write is atomic from the proxy's POV.
@@ -327,10 +338,10 @@ async def test_concurrent_requests_around_relock_never_500(tmp_db_path: str, fer
     # First enrollment
     repo = ShardRepository(tmp_db_path, bytearray(fernet_key))
     await repo.initialize()
-    shard_a1, _ = await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL)
+    shard_a1, _ = await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL, signing_key_bytes)
 
     settings = _make_settings(tmp_db_path, fernet_key)
-    app, db = await _make_proxy_app(settings, repo)
+    app, db = await _make_proxy_app(settings, repo, signing_key_bytes)
 
     transport = httpx.ASGITransport(app=app)
 
@@ -357,7 +368,7 @@ async def test_concurrent_requests_around_relock_never_500(tmp_db_path: str, fer
             async def relock_task():
                 # Small delay so request A starts first
                 await asyncio.sleep(0.005)
-                return await _do_relock(repo, _ALIAS, api_key2, _BASE_URL)
+                return await _do_relock(repo, _ALIAS, api_key2, _BASE_URL, signing_key_bytes)
 
             results = await asyncio.gather(
                 request_with_shard(shard_a1),
@@ -418,12 +429,12 @@ async def test_uniform_401_body_across_all_relock_failure_paths(adv_app, adv_cli
 
     The reference body is _AUTH_BODY (pre-computed in app.py).
     """
-    _, repo = adv_app
+    _, repo, signing_key_bytes = adv_app
 
     # Enroll then re-lock to set up a stale shard-A
-    shard_a1, _ = await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL)
+    shard_a1, _ = await _do_relock(repo, _ALIAS, _API_KEY, _BASE_URL, signing_key_bytes)
     api_key2 = "sk-adv-uniform-second-1234567890"
-    _, _ = await _do_relock(repo, _ALIAS, api_key2, _BASE_URL)
+    _, _ = await _do_relock(repo, _ALIAS, api_key2, _BASE_URL, signing_key_bytes)
 
     forged_token = secrets.token_hex(32)
 

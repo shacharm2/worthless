@@ -23,6 +23,7 @@ import uvicorn
 from cryptography.fernet import Fernet
 
 from tests.helpers import fake_anthropic_key, fake_openai_key
+from worthless.crypto.shard_signing import load_or_create_signing_key, sign_shard_a
 from worthless.crypto.splitter import split_key_fp
 from worthless.proxy.app import create_app
 from worthless.proxy.config import ProxySettings
@@ -120,6 +121,9 @@ def live_proxy():
 
     # Enroll fake keys and collect shard_a tokens for Bearer auth
     shard_a_tokens: dict[str, str] = {}
+    # Use the same key that the proxy lifespan will derive from the tmpdir,
+    # so enrollment signatures match what the proxy verifies at runtime.
+    signing_key_bytes: bytes = load_or_create_signing_key(Path(tmpdir))
 
     prefixes = {"openai": "sk-proj-", "anthropic": "sk-ant-api03-"}
     # 8rqs Phase 5+6: each enrollment carries its own base_url. Point both at
@@ -137,6 +141,7 @@ def live_proxy():
         for provider, key_fn in [("openai", fake_openai_key), ("anthropic", fake_anthropic_key)]:
             api_key = key_fn()
             prefix = prefixes[provider]
+            alias = f"{provider}-contract"
             sr = split_key_fp(api_key, prefix=prefix, provider=provider)
             shard = StoredShard(
                 shard_b=bytearray(sr.shard_b),
@@ -145,7 +150,7 @@ def live_proxy():
                 provider=provider,
             )
             await repo.store_enrolled(
-                f"{provider}-contract",
+                alias,
                 shard,
                 var_name=f"{provider.upper()}_API_KEY",
                 env_path=None,
@@ -153,7 +158,11 @@ def live_proxy():
                 charset=sr.charset,
                 base_url=enrollment_base_urls[provider],
             )
-            shard_a_tokens[provider] = sr.shard_a.decode("utf-8")
+            _signed_env, _env_nonce, _env_expires = sign_shard_a(
+                sr.shard_a, alias, signing_key_bytes, prefix=sr.prefix
+            )
+            await repo.store_signing_nonce(alias, _env_nonce, _env_expires)
+            shard_a_tokens[provider] = _signed_env.decode("utf-8")
 
     asyncio.run(_enroll())
 

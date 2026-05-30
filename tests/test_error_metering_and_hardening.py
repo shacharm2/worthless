@@ -17,6 +17,7 @@ import httpx
 import pytest
 import respx
 
+from worthless.crypto.shard_signing import sign_shard_a
 from worthless.crypto.splitter import split_key_fp
 from worthless.proxy.app import create_app
 from worthless.proxy.config import ProxySettings
@@ -57,7 +58,7 @@ def proxy_settings(tmp_db_path: str, fernet_key: bytes, tmp_path) -> ProxySettin
 
 
 @pytest.fixture()
-async def enrolled_alias(repo, proxy_settings: ProxySettings):
+async def enrolled_alias(repo, proxy_settings: ProxySettings, signing_key_bytes: bytes):
     """Enroll a test key and return (alias, shard_a_utf8, raw_api_key)."""
     alias = "test-key"
     api_key = "sk-test-key-1234567890abcdef"
@@ -73,16 +74,25 @@ async def enrolled_alias(repo, proxy_settings: ProxySettings):
         alias, shard, prefix=sr.prefix, charset=sr.charset, base_url="https://api.openai.com/v1"
     )
 
-    shard_a_utf8 = sr.shard_a.decode("utf-8")
+    signed_envelope, env_nonce, env_expires_at = sign_shard_a(
+        bytearray(sr.shard_a),
+        alias,
+        signing_key_bytes,
+        prefix=sr.prefix,
+    )
+    await repo.store_signing_nonce(alias, env_nonce, env_expires_at)
+
+    shard_a_utf8 = signed_envelope.decode("utf-8")
     return alias, shard_a_utf8, api_key.encode()
 
 
 @pytest.fixture()
-async def proxy_app(proxy_settings: ProxySettings, repo):
+async def proxy_app(proxy_settings: ProxySettings, repo, signing_key_bytes: bytes):
     app = create_app(proxy_settings)
     db = await aiosqlite.connect(proxy_settings.db_path)
     app.state.db = db
     app.state.repo = repo
+    app.state.signing_key = signing_key_bytes
     app.state.httpx_client = httpx.AsyncClient(follow_redirects=False)
     app.state.rules_engine = RulesEngine(
         rules=[
