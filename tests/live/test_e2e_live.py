@@ -219,11 +219,12 @@ class TestAnthropicLive:
     """Lock a real Anthropic key, send a request through the proxy, verify response."""
 
     @pytest.mark.xfail(
-        strict=False,
+        strict=True,
         reason=(
             "Pre-existing proxy bug: worthless wrap returns empty response body "
             "on Anthropic /messages round-trip. Tracked separately; does not "
-            "indicate a regression in the live-gate or crypto code."
+            "indicate a regression in the live-gate or crypto code. "
+            "Remove this decorator when the proxy bug is fixed."
         ),
     )
     def test_anthropic_roundtrip(
