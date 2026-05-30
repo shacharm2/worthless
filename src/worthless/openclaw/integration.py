@@ -416,7 +416,7 @@ class OpenclawApplyResult:
     providers_skipped: tuple[tuple[str, str], ...] = ()
     skill_installed: bool = False
     events: tuple[OpenclawIntegrationEvent, ...] = field(default_factory=tuple)
-    original_config_snapshot: dict = field(default_factory=dict)
+    original_config_snapshot: dict | None = None
 
     @property
     def has_failure(self) -> bool:
@@ -601,7 +601,7 @@ class LockPlan:
     providers_to_add: tuple[str, ...]
     providers_to_skip: tuple[tuple[str, str], ...]
     skill_to_install: bool
-    original_config: dict
+    original_config: dict | None
 
     def to_dict(self) -> dict:
         """Return a JSON-serialisable representation for ``--dry-run`` output."""
@@ -635,16 +635,16 @@ def build_lock_plan(
             providers_to_add=(),
             providers_to_skip=(),
             skill_to_install=False,
-            original_config={},
+            original_config=None,
         )
 
     # Read the existing config once (for conflict detection + snapshot).
-    original_config: dict = {}
+    original_config: dict | None = None
     if config_state == "present":
         try:
             original_config = _config_mod.read_config(config_path)
         except Exception:
-            original_config = {}
+            original_config = None
 
     providers_to_add: list[str] = []
     providers_to_skip: list[tuple[str, str]] = []
@@ -673,7 +673,7 @@ def build_lock_plan(
     )
 
 
-def rollback_config(config_path: Path | None, original_config: dict) -> None:
+def rollback_config(config_path: Path | None, original_config: dict | None) -> None:
     """Atomically restore ``config_path`` to ``original_config``.
 
     Called when a mid-loop ``set_provider`` write fails so that the config is
@@ -681,16 +681,16 @@ def rollback_config(config_path: Path | None, original_config: dict) -> None:
     (:func:`worthless.openclaw.config._atomic_write_json`) that ``set_provider``
     itself uses.
 
-    If ``original_config`` is empty (the file was absent before the failed
-    lock attempt), any partial file created during the attempt is removed
-    rather than writing an empty ``{}`` to disk.
+    ``original_config=None`` means the file was absent before the lock attempt.
+    Any partial file created during the attempt is deleted.  ``{}`` means the
+    file existed with empty content and must be restored to ``{}``.
 
     Raises :class:`OSError` on disk-full or permission failure — the caller
     surfaces both the original write error and the rollback error via events.
     """
     if config_path is None:
         return
-    if not original_config:
+    if original_config is None:
         # File was absent before this lock attempt — delete any partial file
         # written before the failure rather than leaving {} on disk.
         try:
@@ -817,7 +817,7 @@ def _apply_lock_write_providers(
 
 def _apply_lock_rollback(
     config_path: Path,
-    original_config: dict,
+    original_config: dict | None,
     events: list[OpenclawIntegrationEvent],
     providers_set: list[str],
     providers_skipped: list[tuple[str, str]],
@@ -926,11 +926,60 @@ def apply_lock(
 
     # Snapshot the original config BEFORE any writes so rollback_config can
     # restore it atomically if a mid-loop set_provider fails.
-    original_config: dict = {}
+    # None = file was absent (rollback → delete any partial file).
+    # {}   = file existed with empty content (rollback → restore {}).
+    # Any other dict = restore that content.
+    original_config: dict | None = None
     if config_state == "present":
         try:
             original_config = _config_mod.read_config(config_path)
+        except OpenclawConfigError as exc:
+            # read_config wraps PermissionError as OpenclawConfigError.
+            # Two sub-cases both arrive here as config_state=="present":
+            #
+            # a) Directory locked (chmod 000 on parent dir): stat will also fail
+            #    → proceed so write attempt surfaces WRITE_FAILED (DV-01 path).
+            # b) File locked (chmod 000 on file itself, same UID): directory is
+            #    accessible so set_provider's permission_as_missing=True would
+            #    silently create a new file, overwriting siblings — the WOR-516
+            #    case (c) bug.  Abort now before any write happens.
+            #
+            # Distinguish via __cause__: PermissionError + stat succeeds → (b).
+            if isinstance(exc.__cause__, PermissionError):
+                try:
+                    config_path.stat()
+                    # Directory accessible → file-locked → abort.
+                    events.append(
+                        OpenclawIntegrationEvent(
+                            code=OpenclawErrorCode.CONFIG_UNREADABLE,
+                            level="error",
+                            detail=(
+                                f"openclaw.json at {config_path} exists but is not readable "
+                                "(permission denied) — aborting to avoid overwriting your config. "
+                                "Run: chmod u+r openclaw.json"
+                            ),
+                            extra={"path": str(config_path)},
+                        )
+                    )
+                    return OpenclawApplyResult(
+                        detected=True,
+                        config_path=config_path,
+                        workspace_path=state.workspace_path,
+                        skill_path=state.skill_path,
+                        providers_set=(),
+                        providers_skipped=tuple(
+                            (f"worthless-{p}", "config_unreadable") for p, *_ in planned_updates
+                        ),
+                        skill_installed=False,
+                        events=tuple(events),
+                        original_config_snapshot=None,
+                    )
+                except PermissionError:
+                    pass  # directory also locked → proceed, write will hit WRITE_FAILED
+            # All other read failures: proceed; set_provider surfaces WRITE_FAILED.
+            original_config = {}
         except Exception:
+            # Other exceptions (JSON decode error, OS error, etc.): proceed.
             original_config = {}
 
     _check_world_writable(config_path, events)

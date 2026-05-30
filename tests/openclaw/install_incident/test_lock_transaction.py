@@ -598,11 +598,11 @@ def test_sp_ul_apply_unlock_skips_gracefully_on_uid_mismatch(openclaw_config, mo
 
 
 def test_sp5_rollback_noop_when_original_was_absent(tmp_path):
-    """SP5 (regression): rollback_config with empty original_config must NOT
-    write {} to disk.
+    """SP5 (regression): rollback_config(path, None) must NOT write {} to disk.
 
-    When config_state=='missing' the original file was absent. On write failure
-    the rollback must clean up any partial file, not create a new {} file.
+    None is the sentinel for 'file was absent before this lock attempt'.
+    On write failure the rollback must clean up any partial file, not create
+    a new {} file.
 
     Before the WOR-516 fix, _atomic_write_json was called unconditionally,
     leaving an empty-dict file where no config should exist — corrupting a
@@ -615,19 +615,104 @@ def test_sp5_rollback_noop_when_original_was_absent(tmp_path):
 
     # Case A: file was never created — rollback must not create it.
     assert not absent_path.exists()
-    rollback_config(absent_path, {})
+    rollback_config(absent_path, None)
     assert not absent_path.exists(), (
-        "rollback_config({}) must not create a file when original was absent"
+        "rollback_config(None) must not create a file when original was absent"
     )
 
     # Case B: a partial file was written before the failure — rollback must remove it.
     absent_path.write_text('{"models": {"providers": {"partial-entry": {}}}}')
     assert absent_path.exists()
-    rollback_config(absent_path, {})
+    rollback_config(absent_path, None)
     assert not absent_path.exists(), (
-        "rollback_config({}) must delete any partial file created during the failed lock"
+        "rollback_config(None) must delete any partial file created during the failed lock"
     )
 
 
 # Stage C (.bak residue hygiene) tests removed — deferred to WOR-599.
 # Leave .bak alone until the daemon's crash-recovery semantics are understood.
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: rollback_config sentinel — {} vs None
+# These tests MUST FAIL before the fix (RED phase).
+# ---------------------------------------------------------------------------
+
+
+def test_fix1_rollback_restores_empty_config_file(tmp_path):
+    """rollback_config must RESTORE a file whose original content was {}.
+
+    Bug: `if not original_config:` treats {} (real empty file) the same as
+    None (file was absent) and deletes the file.  After the fix (None sentinel),
+    passing {} restores the file; only None means "delete".
+
+    RED: fails on current code because rollback_config({}) unlinks the file.
+    """
+    from worthless.openclaw.integration import rollback_config
+
+    config_path = tmp_path / "openclaw.json"
+    config_path.write_text("{}")  # file existed with content {}
+
+    rollback_config(config_path, {})  # original was {}
+
+    assert config_path.exists(), (
+        "rollback_config({}) must restore the file, not delete it — "
+        "{} is a valid original config, not the absent-file sentinel"
+    )
+    import json
+
+    assert json.loads(config_path.read_text()) == {}, "restored content must be {}"
+
+
+def test_fix1_rollback_deletes_when_original_was_none(tmp_path):
+    """rollback_config(path, None) must delete any partial file.
+
+    After the fix, None is the explicit sentinel for 'file was absent before
+    this lock attempt'.  A partial file written during the failed attempt must
+    be cleaned up.
+
+    RED: fails on current code because None is not yet the sentinel — the
+    function signature only accepts dict, so this documents the new contract.
+    """
+    from worthless.openclaw.integration import rollback_config
+
+    config_path = tmp_path / "openclaw.json"
+    config_path.write_text('{"partial": true}')  # partial write from failed lock
+
+    rollback_config(config_path, None)  # original was absent
+
+    assert not config_path.exists(), (
+        "rollback_config(None) must delete the partial file written during the failed attempt"
+    )
+
+
+def test_fix2_apply_lock_aborts_when_read_config_raises_oserror(openclaw_config, mock_state):
+    """apply_lock must abort with CONFIG_UNREADABLE when read_config raises OSError.
+
+    Bug: except Exception catches any read failure and silently sets
+    original_config={}, allowing the lock to proceed without a valid snapshot.
+    If a mid-write failure then triggers rollback_config({}, path), the entire
+    config is deleted.
+
+    After the fix: non-FileNotFoundError exceptions from read_config must surface
+    a CONFIG_UNREADABLE event and abort Stage A (no writes).
+
+    RED: fails on current code because apply_lock proceeds and writes providers.
+    """
+    from worthless.openclaw.errors import OpenclawErrorCode
+
+    original_bytes = openclaw_config.read_bytes()
+
+    with (
+        patch.object(_integration, "detect", return_value=mock_state),
+        patch.object(_integration._config_mod, "read_config", side_effect=OSError("NFS hiccup")),
+    ):
+        result = _integration.apply_lock(PLANNED, proxy_base_url=PROXY_URL)
+
+    assert openclaw_config.read_bytes() == original_bytes, (
+        "apply_lock must not write when read_config raises OSError"
+    )
+    event_codes = [e.code for e in result.events]
+    assert OpenclawErrorCode.CONFIG_UNREADABLE in event_codes, (
+        "apply_lock must emit CONFIG_UNREADABLE when read_config raises"
+    )
