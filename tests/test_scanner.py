@@ -101,3 +101,129 @@ class TestEnrollmentDataRemoved:
         import worthless.cli.scanner as scanner_mod
 
         assert not hasattr(scanner_mod, "load_enrollment_data")
+
+
+class TestScanGuards:
+    """Hang-guards for scan_files (worthless-c5kc).
+
+    A pre-commit hook calling ``worthless scan`` must NOT silently freeze on
+    a huge / slow / unreadable file. The contract these tests pin:
+      * oversize file → its prefix is still scanned + flagged ``truncated``
+        (so a key padded past the cap is still caught);
+      * past-deadline → scanning stops, findings so far are returned, and a
+        ``timeout`` skip is recorded (caller's job to fail-closed on it);
+      * unreadable file → recorded as ``unreadable`` instead of being silently
+        ``except OSError: continue``-d;
+      * normal small tree → no skips, behaviour unchanged.
+    """
+
+    # A high-entropy key that KEY_PATTERN + entropy threshold both accept.
+    REAL_KEY = "sk-proj-a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0u1V2"
+
+    def test_oversize_file_prefix_still_scanned_and_flagged_truncated(self, tmp_path: Path):
+        from worthless.cli.scanner import SkippedFile, scan_files
+
+        # Put the key in the FIRST 1 KB, then pad past a tiny cap. The prefix
+        # read must still yield a finding AND record ``truncated``.
+        f = tmp_path / "huge.env"
+        f.write_bytes(f"OPENAI_API_KEY={self.REAL_KEY}\n".encode() + b"x" * (8 * 1024))
+
+        skipped: list[SkippedFile] = []
+        findings = scan_files([f], max_file_bytes=2048, skipped=skipped)
+
+        assert any(x.provider == "openai" for x in findings), (
+            "prefix-scan must still catch a key in the first ``max_file_bytes`` bytes"
+        )
+        assert [(s.file, s.reason) for s in skipped] == [(str(f), "truncated")]
+
+    def test_past_deadline_returns_partial_and_records_timeout(self, tmp_path: Path):
+        import time
+
+        from worthless.cli.scanner import SkippedFile, scan_files
+
+        a = tmp_path / "a.env"
+        b = tmp_path / "b.env"
+        a.write_text(f"OPENAI_API_KEY={self.REAL_KEY}\n")
+        b.write_text(f"ANTHROPIC_API_KEY={self.REAL_KEY}\n")
+
+        # Deadline already in the past — first iteration must short-circuit
+        # before reading a.env. ``findings`` is empty, ``skipped`` carries
+        # exactly ONE timeout entry (the file that would have been scanned next).
+        past = time.monotonic() - 1.0
+        skipped: list[SkippedFile] = []
+        findings = scan_files([a, b], deadline=past, skipped=skipped)
+
+        assert findings == []
+        assert len(skipped) == 1
+        assert skipped[0].reason == "timeout"
+
+    def test_partial_findings_when_deadline_hits_mid_loop(self, tmp_path: Path, monkeypatch):
+        """First file scanned, deadline trips before second → 1 finding + 1 timeout skip."""
+        import worthless.cli.scanner as scanner_mod
+        from worthless.cli.scanner import SkippedFile, scan_files
+
+        a = tmp_path / "a.env"
+        b = tmp_path / "b.env"
+        a.write_text(f"OPENAI_API_KEY={self.REAL_KEY}\n")
+        b.write_text(f"ANTHROPIC_API_KEY={self.REAL_KEY}\n")
+
+        # Fake clock: first call (a's deadline check) returns 0.0, every later
+        # call returns 100.0 — so b's deadline check trips no matter how many
+        # ``time.monotonic()`` calls scanner.py adds in the future (logging,
+        # telemetry, etc.). Robust to refactors.
+        calls = {"n": 0}
+
+        def fake_monotonic() -> float:
+            calls["n"] += 1
+            return 0.0 if calls["n"] == 1 else 100.0
+
+        monkeypatch.setattr(scanner_mod.time, "monotonic", fake_monotonic)
+
+        skipped: list[SkippedFile] = []
+        findings = scan_files([a, b], deadline=1.0, skipped=skipped)
+
+        assert len(findings) == 1, "first file must have been scanned before deadline trip"
+        assert findings[0].file == str(a)
+        assert [s.reason for s in skipped] == ["timeout"]
+        assert skipped[0].file == str(b)
+
+    def test_nonexistent_file_silently_skipped(self, tmp_path: Path):
+        """A path that doesn't exist (typo or git-rm'd in pre-commit) is NOT a
+        hang risk — it's just absent. Stays silent so the pre-commit flow over
+        deleted files is unchanged."""
+        from worthless.cli.scanner import SkippedFile, scan_files
+
+        missing = tmp_path / "does-not-exist.env"
+        skipped: list[SkippedFile] = []
+        findings = scan_files([missing], skipped=skipped)
+
+        assert findings == []
+        assert skipped == []
+
+    def test_unreadable_existing_path_recorded(self, tmp_path: Path):
+        """A path that EXISTS but can't be read (here: a directory) IS a fail-
+        closed concern — we don't know what we missed. Recorded as ``unreadable``."""
+        from worthless.cli.scanner import SkippedFile, scan_files
+
+        # Passing a directory triggers IsADirectoryError, a subclass of OSError
+        # but NOT FileNotFoundError. Cross-platform; no chmod-tricks needed.
+        a_dir = tmp_path / "subdir"
+        a_dir.mkdir()
+
+        skipped: list[SkippedFile] = []
+        findings = scan_files([a_dir], skipped=skipped)
+
+        assert findings == []
+        assert [(s.file, s.reason) for s in skipped] == [(str(a_dir), "unreadable")]
+
+    def test_normal_small_tree_no_skips(self, tmp_path: Path):
+        from worthless.cli.scanner import SkippedFile, scan_files
+
+        f = tmp_path / ".env"
+        f.write_text(f"OPENAI_API_KEY={self.REAL_KEY}\n")
+
+        skipped: list[SkippedFile] = []
+        findings = scan_files([f], skipped=skipped)
+
+        assert len(findings) == 1
+        assert skipped == [], "a normal small file must not produce any skip entries"
