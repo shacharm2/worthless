@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Block `git push` / `gh pr create` when risky code lacks a fresh live round-trip.
+"""Block `git push` when risky code lacks a fresh live round-trip.
 
 Two modes:
 
   (hook)  No args. Reads a Claude Code PreToolUse JSON event on stdin. If the
-          tool command publishes code (`git push` / `gh pr create`), the diff to
-          be published touches risky paths, and there is no fresh live-PASS
-          matching the current risky-file content, emit a deny decision.
-          Otherwise allow. Stdlib-only and fast: a non-publish command returns in
-          microseconds and makes zero git calls, so it is safe on the Bash
-          matcher that fires for every command.
+          tool command pushes code (`git push`), the diff to be published touches
+          risky paths, and there is no fresh live-PASS matching the current
+          risky-file content, emit a deny decision. Otherwise allow.
+          Stdlib-only and fast: a non-push command returns in microseconds and
+          makes zero git calls, so it is safe on the Bash matcher that fires for
+          every command. `gh pr create` is intentionally not gated — opening a
+          PR is a review request, not a ship decision; merging is enforced by
+          GitHub's required status checks.
 
   --run   Run the real provider round-trip (`pytest -m live`) and, on success,
           write the evidence file the hook checks. This is the blessed way to
@@ -51,8 +53,10 @@ EVIDENCE_RELPATH = ".worthless/e2e-evidence.json"
 BASE_REF = "origin/main"
 EVIDENCE_SCHEMA = 1
 
-# Commands whose execution means "I am publishing this code".
-_PUBLISH_RE = re.compile(r"\bgit\s+push\b|\bgh\s+pr\s+create\b")
+# Commands whose execution means "I am pushing code to a remote branch".
+# `gh pr create` is intentionally excluded — opening a PR is a review request,
+# not a ship decision. Merging is enforced by GitHub's required status checks.
+_PUBLISH_RE = re.compile(r"\bgit\s+push\b")
 
 
 def _git(*args: str) -> str:
