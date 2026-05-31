@@ -85,13 +85,20 @@ _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
 )
 
 
-def _validate_upstream_url(url: str) -> bool:
+def _validate_upstream_url(url: str, *, allow_loopback: bool = False) -> bool:
     """Return True if url is safe to proxy upstream requests to.
 
     Checks the URL's hostname against a blocklist of loopback, link-local, and
     RFC 1918 private IP ranges. Only literal IPs in the URL are checked here;
     hostname-based URLs pass through (DNS rebinding is a documented residual risk,
     see _BLOCKED_NETWORKS comment above).
+
+    Args:
+        url: The upstream base URL to validate.
+        allow_loopback: When True, loopback addresses (127.x, ::1) are allowed.
+            Only set this when ``ProxySettings.allow_insecure=True`` — that flag
+            is a ConfigError in deploy_mode=public, so loopback cannot escape
+            to production.
 
     Returns False (block) on parse errors or empty hostnames.
     """
@@ -105,7 +112,16 @@ def _validate_upstream_url(url: str) -> bool:
         except ValueError:
             # Hostname (not a literal IP) — allowed at this layer.
             return True
-        return not any(addr in net for net in _BLOCKED_NETWORKS)
+        loopback_nets = {
+            ipaddress.ip_network("127.0.0.0/8"),
+            ipaddress.ip_network("::1/128"),
+        }
+        blocked = (
+            _BLOCKED_NETWORKS
+            if not allow_loopback
+            else tuple(net for net in _BLOCKED_NETWORKS if net not in loopback_nets)
+        )
+        return not any(addr in net for net in blocked)
     except Exception:
         logger.warning("SSRF check failed unexpectedly for url=%r; blocking", url)
         return False
@@ -451,7 +467,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         # Returns 502 so the operator knows the enrollment base_url is misconfigured,
         # without leaking which alias triggered it to unauthenticated callers
         # (only callers with a valid shard_a reach this point).
-        if not _validate_upstream_url(encrypted.base_url):
+        if not _validate_upstream_url(encrypted.base_url, allow_loopback=settings.allow_insecure):
             logger.warning(
                 "SSRF blocked: alias=%r base_url=%r points to a blocked IP range",
                 alias,
