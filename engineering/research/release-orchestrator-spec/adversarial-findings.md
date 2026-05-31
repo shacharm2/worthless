@@ -48,6 +48,35 @@
 | **F-11** | ✅ fixup #4 | `.release-state/` + `.release-audit/` not actually in `.gitignore` — markers leak via `git add -A` | P1 asserts `.gitignore` contains `.release-state/` and `.release-audit/` lines | P1 + R-6 |
 | **F-13** | ✅ fixup #4 | Tag message can inject markdown into Linear paste (`[click](evil)` lands in release comment) | 4.9 emitter HTML-escapes; R-16 regex forbids `[ ] ( ) < >` outside prefix | R-16 / 4.9 |
 
+## Open — 4-lens security panel findings (F-15..F-30, 2026-06-01)
+
+**See `SECURITY-PANEL.md`** for full synthesis + per-lens overlap matrix + morning-options. **Diminishing-returns test: FAILED** (88% of findings distinct across 4 lenses).
+
+| ID | Sev | Source | Headline | Status |
+|---|---|---|---|---|
+| F-15 | CRIT | brutus | R-21 canary tests wrong ruleset (`refs/canary/*` doesn't trip `v-tags-signed`) | ⬜ |
+| F-16 | CRIT | IR | Audit log missing 8 witness fields (gpg-agent socket + tool SHA per call most damaging) | ⬜ |
+| F-17 | CRIT | IR | Audit log local-only — zero offsite copy survives compromise | ⬜ |
+| F-18 | CRIT | IR | Mid-window compromise has no recovery — IR can't know which tag mid-push | ⬜ |
+| F-19 | HIGH | brutus | R-10 attestation chains to ref name, not GPG signature on tag | ⬜ |
+| F-20 | HIGH | brutus | §11 Tool Trust ignores LD_PRELOAD / DYLD_INSERT_LIBRARIES | ⬜ |
+| F-21 | HIGH | pentester | Watchdog re-arm race (parent never observes heartbeat death between fork and R3) | ⬜ |
+| F-22 | HIGH | pentester | jq + grep-of-MITM-stderr bypass of R-24 | ⬜ |
+| F-23 | HIGH | IR | Tag message lacks structured provenance trailer | ⬜ |
+| F-24 | HIGH | IR | Linear paste is prose; no structured IR sidecar | ⬜ |
+| F-25 | MED | brutus | "Offline-capable" claim misleading | ⬜ |
+| F-26 | MED | pentester | pip index ordering + multi-wheel docker mount | ⬜ |
+| F-27 | MED | pentester | CHANGELOG content can inject sed/awk/markdown at 4.5a | ⬜ |
+| F-28 | MED | auditor | n=1 signer / no segregation of duties (SOC 2 CC8.1 blocker) | ⬜ |
+| F-29 | MED | auditor | No SBOM / CVE scan gate before tag-push | ⬜ |
+| F-30 | LOW | auditor | Tool Trust pin refresh lacks upstream-signed-checksum citation | ⬜ |
+
+**Candidate new rules:** R-26 witnessed audit schema · R-27 offsite log shipping · R-28 tag provenance trailer · R-29 pre-window beacon · R-30 IR sidecar · R-31 co-signer · R-32 pin sourcing. **New gates:** P12 SBOM/CVE.
+
+**SLSA Build Level 3 achieved** (signed provenance via Trusted Publisher + GHA OIDC + R-10 attestation chains repo+tag). Gap to L4: two-party `main` review + reproducible builds + parameterless `publish.yml`.
+
+**SOC 2 audit-blocker:** CC8.1 change-management has n=1 signer (no segregation of duties). Every external audit sample will fail until R-31 lands.
+
 ## Cross-cutting (raised by reviewer)
 
 F-1, F-2, F-9 together: the spec needs an explicit "Tool Trust" section listing **every external binary** the script depends on (`gh`, `gpg`, `docker`, `pip`, `awk`, `jq`, `sha256sum`, `python3`, `curl`) with the pinning strategy per binary. Currently R-14 covers only the 3 release scripts themselves — leaves toolchain as implicit ambient trust. Address as part of F-1 fix (new SPEC §11 will list all binaries).
