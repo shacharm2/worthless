@@ -239,8 +239,8 @@
     <div class="step-body">
       <h2>Worthless splits it in half</h2>
       <p>Run <code>worthless lock</code>. Your key gets split into two random-looking pieces. One stays in your .env. The other goes to a local proxy on your machine. Neither piece works on its own.</p>
-      <p>Someone steals your .env? They get random bytes. Can't use it. Can't brute-force it. Mathematically impossible.</p>
-      <details><summary>wait, how is it impossible?</summary><p>It's called XOR secret sharing. Think of it like tearing a photo in half — each piece looks like random noise. You need both halves to see the picture. The math guarantees that one half reveals zero information about the original. Not "hard to guess" — literally zero. Even with every computer on earth running forever.</p></details>
+      <p>Someone steals your .env? They get random bytes — the stored share alone reveals nothing about the original key. Information-theoretically secure.</p>
+      <details><summary>how does that work?</summary><p>It's called XOR secret sharing. Think of it like tearing a photo in half — each piece looks like random noise. You need both halves to see the picture. One half, on its own, reveals zero bits about the original — this is the textbook definition of "information-theoretic security." The catch: the property only holds while the other half is held somewhere the attacker can't reach.</p></details>
     </div>
   </div>
 
@@ -249,7 +249,7 @@
     <div class="step-body">
       <h2>Your app works exactly the same</h2>
       <p>Run <code>worthless wrap python app.py</code> instead of <code>python app.py</code>. That's the only change. Your code reads environment variables like before. The proxy combines both halves for a split second, makes the API call, then destroys the key.</p>
-      <details><summary>what happens under the hood?</summary><p>The proxy sits between your app and the API provider. When your app makes a request, the proxy grabs both halves, XORs them back together, makes the real API call, gets the response, wipes the key from memory, and passes the response to your app. The full key exists for milliseconds. Your app never sees it.</p></details>
+      <details><summary>what happens under the hood?</summary><p>The proxy sits between your app and the API provider. When your app makes a request, the proxy combines both halves, makes the real API call, and passes the response to your app. The reconstructed key is held only for the upstream call. (Python PoC: see <a href="security-model.md">documented memory-zeroing limitations</a> in the security model.) Your app never sees the key.</p></details>
     </div>
   </div>
 
@@ -257,7 +257,7 @@
     <div class="step-rail"><div class="step-num">04</div><div class="step-line"></div></div>
     <div class="step-body">
       <h2>Spending cap stops the bleeding</h2>
-      <p>Set a dollar limit. Hit it, the proxy stops reconstructing the key. Hard stop. Your app can't override it. Even if someone somehow gets both halves, the budget gate fires first.</p>
+      <p>Set a dollar limit. Hit it, the proxy refuses to reconstruct the key. Your app can't override it. Note: pre-request cost estimation may allow a single in-flight request to exceed the cap by up to the cost of one call.</p>
       <details><summary>how is this different from OpenAI's spending limit?</summary><p>OpenAI's limit is checked after the request. Worthless checks before the key even forms. If you're over budget, the key never gets reconstructed. No API call happens. No money spent. The gate is at the infrastructure layer, not the provider's billing page.</p></details>
     </div>
   </div>

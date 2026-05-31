@@ -155,7 +155,7 @@
 
 <div class="page">
   <div class="eyebrow">Features</div>
-  <h1>Leaked key? $0 damage.</h1>
+  <h1>A leaked <code>.env</code> share can't call the provider on its own.</h1>
   <p class="intro">AI agents run <code>git add -A</code> and push your .env to GitHub. Vaults protect the key at rest, but it's still one piece, still in memory, still leaks. And your code has to change to use them. Worthless splits the key. Leaked half is useless. No code changes. Two commands.</p>
 
   <div class="feat-section">
@@ -165,7 +165,7 @@
 
   <div class="feat-section">
     <h2>Hard spending cap</h2>
-    <p>Set a dollar limit per key. Hit the cap, the proxy refuses to reconstruct. Not a soft warning. A hard stop. Your app can't override it. Even if both halves are somehow available, the budget gate fires first.</p>
+    <p>Set a dollar limit per key. Hit the cap, the proxy refuses to reconstruct. Your app can't override it. Note: pre-request cost estimation may allow a single in-flight request to exceed the cap by up to the cost of one call.</p>
   </div>
 
   <div class="feat-section">
@@ -198,9 +198,9 @@
       <tr><td>Capability</td><td>worthless</td><td>Vault / Secrets Mgr</td><td>detect-secrets</td><td>.gitignore</td></tr>
     </thead>
     <tbody>
-      <tr><td>Prevents commits with raw keys</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="ty">&#10003;</td><td class="tp">Partial</td></tr>
+      <tr><td>Blocks commits containing detected raw keys</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="ty">&#10003;</td><td class="tp">Partial</td></tr>
       <tr><td>Post-leak protection</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
-      <tr><td>Leaked key is cryptographically useless</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
+      <tr><td>Leaked <code>.env</code> share alone is cryptographically useless</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
       <tr><td>Budget / hard spending cap</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
       <tr><td>Zero code changes</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td></tr>
       <tr><td>Fully self-hosted</td><td class="ty">&#10003;</td><td class="tp">Optional</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td></tr>
