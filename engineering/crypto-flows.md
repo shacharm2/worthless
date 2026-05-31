@@ -21,7 +21,7 @@ Contributors touching `src/worthless/proxy/`, `src/worthless/crypto/`, or `src/w
 
 ## Architecture in one sentence
 
-The proxy runs as two Unix users in the blessed deployment: `worthless-proxy` handles HTTP, `worthless-crypto` holds the Fernet key and runs reconstruction primitives. They speak one IPC verb — `ipc.open(ciphertext, key_id)` — over a local Unix-domain socket authenticated by `SO_PEERCRED`. Auth lives in the proxy. Cryptographic key material lives in the sidecar.
+The proxy runs as two Unix users in the blessed deployment: `worthless-proxy` handles HTTP, `worthless-crypto` holds the Fernet key and runs reconstruction primitives. They speak one IPC verb — `ipc.open(ciphertext, key_id)` — over a local Unix-domain socket authenticated by `SO_PEERCRED`.
 
 ## Enrollment flow
 
@@ -127,7 +127,7 @@ No code path in the proxy uses `stored.shard_a` as a Bearer fallback. The reposi
 
 ### Code-vs-test gap (WOR-615)
 
-The invariant is structurally true but **not pinned by an adversarial regression test**. A future maintainer adding *"if Bearer is missing and `stored.shard_a` is not None, fall back to it for legacy rows"* would not be caught by CI.
+The invariant **currently relies on code review, not on tests**. A future maintainer adding *"if Bearer is missing and `stored.shard_a` is not None, fall back to it for legacy rows"* would not be caught by CI. A bypass would not be caught.
 
 [WOR-615](https://linear.app/plumbusai/issue/WOR-615) tracks:
 1. An adversarial regression test that inserts a row with `shard_a_enc = Fernet.encrypt(<real shard-A>)` (bypassing `upsert_locked_shard`), sends a request without `Authorization: Bearer`, and asserts 401 + no upstream call + no reconstruction.
@@ -162,12 +162,14 @@ What the design defends against, what falls, and what is explicitly out of scope
 | DB write attacker — swap `commitment` or `nonce` | **Defended** | Next legitimate request's reconstruction won't HMAC to the swapped commitment → 401. |
 | Cross-alias replay (shard-A from alias X to alias Y) | **Defended** | Y's stored commitment/nonce pair won't match the X-vs-Y XOR result. |
 | Old shard-A after key rotation | **Defended** | New shard_b + new commitment after relock → old shard-A reconstruction fails commitment. |
-| Tampered legacy `shard_a_enc` injection | **Defended structurally; not test-pinned** | Proxy auth path doesn't consume `stored.shard_a`. WOR-615 will pin this. |
+| Tampered legacy `shard_a_enc` injection | **Partial — unpinned** | Proxy auth path doesn't consume `stored.shard_a` today (verified by code review, not by CI). WOR-615 adds the regression test. |
 | Rules engine bug failing to deny | **Partial** | Commitment still catches tampered reconstruction. Does not catch a legitimate-key over-budget call — that's the rules gate's job. |
-| Sidecar runtime compromise (read-memory or RCE on the crypto uid) | **Falls** | Attacker has the Fernet key in memory. Defense-in-depth via Rust + seccomp planned for v2.0. |
+| Proxy-process compromise (RCE on uid `worthless-proxy`) | **Falls** | Attacker reads Bearer shard-A from incoming request headers as it arrives AND can call `ipc.open()` arbitrarily — SO_PEERCRED authorizes the proxy uid, so the IPC call is allowed. The wall protects the **Fernet key from disk/memory exfiltration**, not key reconstruction by a compromised proxy process. The rate-limiting + spend-cap rules engine remains as the only in-software backstop. (Note: this contradicts an overstated claim in `docs/security.md` non-goals row 6 — tracked in [WOR-618](https://linear.app/plumbusai/issue/WOR-618).) |
+| Sidecar runtime compromise (read-memory or RCE on the crypto uid) | **Falls** | Attacker has the Fernet key in memory. |
+| Commitment as offline brute-force oracle (after Fernet falls + DB stolen) | **Out of scope — infeasible** | Public commitment + nonce + decrypted shard-B let an attacker grind candidate shard-As against the HMAC offline. Real-key entropy (≥ 256 bits CSPRNG from the provider) makes brute force computationally infeasible. The oracle exists; the keyspace defeats it. |
 | TLS interception between sidecar and proxy | **Out of scope** | The IPC socket is local-only Unix-domain. Treated as inside the trust boundary. |
 | Pre-enrollment MITM | **Falls** | The intercepting party stores their own commitment for their own shards. Mitigation: TLS pinning + out-of-band verification at enrollment. |
-| Timing side-channel beyond HMAC compare | **Partial** | `hmac.compare_digest` is constant-time (SR-07). XOR loop and allocations are not. Documented in `docs/security.md` non-goals. |
+| Timing side-channel beyond HMAC compare | **Unknown** | `hmac.compare_digest` is constant-time (SR-07). XOR loop and allocations are not, and no timing-channel test exists. |
 
 ## Sidecar IPC — assumed perms
 
@@ -178,7 +180,7 @@ The Unix-domain socket between the proxy and the sidecar is treated as inside th
 | Path | `/run/worthless/sidecar.sock` (Docker) or per-install path | install scripts + sidecar startup |
 | Perms | `0660` | sidecar `umask` + post-bind `chmod` |
 | Owner | `worthless-crypto` | sidecar process effective uid |
-| Group | `worthless-proxy` | sidecar groupadd at image build |
+| Group | `worthless-crypto` | sidecar process effective gid; the `worthless-proxy` uid is added as a *member* of this group at image build so it can read/write the socket without owning it |
 | Authentication | `SO_PEERCRED` — sidecar reads the connecting process's effective uid and rejects any uid other than the proxy's | sidecar accept loop |
 
 If these perms drift (operator misconfiguration), any uid that is a member of `worthless-proxy`'s group could request decryption of arbitrary `shard_b_enc` blobs read from the DB. This is treated as a misconfiguration class, not a software vulnerability; install paths set perms correctly and operator audits should verify.
@@ -192,7 +194,8 @@ If these perms drift (operator misconfiguration), any uid that is a member of `w
 - `src/worthless/crypto/reconstruction.py:31-44` — `_verify_commitment`
 - `src/worthless/crypto/reconstruction.py:50-130` — `reconstruct_key_fp`
 - `src/worthless/storage/repository.py:176-233` — `fetch_encrypted`, `decrypt_shard` (incl. legacy `shard_a_enc` branch)
-- `src/worthless/cli/commands/lock.py:406` — `upsert_locked_shard` NULLs `shard_a_enc`
+- `src/worthless/cli/commands/lock.py:406` — `upsert_locked_shard` call site
+- `src/worthless/storage/repository.py:424` — actual `shard_a_enc = NULL` assertion inside `upsert_locked_shard`
 
 ### Tests
 - `tests/test_proxy_auth_16x2.py` — 19 proxy-auth tests pinning three sync guarantees + five SP-numbered hardening scenarios (WOR-549)

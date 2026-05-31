@@ -12,7 +12,6 @@ Linear ([WOR-257](https://linear.app/plumbusai/issue/WOR-257)).
 - To report a vulnerability, see [/SECURITY.md](../SECURITY.md).
 - Contributor invariants (the SR-\* rules) live in [../CONTRIBUTING-security.md](../CONTRIBUTING-security.md).
 - For the install-time supply chain, see [install-security.md](install-security.md).
-- For the full crypto flow and threat-coverage matrix (internal), see [../engineering/crypto-flows.md](https://github.com/shacharm2/worthless/blob/main/engineering/crypto-flows.md).
 
 ## TL;DR
 
@@ -394,19 +393,18 @@ Fernet-encrypted at rest. The current design places shard-A in the request's
 `Authorization: Bearer` header; the proxy's auth code path does not fall back to
 `shard_a_enc` even when present.
 
-- **Risk.** Low. The invariant ("Bearer is the only auth path") is enforced
-  structurally in the proxy code at
-  [`src/worthless/proxy/app.py`](https://github.com/shacharm2/worthless/blob/main/src/worthless/proxy/app.py) —
+- **Risk.** Medium until [WOR-615](https://linear.app/plumbusai/issue/WOR-615)
+  lands. The invariant ("Bearer is the only auth path") is enforced
+  structurally in the proxy code at `src/worthless/proxy/app.py` —
   no fallback branch consumes `stored.shard_a` for authentication. `worthless
-  relock` sets the column to `NULL` on every re-lock.
-- **Pinned.** Not yet by an adversarial regression test. Today, a future
-  refactor that "helpfully" adds a stored-shard-A fallback would not be caught
-  by CI.
+  relock` sets the column to `NULL` on every re-lock. **However**, the
+  invariant currently relies on code review, not on a CI test. A future
+  refactor reintroducing a stored-shard-A fallback would not be caught.
 - **Tracked.** [WOR-615](https://linear.app/plumbusai/issue/WOR-615) — adds the
-  adversarial test, plus a proposed startup assertion that refuses to boot
-  the proxy if any row has `shard_a_enc IS NOT NULL`, making the precondition
-  machine-checkable.
-- **For the full discussion**, see [`../engineering/crypto-flows.md`](https://github.com/shacharm2/worthless/blob/main/engineering/crypto-flows.md).
+  adversarial regression test, plus a proposed startup assertion that refuses
+  to boot the proxy if any row has `shard_a_enc IS NOT NULL`, making the
+  precondition machine-checkable. Once WOR-615 lands, this row downgrades to
+  Low.
 
 ### Windows (experimental)
 
