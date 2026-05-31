@@ -44,11 +44,13 @@ Plus the `--verify-self` SHA check (R-14) and `release-self-check.sh` grep-based
 
 Unconditional, first-fail-exits, one-line remediation each. Full table in `deployment-engineer.md` §2; highlights:
 
+- **P1** — clean worktree on `main` ff'd from origin; **also assert `.gitignore` contains both `.release-state/` and `.release-audit/` literal lines** (F-11 / R-6 — defends against `git add -A` leaking audit artifacts containing `gh api` responses or wheel hashes)
 - **P3/P4** — pyproject.toml version + install.sh pin both match `<version>` (defeats the file↔pin↔tag drift class WOR-601 also targets)
 - **P6** — `scripts/smoke-test.sh` exits 0 (folds worthless-avm7; assumes worthless-mouc fixed first so the wrapper doesn't hang invisibly)
 - **P7** — local GPG secret key fingerprint matches the repo Variable `MAINTAINER_GPG_FINGERPRINT` exactly (no short-ID collisions — R-2)
-- **P9** — `v-tags-signed` ruleset (id `15719679`) is `active` (catches "we forgot to re-enable" before any push)
-- **P11 (NEW, F-1 closure)** — Tool Trust: SHA256 hash of every external binary (`gh`, `gpg`, `docker`, `pip`, `awk`, `jq`, `sha256sum`, `python3`, `curl`) matches the pins in `SECURITY_RULES.md` SR-10. **Runs before P7/P9** so no GPG or `gh api` call ever executes against an unverified binary. See §11 Tool Trust for the full list + refresh policy (R-20).
+- **P8** — `gh auth status` shows BOTH `repo` AND `workflow` scopes (F-9 / R-9 — `gh workflow run` in step 4.7 silently no-ops with `repo`-only token)
+- **P9** — `v-tags-signed` ruleset (id `15719679`) is `active` via API **AND second-channel canary push rejected** (F-3 / R-21 — defends against MITM forging `enforcement: active`)
+- **P11 (F-1 closure)** — Tool Trust: SHA256 hash of every external binary (`gh`, `gpg`, `docker`, `pip`, `awk`, `jq`, `sha256sum`, `python3`, `curl`) matches the pins in `SECURITY_RULES.md` SR-10. **Runs before P7/P9** so no GPG or `gh api` call ever executes against an unverified binary. See §11 Tool Trust for the full list + refresh policy (R-20).
 
 `--dry-run` runs all 11 then exits 0 with a "would cut tag v<version>" summary. Wired in CI on every PR touching `scripts/`.
 
@@ -62,6 +64,11 @@ The **only** GPG step. Passphrase prompted once via gpg-agent, never via `--pass
 
 ```bash
 EXPECTED_SHA=$(cat .release-state/${VERSION}/expected-sha)
+
+# R-7 (F-2): pin gpg-agent socket, refuse env redirect
+[ -z "${GPG_AGENT_INFO:-}" ] || die "GPG_AGENT_INFO set — refusing (deprecated socket-redirect vector)"
+AGENT_SOCK=$(gpgconf --list-dirs agent-socket)
+case "$AGENT_SOCK" in "$HOME/.gnupg/"*) ;; *) die "gpg-agent socket outside ~/.gnupg/: $AGENT_SOCK" ;; esac
 
 git -c gpg.format=openpgp \
     -c user.signingkey="$MAINTAINER_GPG_FINGERPRINT" \
@@ -92,36 +99,63 @@ Then CONFIRM Y/N (non-TTY exits). Then push. On any local-verify failure: delete
 | 4.2 | `pip index versions worthless` polled with max-attempts + exponential backoff (R-17) until `<version>` appears. Then `pip download --no-deps --dest .release-state/<v>/ worthless==<version>` to fetch the wheel; capture its SHA256 to `.release-state/<v>/wheel.sha256`. The **pinned file** is the artifact for all subsequent verification steps. |
 | 4.2b | **`gh attestation verify .release-state/<v>/worthless-<v>-*.whl --owner shacharm2 --repo worthless`** against the EXACT pinned wheel from 4.2 (NOT a fresh fetch — defeats TOCTOU). Sigstore bundle MUST chain to GHA OIDC issuer + worthless repo + `v<version>` tag ref. Failure → exit non-zero (R-10). |
 | 4.3 | Worker `X-Worthless-Script-Tag` header + served `install.sh` `WORTHLESS_VERSION_PIN` both match `<version>` |
-| 4.4 | Docker install proof using the **already-verified wheel from 4.2** (NOT a fresh `pip install` — that downloads a different wheel and bypasses the attestation chain): `docker run --rm -v "$PWD/.release-state/<v>:/wheels:ro" python:3.12-slim sh -c "pip install /wheels/worthless-*.whl && worthless --version"` succeeds with `<v>` |
+| 4.4 | Docker install proof using the **already-verified wheel from 4.2** + **in-container attestation re-verify** (F-10 defense-in-depth against TOCTOU on `.release-state/<v>/`): first `docker run --rm -v "$PWD/.release-state/<v>:/wheels:ro" -e GH_TOKEN ghcr.io/cli/cli:latest sh -c "gh attestation verify /wheels/worthless-*.whl --owner shacharm2 --repo worthless"` MUST pass; THEN `docker run --rm -v "$PWD/.release-state/<v>:/wheels:ro" python:3.12-slim sh -c "pip install /wheels/worthless-*.whl && worthless --version"` succeeds with `<v>`. Mutated wheel fails the in-container verify, install never runs. |
 | 4.5 | `awk` extract CHANGELOG section → non-empty |
-| 4.6 | `gh release create v<v> --notes-file ... --verify-tag` |
+| 4.5a | **Date-stamp in-memory copy** of notes (F-8): substitute `## [Unreleased]` (and any `<v>` placeholder header) → `## [<v>] — $(date -u +%Y-%m-%d)` BEFORE 4.6. Write to `.release-state/<v>/notes.md`. Assert `grep -E '^## \[<v>\] — [0-9]{4}-[0-9]{2}-[0-9]{2}'` succeeds. |
+| 4.6 | `gh release create v<v> --notes-file .release-state/<v>/notes.md --verify-tag` (reads the dated copy from 4.5a, NOT the raw extract — defends against published Release body saying `TBD` forever) |
 | 4.7 | `gh workflow run release-sync-check.yml` → individual A1-A5 PASS/FAIL report |
 | 4.8 | Auto-open `chore/changelog-stamp-<v>` PR with the date replacement (the Phase 3 #1 pattern, now automatic) |
-| 4.9 | Emit Linear comment markdown to stdout — maintainer pastes (R-NEW: no MCP coupling in release.sh, keeps the script auditable and offline-capable) |
+| 4.9 | Emit Linear comment markdown to stdout — maintainer pastes (no MCP coupling, keeps script auditable + offline-capable). Emitter MUST (F-13, R-16): (a) re-assert R-16 regex on tag body; (b) HTML-escape `< > &` in every free-form field (tag body, CHANGELOG excerpt); (c) refuse to emit and fail-closed if R-16 regex fails. Defense-in-depth: even if a malformed tag slipped past tag-cut preflight, the emitter stops markdown/HTML injection at the paste boundary. |
 
 **R-10:** Step 4.2b calls `gh attestation verify` — cryptographic proof the wheel was built by our CI from the signed tag (works today). End-user `pip install` does NOT yet verify attestations at install time (PEP 740 enforcement in pip/uv is in progress) — user-facing wording is "verified at release-cut by maintainer; client-side enforcement when pip/uv ship it."
 
 ---
 
-## 5. release-recover.sh (deployment-engineer §5 + R-3, R-4, R-5, R-15)
+## 5. release-recover.sh (deployment-engineer §5 + R-3, R-4, R-5, R-15, R-21..R-25)
 
-Strict 6-step dance, each idempotent, with a watchdog and trap stack:
+Strict 6-step dance with watchdog + heartbeat + full trap stack:
 
-```
+```bash
 R1  Snapshot current ruleset JSON (R-5) to /tmp
-R2  Disable v-tags-signed (PATCH enforcement=disabled) — REQUIRES --allow-ruleset-disable flag (R-3)
-    Start 120-second watchdog: ( sleep 120; re-enable from snapshot; kill -TERM $$ ) & WATCHDOG_PID=$!
-    Install trap: trap re_enable_from_snapshot EXIT INT TERM HUP
+R2  Disable v-tags-signed (PATCH enforcement=disabled)
+    # R-25 (F-12): require BOTH the CLI flag AND env var; refuse if invoked under shell completion
+    [ "$ALLOW_RULESET_DISABLE" = "1" ] && [ "$WORTHLESS_ALLOW_RULESET_DISABLE" = "1" ] || die "R-25 violation"
+    case "$(ps -o comm= -p $PPID)" in *_complete*|*-completion*|compdef*) die "R-25: completion-injected flag detected" ;; esac
+
+    # R-23 (F-6): full signal coverage; ignore SIGPIPE so closed-terminal still runs cleanup
+    trap '' PIPE
+    trap re_enable_from_snapshot EXIT INT TERM HUP PIPE QUIT USR1 USR2
+
+    # R-22 (F-5): wall-clock deadline, suspend-safe (NOT a single sleep 120)
+    DEADLINE=$(( $(date +%s) + 120 ))
+    ( while [ "$(date +%s)" -lt "$DEADLINE" ]; do sleep 5; done; \
+      re_enable_from_snapshot; kill -TERM $$ ) & WATCHDOG_PID=$!
+
+    # R-3 (F-4): heartbeat the watchdog; SIGKILL on it = disarmed failsafe = abort
+    ( while kill -0 "$WATCHDOG_PID" 2>/dev/null; do sleep 5; done; \
+      kill -TERM $$ ) & WATCHDOG_HEARTBEAT_PID=$!
+
 R3  git push --delete origin "v${VERSION}"  ;  git tag -d "v${VERSION}" 2>/dev/null
 R4  require_local_tag_gpg_signed "${VERSION}"  — BLOCKS until operator re-runs tag-cut
 R5  git push origin "v${VERSION}"
 R6  Re-enable v-tags-signed (PUT the R1 snapshot back, not a hard-coded body)
-    Kill watchdog. GUARD: re-query enforcement; exit 1 if not `active`
+    Kill watchdog + heartbeat.
+
+    # R-24 (F-7): edge cache may serve stale; require 3 consecutive no-cache reads
+    for i in 1 2 3; do
+      gh api -H "Cache-Control: no-cache" "/repos/$REPO/rulesets/15719679" \
+        | jq -re '.enforcement=="active"' >/dev/null || die "R6 poll $i: ruleset not active"
+      sleep 2
+    done
+
+    # R-21 (F-3): second-channel canary — API answer alone is not proof
+    git push origin :refs/canary/ruleset-probe-$$ 2>&1 | grep -q "rejected.*v-tags-signed" \
+      || die "ruleset second-channel probe failed: API says active, push was not rejected"
 ```
 
-Audit log `.release-audit/YYYY-MM-DD.log` written for every disable/enable/sign/push (R-15).
+Append-only audit log `.release-audit/YYYY-MM-DD.log` written for every disable/enable/sign/push, sealed with GPG-detached signature `.log.asc` at script exit (R-15, F-14).
 
-`release-doctor.sh` runs unconditionally at end of `release.sh` AND at end of `release-recover.sh` AND is callable standalone — its sole job is asserting `v-tags-signed` is `active`. Exit-1 on inactive = alarm bell (R-4, mitigates `kill -9` bypassing the trap).
+`release-doctor.sh` runs unconditionally at end of `release.sh` AND at end of `release-recover.sh` AND is callable standalone — asserts `v-tags-signed` is `active` (R-21 second-channel verified, R-24 cache-bypass verified) AND `--verify-audit-log` re-verifies every `.asc` against `$MAINTAINER_GPG_FINGERPRINT`. Exit-1 on any failure = alarm bell (R-4, mitigates `kill -9` bypassing the trap).
 
 ---
 
@@ -133,7 +167,7 @@ Compressed cross-reference:
 |---|---|
 | **Tag integrity** | R-1 forced `gpg.format=openpgp` + explicit `user.signingkey`; R-2 fingerprint + format verified before push; R-19 expected-SHA assertion (captured in P1.5 preflight, checked in tag-cut) |
 | **Tool Trust** | R-20 SHA256-pin every external binary (`gh`, `gpg`, `docker`, `pip`, `awk`, `jq`, `sha256sum`, `python3`, `curl`) in `SECURITY_RULES.md` SR-10; preflight P11 enforces before any GPG/`gh` call. See §11. |
-| **Ruleset window** | R-3 opt-in flag + 120s watchdog + 4-signal trap; R-4 doctor standalone; R-5 snapshot-restore not hard-coded body; R-15 audit log |
+| **Ruleset window** | R-3 opt-in flag + 120s wall-clock watchdog + 8-signal trap stack; R-4 doctor standalone; R-5 snapshot-restore not hard-coded body; R-15 append-only + GPG-signed audit log; R-21 second-channel canary attestation; R-22 wall-clock deadline (suspend-safe); R-23 PIPE/QUIT/USR1/USR2 trap; R-24 R6 3x no-cache verification; R-25 alias/completion injection defense |
 | **Idempotency / replay** | R-6 every phase classified; markers in `.release-state/<v>/` |
 | **Secret hygiene** | R-7 gpg-agent only; R-8 no rc-sourcing, no env export, no `bash -x`; R-13 stderr redactor; R-16 tag-message regex lint |
 | **Token scope** | R-9 exactly `repo` (or `repo, workflow`), reject broader, reject CI `GITHUB_TOKEN` |
@@ -170,6 +204,19 @@ R-1 + R-3 are the rules I'd most fight a reviewer over — they encode the 0.3.7
 | Regression | inject `git config gpg.format ssh`; assert tag-cut still produces openpgp signature | 0.3.7 root cause becomes a regression test |
 | Negative | mock `verify-tag` failure | Phase 3 prints exact recover hint + exit 2 |
 | Negative (F-1) | inject fake `gh` binary on `$PATH` that exits 0 from any `gh attestation verify` call | Preflight P11 MUST abort with `tool binary SHA drift: gh (got <hash>, expected <hash>)` BEFORE any `gh attestation verify` call executes. Regression test for compromised-toolchain class. |
+| Negative (F-2) | set `GPG_AGENT_INFO=/tmp/evil.sock` pointing at a no-prompt forging agent | Tag-cut MUST refuse before `git tag -s` — assert `GPG_AGENT_INFO` unset, socket resolves under `$HOME/.gnupg/`, `gpg --version` SHA matches R-20 pin |
+| Negative (F-3) | MITM `gh api /rulesets` returns `enforcement: active` while upstream is disabled | P9 + R-4 doctor MUST fail because second-channel canary push to `refs/canary/ruleset-probe-<ts>` was NOT rejected by the ruleset |
+| Negative (F-4) | after R2 starts watchdog, `kill -9 $WATCHDOG_PID` from second shell, let R4 proceed | Parent MUST detect dead watchdog within 5s via `kill -0` heartbeat poll, abort recovery, re-enable ruleset from snapshot, exit non-zero |
+| Negative (F-5) | mid-recovery `SIGSTOP` watchdog for 200s then `SIGCONT` (simulates laptop suspend) | Wall-clock deadline MUST detect `date +%s` exceeded `START+120`, re-enable from snapshot, exit non-zero — `sleep 120` resumption MUST NOT extend window |
+| Negative (F-6) | after R2 disables ruleset, send `SIGPIPE` (close terminal mid-pipe) or `SIGQUIT` (Ctrl-\) to parent | Trap MUST fire, re-enable ruleset from snapshot. Test runs once per signal in `{PIPE, QUIT, USR1, USR2}` |
+| Negative (F-7) | mock `gh api /rulesets/15719679` returns cached `disabled` then `active` 4 seconds later | R6 MUST poll 3× with `-H 'Cache-Control: no-cache'` 2s apart; ALL three must be `active` before declaring success |
+| Negative (F-8) | CHANGELOG header is undated (`## [Unreleased]`) at tag time | release.sh MUST date-stamp notes in-memory BEFORE step 4.6; assertion: `grep -E '^## \[<v>\] — [0-9]{4}-[0-9]{2}-[0-9]{2}'` succeeds and the published GH Release body contains the date, not `TBD` |
+| Negative (F-9) | GH_TOKEN has `repo` only (no `workflow`) | release.sh MUST fail in P8 BEFORE step 4.2 with explicit "missing workflow scope" error; never reach 4.7 with under-scoped token |
+| Negative (F-10) | wheel in `.release-state/<v>/` mutated between step 4.2 and 4.4 (TOCTOU) | step 4.4 MUST re-run `gh attestation verify` INSIDE the container BEFORE `pip install`; mutated wheel fails verify, install never runs |
+| Negative (F-11) | repo `.gitignore` is missing `.release-state/` or `.release-audit/` | preflight P1 MUST fail-closed BEFORE step 4.1; never allow audit markers (which may contain token-scoped `gh api` responses) to be stageable |
+| Negative (F-12) | define `alias release.sh='release.sh --allow-ruleset-disable'` in zshrc OR have zsh completion auto-insert flag | Script MUST refuse: env var `WORTHLESS_ALLOW_RULESET_DISABLE=1` not also set ⇒ exit; PPID matching completion subprocess ⇒ exit `completion-injected flag detected` |
+| Negative (F-13) | tag annotation contains `[click me](https://evil.example)` or raw `<script>` | step 4.9 emitter MUST HTML-escape tag body before Linear paste AND R-16 regex MUST reject the tag at creation time; both layers fail-closed |
+| Negative (F-14) | after recovery writes a line to `.release-audit/<date>.log`, run `sed -i '' '1d'` to rewrite history | OS append-only flag (`chflags uappnd` mac / `chattr +a` Linux) MUST cause `sed` to fail with EPERM; `release-doctor.sh --verify-audit-log` MUST detect GPG-signature mismatch on the day's log |
 
 CI job `release-script-ci.yml` runs the above on every PR touching `scripts/release*.sh` or `lib/*.sh`. Real releases require this suite green on `main`.
 
@@ -192,8 +239,8 @@ Each PR independently mergeable; full orchestrator gated behind `WORTHLESS_RELEA
 
 This is **design-only**. Implementation requires the maintainer's explicit go on this SPEC + the two raw agent files. Open questions for the maintainer:
 
-1. **The `Linear comment markdown to stdout`** (4.9) vs MCP coupling — is paste-acceptable, or should we wire `mcp__linear__save_comment`? Recommended: paste, keeps script offline-capable + auditable.
-2. **The `--allow-ruleset-disable` flag** (R-3) — opt-in or default-on? Recommended: opt-in. Forces deliberate keystrokes for the dangerous path.
+1. **The `Linear comment markdown to stdout`** (4.9) — RESOLVED fixup #4: paste, with R-16 / F-13 HTML-escape + markdown-injection rejection in the emitter. Keeps script offline-capable + auditable + defends against tag-message injection.
+2. **The `--allow-ruleset-disable` flag** (R-3) — RESOLVED fixup #4: opt-in CLI flag + `WORTHLESS_ALLOW_RULESET_DISABLE=1` env var BOTH required (R-25 / F-12). PPID-completion-detection also refuses to run if invoked from shell completion subprocess.
 3. **PEP 740 attestation** (R-10) — RESOLVED 2026-05-30 fixup: `release.sh` calls `gh attestation verify` directly in step 4.2b (works today). User-facing release notes say "verified at release-cut; client-side enforcement when pip/uv ship PEP 740 support."
 4. **PR-1's scope** — is 11 preflight gates + scaffold the right first slice, or split smaller (e.g., 5 gates + scaffold first)? Recommended: full 11, since each gate is small and they share lib helpers.
 
