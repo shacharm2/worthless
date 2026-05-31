@@ -310,7 +310,7 @@ Worthless does **not** protect against:
    - Key reconstruction itself — a compromised proxy can call the sidecar's IPC `open()` verb at the documented contract, which the sidecar authenticates by uid match. The sidecar does not rate-limit, scope, or per-call audit-alert; legitimate and compromised `open()` calls are indistinguishable at the IPC layer.
    - After-the-fact detection that any specific request reconstructed a key under attacker control. Reconstruction by a compromised proxy looks identical to legitimate traffic in the audit log.
 
-   The rules engine (spend caps, rate limits, token budgets) is in the same blast radius — it runs in the proxy process, on the compromised uid. An attacker who patches it has no further software defense. The architectural hardening path is sidecar-side enforcement on the `open()` verb (per-alias rate limits, alerting on velocity anomalies, audit-log signing); tracked outside this document.
+   The rules engine (spend caps, rate limits, token budgets) is in the same blast radius — it runs in the proxy process, on the compromised uid. An attacker who patches it has no further software defense. The architectural hardening path is sidecar-side enforcement on the `open()` verb (per-alias rate limits, alerting on velocity anomalies, audit-log signing) — tracked in [WOR-619](https://linear.app/plumbusai/issue/WOR-619); not currently scheduled for V1.
 
    The non-goal is proxy-process RCE. The wall's coverage is Fernet-key isolation, not key-reconstruction prevention.
 8. **Nation-state adversaries with physical access.** Hardware, cold-boot, and electromagnetic side channels are out of scope.
