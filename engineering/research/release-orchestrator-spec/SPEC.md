@@ -32,7 +32,7 @@ Three subphases, strictly sequential, fail-closed between each:
 
 | Phase | What | Secrets touched | Max wall time |
 |---|---|---|---|
-| 1. Preflight | 10 gates (worktree, version sync, smoke, GPG fingerprint, gh auth, ruleset alive) | none | ~30s |
+| 1. Preflight | 11 gates (worktree, version sync, smoke, GPG fingerprint, gh auth, ruleset alive, Tool Trust SHA pins per F-1/§11) | none | ~30s |
 | 2. Tag-cut | `git tag -s` (forced openpgp) + local `git tag -v` parse + CONFIRM Y/N + push | GPG (gpg-agent only) | ~5s after passphrase |
 | 3. Post-tag | Poll publish + deploy; PyPI/worker/docker hard-gates; GH Release; sync-check; date-stamp PR; Linear comment | none | ~5min |
 
