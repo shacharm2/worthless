@@ -187,9 +187,11 @@ def sign_shard_a(
 
     # Encode 36 overhead bytes → 48 base64url chars (no padding)
     overhead_raw = nonce + expiry_bytes + mac_truncated
-    assert len(overhead_raw) == OVERHEAD_BYTES  # noqa: S101 — invariant check
+    if len(overhead_raw) != OVERHEAD_BYTES:  # pragma: no cover
+        raise AssertionError(f"overhead_raw length {len(overhead_raw)} != {OVERHEAD_BYTES}")
     overhead_b64 = base64.urlsafe_b64encode(overhead_raw).decode("ascii")
-    assert len(overhead_b64) == OVERHEAD_CHARS  # noqa: S101 — invariant check
+    if len(overhead_b64) != OVERHEAD_CHARS:  # pragma: no cover
+        raise AssertionError(f"overhead_b64 length {len(overhead_b64)} != {OVERHEAD_CHARS}")
 
     # signed_envelope = prefix + overhead + shard_a_body
     shard_a_str = shard_a.decode("ascii")

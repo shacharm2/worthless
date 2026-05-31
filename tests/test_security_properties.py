@@ -26,6 +26,14 @@ from pathlib import Path
 from hypothesis import given, assume, settings as hsettings
 from hypothesis import strategies as st
 
+from worthless.crypto.shard_signing import (
+    OVERHEAD_CHARS,
+    ShardSigningError,
+    generate_signing_key,
+    load_or_create_signing_key,
+    sign_shard_a,
+    verify_and_extract,
+)
 from worthless.crypto.splitter import reconstruct_key, secure_key, split_key
 from worthless.crypto.types import zero_buf
 from worthless.exceptions import ShardTamperedError
@@ -804,8 +812,6 @@ class TestPhase6EnvelopeConstruction:
     """Envelope format: correct prefix, correct charset, 48 chars longer."""
 
     def test_signed_shard_a_has_same_prefix_as_original(self):
-        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
-
         prefix = "sk-proj-"
         shard_a = bytearray(("sk-proj-" + "A" * 60).encode())
         key = generate_signing_key()
@@ -813,12 +819,6 @@ class TestPhase6EnvelopeConstruction:
         assert envelope.decode().startswith(prefix)
 
     def test_signed_shard_a_is_exactly_48_chars_longer(self):
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            sign_shard_a,
-            OVERHEAD_CHARS,
-        )
-
         assert OVERHEAD_CHARS == 48  # 36 bytes → 48 base64url chars
         prefix = "sk-proj-"
         shard_a = bytearray(("sk-proj-" + "B" * 60).encode())
@@ -828,11 +828,6 @@ class TestPhase6EnvelopeConstruction:
 
     def test_overhead_uses_only_base64url_charset(self):
         """Overhead bytes encoded as base64url — subset of all provider key charsets."""
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            sign_shard_a,
-            OVERHEAD_CHARS,
-        )
         import string
 
         prefix = "sk-proj-"
@@ -844,8 +839,6 @@ class TestPhase6EnvelopeConstruction:
         assert all(c in valid for c in overhead_section)
 
     def test_anthropic_prefix_preserved(self):
-        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
-
         prefix = "sk-ant-api03-"
         shard_a = bytearray(("sk-ant-api03-" + "D" * 80).encode())
         key = generate_signing_key()
@@ -853,8 +846,6 @@ class TestPhase6EnvelopeConstruction:
         assert envelope.decode().startswith(prefix)
 
     def test_nonce_is_16_bytes(self):
-        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
-
         shard_a = bytearray(("sk-proj-" + "E" * 60).encode())
         key = generate_signing_key()
         _, nonce, _ = sign_shard_a(shard_a, "alias", key, prefix="sk-proj-")
@@ -862,16 +853,12 @@ class TestPhase6EnvelopeConstruction:
 
     def test_nonce_space_is_128_bits(self):
         """128-bit nonce → birthday attack requires 2^64 attempts."""
-        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
-
         shard_a = bytearray(("sk-proj-" + "F" * 60).encode())
         key = generate_signing_key()
         _, nonce, _ = sign_shard_a(shard_a, "alias", key, prefix="sk-proj-")
         assert len(nonce) * 8 >= 128
 
     def test_two_enrollments_produce_different_nonces(self):
-        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
-
         shard_a1 = bytearray(("sk-proj-" + "G" * 60).encode())
         shard_a2 = bytearray(("sk-proj-" + "G" * 60).encode())
         key = generate_signing_key()
@@ -880,16 +867,12 @@ class TestPhase6EnvelopeConstruction:
         assert nonce1 != nonce2
 
     def test_expiry_is_in_the_future(self):
-        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
-
         shard_a = bytearray(("sk-proj-" + "H" * 60).encode())
         key = generate_signing_key()
         _, _, expires_at = sign_shard_a(shard_a, "alias", key, prefix="sk-proj-", ttl_days=1)
         assert expires_at > int(_time.time())
 
     def test_ttl_days_controls_expiry(self):
-        from worthless.crypto.shard_signing import generate_signing_key, sign_shard_a
-
         key = generate_signing_key()
         shard_a = bytearray(("sk-proj-" + "I" * 60).encode())
         _, _, exp_30 = sign_shard_a(bytearray(shard_a), "a", key, prefix="sk-proj-", ttl_days=30)
@@ -901,12 +884,6 @@ class TestPhase6Roundtrip:
     """sign → verify → extract recovers byte-identical original shard_a."""
 
     def test_roundtrip_openai_key(self):
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            sign_shard_a,
-            verify_and_extract,
-        )
-
         prefix = "sk-proj-"
         original = bytearray(("sk-proj-" + "J" * 60).encode())
         key = generate_signing_key()
@@ -915,12 +892,6 @@ class TestPhase6Roundtrip:
         assert bytes(recovered) == bytes(original)
 
     def test_roundtrip_anthropic_key(self):
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            sign_shard_a,
-            verify_and_extract,
-        )
-
         prefix = "sk-ant-api03-"
         original = bytearray(("sk-ant-api03-" + "K" * 80).encode())
         key = generate_signing_key()
@@ -929,12 +900,6 @@ class TestPhase6Roundtrip:
         assert bytes(recovered) == bytes(original)
 
     def test_recovery_is_byte_identical(self):
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            sign_shard_a,
-            verify_and_extract,
-        )
-
         prefix = "sk-proj-"
         original = bytearray(("sk-proj-" + "L" * 124).encode())
         key = generate_signing_key()
@@ -947,12 +912,6 @@ class TestPhase6RejectionPaths:
     """Rejection: wrong key, wrong alias, expired, tampered, unsigned."""
 
     def test_raw_unsigned_shard_a_is_rejected(self):
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            verify_and_extract,
-            ShardSigningError,
-        )
-
         prefix = "sk-proj-"
         raw = bytearray(("sk-proj-" + "M" * 60).encode())
         key = generate_signing_key()
@@ -960,13 +919,6 @@ class TestPhase6RejectionPaths:
             verify_and_extract(raw, "alias", key, prefix=prefix)
 
     def test_wrong_signing_key_is_rejected(self):
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            sign_shard_a,
-            verify_and_extract,
-            ShardSigningError,
-        )
-
         prefix = "sk-proj-"
         key1 = generate_signing_key()
         key2 = generate_signing_key()
@@ -977,13 +929,6 @@ class TestPhase6RejectionPaths:
 
     def test_wrong_alias_is_rejected(self):
         """HMAC binds to alias; presenting under different alias fails."""
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            sign_shard_a,
-            verify_and_extract,
-            ShardSigningError,
-        )
-
         prefix = "sk-proj-"
         key = generate_signing_key()
         shard_a = bytearray(("sk-proj-" + "O" * 60).encode())
@@ -992,14 +937,6 @@ class TestPhase6RejectionPaths:
             verify_and_extract(envelope, "openai-different", key, prefix=prefix)
 
     def test_expired_envelope_is_rejected(self):
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            sign_shard_a,
-            verify_and_extract,
-            ShardSigningError,
-            OVERHEAD_CHARS,
-        )
-
         prefix = "sk-proj-"
         key = generate_signing_key()
         shard_a = bytearray(("sk-proj-" + "P" * 60).encode())
@@ -1010,14 +947,6 @@ class TestPhase6RejectionPaths:
             verify_and_extract(envelope, "alias", key, prefix=prefix)
 
     def test_tampered_body_is_rejected(self):
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            sign_shard_a,
-            verify_and_extract,
-            ShardSigningError,
-            OVERHEAD_CHARS,
-        )
-
         prefix = "sk-proj-"
         key = generate_signing_key()
         shard_a = bytearray(("sk-proj-" + "Q" * 60).encode())
@@ -1030,13 +959,6 @@ class TestPhase6RejectionPaths:
             verify_and_extract(bytearray(b), "alias", key, prefix=prefix)
 
     def test_tampered_overhead_is_rejected(self):
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            sign_shard_a,
-            verify_and_extract,
-            ShardSigningError,
-        )
-
         prefix = "sk-proj-"
         key = generate_signing_key()
         shard_a = bytearray(("sk-proj-" + "R" * 60).encode())
@@ -1049,13 +971,6 @@ class TestPhase6RejectionPaths:
             verify_and_extract(bytearray(b), "alias", key, prefix=prefix)
 
     def test_prefix_mismatch_is_rejected(self):
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            sign_shard_a,
-            verify_and_extract,
-            ShardSigningError,
-        )
-
         prefix = "sk-proj-"
         key = generate_signing_key()
         shard_a = bytearray(("sk-proj-" + "S" * 60).encode())
@@ -1064,12 +979,6 @@ class TestPhase6RejectionPaths:
             verify_and_extract(envelope, "alias", key, prefix="sk-ant-api03-")
 
     def test_envelope_too_short_is_rejected(self):
-        from worthless.crypto.shard_signing import (
-            generate_signing_key,
-            verify_and_extract,
-            ShardSigningError,
-        )
-
         key = generate_signing_key()
         with pytest.raises(ShardSigningError):
             verify_and_extract(bytearray(b"sk-proj-short"), "alias", key, prefix="sk-proj-")
@@ -1079,37 +988,138 @@ class TestPhase6SigningKeyManagement:
     """Signing key: 32 bytes, restricted permissions, idempotent creation."""
 
     def test_generate_signing_key_is_32_bytes(self):
-        from worthless.crypto.shard_signing import generate_signing_key
-
         assert len(generate_signing_key()) == 32
 
     def test_two_generated_keys_differ(self):
-        from worthless.crypto.shard_signing import generate_signing_key
-
         assert generate_signing_key() != generate_signing_key()
 
     def test_load_or_create_creates_key_file(self, tmp_path):
-        from worthless.crypto.shard_signing import load_or_create_signing_key
-
         key = load_or_create_signing_key(tmp_path)
         assert (tmp_path / "signing.key").exists()
         assert len(key) == 32
 
     def test_load_or_create_is_idempotent(self, tmp_path):
-        from worthless.crypto.shard_signing import load_or_create_signing_key
-
         key1 = load_or_create_signing_key(tmp_path)
         key2 = load_or_create_signing_key(tmp_path)
         assert key1 == key2
 
     def test_signing_key_file_has_restricted_permissions(self, tmp_path):
         import stat as stat_mod
-        from worthless.crypto.shard_signing import load_or_create_signing_key
 
         load_or_create_signing_key(tmp_path)
         mode = (tmp_path / "signing.key").stat().st_mode
         assert not (mode & stat_mod.S_IRGRP)
         assert not (mode & stat_mod.S_IROTH)
+
+    def test_world_readable_signing_key_raises_on_load(self, tmp_path):
+        """load_or_create_signing_key rejects a key file with group/other read bits."""
+        key = generate_signing_key()
+        key_path = tmp_path / "signing.key"
+        key_path.write_text(key.hex() + "\n")
+        key_path.chmod(0o644)  # world-readable — should be rejected
+        with pytest.raises(ValueError, match="insecure permissions"):
+            load_or_create_signing_key(tmp_path)
+
+    def test_corrupt_short_signing_key_raises_on_load(self, tmp_path):
+        """load_or_create_signing_key rejects a truncated key file (wrong byte count)."""
+        import os
+
+        # Write only 16 bytes as hex (half the required 32)
+        key_path = tmp_path / "signing.key"
+        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, b"aa" * 16 + b"\n")  # 16 bytes hex-encoded
+        finally:
+            os.close(fd)
+        with pytest.raises(ValueError, match="corrupt"):
+            load_or_create_signing_key(tmp_path)
+
+
+class TestPhase6NoncePersistence:
+    """Nonce is stored in SQLite — re-lock revokes old envelopes, survives restart."""
+
+    def test_shard_a_replay_is_rejected_after_relock(self, tmp_path):
+        """After re-lock the old signed envelope's nonce is stale — proxy rejects it.
+
+        Directly tests the revocation contract: is_valid_signing_nonce returns
+        False for the old nonce once a new one is upserted.
+        """
+        import asyncio
+        from cryptography.fernet import Fernet
+        from worthless.storage.repository import ShardRepository
+
+        db_path = str(tmp_path / "test.db")
+        fernet_key = Fernet.generate_key()
+        signing_key = generate_signing_key()
+        alias = "test-alias-replay"
+        prefix = "sk-proj-"
+        shard_a = bytearray(("sk-proj-" + "X" * 60).encode())
+
+        async def _run() -> None:
+            repo = ShardRepository(db_path, fernet_key)
+            await repo.initialize()
+
+            # Lock 1: sign and store nonce_1
+            old_envelope, nonce_1, expires_1 = sign_shard_a(
+                shard_a, alias, signing_key, prefix=prefix
+            )
+            await repo.store_signing_nonce(alias, nonce_1, expires_1)
+            assert await repo.is_valid_signing_nonce(alias, nonce_1)
+
+            # Re-lock: upsert nonce_2 — this invalidates nonce_1
+            _, nonce_2, expires_2 = sign_shard_a(shard_a, alias, signing_key, prefix=prefix)
+            await repo.store_signing_nonce(alias, nonce_2, expires_2)
+
+            # Old envelope HMAC still verifies, but nonce is now stale
+            _, old_nonce, _ = verify_and_extract(
+                bytearray(old_envelope), alias, signing_key, prefix=prefix
+            )
+            assert not await repo.is_valid_signing_nonce(alias, old_nonce)
+            # New nonce still valid
+            assert await repo.is_valid_signing_nonce(alias, nonce_2)
+
+        asyncio.run(_run())
+
+    def test_nonce_replay_rejected_after_server_restart(self, tmp_path):
+        """Nonce persisted to SQLite: a fresh ShardRepository instance honours it.
+
+        Proves the nonce is NOT held in memory — a fresh repo on the same DB
+        file rejects old nonces and accepts the current one, even without any
+        in-process state from the original repo instance.
+        """
+        import asyncio
+        from cryptography.fernet import Fernet
+        from worthless.storage.repository import ShardRepository
+
+        db_path = str(tmp_path / "test.db")
+        fernet_key = Fernet.generate_key()
+        signing_key = generate_signing_key()
+        alias = "test-alias-restart"
+        prefix = "sk-proj-"
+        shard_a = bytearray(("sk-proj-" + "Y" * 60).encode())
+
+        async def _run() -> None:
+            # repo1 = first server instance
+            repo1 = ShardRepository(db_path, fernet_key)
+            await repo1.initialize()
+
+            _, nonce_1, expires_1 = sign_shard_a(shard_a, alias, signing_key, prefix=prefix)
+            await repo1.store_signing_nonce(alias, nonce_1, expires_1)
+
+            # Re-lock: upsert nonce_2
+            _, nonce_2, expires_2 = sign_shard_a(shard_a, alias, signing_key, prefix=prefix)
+            await repo1.store_signing_nonce(alias, nonce_2, expires_2)
+
+            # repo2 = fresh server instance — same SQLite file, no shared memory
+            repo2 = ShardRepository(db_path, fernet_key)
+            await repo2.initialize()
+
+            # Old nonce rejected by fresh instance (proves SQLite, not in-memory)
+            assert not await repo2.is_valid_signing_nonce(alias, nonce_1)
+            # Current nonce accepted
+            assert await repo2.is_valid_signing_nonce(alias, nonce_2)
+
+        asyncio.run(_run())
 
 
 # Helpers for Phase 6 tests
