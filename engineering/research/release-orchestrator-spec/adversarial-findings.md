@@ -23,7 +23,7 @@
 
 | ID | Status | Threat (ELI5) | Fix sketch | Amends |
 |---|---|---|---|---|
-| **F-1** | ⬜ | Compromised `gh`/`gpg`/`docker`/`pip` binary on `$PATH` returns "verified" without doing crypto — entire chain is theatre | Preflight P11 hashes binaries against SHA256 pins in `SECURITY_RULES.md` SR-10; new R-20; new SPEC §11 Tool Trust | R-14+, P11, R-20, §11 |
+| **F-1** | ✅ fixup #3 | Compromised `gh`/`gpg`/`docker`/`pip` binary on `$PATH` returns "verified" without doing crypto — entire chain is theatre | Preflight P11 added (§2), R-20 added (security-engineer.md), SPEC §11 Tool Trust section added with 9-binary pin table + refresh policy + chicken-and-egg note, §8 gained TDD negative-test row "fake gh on PATH must abort at P11 before any verify call" | R-14+, P11, R-20, §11 |
 
 ### HIGH (6)
 

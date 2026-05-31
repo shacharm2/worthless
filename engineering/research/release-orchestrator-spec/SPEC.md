@@ -40,7 +40,7 @@ Plus the `--verify-self` SHA check (R-14) and `release-self-check.sh` grep-based
 
 ---
 
-## 2. The 10 preflight gates (deployment-engineer §2)
+## 2. The 11 preflight gates (deployment-engineer §2 + P11 from F-1)
 
 Unconditional, first-fail-exits, one-line remediation each. Full table in `deployment-engineer.md` §2; highlights:
 
@@ -48,8 +48,9 @@ Unconditional, first-fail-exits, one-line remediation each. Full table in `deplo
 - **P6** — `scripts/smoke-test.sh` exits 0 (folds worthless-avm7; assumes worthless-mouc fixed first so the wrapper doesn't hang invisibly)
 - **P7** — local GPG secret key fingerprint matches the repo Variable `MAINTAINER_GPG_FINGERPRINT` exactly (no short-ID collisions — R-2)
 - **P9** — `v-tags-signed` ruleset (id `15719679`) is `active` (catches "we forgot to re-enable" before any push)
+- **P11 (NEW, F-1 closure)** — Tool Trust: SHA256 hash of every external binary (`gh`, `gpg`, `docker`, `pip`, `awk`, `jq`, `sha256sum`, `python3`, `curl`) matches the pins in `SECURITY_RULES.md` SR-10. **Runs before P7/P9** so no GPG or `gh api` call ever executes against an unverified binary. See §11 Tool Trust for the full list + refresh policy (R-20).
 
-`--dry-run` runs all 10 then exits 0 with a "would cut tag v<version>" summary. Wired in CI on every PR touching `scripts/`.
+`--dry-run` runs all 11 then exits 0 with a "would cut tag v<version>" summary. Wired in CI on every PR touching `scripts/`.
 
 ---
 
@@ -131,6 +132,7 @@ Compressed cross-reference:
 | Lens | Rules |
 |---|---|
 | **Tag integrity** | R-1 forced `gpg.format=openpgp` + explicit `user.signingkey`; R-2 fingerprint + format verified before push; R-19 expected-SHA assertion (captured in P1.5 preflight, checked in tag-cut) |
+| **Tool Trust** | R-20 SHA256-pin every external binary (`gh`, `gpg`, `docker`, `pip`, `awk`, `jq`, `sha256sum`, `python3`, `curl`) in `SECURITY_RULES.md` SR-10; preflight P11 enforces before any GPG/`gh` call. See §11. |
 | **Ruleset window** | R-3 opt-in flag + 120s watchdog + 4-signal trap; R-4 doctor standalone; R-5 snapshot-restore not hard-coded body; R-15 audit log |
 | **Idempotency / replay** | R-6 every phase classified; markers in `.release-state/<v>/` |
 | **Secret hygiene** | R-7 gpg-agent only; R-8 no rc-sourcing, no env export, no `bash -x`; R-13 stderr redactor; R-16 tag-message regex lint |
@@ -167,6 +169,7 @@ R-1 + R-3 are the rules I'd most fight a reviewer over — they encode the 0.3.7
 | Recovery | `bats` with mocked `gh api` ruleset endpoint | Ruleset re-enabled on R3 abort; EXIT trap fires; no orphan local tags |
 | Regression | inject `git config gpg.format ssh`; assert tag-cut still produces openpgp signature | 0.3.7 root cause becomes a regression test |
 | Negative | mock `verify-tag` failure | Phase 3 prints exact recover hint + exit 2 |
+| Negative (F-1) | inject fake `gh` binary on `$PATH` that exits 0 from any `gh attestation verify` call | Preflight P11 MUST abort with `tool binary SHA drift: gh (got <hash>, expected <hash>)` BEFORE any `gh attestation verify` call executes. Regression test for compromised-toolchain class. |
 
 CI job `release-script-ci.yml` runs the above on every PR touching `scripts/release*.sh` or `lib/*.sh`. Real releases require this suite green on `main`.
 
@@ -192,4 +195,38 @@ This is **design-only**. Implementation requires the maintainer's explicit go on
 1. **The `Linear comment markdown to stdout`** (4.9) vs MCP coupling — is paste-acceptable, or should we wire `mcp__linear__save_comment`? Recommended: paste, keeps script offline-capable + auditable.
 2. **The `--allow-ruleset-disable` flag** (R-3) — opt-in or default-on? Recommended: opt-in. Forces deliberate keystrokes for the dangerous path.
 3. **PEP 740 attestation** (R-10) — RESOLVED 2026-05-30 fixup: `release.sh` calls `gh attestation verify` directly in step 4.2b (works today). User-facing release notes say "verified at release-cut; client-side enforcement when pip/uv ship PEP 740 support."
-4. **PR-1's scope** — is 10 preflight gates + scaffold the right first slice, or split smaller (e.g., 5 gates + scaffold first)? Recommended: full 10, since each gate is small and they share lib helpers.
+4. **PR-1's scope** — is 11 preflight gates + scaffold the right first slice, or split smaller (e.g., 5 gates + scaffold first)? Recommended: full 11, since each gate is small and they share lib helpers.
+
+---
+
+## 11. Tool Trust (F-1 closure — fixup #3)
+
+The orchestrator is only as trustworthy as the binaries it shells out to. R-1, R-2, R-10 all assume `gh`/`gpg`/`docker`/`pip` faithfully execute the cryptography we ask of them. A compromised binary on `$PATH` (malicious brew tap, hijacked package, attacker write to `~/.local/bin`, `PATH` injection via `~/.zshrc`) returns "verified" without doing anything — every downstream check becomes theatre.
+
+**Defense:** preflight gate **P11 (Tool Trust)** runs before any cryptographic call, hashes the resolved binary path for each external tool, compares to pins in `SECURITY_RULES.md` SR-10 (new section). First drift → exit non-zero with the failing binary + got/expected hashes. See R-20.
+
+### The pinned binaries
+
+| Binary | Used for | Pin location |
+|---|---|---|
+| `gh` | `attestation verify`, `api`, `release create`, `workflow run`, `pr create`, `auth status/token` | SR-10 |
+| `gpg` | tag signing (R-1), tag verification (R-2), audit log signing (R-15, F-14) | SR-10 |
+| `docker` | step 4.4 install proof | SR-10 |
+| `pip` | step 4.2 `pip download --no-deps` (wheel pinning for R-10) | SR-10 |
+| `awk` | step 4.5 CHANGELOG section extract | SR-10 |
+| `jq` | parsing `gh api` JSON responses | SR-10 |
+| `sha256sum` | the self-check that computes all the above pins (chicken-and-egg note below) | SR-10 |
+| `python3` | helper computations | SR-10 |
+| `curl` | `worthless.sh` worker probe (4.3) | SR-10 |
+
+### Pin refresh policy
+
+- **Refresh = explicit PR.** A `brew upgrade gh` that bumps the binary triggers P11 to refuse on the maintainer's next release; the fix is a manual PR updating SR-10 with new pins, reviewer signoff confirms the new binary's provenance (e.g., checksums from upstream release page).
+- **No auto-bump.** A flag like `--accept-binary-drift` mirrors `--accept-script-change` (R-14): requires both the CLI flag AND `WORTHLESS_ACCEPT_BINARY_DRIFT=1` env var. Defeats accidental flag paste.
+- **First-commit chicken-and-egg.** Same pattern as R-14: PR-1 of the implementation series lands the binaries' pins in SR-10 alongside the P11 code. Reviewers manually verify pins match the binaries on the PR-1 author's machine before merge.
+- **`sha256sum` is the recursive trust anchor.** P11 can't verify `sha256sum` with itself. The first-pass uses BOTH `shasum -a 256` (macOS built-in) and `sha256sum` (Linux/brew) and asserts identical output as a self-check.
+
+### Out of scope for P11
+
+- TOCTOU between P11 and the actual binary invocation (a privileged attacker swapping the binary mid-script is out of our threat model — would require a different defense like `mlock` or `O_TMPFILE`-based invocation).
+- Library/syscall trust (linker, kernel, shell built-ins like `command -v`). Mitigation by `O_TMPFILE` or chroot is overkill for a maintainer-laptop release script.
