@@ -145,9 +145,17 @@ async def worthless_scan(
         # plus a wall-clock deadline so an MCP-driven scan over a huge or slow
         # file can't freeze the calling agent. Skipped files are surfaced so
         # the agent doesn't misread "0 findings" as "clean" on a partial scan.
+        #
+        # scan_files is synchronous and can run for up to SCAN_TIME_BUDGET_S
+        # seconds. Calling it inline would block the FastMCP event loop and
+        # starve other concurrent MCP tool calls — offload to a thread executor
+        # (same pattern worthless_status / worthless_lock use in this file).
+        # ``skipped`` is mutated in-place inside the executor; the reference
+        # we read after the await sees the same list.
         skipped: list[SkippedFile] = []
         deadline = time.monotonic() + SCAN_TIME_BUDGET_S
-        findings = scan_files(
+        findings = await asyncio.to_thread(
+            scan_files,
             scan_paths,
             enrolled_locations=enrolled,
             deadline=deadline,

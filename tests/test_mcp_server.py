@@ -116,6 +116,42 @@ class TestWorthlessScan:
         assert result["scan_incomplete"] is False
 
     @pytest.mark.asyncio
+    async def test_scan_offloaded_to_worker_thread(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """c5kc / CodeRabbit follow-up: scan_files is synchronous and runs for
+        up to 30 s; calling it inline would block the FastMCP event loop and
+        starve other concurrent MCP tools. This test pins that the MCP tool
+        actually offloads to a worker thread.
+
+        If a future refactor accidentally re-inlines the call (drops
+        ``await asyncio.to_thread(...)``), this test fails because
+        ``scan_files`` would then run on the main event-loop thread.
+        """
+        import threading
+
+        main_thread_id = threading.get_ident()
+        called_from: dict[str, int] = {}
+
+        def tracking_scan_files(*args, **kwargs):
+            called_from["thread"] = threading.get_ident()
+            return []
+
+        # Patch the symbol where the MCP tool imports it from.
+        import worthless.cli.scanner as scanner_mod
+
+        monkeypatch.setattr(scanner_mod, "scan_files", tracking_scan_files)
+
+        env_file = _make_env_file(tmp_path, "FOO=bar\n")
+        await worthless_scan(paths=[str(env_file)])
+
+        assert "thread" in called_from, "scan_files was never called"
+        assert called_from["thread"] != main_thread_id, (
+            "scan_files ran on the event-loop thread — would block other MCP tools. "
+            "Wrap the call in `await asyncio.to_thread(scan_files, ...)`."
+        )
+
+    @pytest.mark.asyncio
     async def test_scan_truncated_file_marks_scan_incomplete(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
