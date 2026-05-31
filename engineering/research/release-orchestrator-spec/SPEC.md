@@ -198,7 +198,7 @@ R-1 + R-3 are the rules I'd most fight a reviewer over — they encode the 0.3.7
 | Static | `shellcheck -x` | zero warnings, follows sourced libs |
 | Self-check | `release-self-check.sh` | grep prohibitions all absent (R-11) |
 | SHA pin | `--verify-self` | SHA256 matches SR-09 pin (R-14) |
-| Dry-run | `release.sh 9.9.9 --dry-run` on every `scripts/` PR | All 10 preflights run, none mutate, exit 0 |
+| Dry-run | `release.sh 9.9.9 --dry-run` on every `scripts/` PR | All 11 preflights run, none mutate, exit 0 |
 | Mock harness | `bats` with `PATH`-shimmed `gh`/`git`/`pip`/`docker` | Phase ordering enforced; phase 2 never runs if any P-gate failed |
 | Recovery | `bats` with mocked `gh api` ruleset endpoint | Ruleset re-enabled on R3 abort; EXIT trap fires; no orphan local tags |
 | Regression | inject `git config gpg.format ssh`; assert tag-cut still produces openpgp signature | 0.3.7 root cause becomes a regression test |
