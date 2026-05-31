@@ -42,7 +42,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import os
 import secrets
+import stat
 import struct
 import time
 from pathlib import Path
@@ -92,7 +94,8 @@ def load_or_create_signing_key(home_dir: Path) -> bytes:
     """Load the signing key from *home_dir/signing.key*, creating it if absent.
 
     The key is stored as 64 hex characters (lowercase).  File permissions
-    are set to 0o600 (owner read/write only) on creation and verified on load.
+    are set to 0o600 (owner read/write only) atomically at creation and
+    verified on every load — group/other read bits cause a hard failure.
 
     Args:
         home_dir: Directory containing ``signing.key``
@@ -103,17 +106,38 @@ def load_or_create_signing_key(home_dir: Path) -> bytes:
 
     Raises:
         OSError: If the key file cannot be read or written.
+        ValueError: If the key file has insecure permissions or is corrupt.
     """
     key_path = home_dir / "signing.key"
 
     if key_path.exists():
+        # Reject if group or other bits are set — a world-readable signing key
+        # defeats Phase 6's entire guarantee.
+        mode = key_path.stat().st_mode
+        unsafe_bits = (
+            stat.S_IRGRP | stat.S_IWGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IWOTH | stat.S_IXOTH
+        )
+        if mode & unsafe_bits:
+            raise ValueError(
+                f"signing key at {key_path} has insecure permissions "
+                f"({oct(stat.S_IMODE(mode))}); expected 0o600. "
+                "Fix: chmod 600 ~/.worthless/signing.key"
+            )
         raw = key_path.read_text().strip()
-        return bytes.fromhex(raw)
+        key = bytes.fromhex(raw)
+        if len(key) != _KEY_BYTES:
+            raise ValueError(
+                f"signing key at {key_path} is corrupt: got {len(key)} bytes, expected {_KEY_BYTES}"
+            )
+        return key
 
-    # Create new key
+    # Create new key atomically at 0o600 — no TOCTOU window between write and chmod.
     key = generate_signing_key()
-    key_path.write_text(key.hex() + "\n")
-    key_path.chmod(0o600)
+    fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, (key.hex() + "\n").encode("ascii"))
+    finally:
+        os.close(fd)
     return key
 
 

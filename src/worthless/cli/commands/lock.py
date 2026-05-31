@@ -428,6 +428,10 @@ async def _pass1_db_writes(
                     signing_key,
                     prefix=db_shard.prefix or "",
                 )
+                # NOTE(ordering): nonce is written before the .env file is updated.
+                # If _batch_rewrite fails after this point the nonce row is stale
+                # (the signed envelope never reached .env). Recovery: re-lock
+                # upserts a fresh nonce. Tracked for proper fix in worthless-dupf.
                 await repo.store_signing_nonce(alias, env_nonce, env_expires_at)
 
                 # INSERT OR REPLACE keeps shard_a_enc in sync with the auth token
@@ -510,6 +514,7 @@ async def _pass1_db_writes(
                 charset=sr.charset,
                 base_url=upstream_base_url,
             )
+            # NOTE(ordering): same as re-lock path above — nonce precedes .env write.
             await repo.store_signing_nonce(alias, env_nonce, env_expires_at)
             planned_out.append(
                 _PlannedUpdate(
