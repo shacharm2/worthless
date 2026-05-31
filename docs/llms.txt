@@ -49,7 +49,7 @@ One command. Original .env restored. Proxy stopped. Shares deleted. Zero artifac
 
 ## Not a vault
 
-Worthless is complementary to vaults, not a replacement. Use a vault AND Worthless. Vaults reduce leaks at rest. Worthless narrows what an attacker can do with a leaked share. They solve different problems.
+Worthless is complementary to vaults, not a replacement. Use a vault AND Worthless. Vaults guard at rest. Worthless kills what a leaked share can do. Different problems.
 
 ## Pages
 

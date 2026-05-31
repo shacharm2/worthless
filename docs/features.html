@@ -165,7 +165,7 @@
 
   <div class="feat-section">
     <h2>Hard spending cap</h2>
-    <p>Set a dollar limit per key. Hit the cap, the proxy refuses to reconstruct. Your app can't override it. Note: pre-request cost estimation may allow a single in-flight request to exceed the cap by up to the cost of one call.</p>
+    <p>Set a dollar limit per key. Hit the cap, the proxy refuses to reconstruct. Your app can't override it. One in-flight call may slip past — then the key stops forming.</p>
   </div>
 
   <div class="feat-section">
@@ -198,9 +198,9 @@
       <tr><td>Capability</td><td>worthless</td><td>Vault / Secrets Mgr</td><td>detect-secrets</td><td>.gitignore</td></tr>
     </thead>
     <tbody>
-      <tr><td>Blocks commits containing detected raw keys</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="ty">&#10003;</td><td class="tp">Partial</td></tr>
+      <tr><td>Prevents commits w/ detected raw keys</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="ty">&#10003;</td><td class="tp">Partial</td></tr>
       <tr><td>Post-leak protection</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
-      <tr><td>Leaked <code>.env</code> share alone is cryptographically useless</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
+      <tr><td>Leaked <code>.env</code> share is useless on its own</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
       <tr><td>Budget / hard spending cap</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
       <tr><td>Zero code changes</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td></tr>
       <tr><td>Fully self-hosted</td><td class="ty">&#10003;</td><td class="tp">Optional</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td></tr>
