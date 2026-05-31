@@ -12,6 +12,7 @@ Linear ([WOR-257](https://linear.app/plumbusai/issue/WOR-257)).
 - To report a vulnerability, see [/SECURITY.md](../SECURITY.md).
 - Contributor invariants (the SR-\* rules) live in [../CONTRIBUTING-security.md](../CONTRIBUTING-security.md).
 - For the install-time supply chain, see [install-security.md](install-security.md).
+- For the full crypto flow and threat-coverage matrix (internal), see [../engineering/crypto-flows.md](https://github.com/shacharm2/worthless/blob/main/engineering/crypto-flows.md).
 
 ## TL;DR
 
@@ -383,6 +384,29 @@ touching every row.
 
 - **Risk.** Low (operational). Rolling upgrades are impossible without a version column.
 - **Tracked.** [WOR-257](https://linear.app/plumbusai/issue/WOR-257) epic child.
+
+### Legacy `shard_a_enc` column
+
+The `shards` table includes a column `shard_a_enc` that is `NULL` on every
+modern enrollment. It exists for backwards compatibility with the pre-Bearer-auth
+era (PR #198, internally codenamed "worthless-16x2"), where both shards were
+Fernet-encrypted at rest. The current design places shard-A in the request's
+`Authorization: Bearer` header; the proxy's auth code path does not fall back to
+`shard_a_enc` even when present.
+
+- **Risk.** Low. The invariant ("Bearer is the only auth path") is enforced
+  structurally in the proxy code at
+  [`src/worthless/proxy/app.py`](https://github.com/shacharm2/worthless/blob/main/src/worthless/proxy/app.py) —
+  no fallback branch consumes `stored.shard_a` for authentication. `worthless
+  relock` sets the column to `NULL` on every re-lock.
+- **Pinned.** Not yet by an adversarial regression test. Today, a future
+  refactor that "helpfully" adds a stored-shard-A fallback would not be caught
+  by CI.
+- **Tracked.** [WOR-615](https://linear.app/plumbusai/issue/WOR-615) — adds the
+  adversarial test, plus a proposed startup assertion that refuses to boot
+  the proxy if any row has `shard_a_enc IS NOT NULL`, making the precondition
+  machine-checkable.
+- **For the full discussion**, see [`../engineering/crypto-flows.md`](https://github.com/shacharm2/worthless/blob/main/engineering/crypto-flows.md).
 
 ### Windows (experimental)
 
