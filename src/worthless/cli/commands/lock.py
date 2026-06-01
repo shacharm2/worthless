@@ -976,8 +976,8 @@ def _lock_keys(
                 key_names = ", ".join(var_name for var_name, _, _ in candidates)
                 console.print_hint(f"  Protecting {key_names}...")
             # Load (or create) the server-side signing key used to wrap shard-A
-            # in an HMAC envelope. The key lives in ~/.worthless/signing.key.
-            signing_key = load_or_create_signing_key(home.base_dir)
+            # in an HMAC envelope. Stored Fernet-encrypted at ~/.worthless/signing.key.
+            signing_key = load_or_create_signing_key(home.base_dir, home.fernet_key)
 
             # 8rqs Phase 7: env_values flows through so _pass1_db_writes can
             # read each key's matching *_BASE_URL from .env at lock time.
@@ -1068,7 +1068,7 @@ def _enroll_single(
             )
 
         # Sign shard-A so the enrolled value carries the HMAC envelope.
-        signing_key = load_or_create_signing_key(home.base_dir)
+        signing_key = load_or_create_signing_key(home.base_dir, home.fernet_key)
         signed_shard_a, env_nonce, env_expires_at = sign_shard_a(
             sr.shard_a,
             alias,

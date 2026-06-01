@@ -985,7 +985,13 @@ class TestPhase6RejectionPaths:
 
 
 class TestPhase6SigningKeyManagement:
-    """Signing key: 32 bytes, restricted permissions, idempotent creation."""
+    """Signing key: 32 bytes, Fernet-encrypted at rest, idempotent creation."""
+
+    @pytest.fixture()
+    def fernet_key(self):
+        from cryptography.fernet import Fernet
+
+        return Fernet.generate_key()
 
     def test_generate_signing_key_is_32_bytes(self):
         assert len(generate_signing_key()) == 32
@@ -993,46 +999,69 @@ class TestPhase6SigningKeyManagement:
     def test_two_generated_keys_differ(self):
         assert generate_signing_key() != generate_signing_key()
 
-    def test_load_or_create_creates_key_file(self, tmp_path):
-        key = load_or_create_signing_key(tmp_path)
+    def test_load_or_create_creates_key_file(self, tmp_path, fernet_key):
+        key = load_or_create_signing_key(tmp_path, fernet_key)
         assert (tmp_path / "signing.key").exists()
         assert len(key) == 32
 
-    def test_load_or_create_is_idempotent(self, tmp_path):
-        key1 = load_or_create_signing_key(tmp_path)
-        key2 = load_or_create_signing_key(tmp_path)
+    def test_load_or_create_is_idempotent(self, tmp_path, fernet_key):
+        key1 = load_or_create_signing_key(tmp_path, fernet_key)
+        key2 = load_or_create_signing_key(tmp_path, fernet_key)
         assert key1 == key2
 
-    def test_signing_key_file_has_restricted_permissions(self, tmp_path):
+    def test_signing_key_file_has_restricted_permissions(self, tmp_path, fernet_key):
         import stat as stat_mod
 
-        load_or_create_signing_key(tmp_path)
+        load_or_create_signing_key(tmp_path, fernet_key)
         mode = (tmp_path / "signing.key").stat().st_mode
         assert not (mode & stat_mod.S_IRGRP)
         assert not (mode & stat_mod.S_IROTH)
 
-    def test_world_readable_signing_key_raises_on_load(self, tmp_path):
-        """load_or_create_signing_key rejects a key file with group/other read bits."""
-        key = generate_signing_key()
-        key_path = tmp_path / "signing.key"
-        key_path.write_text(key.hex() + "\n")
-        key_path.chmod(0o644)  # world-readable — should be rejected
-        with pytest.raises(ValueError, match="insecure permissions"):
-            load_or_create_signing_key(tmp_path)
+    def test_world_readable_encrypted_signing_key_still_loads(self, tmp_path, fernet_key):
+        """A world-readable signing.key is safe because content is Fernet-encrypted.
 
-    def test_corrupt_short_signing_key_raises_on_load(self, tmp_path):
-        """load_or_create_signing_key rejects a truncated key file (wrong byte count)."""
+        File permissions are defence-in-depth; the encryption is the real protection.
+        Unlike the old plaintext format, a world-readable encrypted file does not leak
+        the signing key to a file-scraping attack.
+        """
+        # Create key, then loosen permissions — should still load fine.
+        load_or_create_signing_key(tmp_path, fernet_key)
+        (tmp_path / "signing.key").chmod(0o644)
+        key = load_or_create_signing_key(tmp_path, fernet_key)
+        assert len(key) == 32
+
+    def test_corrupt_signing_key_raises_on_load(self, tmp_path, fernet_key):
+        """load_or_create_signing_key raises on a file that is neither hex nor a Fernet token."""
         import os
 
-        # Write only 16 bytes as hex (half the required 32)
         key_path = tmp_path / "signing.key"
         fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            os.write(fd, b"aa" * 16 + b"\n")  # 16 bytes hex-encoded
+            os.write(fd, b"not-a-valid-fernet-token-or-hex\n")
         finally:
             os.close(fd)
-        with pytest.raises(ValueError, match="corrupt"):
-            load_or_create_signing_key(tmp_path)
+        with pytest.raises(ValueError, match="corrupt|could not be decrypted"):
+            load_or_create_signing_key(tmp_path, fernet_key)
+
+    def test_plaintext_hex_signing_key_auto_migrates(self, tmp_path, fernet_key):
+        """Old plaintext hex signing.key is auto-migrated to Fernet-encrypted format."""
+        import os
+
+        # Write old plaintext hex format directly
+        raw_key = generate_signing_key()
+        key_path = tmp_path / "signing.key"
+        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, (raw_key.hex() + "\n").encode("ascii"))
+        finally:
+            os.close(fd)
+
+        # Load should auto-migrate and return the correct key
+        loaded = load_or_create_signing_key(tmp_path, fernet_key)
+        assert loaded == raw_key
+
+        # File should now be encrypted (much longer than 65-byte hex)
+        assert len(key_path.read_bytes()) > 80
 
 
 class TestPhase6NoncePersistence:
@@ -1150,7 +1179,7 @@ class TestPhase6KeyRotation:
 class TestPhase6KeyCreationWarning:
     """Warning emitted when a new signing key is created alongside an existing DB."""
 
-    def test_warning_logged_when_key_created_with_existing_db(self, tmp_path, caplog):
+    def test_warning_logged_when_key_created_with_existing_db(self, tmp_path, fernet_key, caplog):
         """load_or_create_signing_key warns when worthless.db exists but signing.key does not.
 
         This state means existing enrollments were signed with a now-deleted key —
@@ -1162,7 +1191,7 @@ class TestPhase6KeyCreationWarning:
         (tmp_path / "worthless.db").write_bytes(b"")
 
         with caplog.at_level(logging.WARNING, logger="worthless.crypto.shard_signing"):
-            load_or_create_signing_key(tmp_path)
+            load_or_create_signing_key(tmp_path, fernet_key)
 
         assert any("existing enrollments" in r.message for r in caplog.records), (
             "Expected a WARNING about existing enrollments when signing key is created "

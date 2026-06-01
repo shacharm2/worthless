@@ -33,14 +33,16 @@ Security properties
 
 Residual risks (documented)
 ---------------------------
-- Signing key stored at rest in ~/.worthless/signing.key (file permissions: 0o600)
-  An attacker with local file access can read it. Mitigation: mTLS + HSM in Phase 6b.
+- Signing key stored at rest in ~/.worthless/signing.key, Fernet-encrypted with the
+  operator's Fernet key (WOR-620). File-scraping supply chain attacks get an encrypted
+  blob — useless without the Fernet key, which lives in the OS keychain.
+  Mitigation for process-level compromise: mTLS + HSM in Phase 6b.
 - Truncated HMAC (16 bytes / 128 bits) provides 2^64 security against forgery.
   Acceptable for this threat model; full 32 bytes would lengthen the envelope by 16 chars.
 - Threat model scope: Phase 6 protects against non-filesystem exfiltration vectors
-  (git history leaks, CI log leaks, env var scraping). It does NOT protect against
-  machine-level compromise — an attacker with read access to the proxy host can read
-  signing.key and forge envelopes.
+  (git history leaks, CI log leaks, env var scraping, file-scraping supply chain).
+  It does NOT protect against process-level compromise — an attacker with code execution
+  in the proxy process can call the Fernet keychain API and reconstruct signing.key.
 """
 
 from __future__ import annotations
@@ -51,10 +53,12 @@ import hmac
 import logging
 import os
 import secrets
-import stat
 import struct
 import time
 from pathlib import Path
+
+from cryptography.fernet import Fernet as _Fernet
+from cryptography.fernet import InvalidToken as _InvalidToken
 
 _logger = logging.getLogger(__name__)
 
@@ -99,58 +103,81 @@ def generate_signing_key() -> bytes:
     return secrets.token_bytes(_KEY_BYTES)
 
 
-def load_or_create_signing_key(home_dir: Path) -> bytes:
+def load_or_create_signing_key(home_dir: Path, fernet_key: bytes | bytearray) -> bytes:
     """Load the signing key from *home_dir/signing.key*, creating it if absent.
 
-    The key is stored as 64 hex characters (lowercase).  File permissions
-    are set to 0o600 (owner read/write only) atomically at creation and
-    verified on every load — group/other read bits cause a hard failure.
+    The key is stored as a Fernet-encrypted blob (WOR-620). This means a
+    file-scraping supply chain attack gets an opaque ciphertext — useless
+    without the Fernet key, which lives in the OS keychain.
+
+    **Migration:** if an old plaintext hex file is found it is automatically
+    re-encrypted in-place. No user action required.
 
     Args:
-        home_dir: Directory containing ``signing.key``
-                  (typically ``~/.worthless/``).
+        home_dir:   Directory containing ``signing.key`` (typically ``~/.worthless/``).
+        fernet_key: The operator's Fernet key (bytes or bytearray, 44 base64url chars).
+                    Already available from ``ProxySettings.fernet_key`` / ``WorthlessHome.fernet_key``.
 
     Returns:
         32-byte signing key as ``bytes``.
 
     Raises:
-        OSError: If the key file cannot be read or written.
-        ValueError: If the key file has insecure permissions or is corrupt.
+        OSError:    If the key file cannot be read or written.
+        ValueError: If the key file is corrupt or encrypted with a different Fernet key.
     """
     key_path = home_dir / "signing.key"
+    cipher = _Fernet(bytes(fernet_key))
 
     if key_path.exists():
-        # Reject if group or other bits are set — a world-readable signing key
-        # defeats Phase 6's entire guarantee.
-        mode = key_path.stat().st_mode
-        unsafe_bits = (
-            stat.S_IRGRP | stat.S_IWGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IWOTH | stat.S_IXOTH
-        )
-        if mode & unsafe_bits:
-            raise ValueError(
-                f"signing key at {key_path} has insecure permissions "
-                f"({oct(stat.S_IMODE(mode))}); expected 0o600. "
-                "Fix: chmod 600 ~/.worthless/signing.key"
+        content = key_path.read_bytes()
+
+        # Migration path: detect old plaintext hex format (64 hex chars + optional newline).
+        # New Fernet tokens are base64url and much longer (≥ 90 bytes), so the length check
+        # is unambiguous.
+        stripped = content.strip()
+        if len(stripped) == _KEY_BYTES * 2:  # 64 hex chars
+            try:
+                key = bytes.fromhex(stripped.decode("ascii"))
+            except (ValueError, UnicodeDecodeError):
+                raise ValueError(
+                    f"signing key at {key_path} is corrupt (expected hex or Fernet token)"
+                ) from None
+            if len(key) != _KEY_BYTES:
+                raise ValueError(
+                    f"signing key at {key_path} is corrupt: got {len(key)} bytes, expected {_KEY_BYTES}"
+                )
+            # Re-encrypt in-place atomically.
+            encrypted = cipher.encrypt(key)
+            _atomic_write(key_path, encrypted)
+            _logger.info(
+                "Migrated signing key at %s from plaintext to Fernet-encrypted format (WOR-620)",
+                key_path,
             )
-        raw = key_path.read_text().strip()
-        key = bytes.fromhex(raw)
+            return key
+
+        # Normal path: Fernet-encrypted blob.
+        try:
+            key = cipher.decrypt(content)
+        except _InvalidToken:
+            raise ValueError(
+                f"signing key at {key_path} could not be decrypted — "
+                "it may be encrypted with a different Fernet key, or corrupt. "
+                "If you rotated the Fernet key, re-lock all .env files: worthless lock <your-.env>"
+            ) from None
         if len(key) != _KEY_BYTES:
             raise ValueError(
-                f"signing key at {key_path} is corrupt: got {len(key)} bytes, expected {_KEY_BYTES}"
+                f"signing key at {key_path} decrypted to wrong length: "
+                f"got {len(key)} bytes, expected {_KEY_BYTES}"
             )
         return key
 
-    # Create new key atomically at 0o600 — no TOCTOU window between write and chmod.
+    # Create new key, encrypted atomically at 0o600.
     key = generate_signing_key()
-    fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        os.write(fd, (key.hex() + "\n").encode("ascii"))
-    finally:
-        os.close(fd)
+    encrypted = cipher.encrypt(key)
+    _atomic_write(key_path, encrypted)
 
     # If a DB already exists but the signing key was just created, all existing
-    # enrollments were signed with a different (now-gone) key. Warn loudly so the
-    # operator knows to re-lock every .env file.
+    # enrollments were signed with a different (now-gone) key. Warn loudly.
     if (home_dir / "worthless.db").exists():
         _logger.warning(
             "Created new signing key at %s but worthless.db already exists — "
@@ -160,6 +187,16 @@ def load_or_create_signing_key(home_dir: Path) -> bytes:
         )
 
     return key
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write *data* to *path* atomically at 0o600 (create or overwrite)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(str(path), flags, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------

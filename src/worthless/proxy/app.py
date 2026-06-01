@@ -290,7 +290,7 @@ async def _lifespan(app: FastAPI):
     # verification.  The key lives alongside the DB (same directory), so custom
     # db_path overrides are respected without additional config.
     _home_dir = Path(settings.db_path).parent
-    app.state.signing_key = load_or_create_signing_key(_home_dir)
+    app.state.signing_key = load_or_create_signing_key(_home_dir, settings.fernet_key)
 
     client = httpx.AsyncClient(
         follow_redirects=False,

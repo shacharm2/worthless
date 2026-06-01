@@ -123,7 +123,7 @@ def live_proxy():
     shard_a_tokens: dict[str, str] = {}
     # Use the same key that the proxy lifespan will derive from the tmpdir,
     # so enrollment signatures match what the proxy verifies at runtime.
-    signing_key_bytes: bytes = load_or_create_signing_key(Path(tmpdir))
+    signing_key_bytes: bytes = load_or_create_signing_key(Path(tmpdir), fernet_key)
 
     prefixes = {"openai": "sk-proj-", "anthropic": "sk-ant-api03-"}
     # 8rqs Phase 5+6: each enrollment carries its own base_url. Point both at
