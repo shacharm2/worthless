@@ -188,6 +188,17 @@
     <p>Your keys never touch anyone else's server. AGPL-3.0. Zero telemetry. No account needed.</p>
   </div>
 
+  <div class="feat-section">
+    <h2>What Worthless does not protect against</h2>
+    <p>Worthless aims to make a copied <code>.env</code> share useless on its own. It is not a sandbox for a machine that is already compromised, and it is not the only layer you need.</p>
+    <ul>
+      <li><strong>A compromised machine.</strong> If an attacker controls the computer Worthless runs on, they can reach your key. Same trust boundary as a password manager.</li>
+      <li><strong>The provider's side.</strong> A breach or outage at OpenAI, Anthropic, or another upstream is outside what Worthless can affect.</li>
+      <li><strong>This early build's limits.</strong> The proof of concept is Python, with documented limits on how briefly key material lives in memory.</li>
+    </ul>
+    <p>Worthless is one layer, built to sit alongside a vault, secret scanning, and key rotation. Full threat model: <a href="https://docs.wless.io/security/">security model</a>.</p>
+  </div>
+
   <!-- Comparison -->
   <div class="eyebrow" style="margin-top:1rem">Comparison</div>
   <h2 style="font-size:1.1rem;margin-top:.4rem;margin-bottom:.25rem">How Worthless compares</h2>
