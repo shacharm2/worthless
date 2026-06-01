@@ -15,6 +15,22 @@ TRUST_PAGES = {
     "red/security-model.html": RED / "security-model.html",
 }
 
+AI_SLOP_PHRASES = (
+    "in today's rapidly evolving threat landscape",
+    "it is important to understand",
+    "comprehensive security posture",
+    "robust protection",
+    "seamlessly empowers",
+    "this article explores",
+    "public evidence layer",
+    "changes what leaks",
+)
+
+DRAFT_POST_TITLES = (
+    "How leaked AI keys get reused",
+    "Provider budgets are not blast-radius controls",
+)
+
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
@@ -34,7 +50,20 @@ def test_wor398_stable_trust_urls_exist_and_are_cross_linked() -> None:
     assert "claims.html" in _hrefs(red_index)
     assert "security-model.html" in _hrefs(red_index)
     assert "Read the claim ledger" not in red_index
-    assert "Review threat reports" in red_index
+
+
+def test_red_index_is_attack_blog_not_trust_dashboard() -> None:
+    html = _read(RED / "index.html")
+    lower = html.lower()
+
+    assert "Red Blog" in html
+    assert "Proof surfaces" not in html
+    assert "Audit with AI" not in html
+    assert "terminal" not in lower
+    assert "Review threat reports" not in html
+    assert "Read the claim ledger" not in html
+    assert "Posts stay hidden until they are ready." not in html
+    assert lower.count("<section") <= 4
 
 
 def test_claim_ledger_states_claims_proof_and_limitations() -> None:
@@ -100,6 +129,7 @@ def test_trust_pages_avoid_disallowed_public_claims() -> None:
         "protects any secret",
         "nothing happens if",
         "can't do anything",
+        *AI_SLOP_PHRASES,
     )
 
     offenders: dict[str, list[str]] = {}
@@ -139,3 +169,6 @@ def test_red_blog_posts_are_hidden_until_publication_flag_changes() -> None:
     assert "published: false" in posts_js
     assert 'id="red-post-list"' in red_index
     assert "Coming soon" not in red_index
+    for title in DRAFT_POST_TITLES:
+        assert title in posts_js
+        assert title not in red_index
