@@ -57,8 +57,10 @@ The credential placed in `apiKey` (shard-A) reaches the proxy verbatim as the `A
 | `probe-modelsjson-precedence.sh` | B | A (generated) | `[]` | – | **all 3** | plaintext | **B** |
 | `probe-populated-modelsjson.sh` | B | A (hand-written) | **populated** `[gpt-4o, gpt-4o-mini]` | absent | **all 3** | plaintext | **B** |
 | `probe-per-model-baseurl.sh` | B (provider) | – | populated | **A** | **all 3** | plaintext | **B** |
+| `probe-anthropic-and-replace.sh` (P1) | B | – | populated | – | **all 3** | plaintext | **B** — api type = `anthropic-messages` |
+| `probe-anthropic-and-replace.sh` (P2) | B | A (hand-written) | populated | – | **all 3** | plaintext | **B** — `models.mode: replace` |
 
-**Invariant observed:** whenever `openclaw.json` provider `baseUrl = B`, the request went to **B** — on every path, with any agent `models.json` value (empty or populated), and with a divergent per-model `baseUrl`. The only "A" result is the control case where `openclaw.json` itself pointed at A.
+**Invariant observed:** whenever `openclaw.json` provider `baseUrl = B`, the request went to **B** — on every path (infer / agent-local / gateway), with any agent `models.json` value (empty or populated), with a divergent per-model `baseUrl`, for **both** api types (`openai-completions` and `anthropic-messages`), and under **both** config modes (`merge` and `replace`). The only "A" result is the control case where `openclaw.json` itself pointed at A. Notably, `replace` mode still left the hand-written stale agent `models.json` baseUrl in place, yet routing ignored it — same as `merge`.
 
 **Auth-profiles note:** `auth status` reported `oauth.profiles: []` and credentials resolving from `models.json`; no `auth-profiles.json` cached-credential path intercepted routing in the api-key configuration.
 
@@ -93,8 +95,8 @@ The end-to-end path (real `worthless lock` → high-entropy shard-A → routing 
 
 | Missing cell | Priority | Rationale |
 |---|---|---|
-| **api type = `anthropic`** | **HIGH** | api type provably affects handling (beta-header suppression); routing could differ from `openai-completions`. |
-| **merge mode = `replace`** | MED | Likely reinforces `openclaw.json` authority; cheap to confirm. |
+| ~~api type = `anthropic`~~ | ~~HIGH~~ | ✅ **RUN** (`probe-anthropic-and-replace.sh` P1) — follows `baseUrl` like OpenAI; no api-type bypass. |
+| ~~merge mode = `replace`~~ | ~~MED~~ | ✅ **RUN** (`probe-anthropic-and-replace.sh` P2) — `openclaw.json` authoritative under `replace` too. |
 | SecretRef **+** populated `models.json` together | LOW | Each axis shown independently; combination unlikely to interact. |
 | model row order `[A,B]` vs `[B,A]` | LOW | Affects default-model *selection*, not endpoint; a fixed model id maps to a fixed provider. One confirm-and-dismiss row. |
 | multiple agents (each own `models.json`) | LOW | Single `main` agent is the norm; one row. |
@@ -110,6 +112,6 @@ All results are pinned to `2026.5.3-1`. OpenClaw can change routing/merge behavi
 
 ## Implications for Worthless Phase 3 (WOR-621)
 
-1. **The one-file `openclaw.json` provider-baseUrl rewrite is sufficient and load-bearing** for routing. No mandatory agent `models.json` rewrite, no per-model `baseUrl` clearing (for `openai-completions`; confirm Anthropic).
+1. **The one-file `openclaw.json` provider-baseUrl rewrite is sufficient and load-bearing** for routing. No mandatory agent `models.json` rewrite, no per-model `baseUrl` clearing. Confirmed for **both** `openai-completions` and `anthropic-messages`, and under **both** `merge` and `replace` modes.
 2. **Merge-preserve leaves a stale baseUrl (and possibly a stale key) in the agent `models.json` after lock.** This is NOT a routing issue (ignored at runtime) but a cleanliness / secret-at-rest concern. Surface via `doctor` as a follow-up; Phase 1's audit gate already blocks plaintext keys at lock time. **Downgraded from "blocking" to follow-up.**
 3. The Cursor review earned its keep by surfacing the merge-preserve mechanism (a real behavior our first probe hid via empty `models[]`), but its headline ("`openclaw.json` rewrite ≠ load-bearing") is **overstated and refuted** by the populated-`models.json` gateway probe.
