@@ -228,6 +228,67 @@ class TestPostLockPromptAdvisoryOnly:
             f"happy path must stay silent; got stderr: {captured.err!r}"
         )
 
+    def test_multi_reason_summary_sorts_most_frequent_first(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """8vvg: when multiple skip reasons are present, the summary sorts
+        most-frequent-first with deterministic alphabetical tie-break.
+
+        Pre-fix the summary sorted alphabetically by reason key, but rendered
+        count-first ("1 truncated, 2 timeout") — confusing to read. Code-reviewer
+        agent flagged this on PR #264. Sort key is now (-count, reason).
+        """
+        from worthless.cli.commands.lock import _maybe_prompt_code_scan
+
+        def fake_scan(_roots, *, deadline=None, skipped=None, **_kw):
+            # 1 truncated, 2 timeout, 3 unreadable — expected order:
+            # "3 unreadable, 2 timeout, 1 truncated" (most-frequent-first)
+            skipped.append(SkippedFile(file=str(tmp_path / "big.py"), reason="truncated"))
+            skipped.append(SkippedFile(file=str(tmp_path / "slow1.py"), reason="timeout"))
+            skipped.append(SkippedFile(file=str(tmp_path / "slow2.py"), reason="timeout"))
+            skipped.append(SkippedFile(file=str(tmp_path / "denied1.py"), reason="unreadable"))
+            skipped.append(SkippedFile(file=str(tmp_path / "denied2.py"), reason="unreadable"))
+            skipped.append(SkippedFile(file=str(tmp_path / "denied3.py"), reason="unreadable"))
+            return []
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.lock.scan_for_hardcoded_provider_urls",
+            fake_scan,
+        )
+
+        _maybe_prompt_code_scan(tmp_path)
+
+        captured = capsys.readouterr()
+        # Most-frequent-first ordering — the readable + deterministic shape.
+        assert "3 unreadable, 2 timeout, 1 truncated" in captured.err, (
+            f"reason summary should sort most-frequent-first; got: {captured.err!r}"
+        )
+
+    def test_tie_break_in_reason_summary_is_alphabetical(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """8vvg: when two reasons have the same count, alphabetical tie-break
+        gives a stable output."""
+        from worthless.cli.commands.lock import _maybe_prompt_code_scan
+
+        def fake_scan(_roots, *, deadline=None, skipped=None, **_kw):
+            # 1 timeout, 1 truncated — same count, alpha tie-break → timeout, truncated
+            skipped.append(SkippedFile(file=str(tmp_path / "slow.py"), reason="timeout"))
+            skipped.append(SkippedFile(file=str(tmp_path / "big.py"), reason="truncated"))
+            return []
+
+        monkeypatch.setattr(
+            "worthless.cli.commands.lock.scan_for_hardcoded_provider_urls",
+            fake_scan,
+        )
+
+        _maybe_prompt_code_scan(tmp_path)
+
+        captured = capsys.readouterr()
+        assert "1 timeout, 1 truncated" in captured.err, (
+            f"ties should break alphabetically; got: {captured.err!r}"
+        )
+
     def test_incomplete_scan_drops_partial_findings(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:

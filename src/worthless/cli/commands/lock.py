@@ -744,8 +744,12 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
             reason_counts: dict[str, int] = {}
             for s in skipped:
                 reason_counts[s.reason] = reason_counts.get(s.reason, 0) + 1
+            # Sort most-frequent-first, alpha tie-break — matches the
+            # rendered "{count} {reason}" reading order and gives a stable
+            # output for the same input.
             reason_summary = ", ".join(
-                f"{n} {r}" for r, n in sorted(reason_counts.items())
+                f"{n} {r}"
+                for r, n in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
             )
             typer.echo(
                 f"\nNote: post-lock source scan incomplete ({reason_summary}). "
@@ -775,12 +779,22 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
                 " fix instructions.",
                 err=True,
             )
+    # Handler ordering matters: ``typer.Abort`` MUST precede ``except Exception``.
+    # ``typer.Abort`` is a subclass of ``click.exceptions.Abort`` → ``RuntimeError``,
+    # so the broader catch would otherwise swallow Ctrl-C and we'd lose the
+    # "polite no" semantic. A future maintainer reordering these alphabetically
+    # would silently break that behaviour.
     except typer.Abort:
         # User pressed Ctrl-C at the "Scan now?" prompt — lock already succeeded,
         # treat this as a polite "no thanks" rather than an error.
         return
     except Exception:  # noqa: BLE001
-        logger.debug("_maybe_prompt_code_scan raised, skipping", exc_info=True)
+        # Promoted from debug → warning (sec-eng R1 on PR #264): if the scanner
+        # raises BEFORE populating ``skipped`` (e.g. provider-list import error),
+        # the advisory is silently dropped — same blind spot as pre-8vvg. WARNING
+        # makes broken post-lock scanners observable in support logs without
+        # changing user-facing behaviour (lock exit code stays 0 either way).
+        logger.warning("_maybe_prompt_code_scan raised, skipping", exc_info=True)
 
 
 def _emit_openclaw_failure(
