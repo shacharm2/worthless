@@ -106,7 +106,7 @@ The end-to-end path (real `worthless lock` → high-entropy shard-A → routing 
 
 ## Version fragility & re-verification
 
-All results are pinned to `2026.5.3-1`. OpenClaw can change routing/merge behavior across releases. **Plan:** fold these probes into a tag-pinned parametrized pytest (`tests/openclaw/test_routing_contract.py`) where each matrix row is an assertion; a tag bump that changes routing turns the suite red. The five `probe-*.sh` scripts are throwaway scaffolding and should be deleted once the pytest contract lands. **The contract test must use a realistic high-entropy shard-A value** (not a low-entropy `sk-…aaaa` placeholder) so it also clears `worthless`'s entropy guard and exercises the scan/lock path, not just routing — see the Probe fidelity caveat above.
+All results are pinned to `2026.5.3-1`. OpenClaw can change routing/merge behavior across releases. **Guard:** the load-bearing subset of this matrix is now an executable, tag-pinned parametrized pytest — `tests/openclaw/test_routing_contract.py` (marks: `openclaw`, `docker`). Each case spins the real image + two mock upstreams and asserts the rewritten `openclaw.json` baseUrl wins on the gateway path. **A tag bump that changes routing turns it red — that is the version-drift signal**; re-verify the lock design and update this doc when it fires. The contract test uses a realistic high-entropy apiKey (`secrets.token_hex`), not a low-entropy `sk-…aaaa` placeholder. The original `probe-*.sh` scaffolding has been folded into the contract test and removed.
 
 ---
 
