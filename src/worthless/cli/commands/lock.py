@@ -974,13 +974,20 @@ def _lock_keys(
         deadline=bypass_deadline,
         skipped=bypass_skipped,
     )
-    if bypass_skipped:
+    # Filter to the HANG-class skips only. ``unreadable`` (permission denied,
+    # I/O error) is silently tolerated here because lock's source scan is
+    # opportunistic defense-in-depth — vendored binaries, OS-specific files,
+    # and dev-only permission quirks are normal and should NOT block a lock.
+    # The pre-existing contract (``test_unreadable_source_file_does_not_crash``)
+    # is preserved. ``truncated`` / ``timeout`` ARE genuine hang risks (the
+    # c5kc-named scenarios) and still fail closed.
+    hang_class_skipped = [s for s in bypass_skipped if s.reason != "unreadable"]
+    if hang_class_skipped:
         # Lead with the reason summary so the user-facing word ("truncated" /
-        # "timeout" / "unreadable") lands in the header — downstream message
-        # truncation can eat the middle of multi-line messages, but the
-        # header stays intact.
+        # "timeout") lands in the header — downstream message truncation can
+        # eat the middle of multi-line messages, but the header stays intact.
         reason_counts: dict[str, int] = {}
-        for s in bypass_skipped:
+        for s in hang_class_skipped:
             reason_counts[s.reason] = reason_counts.get(s.reason, 0) + 1
         reason_summary = ", ".join(
             f"{n} {r}" for r, n in sorted(reason_counts.items())
@@ -990,7 +997,7 @@ def _lock_keys(
             "An incomplete scan can't prove no hardcoded provider URLs slipped past.",
             "Affected files:",
         ]
-        for s in bypass_skipped:
+        for s in hang_class_skipped:
             # File paths come from our own walk, not untrusted input.
             skip_lines.append(f"  {s.file}  [{s.reason}]")
         skip_lines.append(
