@@ -870,7 +870,7 @@ def apply_lock(
     Returns:
         :class:`OpenclawApplyResult` describing what we did.
 
-    Spec: ``engineering/research/openclaw-WOR-431-phase-2-spec.md``
+    Spec: ``engineering/research/openclaw/WOR-431-phase-2-spec.md``
     §"Phase 2.b" / §"`apply_lock()` contract".
     """
     # Resolve the proxy base URL here (not at import time) so the Docker
@@ -1150,7 +1150,7 @@ def apply_unlock(
     """Reverse Phase 2.b's :func:`apply_lock`. Idempotent. Best-effort.
 
     Stage 3 of ``worthless unlock``. Per L1/L2 in
-    ``engineering/research/openclaw-WOR-431-phase-2-spec.md``: failures
+    ``engineering/research/openclaw/WOR-431-phase-2-spec.md``: failures
     here NEVER cause unlock-core to fail. If the user runs ``unlock`` and
     we can't clean up OpenClaw's config, they still get their ``.env``
     restored — surfaced as structured events instead of exceptions.
@@ -1171,7 +1171,7 @@ def apply_unlock(
         ``apply_lock``); ``providers_skipped`` lists ones we couldn't
         remove and the reason.
 
-    Spec: ``engineering/research/openclaw-WOR-431-phase-2-spec.md``
+    Spec: ``engineering/research/openclaw/WOR-431-phase-2-spec.md``
     §"Phase 2.c — ``unlock`` integration", failure-mode rows RT-01/02/03,
     F-XS-40 / F-XS-41, locked decisions L1, L2, L3.
     """

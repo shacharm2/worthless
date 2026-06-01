@@ -5,7 +5,7 @@
 **Sources:** real `--help` output, decompiled `dist/cli/commands/*.js`, `docs/cli.md` from openclaw/clawhub@main, GitHub issue #669
 **Status:** No login was performed. No publish was performed. Token store untouched.
 
-> The earlier `engineering/research/openclaw.md` referenced in the brief does not exist on disk; this is the first validated probe.
+> The earlier `engineering/research/openclaw/README.md` referenced in the brief does not exist on disk; this is the first validated probe.
 
 ---
 

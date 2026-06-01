@@ -569,7 +569,7 @@ def _apply_openclaw(
 ) -> int:
     """OpenClaw integration call + sentinel write. Returns exit code (0/73/87).
 
-    Per L1 in ``engineering/research/openclaw-WOR-431-phase-2-spec.md``:
+    Per L1 in ``engineering/research/openclaw/WOR-431-phase-2-spec.md``:
     failures here NEVER roll back lock-core. Per L2 (revised 2026-05-08
     by the verification gauntlet): when OpenClaw is **detected** AND the
     integration stage fails, the user is in a false-invariant state ("lock
@@ -1100,7 +1100,7 @@ def _lock_keys(
                 if _oc_gate is not None:
                     _openclaw_audit_postflight(_oc_gate)
                 # Phase 2.b: OpenClaw magic. Per L1 in
-                # engineering/research/openclaw-WOR-431-phase-2-spec.md, this
+                # engineering/research/openclaw/WOR-431-phase-2-spec.md, this
                 # NEVER rolls back lock-core success. Per L2 (revised 2026-05-08
                 # by the verification gauntlet): detected+failed returns non-zero
                 # openclaw_exit so the caller can raise typer.Exit(openclaw_exit)

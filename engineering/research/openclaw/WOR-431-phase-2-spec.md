@@ -161,8 +161,8 @@ Each AC is a single verifiable assertion. Implementation is "done" when **all** 
 ### Phase 2.0 — Invariant gate (NO CODE)
 
 - Re-run Phase 1's full test suite — confirm 27/27, 93% coverage.
-- Read `engineering/research/openclaw.md` §Corrections.
-- Read `engineering/research/openclaw-WOR-431-skill-authoring.md`.
+- Read `engineering/research/openclaw/README.md` §Corrections.
+- Read `engineering/research/openclaw/WOR-431-skill-authoring.md`.
 - Confirm `_PROVIDER_ENV_MAP` in `wrap.py` matches the providers we'll write.
 - **Output:** one-paragraph note in PR description.
 
@@ -218,7 +218,7 @@ Each AC is a single verifiable assertion. Implementation is "done" when **all** 
 
 ### Phase 2.f — Documentation + Linear sync
 
-- `engineering/research/openclaw.md` — append §Phase-2-implementation-notes (rollback decision, idempotency rationale).
+- `engineering/research/openclaw/README.md` — append §Phase-2-implementation-notes (rollback decision, idempotency rationale).
 - `.claude/module_ir.md` — add `openclaw/` modules entry.
 - Linear: close WOR-321 as duplicate; update WOR-431 with executive summary linking back to this spec file.
 

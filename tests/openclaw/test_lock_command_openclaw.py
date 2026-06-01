@@ -1,6 +1,6 @@
 """Phase 2.b — ``worthless lock`` integration with apply_lock().
 
-Spec: ``engineering/research/openclaw-WOR-431-phase-2-spec.md`` §"Phase 2.b"
+Spec: ``engineering/research/openclaw/WOR-431-phase-2-spec.md`` §"Phase 2.b"
 + AC1 (no-OpenClaw byte-identical), AC10 (.env success + OpenClaw failure
 → exit 0), AC11 (lock-core never rolls back).
 

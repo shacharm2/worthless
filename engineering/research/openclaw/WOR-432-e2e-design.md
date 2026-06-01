@@ -8,7 +8,7 @@ WOR-432 (child of WOR-421) requires an automated test that drives the full chain
 2. OpenClaw agent invocation triggers the skill, which routes the request through the Worthless proxy.
 3. Mock upstream receives the **reconstructed real key**, never shard-A.
 
-Prior research on the partnership lives in `engineering/product/docker-journey.md`, `engineering/product/personas.md`, `.planning/research/v1.1-stress-test.md`, and `.planning/research/04.1-readme-launch/`. There was no `engineering/research/openclaw.md` — this is the first canonical note for the partnership test. Every finding below is backed by live `docker exec` output against `ghcr.io/openclaw/openclaw:latest` (image `2026.5.3-1`).
+Prior research on the partnership lives in `engineering/product/docker-journey.md`, `engineering/product/personas.md`, `.planning/research/v1.1-stress-test.md`, and `.planning/research/04.1-readme-launch/`. There was no `engineering/research/openclaw/README.md` — this is the first canonical note for the partnership test. Every finding below is backed by live `docker exec` output against `ghcr.io/openclaw/openclaw:latest` (image `2026.5.3-1`).
 
 ---
 

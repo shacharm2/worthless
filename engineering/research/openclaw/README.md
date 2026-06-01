@@ -3,9 +3,9 @@
 > Internal reference for the worthless × OpenClaw integration. Public install
 > docs live in `docs/install-openclaw.md`. This file is for contributors.
 >
-> Per-child deep-dive research: `openclaw-WOR-430-decisions.md`,
-> `openclaw-WOR-431-skill-authoring.md`, `openclaw-WOR-432-e2e-design.md`,
-> `openclaw-WOR-433-publish-flow.md`. Read those for verdicts and live-test
+> Per-child deep-dive research: `WOR-430-decisions.md`,
+> `WOR-431-skill-authoring.md`, `WOR-432-e2e-design.md`,
+> `WOR-433-publish-flow.md`. Read those for verdicts and live-test
 > evidence; this file is the umbrella.
 
 ## TL;DR
@@ -69,17 +69,17 @@ disagree.
    The headless test harness for skills is `openclaw agent --local --json
    --message …` invoked via `docker exec`. The earlier Integration-paths table
    implied a direct HTTP API; that's wrong. See
-   `openclaw-WOR-432-e2e-design.md`.
+   `WOR-432-e2e-design.md`.
 
 2. **No GitHub-URL sideload for skills.** `clawhub install` accepts only `<slug>`
    + `--version`. GitHub-source publish is a *package*-only feature, not skills.
    The Plan B fallback if registry publish blocks is `git clone` + manual copy
-   into `~/.openclaw/skills/`. See `openclaw-WOR-433-publish-flow.md`.
+   into `~/.openclaw/skills/`. See `WOR-433-publish-flow.md`.
 
 3. **Skills have no appeal process if the scanner flags.** Only `clawhub skill
    rescan <slug>` (rate-limited). Packages have a full appeal/report/triage
    surface; skills don't. Risk on registry publish is higher than this doc
-   originally implied. See `openclaw-WOR-433-publish-flow.md`.
+   originally implied. See `WOR-433-publish-flow.md`.
 
 Other findings worth promoting from the per-child files:
 
