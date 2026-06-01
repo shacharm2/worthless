@@ -18,13 +18,19 @@
   <main>
     <p class="kicker">May 2026 / supply chain</p>
     <h1>The package ran before your build did.</h1>
-    <p class="deck">The trick was not subtle. Publish packages that look close enough, run during install, then read the room.</p>
+    <p class="deck">A developer meant to install one thing and got something close enough to pass at a glance. The bad package ran before the app did. By the time the build started, the attacker already had a shot at the secrets in the room.</p>
     <p class="source">Source: <a href="https://www.microsoft.com/en-us/security/blog/2026/05/28/typosquatted-npm-packages-used-steal-cloud-ci-cd-secrets/" target="_blank" rel="noopener">Microsoft Security</a></p>
 
     <section>
       <p class="label">why it matters</p>
       <p>Microsoft reported 14 typosquatted npm packages published in a four-hour window. The packages targeted cloud and CI/CD secrets and executed through npm lifecycle hooks.</p>
       <p>The victim does not need to import the package. Install is enough.</p>
+      <p>In plain English: the stolen material can include tokens used by build systems and cloud accounts. If those tokens work, an attacker may read private systems, push code, publish packages, or spend money before anyone notices.</p>
+    </section>
+
+    <section>
+      <p class="label">how it got there</p>
+      <p>The attacker published packages with names close to legitimate ones. That is typosquatting: betting that someone mistypes, copies the wrong command, or trusts a familiar-looking name.</p>
     </section>
 
     <section>

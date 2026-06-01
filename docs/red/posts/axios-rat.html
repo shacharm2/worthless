@@ -18,12 +18,18 @@
   <main>
     <p class="kicker">Mar 2026 / compromised release</p>
     <h1>Axios shipped a RAT for three hours.</h1>
-    <p class="deck">When the package itself is trusted, the attacker does not need a typo. They ride the update.</p>
+    <p class="deck">This is the scarier version. The name was not fake. The package was trusted. For a short window, the update path itself carried attacker code.</p>
     <p class="source">Source: <a href="https://www.stepsecurity.io/blog/axios-compromised-on-npm-malicious-versions-drop-remote-access-trojan" target="_blank" rel="noopener">StepSecurity</a></p>
 
     <section>
       <p class="label">why it matters</p>
       <p>Compromised releases are different from typo traps. The name is right. The dependency graph is right. The version is the problem.</p>
+      <p>A remote access trojan is not just a leaked string. It is code that may let an attacker control or inspect the machine. That can expose keys, files, shells, and developer context.</p>
+    </section>
+
+    <section>
+      <p class="label">how it got there</p>
+      <p>The attacker used the package release path. That means normal dependency updates could pull the malicious version before maintainers or scanners caught up.</p>
     </section>
 
     <section>

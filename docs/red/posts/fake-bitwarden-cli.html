@@ -18,12 +18,18 @@
   <main>
     <p class="kicker">Apr 2026 / fake package</p>
     <h1>Bitwarden CLI was fake. The package was not.</h1>
-    <p class="deck">The package name borrowed trust from a real tool. The payload did the rest.</p>
+    <p class="deck">The name looked like something you might install in a hurry. That was the whole play. Borrow trust from a password-manager brand, get onto the machine, then look around.</p>
     <p class="source">Source: <a href="https://www.paloaltonetworks.com/blog/cloud-security/bitwardencli-supply-chain-attack/" target="_blank" rel="noopener">Palo Alto Networks</a></p>
 
     <section>
       <p class="label">why it matters</p>
       <p>Fake CLI packages are nasty because they meet developers where secrets already are. The command name sounds operational. The install path gets local access.</p>
+      <p>What gets stolen depends on what the machine exposes: environment variables, config files, session material, or credentials sitting in developer workflows. The consequence is simple: the attacker may get a working key without breaking into the provider directly.</p>
+    </section>
+
+    <section>
+      <p class="label">how it got there</p>
+      <p>The attacker did not need to compromise the real Bitwarden CLI. They published a fake package that looked related enough to catch someone searching or copying an install command.</p>
     </section>
 
     <section>
