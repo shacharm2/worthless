@@ -31,6 +31,42 @@ Bad Red Blog writing sounds like:
 
 > This public evidence layer demonstrates Worthless's proof and trust posture through scoped claim surfaces and limitation-aware incident analysis.
 
+## Writing Style
+
+Red Blog should read like a sharp technical post someone would actually pass around on Reddit, Hacker News, or security Twitter.
+
+The voice is:
+
+- snappy;
+- concrete;
+- skeptical;
+- mildly opinionated;
+- allergic to filler.
+
+Use short paragraphs. Prefer one hard sentence over four careful ones. Open with the attack, not the background. Say what happened, why it matters, where the attacker wins, and where Worthless changes the path.
+
+Good rhythm:
+
+> Someone leaked a working AI key. The attacker does not need the whole repo. They paste the key, test it, and start burning tokens before anyone notices.
+
+Also good:
+
+> Worthless does not make the leak fine. It makes the copied value less useful.
+
+Avoid AI-slop patterns:
+
+- `In today's rapidly evolving threat landscape`;
+- `it is important to understand`;
+- `comprehensive security posture`;
+- `robust protection`;
+- `seamlessly empowers`;
+- `this article explores`;
+- long intro paragraphs before the attack appears;
+- ten-word labels for simple ideas;
+- balanced-but-empty corporate caveats.
+
+If a sentence could appear in a vendor whitepaper, rewrite it. If it sounds like a LinkedIn announcement, delete it. If it hides the point, cut the setup and say the thing.
+
 ## Article Shapes
 
 ### Attack Walkthrough
