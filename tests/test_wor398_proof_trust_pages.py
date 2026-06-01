@@ -40,15 +40,15 @@ def _hrefs(html: str) -> list[str]:
     return re.findall(r'href="([^"]+)"', html)
 
 
-def test_wor398_stable_trust_urls_exist_and_are_cross_linked() -> None:
+def test_wor398_stable_trust_urls_exist_without_owning_red_blog_structure() -> None:
     for page in TRUST_PAGES.values():
         assert page.exists(), f"{page.relative_to(REPO_ROOT)} should exist"
 
     red_index = _read(RED / "index.html")
 
-    assert "incidents.html" in _hrefs(red_index)
-    assert "claims.html" in _hrefs(red_index)
-    assert "security-model.html" in _hrefs(red_index)
+    assert "incidents.html" not in _hrefs(red_index)
+    assert "claims.html" not in _hrefs(red_index)
+    assert "security-model.html" not in _hrefs(red_index)
     assert "Read the claim ledger" not in red_index
 
 
@@ -62,8 +62,28 @@ def test_red_index_is_attack_blog_not_trust_dashboard() -> None:
     assert "terminal" not in lower
     assert "Review threat reports" not in html
     assert "Read the claim ledger" not in html
+    assert "Proof & limits" not in html
+    assert "Incident notes" not in html
+    assert "Security model" not in html
     assert "Posts stay hidden until they are ready." not in html
     assert lower.count("<section") <= 4
+
+
+def test_red_index_uses_real_attack_headlines_and_red_green_boundary() -> None:
+    html = _read(RED / "index.html")
+
+    for required in (
+        "How keys get stolen.",
+        "The package ran before your build did.",
+        "Bitwarden CLI was fake. The package was not.",
+        "Axios shipped a RAT for three hours.",
+        "TrapDoor hid in npm, PyPI, and crates.",
+        "Shai-Hulud put the secrets in public repos.",
+        "A GitHub Action printed the secrets.",
+        "copied locked AI-key material alone is less useful",
+        "attacker code running as you is still inside the room",
+    ):
+        assert required in html
 
 
 def test_claim_ledger_states_claims_proof_and_limitations() -> None:
