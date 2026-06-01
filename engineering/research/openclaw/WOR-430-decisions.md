@@ -1,6 +1,6 @@
 # WOR-430 — Verdicts on the 5 Critical Edge Cases
 
-> Parent: [WOR-421 OpenClaw Epic](https://linear.app/plumbusai/issue/WOR-421). This document produces defensible verdicts for the 5 behaviors that must be locked in worthless before OpenClaw ships. Every verdict is grounded in a real competitive prior-art citation. No prior `engineering/research/openclaw.md` was on disk at write time; this report stands alone.
+> Parent: [WOR-421 OpenClaw Epic](https://linear.app/plumbusai/issue/WOR-421). This document produces defensible verdicts for the 5 behaviors that must be locked in worthless before OpenClaw ships. Every verdict is grounded in a real competitive prior-art citation. No prior `engineering/research/openclaw/README.md` was on disk at write time; this report stands alone.
 
 ---
 
