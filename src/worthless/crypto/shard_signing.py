@@ -116,14 +116,16 @@ def load_or_create_signing_key(home_dir: Path, fernet_key: bytes | bytearray) ->
     Args:
         home_dir:   Directory containing ``signing.key`` (typically ``~/.worthless/``).
         fernet_key: The operator's Fernet key (bytes or bytearray, 44 base64url chars).
-                    Already available from ``ProxySettings.fernet_key`` / ``WorthlessHome.fernet_key``.
+                    Already available from ``ProxySettings.fernet_key`` /
+                    ``WorthlessHome.fernet_key``.
 
     Returns:
         32-byte signing key as ``bytes``.
 
     Raises:
         OSError:    If the key file cannot be read or written.
-        ValueError: If the key file is corrupt or encrypted with a different Fernet key.
+        ValueError: If a plaintext-hex file is malformed, or a decrypted blob is
+                    the wrong length (internal invariant violation).
     """
     key_path = home_dir / "signing.key"
     cipher = _Fernet(bytes(fernet_key))
@@ -144,7 +146,8 @@ def load_or_create_signing_key(home_dir: Path, fernet_key: bytes | bytearray) ->
                 ) from None
             if len(key) != _KEY_BYTES:
                 raise ValueError(
-                    f"signing key at {key_path} is corrupt: got {len(key)} bytes, expected {_KEY_BYTES}"
+                    f"signing key at {key_path} is corrupt: "
+                    f"got {len(key)} bytes, expected {_KEY_BYTES}"
                 )
             # Re-encrypt in-place atomically.
             encrypted = cipher.encrypt(key)
@@ -159,25 +162,34 @@ def load_or_create_signing_key(home_dir: Path, fernet_key: bytes | bytearray) ->
         try:
             key = cipher.decrypt(content)
         except _InvalidToken:
-            raise ValueError(
-                f"signing key at {key_path} could not be decrypted — "
-                "it may be encrypted with a different Fernet key, or corrupt. "
-                "If you rotated the Fernet key, re-lock all .env files: worthless lock <your-.env>"
-            ) from None
-        if len(key) != _KEY_BYTES:
-            raise ValueError(
-                f"signing key at {key_path} decrypted to wrong length: "
-                f"got {len(key)} bytes, expected {_KEY_BYTES}"
+            # The Fernet key that encrypted this signing key is gone — typically
+            # because a full revoke deleted fernet.key and re-lock generated a new
+            # one. The old signing key is cryptographically unrecoverable (its KEK
+            # is destroyed), exactly like shard-B ciphertext in the DB. Regenerating
+            # is the correct recovery; hard-failing would brick `worthless lock`.
+            # Any enrollments signed with the old key are warned about below.
+            _logger.warning(
+                "signing key at %s could not be decrypted with the current Fernet key "
+                "(the encrypting key was rotated or deleted) — regenerating. Existing "
+                "enrollments, if any, must be re-locked: worthless lock <your-.env>",
+                key_path,
             )
-        return key
+        else:
+            if len(key) != _KEY_BYTES:
+                raise ValueError(
+                    f"signing key at {key_path} decrypted to wrong length: "
+                    f"got {len(key)} bytes, expected {_KEY_BYTES}"
+                )
+            return key
 
-    # Create new key, encrypted atomically at 0o600.
+    # Create (or regenerate) the key, encrypted atomically at 0o600.
     key = generate_signing_key()
     encrypted = cipher.encrypt(key)
     _atomic_write(key_path, encrypted)
 
-    # If a DB already exists but the signing key was just created, all existing
+    # If a DB already exists but the signing key was just created, existing
     # enrollments were signed with a different (now-gone) key. Warn loudly.
+    # (The InvalidToken branch above already warned for the regenerate case.)
     if (home_dir / "worthless.db").exists():
         _logger.warning(
             "Created new signing key at %s but worthless.db already exists — "

@@ -1030,8 +1030,13 @@ class TestPhase6SigningKeyManagement:
         key = load_or_create_signing_key(tmp_path, fernet_key)
         assert len(key) == 32
 
-    def test_corrupt_signing_key_raises_on_load(self, tmp_path, fernet_key):
-        """load_or_create_signing_key raises on a file that is neither hex nor a Fernet token."""
+    def test_undecryptable_signing_key_regenerates(self, tmp_path, fernet_key):
+        """An undecryptable signing.key regenerates instead of bricking lock.
+
+        Garbage content (neither hex nor a valid Fernet token for this key) is
+        treated like a lost key: the old one is cryptographically unrecoverable,
+        so we regenerate rather than hard-fail.
+        """
         import os
 
         key_path = tmp_path / "signing.key"
@@ -1040,8 +1045,33 @@ class TestPhase6SigningKeyManagement:
             os.write(fd, b"not-a-valid-fernet-token-or-hex\n")
         finally:
             os.close(fd)
-        with pytest.raises(ValueError, match="corrupt|could not be decrypted"):
-            load_or_create_signing_key(tmp_path, fernet_key)
+
+        key = load_or_create_signing_key(tmp_path, fernet_key)
+        assert len(key) == 32
+        # File is now a valid encrypted blob that round-trips.
+        assert load_or_create_signing_key(tmp_path, fernet_key) == key
+
+    def test_undecryptable_signing_key_regenerates_after_fernet_rotation(self, tmp_path):
+        """Full-revoke deletes fernet.key; re-lock generates a new one.
+
+        The surviving signing.key (encrypted with the old Fernet key) must NOT
+        brick the next lock. It regenerates under the new Fernet key. This is the
+        exact path CI caught in test_c1_reenroll_after_full_revoke.
+        """
+        from cryptography.fernet import Fernet
+
+        old_fernet = Fernet.generate_key()
+        new_fernet = Fernet.generate_key()  # simulates regenerated key after revoke
+
+        # Lock 1: signing.key encrypted with the old Fernet key.
+        key1 = load_or_create_signing_key(tmp_path, old_fernet)
+        # Re-lock after revoke wiped + regenerated the Fernet key.
+        key2 = load_or_create_signing_key(tmp_path, new_fernet)
+        assert len(key2) == 32
+        # New key is usable and decrypts under the new Fernet key on the next load.
+        assert load_or_create_signing_key(tmp_path, new_fernet) == key2
+        # The old key is gone (unrecoverable) — different value.
+        assert key2 != key1
 
     def test_plaintext_hex_signing_key_auto_migrates(self, tmp_path, fernet_key):
         """Old plaintext hex signing.key is auto-migrated to Fernet-encrypted format."""
