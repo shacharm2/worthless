@@ -4,11 +4,11 @@
 
 | Version | Supported |
 |---------|-----------|
-| v0.x (Python PoC) | Yes — security fixes applied |
+| v0.x (Python PoC) | Yes, security fixes applied |
 
 ## Reporting a Vulnerability
 
-I take security seriously. Worthless exists to protect API keys — a vulnerability here has real consequences.
+I take security seriously. Worthless exists to protect API keys, a vulnerability here has real consequences.
 
 ### How to Report
 
@@ -23,10 +23,10 @@ This is a solo, open-source project. I aim to acknowledge reports quickly and tr
 
 Vulnerabilities in the following areas are in scope:
 
-- **Crypto** — key splitting, reconstruction, commitment scheme, zeroing
-- **Proxy** — gate-before-reconstruct bypass, request smuggling, error leakage
-- **Storage** — shard encryption at rest, repository access controls
-- **CLI** — credential handling, shard exposure, command injection
+- **Crypto**, key splitting, reconstruction, commitment scheme, zeroing
+- **Proxy**, gate-before-reconstruct bypass, request smuggling, error leakage
+- **Storage**, shard encryption at rest, repository access controls
+- **CLI**, credential handling, shard exposure, command injection
 
 ### Out of Scope
 

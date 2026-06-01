@@ -8,7 +8,7 @@
 
 2. **Read [SECURITY_RULES.md](SECURITY_RULES.md).** These are the non-negotiable invariants protecting users from key leaks. The pre-commit hooks enforce them; the verifier checks against them. If your change touches `src/worthless/crypto/`, `src/worthless/storage/`, or any code that reconstructs, zeroes, redacts, compares, or logs key material, expect extra review.
 
-3. **Sign off your commits.** Use `git commit -s` to add the `Signed-off-by:` trailer ([Developer Certificate of Origin](https://developercertificate.org/)). The DCO attests provenance — that you wrote (or are authorized to contribute) the code. The CLA grants the license; the DCO attests origin. Both are required.
+3. **Sign off your commits.** Use `git commit -s` to add the `Signed-off-by:` trailer ([Developer Certificate of Origin](https://developercertificate.org/)). The DCO attests provenance, that you wrote (or are authorized to contribute) the code. The CLA grants the license; the DCO attests origin. Both are required.
 
 4. **Make sure pre-commit hooks pass locally.** Run `uv run pre-commit run --files <changed files>` before pushing. The push will be rejected otherwise.
 
@@ -38,4 +38,4 @@ Open a [GitHub Issue](https://github.com/shacharm2/worthless/issues). Describe w
 
 ## License of contributions
 
-By contributing, you agree that your Contribution is licensed under the project's [LICENSE](LICENSE) (AGPL-3.0-only) and that you grant the rights described in [CLA.md](CLA.md). The CLA permits the Project Maintainer to also license your Contribution under proprietary or commercial terms, including as part of a commercial hosted service — this is what enables open-core development without violating contributors' rights.
+By contributing, you agree that your Contribution is licensed under the project's [LICENSE](LICENSE) (AGPL-3.0-only) and that you grant the rights described in [CLA.md](CLA.md). The CLA permits the Project Maintainer to also license your Contribution under proprietary or commercial terms, including as part of a commercial hosted service, this is what enables open-core development without violating contributors' rights.

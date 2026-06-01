@@ -3,7 +3,7 @@
 > **Status: working draft pending OSS counsel review.**
 > Derived from the Apache Software Foundation's [Individual Contributor License Agreement v2.0](https://www.apache.org/licenses/icla.pdf) and customized for the Worthless project. The signing requirement is in force in the interim; the wording may be refined after counsel review.
 
-In order to clarify the intellectual property license granted with Contributions from any person or entity, **Worthless** (maintained by Shachar Mendelowitz — the "Project Maintainer") must have on file a signed Contributor License Agreement ("CLA") from each contributor, indicating agreement with the terms below. This license is for Your protection as a contributor as well as the protection of the Project Maintainer and downstream users.
+In order to clarify the intellectual property license granted with Contributions from any person or entity, **Worthless** (maintained by Shachar Mendelowitz, the "Project Maintainer") must have on file a signed Contributor License Agreement ("CLA") from each contributor, indicating agreement with the terms below. This license is for Your protection as a contributor as well as the protection of the Project Maintainer and downstream users.
 
 Read this document carefully before signing. Questions: `legal@wless.io`.
 
