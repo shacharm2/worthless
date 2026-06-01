@@ -78,7 +78,7 @@ done
 say "PHASE A — seed provider.openai -> mockA, force one inference"
 oc config set models.providers.openai \
   '{"baseUrl":"http://'"$MOCKA"':9999/openai/v1","api":"openai-completions","models":[]}' --strict-json
-oc config set models.providers.openai.apiKey "sk-probe-REALKEY-aaaaaaaaaaaaaaaaaaaa"
+oc config set models.providers.openai.apiKey "sk-probe-FAKEKEY-aaaaaaaaaaaaaaaaaaaa"
 oc config set agents.defaults.model.primary openai/gpt-4o >/dev/null 2>&1 || true
 clear_hits "$MOCKA"; clear_hits "$MOCKB"
 
