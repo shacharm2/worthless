@@ -3,17 +3,19 @@ const SHOW_DRAFT_POSTS = false;
 const RED_POSTS = [
   {
     title: "How leaked AI keys get reused",
-    tag: "Draft",
+    label: "Walkthrough",
     href: "#",
     published: false,
-    summary: "A future attacker-view walkthrough. Not linked publicly until reviewed and sourced."
+    summary: "A copied provider key gets tested fast. Worthless only changes the path if the leaked value was locked first.",
+    verdict: "Copied locked value alone is not enough."
   },
   {
     title: "Provider budgets are not blast-radius controls",
-    tag: "Draft",
+    label: "Boundary",
     href: "#",
     published: false,
-    summary: "A future proof post about why token and billing controls need precise language."
+    summary: "Budget alerts help after usage starts. They are not the same thing as making copied material fail.",
+    verdict: "A guardrail is not a hard spend cap."
   }
 ];
 
@@ -28,11 +30,22 @@ function renderRedPosts() {
   posts.forEach((post) => {
     const item = document.createElement("article");
     item.className = "post";
-    item.innerHTML = `
-      <small>${post.tag}</small>
-      <a href="${post.href}">${post.title}</a>
-      <p>${post.summary}</p>
-    `;
+
+    const label = document.createElement("div");
+    label.className = "post-label";
+    label.textContent = post.label;
+
+    const link = document.createElement("a");
+    link.href = post.href;
+    link.textContent = post.title;
+
+    const summary = document.createElement("p");
+    summary.textContent = post.summary;
+
+    const verdict = document.createElement("small");
+    verdict.textContent = post.verdict;
+
+    item.append(label, link, summary, verdict);
     list.appendChild(item);
   });
 }
