@@ -485,6 +485,38 @@ class TestCodeScanApiSurface:
         assert len(findings) == 1
         assert findings[0].file.endswith("app.py")
 
+    def test_oserror_on_is_symlink_in_git_branch_skips_file_silently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """worthless-nxyz: ``_list_files_git`` calls ``f.is_symlink()`` which
+        internally calls ``lstat()``. If the file vanishes mid-scan (race) or
+        the OS errors out, the OSError must NOT escape — it must be caught
+        and the file silently skipped, matching the walk-branch contract.
+
+        This test exercises the GIT branch specifically (init_git + real
+        commit) so the new guard in ``_list_files_git`` is the one that
+        catches the error — not the OLD guard in ``_candidate_files``."""
+        write(tmp_path / "racy.py", '"https://api.openai.com/v1"\n')
+        write(tmp_path / "ok.py", '"https://api.anthropic.com/v1"\n')
+        init_git(tmp_path)  # makes ``_list_files_git`` the active branch
+
+        # Patch ``Path.is_symlink`` (NOT ``Path.lstat``) so the OSError fires
+        # at the exact call site this PR guards. ``_list_files_git`` does
+        # ``if f.is_symlink(): continue`` — that's the new try/except's job.
+        real_is_symlink = Path.is_symlink
+
+        def fake_is_symlink(self):  # noqa: ANN001
+            if self.name == "racy.py":
+                raise OSError("file vanished between git ls-files and stat")
+            return real_is_symlink(self)
+
+        monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+
+        findings = scan_for_hardcoded_provider_urls([tmp_path])
+        files = {Path(f.file).name for f in findings}
+        assert "racy.py" not in files, "OSError-raising file must be silently dropped"
+        assert "ok.py" in files, "clean files in the same scan must still be reported"
+
     def test_oserror_on_stat_skips_file_silently(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
