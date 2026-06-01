@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Incident Ledger - Worthless</title>
+  <title>Incident Notes - Worthless</title>
   <meta name="description" content="Sourced API key leak and billing incidents, scoped to what Worthless would and would not change." />
   <link rel="canonical" href="https://wless.io/red/incidents.html" />
   <link rel="icon" type="image/x-icon" href="../favicon.ico" />
@@ -25,17 +25,17 @@
   <header>
     <nav>
       <a href="../index.html">Home</a>
-      <a href="index.html">Red</a>
-      <a href="claims.html">Claim ledger</a>
+      <a href="index.html">Red Blog</a>
+      <a href="claims.html">Proof & limits</a>
       <a href="security-model.html">Security model</a>
     </nav>
-    <h1>Incident ledger.</h1>
-    <p class="lead">Sourced examples of what exposed keys can turn into. These are receipts for the risk model, not claims that Worthless would have solved every incident below.</p>
+    <h1>Incident notes.</h1>
+    <p class="lead">Real leak stories, read through one question: would a copied locked AI key have changed the path?</p>
   </header>
 
   <main>
     <div class="note">
-      <strong>Scope rule:</strong> Worthless changes the outcome when a supported AI provider key is locked first and the copied .env shard alone is what leaks. It would not fix a full host compromise, broad cloud account exposure, provider billing disputes, or unsupported non-LLM credentials.
+      <strong>Scope rule:</strong> Worthless changes copied-key reuse when a supported AI provider key is locked first. It does not fix full host compromise, broad cloud account exposure, provider billing disputes, or unsupported non-LLM credentials.
     </div>
 
     <article class="incident">
@@ -78,7 +78,7 @@
       </div>
       <div>
         <div class="label">What Worthless would change</div>
-        <p>This is the exact leak shape Worthless is designed around: AI tooling, generated code, and repository workflows exposing values from local environment files.</p>
+        <p>This is the leak shape Worthless is built around: AI tooling, generated code, and repository workflows exposing values from local environment files.</p>
       </div>
       <div>
         <div class="label">What Worthless would not change</div>

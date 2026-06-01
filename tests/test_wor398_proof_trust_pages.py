@@ -107,7 +107,7 @@ def test_security_model_summary_uses_public_scope_boundaries() -> None:
 def test_incident_index_is_sourced_and_scoped() -> None:
     html = _read(RED / "incidents.html").lower()
 
-    assert "incident ledger" in html
+    assert "incident notes" in html
     assert "source" in html
     assert "what worthless would change" in html
     assert "what worthless would not change" in html
