@@ -76,7 +76,16 @@ The credential placed in `apiKey` (shard-A) reaches the proxy verbatim as the `A
 
 ## Credential flow
 
-`worthless lock` writes shard-A (format-preserving split value) into `apiKey` (`lock.py` ~591-608). Probe D confirmed the value arriving at the proxy is exactly that shard-A string as `Authorization: Bearer …`, never a real `sk-` key. (A stale docstring at `integration.py` ~861-866 still describes an abandoned "stable worthless-16x2 token" design — the live code writes shard-A; reconcile per WOR-621 AC14.)
+`worthless lock` writes shard-A (format-preserving split value) into `apiKey` (`lock.py` ~591-608). Probe D confirmed the value arriving at the proxy is exactly that `apiKey` string as `Authorization: Bearer …`, never a real `sk-` key. (A stale docstring at `integration.py` ~861-866 still describes an abandoned "stable worthless-16x2 token" design — the live code writes shard-A; reconcile per WOR-621 AC14.)
+
+### Probe fidelity caveat (apiKey values are placeholders)
+
+These are **routing** probes, not faithful end-to-end `worthless lock` runs. They set the provider `apiKey` **directly** in OpenClaw's config (`openclaw config set`), deliberately bypassing `worthless scan`/`lock`, and use a low-entropy placeholder like `sk-SEED-aaaa…`. Two consequences:
+
+- **Routing is value-independent** — OpenClaw forwards whatever string is in `apiKey` as the Bearer (Probe D), so a placeholder vs a real shard-A changes nothing about which endpoint is hit. The routing findings stand.
+- **`worthless` itself would NOT accept that placeholder.** `scanner.py:274` skips any value whose Shannon entropy is below `ENTROPY_THRESHOLD = 3.9` (`key_patterns.py:43-47`; `sk-aaaa` ≈ 0.88). A real shard-A is a high-entropy XOR share and clears the guard; the `sk-…aaaa` placeholder would be treated as a non-key and skipped by `scan`/`lock`. This only matters on the scan/lock path, which these routing probes do not exercise.
+
+The end-to-end path (real `worthless lock` → high-entropy shard-A → routing → entropy guard) is a **separate, integration-level test** — see WOR-545 and the contract test below.
 
 ---
 
@@ -95,7 +104,7 @@ The credential placed in `apiKey` (shard-A) reaches the proxy verbatim as the `A
 
 ## Version fragility & re-verification
 
-All results are pinned to `2026.5.3-1`. OpenClaw can change routing/merge behavior across releases. **Plan:** fold these probes into a tag-pinned parametrized pytest (`tests/openclaw/test_routing_contract.py`) where each matrix row is an assertion; a tag bump that changes routing turns the suite red. The five `probe-*.sh` scripts are throwaway scaffolding and should be deleted once the pytest contract lands.
+All results are pinned to `2026.5.3-1`. OpenClaw can change routing/merge behavior across releases. **Plan:** fold these probes into a tag-pinned parametrized pytest (`tests/openclaw/test_routing_contract.py`) where each matrix row is an assertion; a tag bump that changes routing turns the suite red. The five `probe-*.sh` scripts are throwaway scaffolding and should be deleted once the pytest contract lands. **The contract test must use a realistic high-entropy shard-A value** (not a low-entropy `sk-…aaaa` placeholder) so it also clears `worthless`'s entropy guard and exercises the scan/lock path, not just routing — see the Probe fidelity caveat above.
 
 ---
 
