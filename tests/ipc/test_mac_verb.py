@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from worthless.crypto.kdf import derive_mac_secret
 from worthless.ipc.client import IPCClient, IPCProtocolError
 from worthless.sidecar.backends.base import Backend
 from worthless.sidecar.backends.fernet import FernetBackend
@@ -67,13 +68,15 @@ def _shares_for_known_key(raw_key_32: bytes) -> tuple[bytes, bytes, bytes]:
 # ---------------------------------------------------------------------------
 
 
-async def test_mac_returns_hmac_sha256_of_value_with_fernet_key() -> None:
-    """``backend.mac(value)`` MUST equal ``hmac.new(key, value, sha256).digest()``.
+async def test_mac_returns_hmac_sha256_with_derived_mac_secret() -> None:
+    """``backend.mac(value)`` MUST equal HMAC keyed with the derived MAC subkey.
 
-    Pinning byte-equality is the load-bearing invariant: it is what lets
-    ``ShardRepository._compute_decoy_hash`` (which calls ``hmac.new(key, value,
-    sha256).hexdigest()`` directly today) keep producing identical decoy_hash
-    bytes after the flag flips and the call routes through the sidecar.
+    Post-WOR-637 the MAC key is ``derive_mac_secret(fernet_key)``, NOT the raw
+    Fernet master key. Pinning byte-equality against the derived subkey is the
+    load-bearing invariant: it is what lets
+    ``ShardRepository._compute_decoy_hash`` (which keys HMAC with the same
+    derived subkey) keep producing identical decoy_hash bytes after the flag
+    flips and the call routes through the sidecar.
 
     Failure here means the on-disk decoy registry would silently invalidate
     every existing enrollment the moment WORTHLESS_FERNET_IPC_ONLY=1 is set.
@@ -83,14 +86,15 @@ async def test_mac_returns_hmac_sha256_of_value_with_fernet_key() -> None:
     backend = FernetBackend(shares=(share_a, share_b))
 
     value = b"sk-anthropic-redacted-decoy-value"
-    expected = hmac.new(fernet_key, value, sha256).digest()
+    expected = hmac.new(derive_mac_secret(fernet_key), value, sha256).digest()
 
     actual = await backend.mac(value)
     assert isinstance(actual, bytes)
     assert actual == expected, (
-        "mac(value) must equal hmac.new(fernet_key, value, sha256).digest() "
-        "byte-for-byte, otherwise decoy_hash bytes would change across the "
-        "WORTHLESS_FERNET_IPC_ONLY flag flip and invalidate stored hashes."
+        "mac(value) must equal hmac.new(derive_mac_secret(fernet_key), value, "
+        "sha256).digest() byte-for-byte, otherwise decoy_hash bytes would "
+        "change across the WORTHLESS_FERNET_IPC_ONLY flag flip and invalidate "
+        "stored hashes."
     )
 
 
@@ -118,7 +122,7 @@ async def test_mac_empty_value_is_well_defined() -> None:
     share_a, share_b, fernet_key = _shares_for_known_key(raw_key_32)
     backend = FernetBackend(shares=(share_a, share_b))
 
-    expected = hmac.new(fernet_key, b"", sha256).digest()
+    expected = hmac.new(derive_mac_secret(fernet_key), b"", sha256).digest()
     actual = await backend.mac(b"")
     assert isinstance(actual, bytes)
     assert len(actual) == 32
@@ -166,6 +170,32 @@ async def test_mac_is_not_alias_of_attest() -> None:
     assert mac_out != attest_out, (
         "mac must NOT alias attest — they use different MAC keys "
         "(raw key vs HKDF-derived) and different message framing."
+    )
+
+
+async def test_mac_is_not_keyed_with_raw_fernet_key() -> None:
+    """``mac(value)`` MUST NOT equal ``HMAC(raw_fernet_key, value)`` (WOR-637).
+
+    The pre-WOR-637 implementation keyed the MAC with the raw Fernet master
+    key, turning the locked vault into a chosen-message oracle: any caller on
+    the socket allowlist (including a compromised proxy) could obtain
+    ``HMAC(master_key, attacker_chosen_bytes)``. The fix keys the MAC with an
+    HKDF-derived subkey instead, so the master key is never used as a MAC key.
+
+    This is the load-bearing RED test: it fails on the old code (where the two
+    are byte-identical) and passes only once the verb is re-keyed.
+    """
+    raw_key_32 = b"\x42" * 32
+    share_a, share_b, fernet_key = _shares_for_known_key(raw_key_32)
+    backend = FernetBackend(shares=(share_a, share_b))
+
+    value = b"sk-anthropic-redacted-decoy-value"
+    master_key_tag = hmac.new(fernet_key, value, sha256).digest()
+
+    actual = await backend.mac(value)
+    assert actual != master_key_tag, (
+        "mac(value) must NOT be HMAC(raw_fernet_key, value) — the master key "
+        "must never be used as a MAC key (WOR-637 mac-oracle fix)."
     )
 
 
