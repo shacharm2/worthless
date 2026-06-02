@@ -3,19 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bitwarden CLI was fake - Red Blog</title>
-  <meta name="description" content="A Red Blog writeup on a fake Bitwarden CLI package, credential theft from developer machines, and what Worthless would and would not change." />
-  <link rel="canonical" href="https://wless.io/red/posts/fake-bitwarden-cli.html" />
+  <title>Bitwarden CLI was real - Red Blog</title>
+  <meta name="description" content="A Red Blog writeup on the compromised Bitwarden CLI npm package, credential theft from developer machines, and what Worthless would and would not change." />
+  <link rel="canonical" href="https://wless.io/red/posts/bitwarden-cli-npm.html" />
   <meta name="theme-color" content="#090b10" />
-  <meta property="og:title" content="Bitwarden CLI was fake. The package was not" />
-  <meta property="og:description" content="A lookalike CLI package borrowed brand trust, got onto the machine, and searched for credentials." />
+  <meta property="og:title" content="Bitwarden CLI was real. The package went bad" />
+  <meta property="og:description" content="The official npm package path carried malicious code for a limited window and searched for credentials." />
   <meta property="og:image" content="https://wless.io/og-image.png" />
-  <meta property="og:url" content="https://wless.io/red/posts/fake-bitwarden-cli.html" />
+  <meta property="og:url" content="https://wless.io/red/posts/bitwarden-cli-npm.html" />
   <meta property="og:type" content="article" />
   <meta property="og:site_name" content="Worthless" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Bitwarden CLI was fake. The package was not" />
-  <meta name="twitter:description" content="Typo package, credential grab, attacker server." />
+  <meta name="twitter:title" content="Bitwarden CLI was real. The package went bad" />
+  <meta name="twitter:description" content="Official package, malicious release, credential grab." />
   <meta name="twitter:image" content="https://wless.io/og-image.png" />
   <link rel="icon" type="image/x-icon" href="../../favicon.ico" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -28,28 +28,28 @@
     <a class="back" href="../index.html">/red</a>
   </header>
   <main>
-    <div class="kicker-row"><p class="kicker">Apr 2026 / fake package</p><span class="wless-badge" aria-hidden="true"><img src="../../logo-transparent.png" alt="" /></span></div>
-    <h1>Bitwarden CLI was fake. The package was not.</h1>
-    <p class="deck">The name looked like something you might install in a hurry. That was the whole play. Borrow trust from a password-manager brand, get onto the machine, then look around.</p>
+    <div class="kicker-row"><p class="kicker">Apr 2026 / supply chain</p><span class="wless-badge" aria-hidden="true"><img src="../../logo-transparent.png" alt="" /></span></div>
+    <h1>Bitwarden CLI was real. The package went bad.</h1>
+    <p class="deck">This is worse than a typo. The package name was the real one. For a limited window, the npm path people trusted carried code that looked around for credentials.</p>
     <p class="source">Source: <a href="https://www.paloaltonetworks.com/blog/cloud-security/bitwardencli-supply-chain-attack/" target="_blank" rel="noopener">Palo Alto Networks</a></p>
 
     <section>
       <p class="label">why it matters</p>
-      <p>Fake CLI packages are nasty because they meet developers where secrets already are. The command name sounds operational. The install path gets local access.</p>
+      <p>Compromised CLI packages are nasty because they meet developers where secrets already are. The command sounds operational. The install path gets local access.</p>
       <p>What gets stolen depends on what the machine exposes: environment variables, config files, session material, or credentials sitting in developer workflows. The consequence is simple: the attacker may get a working key without breaking into the provider directly.</p>
     </section>
 
     <section>
       <p class="label">how it got there</p>
-      <p>The attacker did not need to compromise the real Bitwarden CLI. They published a fake package that looked related enough to catch someone searching or copying an install command.</p>
+      <p>Reporting tied the malicious <code>@bitwarden/cli@2026.4.0</code> npm package to supply-chain abuse of the delivery path, not a random lookalike package. That is the scary part: a trusted update route can become the attack.</p>
     </section>
 
     <section>
       <p class="label">red</p>
       <div class="steps">
-        <span>choose trusted brand</span>
-        <span>publish lookalike package</span>
-        <span>wait for install</span>
+        <span>reach trusted package path</span>
+        <span>ship malicious release</span>
+        <span>runner or developer installs it</span>
         <span>grab credentials from the developer or runner</span>
       </div>
     </section>

@@ -18,7 +18,7 @@ TRUST_PAGES = {
 
 RED_POSTS = {
     "red/posts/package-before-build.html": RED / "posts" / "package-before-build.html",
-    "red/posts/fake-bitwarden-cli.html": RED / "posts" / "fake-bitwarden-cli.html",
+    "red/posts/bitwarden-cli-npm.html": RED / "posts" / "bitwarden-cli-npm.html",
     "red/posts/axios-rat.html": RED / "posts" / "axios-rat.html",
     "red/posts/trapdoor.html": RED / "posts" / "trapdoor.html",
     "red/posts/shai-hulud.html": RED / "posts" / "shai-hulud.html",
@@ -148,7 +148,7 @@ def test_red_index_uses_real_attack_headlines() -> None:
     for required in (
         "How keys get stolen.",
         "The package ran before your build did.",
-        "Bitwarden CLI was fake. The package was not.",
+        "Bitwarden CLI was real. The package went bad.",
         "Axios shipped a RAT for three hours.",
         "TrapDoor hid in npm, PyPI, and crates.",
         "Shai-Hulud put the secrets in public repos.",

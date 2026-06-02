@@ -6,8 +6,8 @@ const RED_POSTS = [
     label: "Walkthrough",
     href: "#",
     published: false,
-    summary: "A copied provider key gets tested fast. Worthless only changes the path if the leaked value was locked first.",
-    verdict: "Copied locked value alone is not enough."
+    summary: "A copied supported AI provider key gets tested fast. Worthless only changes the path if the leaked value was locked first.",
+    verdict: "Copied locked supported AI-key material alone is not enough."
   },
   {
     title: "Provider budgets are not blast-radius controls",
