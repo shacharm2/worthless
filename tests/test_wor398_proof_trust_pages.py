@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from html.parser import HTMLParser
 import re
 from pathlib import Path
 
@@ -41,12 +42,75 @@ DRAFT_POST_TITLES = (
 )
 
 
+class _HeadParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_head = False
+        self.links: list[dict[str, str | None]] = []
+        self.metas: list[dict[str, str | None]] = []
+        self.title = ""
+        self._in_title = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = dict(attrs)
+        if tag == "head":
+            self.in_head = True
+        elif self.in_head and tag == "title":
+            self._in_title = True
+        elif self.in_head and tag == "link":
+            self.links.append(attrs_dict)
+        elif self.in_head and tag == "meta":
+            self.metas.append(attrs_dict)
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self.title += data
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "title":
+            self._in_title = False
+        elif tag == "head":
+            self.in_head = False
+
+
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
 def _hrefs(html: str) -> list[str]:
     return re.findall(r'href="([^"]+)"', html)
+
+
+def _head(path: Path) -> _HeadParser:
+    parser = _HeadParser()
+    parser.feed(_read(path))
+    return parser
+
+
+def _meta_content(parser: _HeadParser, **attrs: str) -> list[str]:
+    matches = []
+    for meta in parser.metas:
+        if all(meta.get(name) == value for name, value in attrs.items()):
+            content = meta.get("content")
+            if content:
+                matches.append(content)
+    return matches
+
+
+def _canonical(parser: _HeadParser) -> list[str | None]:
+    return [link.get("href") for link in parser.links if link.get("rel") == "canonical"]
+
+
+def _assert_public_social_head(parser: _HeadParser, canonical: str, og_type: str) -> None:
+    assert parser.title.strip()
+    assert _meta_content(parser, name="description")
+    assert _canonical(parser) == [canonical]
+    assert _meta_content(parser, property="og:url") == [canonical]
+    assert _meta_content(parser, property="og:type") == [og_type]
+    assert _meta_content(parser, property="og:site_name") == ["Worthless"]
+    assert _meta_content(parser, property="og:image") == ["https://wless.io/og-image.png"]
+    assert _meta_content(parser, name="twitter:card") == ["summary_large_image"]
+    assert _meta_content(parser, name="twitter:image") == ["https://wless.io/og-image.png"]
 
 
 def test_wor398_stable_trust_urls_exist_without_owning_red_blog_structure() -> None:
@@ -232,3 +296,25 @@ def test_red_blog_posts_are_hidden_until_publication_flag_changes() -> None:
     for title in DRAFT_POST_TITLES:
         assert title in posts_js
         assert title not in red_index
+
+
+def test_red_index_and_writeups_are_indexable_with_social_metadata() -> None:
+    red_index = _head(RED / "index.html")
+
+    _assert_public_social_head(red_index, "https://wless.io/red/", "website")
+    assert _meta_content(red_index, name="robots") == []
+
+    for label, path in RED_POSTS.items():
+        parser = _head(path)
+        _assert_public_social_head(parser, f"https://wless.io/{label}", "article")
+        assert _meta_content(parser, name="robots") == []
+
+
+def test_reference_trust_pages_are_stable_but_noindexed() -> None:
+    for label, path in TRUST_PAGES.items():
+        if label == "red/index.html":
+            continue
+
+        parser = _head(path)
+        _assert_public_social_head(parser, f"https://wless.io/{label}", "website")
+        assert _meta_content(parser, name="robots") == ["noindex, follow"]
