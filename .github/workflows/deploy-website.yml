@@ -39,7 +39,6 @@ jobs:
           test -f website/llms.txt
           test -f website/features.html
           test -f website/how-it-works.html
-          test -f website/coming-soon.html
           test -f website/memes.html
           test -f website/blog/index.html
           test -f website/.well-known/security.txt
