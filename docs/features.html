@@ -3,26 +3,26 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Features: Worthless</title>
-  <meta name="description" content="Full feature breakdown for Worthless: split-key cryptography, budget enforcement, pre-commit scanning, and more." />
-  <link rel="canonical" href="https://worthless.cloud/features.html" />
+  <title>Features — Worthless</title>
+  <meta name="description" content="Worthless protects local AI API keys with a format-preserving .env shard, local proxy, token guardrails, and LLM-key scanning." />
+  <link rel="canonical" href="https://wless.io/features.html" />
   <meta name="theme-color" content="#4a6fa5" />
 
   <!-- Open Graph -->
-  <meta property="og:title" content="Features: Worthless" />
-  <meta property="og:description" content="Full feature breakdown for Worthless: split-key cryptography, budget enforcement, pre-commit scanning, and more." />
-  <meta property="og:image" content="https://worthless.cloud/og-image.png" />
+  <meta property="og:title" content="Features — Worthless" />
+  <meta property="og:description" content="Protect local AI API keys with a copied .env shard that cannot call the provider by itself." />
+  <meta property="og:image" content="https://wless.io/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:url" content="https://worthless.cloud/features.html" />
+  <meta property="og:url" content="https://wless.io/features.html" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="Worthless" />
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Features: Worthless" />
-  <meta name="twitter:description" content="Full feature breakdown for Worthless: split-key cryptography, budget enforcement, pre-commit scanning, and more." />
-  <meta name="twitter:image" content="https://worthless.cloud/og-image.png" />
+  <meta name="twitter:title" content="Features — Worthless" />
+  <meta name="twitter:description" content="Protect local AI API keys with a copied .env shard that cannot call the provider by itself." />
+  <meta name="twitter:image" content="https://wless.io/og-image.png" />
 
   <!-- Favicon -->
   <link rel="icon" type="image/x-icon" href="favicon.ico" />
@@ -164,8 +164,8 @@
   </div>
 
   <div class="feat-section">
-    <h2>Hard spending cap</h2>
-    <p>Set a dollar limit per key. Hit the cap, the proxy refuses to reconstruct. Your app can't override it. One in-flight call may slip past, then the key stops forming.</p>
+    <h2>Local usage guardrails</h2>
+    <p>Set local token or usage limits that apply before Worthless reconstructs the key. A local guardrail, not a provider-side dollar cap; provider billing rules still apply.</p>
   </div>
 
   <div class="feat-section">
@@ -212,7 +212,7 @@
       <tr><td>Prevents commits w/ detected raw keys</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="ty">&#10003;</td><td class="tp">Partial</td></tr>
       <tr><td>Post-leak protection</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
       <tr><td>Leaked <code>.env</code> share is useless on its own</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
-      <tr><td>Budget / hard spending cap</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
+      <tr><td>Local usage guardrail (pre-reconstruction)</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td><td class="tn">&#10007;</td></tr>
       <tr><td>Zero code changes</td><td class="ty">&#10003;</td><td class="tn">&#10007;</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td></tr>
       <tr><td>Fully self-hosted</td><td class="ty">&#10003;</td><td class="tp">Optional</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td></tr>
       <tr><td>Open source</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td><td class="ty">&#10003;</td><td>-</td></tr>
@@ -224,7 +224,7 @@
     <h2>Ready to make your keys worthless?</h2>
     <p>Install in one command. Protect your first key in under a minute.</p>
     <div class="cta-row">
-      <a href="https://pypi.org/project/worthless" class="btn-calm" target="_blank" rel="noopener">pip install worthless &#8599;</a>
+      <a href="https://docs.wless.io/install/" class="btn-calm">Install guide &#8599;</a>
       <a href="how-it-works.html" class="btn-ghost">How it works &#8594;</a>
     </div>
   </div>
