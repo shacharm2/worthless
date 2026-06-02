@@ -127,9 +127,9 @@ Independently reproduced claims **1, 4, 5, 7** and **refuted claim 2 as stated**
 ## Reproduction commands (worthless repo)
 
 ```bash
-bash tests/openclaw/probe-auth-profiles-bypass.sh
-bash tests/openclaw/probe-routing-precedence.sh
-# Extract bundle:
+# The original probe-*.sh scripts were folded into a tag-pinned contract test:
+uv run pytest tests/openclaw/test_routing_contract.py -o addopts="" -p no:randomly
+# Extract bundle (for source inspection):
 docker create ghcr.io/openclaw/openclaw:2026.5.3-1
 docker cp <cid>:/app /tmp/openclaw-2026.5.3-1
 ```
