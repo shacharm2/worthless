@@ -400,13 +400,13 @@ class TestSkipBlockSanitisesAttackerControlledFilenames:
         """C1 CSI (U+009B) in a filename must NOT reach the terminal —
         8-bit-aware terminals interpret it as a CSI introducer just like
         ESC ``[``."""
-        malicious = "evil31mFAKE0m.py"
+        malicious = "evil\x9b31mFAKE\x9b0m.py"
         result = self._run_with_malicious_skip(tmp_path, env_with_key, monkeypatch, malicious)
 
         assert result.exit_code == 2
         # U+009B serializes as UTF-8 bytes 0xc2 0x9b — neither should
         # appear in the encoded stderr output.
-        assert "" not in result.stderr, (
+        assert "\x9b" not in result.stderr, (
             f"C1 CSI codepoint leaked to terminal. stderr={result.stderr!r}"
         )
         # Spot-check the encoded bytes too (defensive: in case stderr is
@@ -420,11 +420,11 @@ class TestSkipBlockSanitisesAttackerControlledFilenames:
         """U+202E (RIGHT-TO-LEFT OVERRIDE) is the Trojan Source class
         (CVE-2021-42574) — visual filename spoofing inside the security
         gate. Must be stripped before rendering."""
-        malicious = "good‮moc.evil.py"
+        malicious = "good\u202emoc.evil.py"
         result = self._run_with_malicious_skip(tmp_path, env_with_key, monkeypatch, malicious)
 
         assert result.exit_code == 2
-        assert "‮" not in result.stderr, (
+        assert "\u202e" not in result.stderr, (
             f"Bidi override leaked to terminal — Trojan Source unfixed. "
             f"stderr={result.stderr!r}"
         )
