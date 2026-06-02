@@ -428,3 +428,26 @@ class TestSkipBlockSanitisesAttackerControlledFilenames:
             f"Bidi override leaked to terminal — Trojan Source unfixed. "
             f"stderr={result.stderr!r}"
         )
+
+    def test_clean_filename_passes_through_unchanged(
+        self, tmp_path: Path, env_with_key: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression guard: a clean filename (no attack chars) must render
+        intact AND with its ``[reason]`` token. Pins that
+        ``sanitise_for_message`` doesn't over-strip, and that
+        ``rich.markup.escape`` keeps the reason token readable.
+
+        If a future overzealous sanitiser tweak silently breaks normal
+        paths, the 3 attack-vector tests above would still pass (they
+        only assert ON-ABSENCE of attack bytes) — this test catches that
+        regression."""
+        clean = "src/api/client.py"
+        result = self._run_with_malicious_skip(tmp_path, env_with_key, monkeypatch, clean)
+
+        assert result.exit_code == 2
+        # Clean filename appears intact — no over-stripping.
+        assert "src/api/client.py" in result.stderr
+        # Reason token survives the k82c renderer escape.
+        assert "[truncated]" in result.stderr
+        # And the surrounding message body is intact.
+        assert "scan incomplete" in result.stderr.lower()
