@@ -107,7 +107,13 @@ def test_publishable_docs_do_not_include_internal_planning_sources() -> None:
         DOCS / "superpowers",
     ]
 
-    assert [path.relative_to(REPO_ROOT).as_posix() for path in internal_paths if path.exists()] == []
+    offenders = [
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in internal_paths
+        if path.exists()
+    ]
+
+    assert offenders == []
 
 
 def test_publishable_docs_do_not_reference_stale_worthless_domains() -> None:
