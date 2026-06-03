@@ -110,6 +110,15 @@
     }
     .nav-gh { margin-left: auto; font-size: 0.82rem; font-weight: 500; color: var(--text2); text-decoration: none; padding: 0.4rem 0.85rem; border: 1px solid var(--border); border-radius: 7px; background: var(--white); transition: color 0.2s; }
     .nav-gh:hover { color: var(--text); }
+    @media (max-width: 720px) {
+      nav { height: auto; min-height: 60px; flex-wrap: wrap; gap: 0.45rem 0.75rem; padding: 0.65rem 1rem; }
+      .nav-logo { flex: 1 0 auto; }
+      .nav-links { order: 3; width: 100%; margin-left: 0; overflow-x: auto; padding-bottom: 0.1rem; scrollbar-width: none; }
+      .nav-links::-webkit-scrollbar { display: none; }
+      .nav-links a { padding: 0.35rem 0.55rem; white-space: nowrap; }
+      .nav-kofi { margin-left: 0; padding: 0.34rem 0.65rem; }
+      .nav-gh { margin-left: 0; padding: 0.34rem 0.65rem; }
+    }
 
     .page { max-width: 760px; margin: 0 auto; padding: 4rem 2rem 6rem; }
     .eyebrow { font-size: 14px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text2); margin-bottom: 0.6rem; }
