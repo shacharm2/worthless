@@ -740,10 +740,13 @@ def _apply_lock_write_providers(
     Extracted to keep :func:`apply_lock` within xenon's complexity budget.
     """
     for provider, alias, shard_a_str in planned_updates:
-        provider_name = f"worthless-{provider}"
+        # WOR-621 F1: rewrite the provider's ORIGINAL entry (e.g. ``openai``),
+        # not a separate ``worthless-<id>`` decoy that OpenClaw never routes
+        # through (the WOR-514 bypass).
+        provider_name = provider
         base_url = f"{resolved_proxy_base_url.rstrip('/')}/{alias}/v1"
 
-        existing, read_err = _get_provider_for_lock(config_path, provider_name)
+        _existing, read_err = _get_provider_for_lock(config_path, provider_name)
         if read_err is not None:
             events.append(
                 OpenclawIntegrationEvent(
@@ -755,22 +758,12 @@ def _apply_lock_write_providers(
             providers_skipped.append((provider_name, "config_unreadable"))
             continue
 
-        if existing is not None:
-            existing_url = existing.get("baseUrl", "")
-            if existing_url and not _is_proxy_url(existing_url, resolved_proxy_base_url):
-                events.append(
-                    OpenclawIntegrationEvent(
-                        code=OpenclawErrorCode.PROVIDER_CONFLICT,
-                        level="warn",
-                        detail=(
-                            f"refusing to overwrite {provider_name}: "
-                            f"existing baseUrl {existing_url!r} is not a worthless proxy"
-                        ),
-                        extra={"provider": provider_name, "baseUrl": existing_url},
-                    )
-                )
-                providers_skipped.append((provider_name, "provider_conflict"))
-                continue
+        # No conflict-skip here: locking a provider MEANS rewriting its real
+        # entry (which holds the live key the user chose to lock), so a
+        # non-proxy baseUrl is expected and intentionally overwritten. The
+        # original is stashed for restore in F2 (unlock). DB-driven
+        # recognition — so a user's UNRELATED proxy-shaped entry is never
+        # adopted — lands in F3.
 
         try:
             _config_mod.set_provider(

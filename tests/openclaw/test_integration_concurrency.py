@@ -224,7 +224,8 @@ def test_conc22_held_flock_blocks_contender_until_release(
 
         assert holder_result == "released"
         # Contender successfully wrote its entry post-release.
-        assert "worthless-conc45-22" in contender_result["providers_set"]
+        # WOR-621 F1: lock rewrites the provider's ORIGINAL id, not worthless-*.
+        assert "conc45-22" in contender_result["providers_set"]
     finally:
         holder_pool.close()
         holder_pool.join()
@@ -244,7 +245,8 @@ def test_conc45_fifty_parallel_apply_lock_produces_coherent_state(
     calling ``apply_lock`` against the SAME ``openclaw.json`` with a
     distinct synthetic provider. After all complete:
 
-      (a) All 50 ``worthless-conc45-NN`` provider entries present.
+      (a) All 50 ``conc45-NN`` provider entries present (WOR-621 F1: lock
+          rewrites the provider's ORIGINAL id, not a ``worthless-*`` decoy).
       (b) JSON is valid (no torn write).
       (c) No duplicate or interleaved entries.
       (d) Every alias's baseUrl is correct for that alias.
@@ -267,7 +269,7 @@ def test_conc45_fifty_parallel_apply_lock_produces_coherent_state(
 
     # Sanity: every child reported success on its own slot.
     for i, result in enumerate(results):
-        expected = f"worthless-conc45-{i:02d}"
+        expected = f"conc45-{i:02d}"
         assert expected in result["providers_set"], (
             f"child {i} did not write its slot: providers_set={result['providers_set']}, "
             f"skipped={result['providers_skipped']}, events={result['events']}"
@@ -280,7 +282,7 @@ def test_conc45_fifty_parallel_apply_lock_produces_coherent_state(
     providers = data["models"]["providers"]
 
     # (a) All 50 entries present.
-    expected_keys = {f"worthless-conc45-{i:02d}" for i in range(n_children)}
+    expected_keys = {f"conc45-{i:02d}" for i in range(n_children)}
     actual_keys = set(providers.keys())
     missing = expected_keys - actual_keys
     assert not missing, (
@@ -290,7 +292,7 @@ def test_conc45_fifty_parallel_apply_lock_produces_coherent_state(
 
     # (c) No duplicates (set comparison) and (d) baseUrl correct per alias.
     for i in range(n_children):
-        key = f"worthless-conc45-{i:02d}"
+        key = f"conc45-{i:02d}"
         entry = providers[key]
         expected_alias = f"conc45-alias-{i:02d}"
         assert expected_alias in entry["baseUrl"], (

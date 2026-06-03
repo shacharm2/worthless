@@ -74,11 +74,12 @@ def test_ac1_clean_config_providers_written_existing_preserved(openclaw_config, 
 
     assert result.detected
     assert not result.has_failure
-    assert "worthless-openai" in result.providers_set
+    # WOR-621 F1: lock rewrites the provider's ORIGINAL id (``openai``).
+    assert "openai" in result.providers_set
 
     written = _config.read_config(openclaw_config)
     providers = written["models"]["providers"]
-    assert "worthless-openai" in providers, "new provider missing"
+    assert "openai" in providers, "new provider missing"
     assert "existing-provider" in providers, "existing provider must NOT be clobbered"
 
 

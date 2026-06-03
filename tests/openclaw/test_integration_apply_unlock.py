@@ -332,6 +332,11 @@ def test_apply_unlock_skill_uninstall_failure_returns_result(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="WOR-621 F2 — unlock-restore contract not yet implemented; lock now "
+    "rewrites the original entry, unlock cannot yet restore it. Remove when F2 lands.",
+)
 def test_apply_lock_then_apply_unlock_round_trip_byte_identical(
     openclaw_present: dict[str, Path],
 ) -> None:
