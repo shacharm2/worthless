@@ -33,11 +33,7 @@ from tests.openclaw.install_incident.reproduce import (
 # Each test invokes the real ``worthless lock`` CLI via subprocess.
 pytestmark = pytest.mark.timeout(240)
 
-_WOR_515 = "WOR-515: worthless lock leaves OpenClaw able to bypass the proxy"
-_WOR_516 = "WOR-516: worthless lock corrupts openclaw.json"
 
-
-@pytest.mark.xfail(reason=_WOR_515, strict=True)
 def test_lock_routes_agent_through_proxy_or_does_not_claim_success(tmp_path):
     """After a successful ``lock``, OpenClaw's default agent must route
     through a worthless provider -- otherwise the agent keeps using the real
@@ -54,7 +50,6 @@ def test_lock_routes_agent_through_proxy_or_does_not_claim_success(tmp_path):
     )
 
 
-@pytest.mark.xfail(reason=_WOR_515, strict=True)
 def test_lock_neutralizes_cached_credential_or_fails_loud(tmp_path):
     """OpenClaw caches the real token in ``auth-profiles.json``. After
     ``lock`` that cached credential must be gone -- or ``lock`` must exit
@@ -87,7 +82,6 @@ def test_lock_preserves_sibling_config_on_unreadable_file(tmp_path):
     )
 
 
-@pytest.mark.xfail(reason=_WOR_516, strict=True)
 def test_lock_preserves_openclaw_file_mode(tmp_path):
     """``lock`` must not silently narrow ``openclaw.json``'s permissions. A
     group/world-readable config must keep its mode."""

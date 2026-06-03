@@ -20,7 +20,7 @@ from worthless.cli._repo_factory import open_repo
 from worthless.cli.bootstrap import WorthlessHome, acquire_lock, get_home
 from worthless.cli.code_scanner import scan_for_hardcoded_provider_urls
 from worthless.cli.commands.scan import SCAN_TIME_BUDGET_S, _format_code_findings_human
-from worthless.cli.process import resolve_port
+from worthless.cli.process import check_proxy_health, resolve_port
 from worthless.cli.console import WorthlessConsole, get_console
 from worthless.cli.scanner import SkippedFile, scan_source_for_hardcoded_provider_urls
 from worthless.cli.dotenv_rewriter import (
@@ -588,6 +588,7 @@ def _apply_openclaw(
         status`` can report DEGRADED state across terminal sessions.
         Sentinel write failure is itself best-effort (logged, swallowed).
     """
+
     # Each alias gets its own shard-A (format-preserving split value) as the
     # apiKey in openclaw.json. The agent sends shard-A as Bearer on each request;
     # the proxy validates via commitment check (no stable token needed).
@@ -733,9 +734,7 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
     try:
         skipped: list[SkippedFile] = []
         deadline = time.monotonic() + SCAN_TIME_BUDGET_S
-        findings = scan_for_hardcoded_provider_urls(
-            [cwd], deadline=deadline, skipped=skipped
-        )
+        findings = scan_for_hardcoded_provider_urls([cwd], deadline=deadline, skipped=skipped)
         if skipped:
             # Advisory note ONLY — lock already succeeded; we don't prompt and
             # we don't change the exit code. The user can re-run the scan
@@ -748,8 +747,7 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
             # rendered "{count} {reason}" reading order and gives a stable
             # output for the same input.
             reason_summary = ", ".join(
-                f"{n} {r}"
-                for r, n in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                f"{n} {r}" for r, n in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
             )
             typer.echo(
                 f"\nNote: post-lock source scan incomplete ({reason_summary}). "
@@ -1034,9 +1032,7 @@ def _lock_keys(
         reason_counts: dict[str, int] = {}
         for s in hang_class_skipped:
             reason_counts[s.reason] = reason_counts.get(s.reason, 0) + 1
-        reason_summary = ", ".join(
-            f"{n} {r}" for r, n in sorted(reason_counts.items())
-        )
+        reason_summary = ", ".join(f"{n} {r}" for r, n in sorted(reason_counts.items()))
         skip_lines = [
             f"worthless: source scan incomplete ({reason_summary}) — refusing to lock.",
             "An incomplete scan can't prove no hardcoded provider URLs slipped past.",
@@ -1045,9 +1041,7 @@ def _lock_keys(
         for s in hang_class_skipped:
             # File paths come from our own walk, not untrusted input.
             skip_lines.append(f"  {s.file}  [{s.reason}]")
-        skip_lines.append(
-            "Resolve the cause (oversized source, permission, slow disk) and re-run."
-        )
+        skip_lines.append("Resolve the cause (oversized source, permission, slow disk) and re-run.")
         raise WorthlessError(
             ErrorCode.SCAN_ERROR,
             "\n".join(skip_lines),
@@ -1125,6 +1119,24 @@ def _lock_keys(
             # zero side effects (gate-before-write). Orthogonal to the
             # sidecar-IPC repo above — placement here is load-bearing.
             _oc_gate = _openclaw_audit_preflight()
+
+            # F7 (WOR-648 / WOR-621 AC5): proxy health gate, alongside the
+            # audit gate above — BEFORE any DB or .env write. If OpenClaw is
+            # present but the proxy is down, the lock we'd write points the
+            # config + .env at a dead proxy; aborting HERE keeps .env, the DB,
+            # and openclaw.json all byte-for-byte unchanged (clean no-op). This
+            # avoids the partial-lock footgun where .env already holds shard-A
+            # but the DB shard was unwound, leaving the real key unrecoverable.
+            if _openclaw_integration.detect().present:
+                _probe_port = resolve_port(None)
+                if not check_proxy_health(_probe_port)["healthy"]:
+                    raise WorthlessError(
+                        ErrorCode.PROXY_NOT_RUNNING,
+                        f"Worthless proxy is not responding on port {_probe_port}. "
+                        "Nothing was changed — your .env, database, and "
+                        "~/.openclaw/openclaw.json are untouched. Start the proxy "
+                        "(`worthless up`) and re-run `worthless lock`.",
+                    )
 
             planned: list[_PlannedUpdate] = []
             try:
