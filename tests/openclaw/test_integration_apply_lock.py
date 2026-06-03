@@ -466,6 +466,45 @@ def test_apply_lock_uses_custom_proxy_base_url(
 
 
 # ---------------------------------------------------------------------------
+# WOR-621 Phase 3 / F1 — rewrite the ORIGINAL entry, no `worthless-<id>` decoy
+# ---------------------------------------------------------------------------
+
+
+def test_apply_lock_rewrites_original_entry_no_worthless_alias(
+    openclaw_present: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F1 (WOR-621): lock must rewrite the provider under its ORIGINAL id so
+    OpenClaw actually routes through the proxy — NOT add a separate
+    ``worthless-<id>`` entry that OpenClaw never uses (the WOR-514 bypass).
+
+    After lock: ``providers['openai']`` points at the proxy with shard-A in
+    ``apiKey``, and there is NO ``worthless-openai`` key.
+    """
+    from worthless.openclaw import integration
+
+    monkeypatch.chdir(openclaw_present["home"])
+
+    result = integration.apply_lock(
+        planned_updates=[("openai", "openai-aaaa1111", "sk-shard-a-openai")],
+    )
+
+    assert result.detected is True
+
+    data = json.loads(openclaw_present["config_path"].read_text(encoding="utf-8"))
+    providers = data["models"]["providers"]
+
+    # The decoy must be gone: no separate worthless-<id> entry.
+    assert "worthless-openai" not in providers, (
+        "lock created a separate worthless-openai entry — the WOR-514 bypass; "
+        "it must rewrite the original 'openai' entry instead"
+    )
+    # The ORIGINAL provider id now carries the proxy address + shard-A.
+    assert "openai" in providers, providers
+    assert providers["openai"]["baseUrl"].endswith("/openai-aaaa1111/v1")
+    assert providers["openai"]["apiKey"] == "sk-shard-a-openai"
+
+
+# ---------------------------------------------------------------------------
 # Regressions surfaced by live verification (WOR-431 evidence + simplify pass)
 # ---------------------------------------------------------------------------
 
