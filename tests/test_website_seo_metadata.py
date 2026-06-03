@@ -237,7 +237,6 @@ def test_non_red_seo_copy_avoids_disallowed_claim_boundaries() -> None:
         "any key",
         "aws keys",
         "can't do anything",
-        "doesn't matter",
         "gemini changed the rules",
         "github token",
         "hard spending cap",
@@ -264,6 +263,21 @@ def test_non_red_seo_copy_avoids_disallowed_claim_boundaries() -> None:
                 offenders.append((path, phrase))
 
     assert offenders == []
+
+
+def test_homepage_uses_approved_original_hero_tagline() -> None:
+    index = (DOCS / "index.html").read_text(encoding="utf-8")
+    coming_soon = (DOCS / "coming-soon.html").read_text(encoding="utf-8")
+
+    assert (
+        "Your API key gets leaked. Or stolen. Doesn't matter. It won't work."
+        in index
+    )
+    assert (
+        "Your API key gets leaked. Or stolen. Doesn't matter. It won't work. "
+        "It's Worthless."
+        in coming_soon
+    )
 
 
 def test_non_red_pages_do_not_use_restricted_faq_schema() -> None:
