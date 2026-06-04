@@ -32,6 +32,7 @@ from worthless.storage.spend_ledger import SpendLedger
 
 
 async def _open(tmp_path) -> aiosqlite.Connection:
+    """Open a fresh DB with the full schema applied."""
     db = await aiosqlite.connect(str(tmp_path / "ledger.db"))
     await db.executescript(SCHEMA)
     await db.commit()
@@ -39,6 +40,7 @@ async def _open(tmp_path) -> aiosqlite.Connection:
 
 
 async def _committed(db: aiosqlite.Connection, alias: str) -> int:
+    """Total recorded (settled) spend for an alias."""
     cur = await db.execute(
         "SELECT COALESCE(SUM(tokens), 0) FROM spend_log WHERE key_alias = ?", (alias,)
     )
@@ -47,6 +49,7 @@ async def _committed(db: aiosqlite.Connection, alias: str) -> int:
 
 
 async def _held(db: aiosqlite.Connection, alias: str) -> int:
+    """Total open (un-settled) hold estimate for an alias."""
     cur = await db.execute(
         "SELECT COALESCE(SUM(estimate), 0) FROM pending_charges WHERE key_alias = ?", (alias,)
     )
@@ -55,6 +58,7 @@ async def _held(db: aiosqlite.Connection, alias: str) -> int:
 
 
 async def _spend_rows(db: aiosqlite.Connection, alias: str) -> int:
+    """Count of spend_log rows for an alias."""
     cur = await db.execute("SELECT COUNT(*) FROM spend_log WHERE key_alias = ?", (alias,))
     (n,) = await cur.fetchone()
     return n
