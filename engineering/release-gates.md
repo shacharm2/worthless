@@ -110,7 +110,7 @@ Starter decision: `FAIL` for GA, `Release Starter beta` after fixing A5 + A6.
 
 | Gate | Status | Why |
 |---|---|---|
-| B1 Public install path exists | `FAIL` | `docs/install-openclaw.md` still says planned/not available. |
+| B1 Public install path exists | `FAIL` | `docs/install-openclaw.md` absent; `website/install-openclaw.md` still says planned/not available. |
 | B2 Skill content is production-ready | `FAIL` | Embedded OpenClaw skill file is still a phase placeholder. |
 | B3 OpenClaw journey proof exists | `FAIL` | User-flow report still marks OpenClaw journey as a gap/backlog. |
 
