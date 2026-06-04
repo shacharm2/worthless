@@ -53,12 +53,14 @@ class SpendLedger:
                 "SELECT COALESCE(SUM(tokens), 0) FROM spend_log WHERE key_alias = ?",
                 (alias,),
             )
-            (committed,) = await cur.fetchone()
+            crow = await cur.fetchone()
+            committed = crow[0] if crow is not None else 0
             cur = await self._db.execute(
                 "SELECT COALESCE(SUM(estimate), 0) FROM pending_charges WHERE key_alias = ?",
                 (alias,),
             )
-            (held,) = await cur.fetchone()
+            hrow = await cur.fetchone()
+            held = hrow[0] if hrow is not None else 0
 
             if committed + held + estimate > cap:
                 await self._db.rollback()
@@ -129,7 +131,7 @@ class SpendLedger:
                 " WHERE created_at <= datetime('now', ?)",
                 (f"-{int(max_age_seconds)} seconds",),
             )
-            stale = await cur.fetchall()
+            stale = list(await cur.fetchall())
             for handle, alias, estimate, provider, model in stale:
                 await self._db.execute("DELETE FROM pending_charges WHERE handle = ?", (handle,))
                 await self._db.execute(
