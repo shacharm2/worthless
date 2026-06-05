@@ -374,11 +374,12 @@ def test_unknown_and_nonstring_text_blocks_counted_by_length() -> None:
 def test_unexpected_scalar_content_counted_not_dropped() -> None:
     """A message `content` that is an unexpected scalar (int/bool) is serialised and
     counted (fail-high), not silently dropped to 0 — CodeRabbit on #277."""
+    # content is a bare scalar (not str/list/dict) — exercises the fail-high path
     est = estimate_request_tokens(
-        _body({"messages": [{"role": "user", "content": 987654321987654321}], "max_tokens": 0}),
+        _body({"messages": [{"role": "user", "content": 10**18}], "max_tokens": 0}),
         max_output_ceiling=_CEIL,
     )
-    assert est >= 5  # ~18 serialised chars / 2, well above the never-0 floor
+    assert est >= 5  # ~19 serialised chars / 2, well above the never-0 floor
 
 
 def test_empty_valid_request_never_zero() -> None:
