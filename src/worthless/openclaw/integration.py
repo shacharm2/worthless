@@ -24,6 +24,7 @@ Predicate" and §"Failure modes" rows F01–F04, F36.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import re
@@ -128,16 +129,35 @@ def build_oc_rollback_entry_record(original_entry: dict) -> str:
     return json.dumps(entry, separators=(",", ":"), sort_keys=True)
 
 
-def _parse_oc_rollback_entry_record(record_json: str) -> dict:
+def _parse_oc_rollback_entry_record(
+    record_json: str,
+    *,
+    expected_mac: str | None = None,
+    recomputed_mac: str | None = None,
+) -> dict:
     """Strict parse of a rollback entry record → the original entry dict
     (with ``apiKey`` still holding its shape record).
 
-    Fail-CLOSED (decision 3): any deviation raises ``ValueError`` so the
-    caller leaves the provider on the proxy rather than risk synthesizing a
-    bad/plaintext restore. Validates: top level is a JSON object; it has an
-    ``apiKey`` that is itself an object with ``kind`` in
-    ``{"plaintext","secretref"}``; a ``secretref`` carries a ``ref`` object;
-    a ``plaintext`` carries no stray keys beyond ``kind``.
+    Fail-CLOSED (decisions 3 + 4):
+
+    * **JSON / shape** (decision 3) — any structural deviation raises
+      ``ValueError`` so the caller leaves the provider on the proxy rather
+      than risk synthesizing a bad/plaintext restore. Validates: top level
+      is a JSON object; it has an ``apiKey`` that is itself an object with
+      ``kind`` in ``{"plaintext","secretref"}``; a ``secretref`` carries a
+      ``ref`` object; a ``plaintext`` carries no stray keys beyond ``kind``.
+    * **MAC tamper-bind** (decision 4, G2) — when ``expected_mac`` AND
+      ``recomputed_mac`` are supplied, constant-time-compare them; mismatch
+      raises ``ValueError("rollback mac tampered")``. The caller computes
+      ``recomputed_mac`` via the fernet-keyed HMAC (same
+      ``ShardRepository._compute_decoy_hash`` the ``decoy_hash`` column
+      uses) and passes it in — keeps this function sync so the unlock chain
+      doesn't have to cascade async. This blocks a DB-write attacker (no
+      fernet key) from flipping a stored ``secretref`` JSON to ``plaintext``
+      so the next legit unlock writes the real key into a slot they can
+      read. Legacy rows with no MAC pass both args as ``None`` — we fall
+      back to shape-only validation (G1 behavior) for backward compat until
+      a re-lock attaches a tag.
     """
     parsed = json.loads(record_json)  # raises ValueError on bad JSON
     if not isinstance(parsed, dict):
@@ -154,6 +174,14 @@ def _parse_oc_rollback_entry_record(record_json: str) -> dict:
             raise ValueError("secretref apiKey shape malformed")
     else:
         raise ValueError(f"unknown apiKey shape kind: {kind!r}")
+
+    # G2 tamper-bind: caller passes a freshly-recomputed MAC; we compare
+    # constant-time against the one the DB returned. Caller's recompute
+    # uses the same fernet-derived HMAC-SHA256 the ``decoy_hash`` column
+    # uses (no new crypto, no master-key oracle). SR-07 constant-time.
+    if expected_mac is not None and recomputed_mac is not None:
+        if not hmac.compare_digest(recomputed_mac, expected_mac):
+            raise ValueError("rollback mac tampered")
     return parsed
 
 

@@ -191,7 +191,8 @@ class ShardRepository:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT shard_b_enc, commitment, nonce, provider, prefix, charset, base_url, "
-                "shard_a_enc, oc_original_base_url, oc_original_api_key_json "
+                "shard_a_enc, oc_original_base_url, oc_original_api_key_json, "
+                "oc_rollback_mac "
                 "FROM shards WHERE key_alias = ?",
                 (alias,),
             )
@@ -220,6 +221,7 @@ class ShardRepository:
                 else None,
                 oc_original_base_url=row["oc_original_base_url"],
                 oc_original_api_key_json=row["oc_original_api_key_json"],
+                oc_rollback_mac=row["oc_rollback_mac"],
             )
 
     async def decrypt_shard(self, encrypted: EncryptedShard) -> StoredShard:
@@ -373,6 +375,7 @@ class ShardRepository:
         base_url: str,
         oc_original_base_url: str | None = None,
         oc_original_api_key_json: str | None = None,
+        oc_rollback_mac: str | None = None,
     ) -> None:
         """Upsert a shard row, storing only shard-B (NOT shard-A) encrypted.
 
@@ -423,8 +426,9 @@ class ShardRepository:
             await db.execute(
                 "INSERT INTO shards "
                 "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset, "
-                " base_url, shard_a_enc, oc_original_base_url, oc_original_api_key_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?) "
+                " base_url, shard_a_enc, oc_original_base_url, oc_original_api_key_json, "
+                " oc_rollback_mac) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?) "
                 "ON CONFLICT(key_alias) DO UPDATE SET "
                 "  shard_b_enc = excluded.shard_b_enc, "
                 "  commitment  = excluded.commitment, "
@@ -435,7 +439,8 @@ class ShardRepository:
                 "  base_url    = excluded.base_url, "
                 "  shard_a_enc = NULL, "
                 "  oc_original_base_url     = excluded.oc_original_base_url, "
-                "  oc_original_api_key_json = excluded.oc_original_api_key_json",
+                "  oc_original_api_key_json = excluded.oc_original_api_key_json, "
+                "  oc_rollback_mac          = excluded.oc_rollback_mac",
                 (
                     alias,
                     shard_b_enc,
@@ -447,6 +452,7 @@ class ShardRepository:
                     base_url,
                     oc_original_base_url,
                     oc_original_api_key_json,
+                    oc_rollback_mac,
                 ),
             )
             await db.commit()
@@ -469,6 +475,7 @@ class ShardRepository:
         base_url: str | None = None,
         oc_original_base_url: str | None = None,
         oc_original_api_key_json: str | None = None,
+        oc_rollback_mac: str | None = None,
     ) -> None:
         """Atomically store a shard, enrollment record, and enrollment config.
 
@@ -495,8 +502,9 @@ class ShardRepository:
             await db.execute(
                 "INSERT OR IGNORE INTO shards "
                 "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset, "
-                " base_url, oc_original_base_url, oc_original_api_key_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " base_url, oc_original_base_url, oc_original_api_key_json, "
+                " oc_rollback_mac) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     alias,
                     shard_b_enc,
@@ -508,6 +516,7 @@ class ShardRepository:
                     base_url,
                     oc_original_base_url,
                     oc_original_api_key_json,
+                    oc_rollback_mac,
                 ),
             )
             await db.execute(

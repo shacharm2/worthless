@@ -36,6 +36,13 @@ class EncryptedShard(NamedTuple):
     # is a shape-only {"kind":...} record, never key material.
     oc_original_base_url: str | None = None
     oc_original_api_key_json: str | None = None
+    # WOR-621 F2 G2: HMAC-SHA256 hex tag over oc_original_api_key_json,
+    # keyed by the fernet-derived MAC subkey. Unlock recomputes + compares;
+    # mismatch → fail-safe skip. NON-secret; legacy rows are None (no MAC) —
+    # G2-aware unlock paths treat None as "legacy / no tamper-bind" and fall
+    # back to the G1 fail-closed JSON parse for backward compatibility until
+    # a re-lock attaches a tag.
+    oc_rollback_mac: str | None = None
 
     def __repr__(self) -> str:
         return (

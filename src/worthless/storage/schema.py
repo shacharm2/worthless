@@ -56,6 +56,14 @@ CREATE TABLE IF NOT EXISTS shards (
     -- distinct from ``base_url`` above, which is the UPSTREAM provider url.
     oc_original_base_url     TEXT,
     oc_original_api_key_json TEXT,
+    -- WOR-621 F2 G2 (decision 4): HMAC-SHA256 tag (hex) over
+    -- ``oc_original_api_key_json``, keyed by the fernet-derived MAC subkey
+    -- (same subkey the ``decoy_hash`` column uses). Unlock recomputes and
+    -- constant-time-compares; a DB-write attacker who flips the JSON (e.g.
+    -- secretref→plaintext) leaves a stale tag here, so unlock refuses the
+    -- row → entry stays on the proxy, plaintext is never synthesized from a
+    -- tampered record.
+    oc_rollback_mac          TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -121,18 +129,21 @@ async def _migrate_shard_format_columns(db: aiosqlite.Connection, shard_columns:
 
 
 async def _migrate_oc_rollback_columns(db: aiosqlite.Connection, shard_columns: set[str]) -> None:
-    """WOR-651/F4: add shape-only OpenClaw rollback columns to ``shards``.
+    """WOR-651/F4 + WOR-621 F2 G2: add OpenClaw rollback columns to ``shards``.
 
     ``oc_original_base_url`` is the ORIGINAL OpenClaw provider baseUrl
     (distinct from the ``base_url`` column, which is the UPSTREAM provider
     url). ``oc_original_api_key_json`` holds a shape-only record (kind +
-    optional non-secret ref) — never the real key. Mirrors
-    :func:`_migrate_shard_format_columns`: duplicate-column-tolerant ALTERs,
-    nullable, no backfill.
+    optional non-secret ref) — never the real key. ``oc_rollback_mac`` (G2)
+    binds that JSON to a fernet-keyed HMAC so a DB-write attacker can't flip
+    the record (e.g. secretref→plaintext) without the next unlock noticing.
+    Mirrors :func:`_migrate_shard_format_columns`: duplicate-column-tolerant
+    ALTERs, nullable, no backfill.
     """
     _OC_MIGRATIONS = {
         "oc_original_base_url": "ALTER TABLE shards ADD COLUMN oc_original_base_url TEXT",
         "oc_original_api_key_json": "ALTER TABLE shards ADD COLUMN oc_original_api_key_json TEXT",
+        "oc_rollback_mac": "ALTER TABLE shards ADD COLUMN oc_rollback_mac TEXT",
     }
     for col_name, stmt in _OC_MIGRATIONS.items():
         if col_name not in shard_columns:

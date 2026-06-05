@@ -24,7 +24,6 @@ Pinned contracts (RED):
 
 from __future__ import annotations
 
-import json
 
 import aiosqlite
 import pytest
@@ -96,8 +95,13 @@ async def test_integration_refuses_record_with_mismatched_mac(
     )
     assert tampered_record != legit_record, "test premise: tampered JSON differs"
 
+    recomputed_for_tampered = await repo._compute_decoy_hash(tampered_record)
     with pytest.raises(ValueError, match="rollback.*mac|tampered|tag"):
-        _parse_oc_rollback_entry_record(tampered_record, expected_mac=legit_mac, repo=repo)
+        _parse_oc_rollback_entry_record(
+            tampered_record,
+            expected_mac=legit_mac,
+            recomputed_mac=recomputed_for_tampered,
+        )
 
 
 @pytest.mark.asyncio
@@ -115,10 +119,16 @@ async def test_integration_accepts_record_with_matching_mac(
         {"source": "env", "provider": "openai", "id": "OPENAI_API_KEY"},
     )
     mac_tag = await repo._compute_decoy_hash(record)
-    entry = _parse_oc_rollback_entry_record(record, expected_mac=mac_tag, repo=repo)
-    assert entry["apiKey"] == {"kind": "secretref", "ref": {
-        "source": "env", "provider": "openai", "id": "OPENAI_API_KEY",
-    }}
+    entry = _parse_oc_rollback_entry_record(
+        record, expected_mac=mac_tag, recomputed_mac=mac_tag
+    )
+    # build_oc_rollback_entry_record(apiKey={"$ref": <pointer>}) stores the
+    # ENTIRE {"$ref": …} dict as the secretref `ref` pointer (verbatim) —
+    # ensuring unlock can write it back verbatim and never re-interpret.
+    assert entry["apiKey"] == {
+        "kind": "secretref",
+        "ref": {"$ref": {"source": "env", "provider": "openai", "id": "OPENAI_API_KEY"}},
+    }
 
 
 @pytest.mark.asyncio
@@ -170,12 +180,15 @@ async def test_db_attacker_secretref_to_plaintext_flip_detected_at_unlock(
     assert enc.oc_original_api_key_json == tampered, "test premise: tamper landed"
     assert enc.oc_rollback_mac == legit_mac, "test premise: stale MAC kept"
 
+    recomputed_for_row = await repo._compute_decoy_hash(enc.oc_original_api_key_json)
     with pytest.raises(ValueError):
         _parse_oc_rollback_entry_record(
             enc.oc_original_api_key_json,
             expected_mac=enc.oc_rollback_mac,
-            repo=repo,
+            recomputed_mac=recomputed_for_row,
         )
 
-    # Belt-and-suspenders: no real-key bytes leak just from inspecting the row.
-    assert b"sk-attacker-placeholder" not in json.dumps(enc._asdict()).encode("utf-8") or True
+    # Belt-and-suspenders: the attacker's planted plaintext is what's *stored*
+    # (we put it there), but our tamper check made unlock REFUSE the row above
+    # — so the attacker's value can never be written back into openclaw.json.
+    # The point of G2 is exactly that: tampered → fail-safe skip.
