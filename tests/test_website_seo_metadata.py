@@ -90,6 +90,28 @@ def _public_text_files() -> list[Path]:
     return sorted(files)
 
 
+def _relative_luminance(hex_color: str) -> float:
+    channels = [
+        int(hex_color[index : index + 2], 16) / 255
+        for index in range(1, 7, 2)
+    ]
+    linear = [
+        channel / 12.92
+        if channel <= 0.04045
+        else ((channel + 0.055) / 1.055) ** 2.4
+        for channel in channels
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast_ratio(foreground: str, background: str) -> float:
+    lighter, darker = sorted(
+        (_relative_luminance(foreground), _relative_luminance(background)),
+        reverse=True,
+    )
+    return (lighter + 0.05) / (darker + 0.05)
+
+
 def test_public_seo_surfaces_do_not_reference_worthless_cloud() -> None:
     offenders = [
         path
@@ -308,6 +330,26 @@ def test_launch_pages_are_compatible_with_live_content_security_policy() -> None
     assert not re.search(r"\son[a-z]+=", index)
     assert not re.search(r"\son[a-z]+=", blog)
     assert "https://cdn.simpleicons.org/" not in index
+
+
+def test_homepage_javascript_honors_reduced_motion() -> None:
+    homepage_js = (DOCS / "homepage.js").read_text(encoding="utf-8")
+
+    assert "prefers-reduced-motion: reduce" in homepage_js
+    assert "if (!reduceMotion)" in homepage_js
+
+
+def test_red_faint_text_meets_wcag_aa_contrast() -> None:
+    surfaces = {
+        DOCS / "red" / "index.html": "#090b10",
+        DOCS / "red" / "posts" / "post.css": "#0b0c10",
+    }
+
+    for path, background in surfaces.items():
+        text = path.read_text(encoding="utf-8")
+        match = re.search(r"--faint:\s*(#[0-9a-fA-F]{6})", text)
+        assert match is not None
+        assert _contrast_ratio(match.group(1), background) >= 4.5
 
 
 def test_blog_controls_are_accessible_and_hash_routes_are_valid() -> None:

@@ -11,6 +11,9 @@ const installStatus = document.getElementById("copy-install-status");
 const receiptRail = document.querySelector(".receipt-rail");
 const receiptPause = document.getElementById("receipt-pause");
 const installCommand = "curl -sSL https://worthless.sh | sh";
+const reduceMotion = window.matchMedia(
+  "(prefers-reduced-motion: reduce)",
+).matches;
 const beats = [
   {
     label: "Protect",
@@ -162,6 +165,8 @@ document.querySelectorAll("[data-audit]").forEach((link) => {
   link.rel = "noopener noreferrer";
 });
 
-updateVisualTransition();
-window.addEventListener("scroll", updateVisualTransition, { passive: true });
-window.addEventListener("resize", updateVisualTransition);
+if (!reduceMotion) {
+  updateVisualTransition();
+  window.addEventListener("scroll", updateVisualTransition, { passive: true });
+  window.addEventListener("resize", updateVisualTransition);
+}
