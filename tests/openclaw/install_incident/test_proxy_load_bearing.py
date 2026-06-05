@@ -227,27 +227,37 @@ def test_proxy_is_load_bearing_after_lock(loaded_stack):
     fake_key = loaded_stack["fake_key"]
     shard_a = loaded_stack["shard_a"]
 
-    # 1. Baseline — proxy up: a chat reaches the mock with the REAL key.
+    # 1. Baseline — proxy up: the chat SUCCEEDS and reaches the mock with the REAL key.
     _clear(mock_port)
-    _route(oc)
+    base_turn = _route(oc)
+    assert base_turn.returncode == 0, (
+        f"baseline agent turn did not succeed (rc={base_turn.returncode}); the kill-step proof is "
+        f"only meaningful if the agent works when the proxy is up.\n{base_turn.stderr[-600:]}"
+    )
     base = _captured(mock_port)
     assert len(base) >= 1, "baseline chat did not reach the mock upstream through the proxy"
     auths = " ".join(e.get("authorization", "") for e in base)
     assert fake_key in auths, "proxy did not reconstruct the real key to upstream"
     assert shard_a not in auths, "shard-A leaked to upstream — reconstruction is broken"
 
-    # 2. THE PROOF — stop the proxy: the next chat reaches NOTHING.
+    # 2. THE PROOF — stop the proxy: the next chat FAILS at the proxy hop AND reaches nothing.
+    # rc != 0 proves the agent actually TRIED and couldn't reach upstream, not that it no-op'd.
     _run(["docker", "stop", proxy], check=True, timeout=60)
     _clear(mock_port)
-    _route(oc)
+    down_turn = _route(oc)
+    assert down_turn.returncode != 0, (
+        "agent turn SUCCEEDED with the Worthless proxy stopped — proxy is NOT load-bearing "
+        "(WOR-514 bypass reborn)."
+    )
     assert _captured(mock_port) == [], (
         "OpenClaw reached upstream with the Worthless proxy STOPPED — "
         "the proxy is NOT load-bearing (WOR-514 bypass reborn)."
     )
 
-    # 3. Restart the proxy: chats reach upstream again.
+    # 3. Restart the proxy: the chat SUCCEEDS again (rules out an unrelated agent failure).
     _run(["docker", "start", proxy], check=True, timeout=60)
     assert wait_healthy(proxy, timeout=120), "proxy did not recover after restart"
     _clear(mock_port)
-    _route(oc)
+    back_turn = _route(oc)
+    assert back_turn.returncode == 0, f"agent turn failed after restart: {back_turn.stderr[-400:]}"
     assert len(_captured(mock_port)) >= 1, "proxy did not resume routing after restart"
