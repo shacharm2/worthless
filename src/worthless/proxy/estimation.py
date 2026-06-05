@@ -46,26 +46,21 @@ def _walk_content(value: Any) -> tuple[int, int]:
     return chars, images
 
 
-def estimate_request_tokens(body: bytes, *, max_output_ceiling: int) -> int:
-    """Estimate a request's token cost for the spend cap. Fails high, never 0."""
-    try:
-        payload = json.loads(body)
-    except (json.JSONDecodeError, ValueError):
-        return _MALFORMED_FLOOR_TOKENS
-    if not isinstance(payload, dict):
-        return _MALFORMED_FLOOR_TOKENS
-
+def _count_chars_and_images(payload: dict[str, Any]) -> tuple[int, int]:
+    """Sum input chars + image blocks across messages, system, tools, and the
+    top-level prompt — every field that bills as input."""
     chars = images = 0
     for msg in payload.get("messages") or []:
-        if isinstance(msg, dict):
-            c, b = _walk_content(msg.get("content"))
-            chars += c
-            images += b
-            # OpenAI tool-call args ride alongside content (often content=null).
-            for key in ("tool_calls", "function_call"):
-                v = msg.get(key)
-                if v is not None:
-                    chars += len(json.dumps(v))
+        if not isinstance(msg, dict):
+            continue
+        c, b = _walk_content(msg.get("content"))
+        chars += c
+        images += b
+        # OpenAI tool-call args ride alongside content (often content=null).
+        for key in ("tool_calls", "function_call"):
+            v = msg.get(key)
+            if v is not None:
+                chars += len(json.dumps(v))
     c, b = _walk_content(payload.get("system"))
     chars += c
     images += b
@@ -77,9 +72,11 @@ def estimate_request_tokens(body: bytes, *, max_output_ceiling: int) -> int:
         c, b = _walk_content(payload.get(key))
         chars += c
         images += b
+    return chars, images
 
-    input_tokens = math.ceil(chars / _CHARS_PER_TOKEN) + images * _IMAGE_BLOCK_TOKENS
 
+def _resolve_output_units(payload: dict[str, Any], max_output_ceiling: int) -> tuple[int, int]:
+    """(n, capped_max_tokens) — both validated; invalid/absent values assume the worst."""
     n = payload.get("n", 1)
     if not isinstance(n, int) or n < 1:
         n = 1
@@ -88,6 +85,19 @@ def estimate_request_tokens(body: bytes, *, max_output_ceiling: int) -> int:
         max_tokens = payload.get("max_completion_tokens")  # modern OpenAI o-series
     if not isinstance(max_tokens, int) or max_tokens < 0:
         max_tokens = max_output_ceiling  # absent/invalid → assume the worst
-    output_tokens = n * min(max_tokens, max_output_ceiling)
+    return n, min(max_tokens, max_output_ceiling)
 
-    return input_tokens + output_tokens
+
+def estimate_request_tokens(body: bytes, *, max_output_ceiling: int) -> int:
+    """Estimate a request's token cost for the spend cap. Fails high, never 0."""
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return _MALFORMED_FLOOR_TOKENS
+    if not isinstance(payload, dict):
+        return _MALFORMED_FLOOR_TOKENS
+
+    chars, images = _count_chars_and_images(payload)
+    input_tokens = math.ceil(chars / _CHARS_PER_TOKEN) + images * _IMAGE_BLOCK_TOKENS
+    n, max_tokens = _resolve_output_units(payload, max_output_ceiling)
+    return input_tokens + n * max_tokens
