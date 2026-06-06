@@ -506,69 +506,82 @@ def _apply_openclaw_unlock(
     if not restores:
         # Nothing to undo on the OpenClaw side — also nothing to record.
         return False
+    # G4 MED-1 (post-review security follow-up): Stage A zeros
+    # ``plaintext_key`` per-iteration in its ``finally`` (integration.py:1397).
+    # That covers the happy path, but ``apply_unlock`` can return BEFORE Stage A
+    # runs at all (no OpenClaw detected; symlinked config; pre-Stage-A raise) —
+    # in those paths the reconstructed real-key bytearrays would live in heap
+    # until GC. Wrap the whole function body so every restore's key gets a
+    # final zeroing pass on every exit. ``zero_buf`` on an already-zeroed
+    # bytearray is idempotent, so this doesn't double-zero or fight Stage A.
     try:
-        result = _openclaw_integration.apply_unlock(restores=restores)
-    except OpenclawIntegrationError as exc:
-        logger.warning("openclaw apply_unlock raised unexpectedly: %s", exc)
-        _emit_openclaw_unlock_failure(console, home, len(restores), str(exc))
-        return True
-    except Exception as exc:  # noqa: BLE001 — last-resort guard for L1
-        logger.warning("openclaw apply_unlock raised unexpectedly: %s", exc)
-        _emit_openclaw_unlock_failure(console, home, len(restores), str(exc))
-        return True
+        try:
+            result = _openclaw_integration.apply_unlock(restores=restores)
+        except OpenclawIntegrationError as exc:
+            logger.warning("openclaw apply_unlock raised unexpectedly: %s", exc)
+            _emit_openclaw_unlock_failure(console, home, len(restores), str(exc))
+            return True
+        except Exception as exc:  # noqa: BLE001 — last-resort guard for L1
+            logger.warning("openclaw apply_unlock raised unexpectedly: %s", exc)
+            _emit_openclaw_unlock_failure(console, home, len(restores), str(exc))
+            return True
 
-    # ---- Classify the result ---------------------------------------------
-    if not result.detected:
-        # No OpenClaw on this host — record absent, no UI noise.
-        _write_unlock_sentinel(home, status="ok", openclaw="absent", alias_count=0, events=())
-        return False
+        # ---- Classify the result ---------------------------------------------
+        if not result.detected:
+            # No OpenClaw on this host — record absent, no UI noise.
+            _write_unlock_sentinel(home, status="ok", openclaw="absent", alias_count=0, events=())
+            return False
 
-    # Trust-fix classification lives on OpenclawApplyResult.has_failure
-    # (single-sourced — see integration.py docstring).
-    # WOR-621 F2 G4: ``providers_set`` carries the providers Stage A actually
-    # RESTORED to their pre-lock entries (G1 renamed the field's semantic
-    # accordingly). The CLI copy reflects the real action — "restored", not
-    # "removed" (decoy-era wording deferred from G1 review).
-    if not result.has_failure:
-        if result.providers_set:
-            console.print_success(
-                f"[OK] OpenClaw: restored {len(result.providers_set)} provider(s)"
+        # Trust-fix classification lives on OpenclawApplyResult.has_failure
+        # (single-sourced — see integration.py docstring).
+        # WOR-621 F2 G4: ``providers_set`` carries the providers Stage A actually
+        # RESTORED to their pre-lock entries (G1 renamed the field's semantic
+        # accordingly). The CLI copy reflects the real action — "restored", not
+        # "removed" (decoy-era wording deferred from G1 review).
+        if not result.has_failure:
+            if result.providers_set:
+                console.print_success(
+                    f"[OK] OpenClaw: restored {len(result.providers_set)} provider(s)"
+                )
+                for provider_name in result.providers_set:
+                    console.print_hint(f"   • {provider_name}")
+            if result.skill_installed:
+                console.print_hint("   • ~/.openclaw/workspace/skills/worthless/ — removed")
+            _write_unlock_sentinel(
+                home,
+                status="ok",
+                openclaw="ok",
+                alias_count=len(result.providers_set),
+                events=tuple(e.to_dict() for e in result.events),
             )
-            for provider_name in result.providers_set:
-                console.print_hint(f"   • {provider_name}")
-        if result.skill_installed:
-            console.print_hint("   • ~/.openclaw/workspace/skills/worthless/ — removed")
+            return False
+
+        # Detected + failed: trust-failure path.
+        console.print_failure("[FAIL] OpenClaw cleanup did NOT complete.")
+        console.print_warning(
+            "   Your .env is restored, but the original OpenClaw provider entries"
+        )
+        console.print_warning("   may not have been restored in ~/.openclaw/openclaw.json — re-run")
+        console.print_warning("   `worthless unlock` or `worthless doctor` to repair.")
+        for name, reason in result.providers_skipped:
+            console.print_warning(f"   skipped {name} ({reason})")
+        for event in result.events:
+            if event.level == "error":
+                console.print_warning(f"   {event.code.value} — {event.detail}")
         _write_unlock_sentinel(
             home,
-            status="ok",
-            openclaw="ok",
+            status="partial",
+            openclaw="failed",
             alias_count=len(result.providers_set),
             events=tuple(e.to_dict() for e in result.events),
         )
-        return False
-
-    # Detected + failed: trust-failure path.
-    console.print_failure("[FAIL] OpenClaw cleanup did NOT complete.")
-    console.print_warning(
-        "   Your .env is restored, but the original OpenClaw provider entries"
-    )
-    console.print_warning(
-        "   may not have been restored in ~/.openclaw/openclaw.json — re-run"
-    )
-    console.print_warning("   `worthless unlock` or `worthless doctor` to repair.")
-    for name, reason in result.providers_skipped:
-        console.print_warning(f"   skipped {name} ({reason})")
-    for event in result.events:
-        if event.level == "error":
-            console.print_warning(f"   {event.code.value} — {event.detail}")
-    _write_unlock_sentinel(
-        home,
-        status="partial",
-        openclaw="failed",
-        alias_count=len(result.providers_set),
-        events=tuple(e.to_dict() for e in result.events),
-    )
-    return True
+        return True
+    finally:
+        # Idempotent zeroing safety net (SR-02). Stage A already zeros on
+        # the happy path; this catches early-returns + pre-Stage-A raises.
+        for r in restores:
+            if r.plaintext_key is not None:
+                zero_buf(r.plaintext_key)
 
 
 def _emit_openclaw_unlock_failure(
@@ -579,9 +592,7 @@ def _emit_openclaw_unlock_failure(
 ) -> None:
     """Print [FAIL] block + write partial sentinel for the unexpected-raise path."""
     console.print_failure("[FAIL] OpenClaw cleanup did NOT complete.")
-    console.print_warning(
-        "   Your .env is restored, but the original OpenClaw provider entries"
-    )
+    console.print_warning("   Your .env is restored, but the original OpenClaw provider entries")
     console.print_warning(
         "   may not have been restored in ~/.openclaw/openclaw.json — repair via:"
     )

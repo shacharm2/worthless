@@ -100,3 +100,4 @@ dist/
 # Internal — not published to the public repo (WOR-532)
 .planning/
 .beads/
+tests/openclaw/_artifacts/
