@@ -244,6 +244,16 @@ def test_astral_installer_sha_mismatch_exits_50(tmp_path: Path) -> None:
     assert "SHA256 mismatch" in result.stderr, (
         f"stderr should name the integrity failure clearly.\nstderr: {result.stderr}"
     )
+    # Honest framing: an exit code that says "do not retry" must NOT be paired
+    # with a message that says "Re-run later" — that contradicts the contract
+    # and trains operators / CI to ignore the new exit code.
+    assert "Re-run later" not in result.stderr, (
+        "stderr must NOT suggest retrying — EXIT_INTEGRITY (50) means do-not-retry.\n"
+        f"stderr: {result.stderr}"
+    )
+    assert "Do NOT retry" in result.stderr, (
+        f"stderr must state the do-not-retry contract explicitly.\nstderr: {result.stderr}"
+    )
 
 
 def test_curl_network_failure_exits_10(tmp_path: Path) -> None:

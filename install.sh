@@ -205,7 +205,7 @@ ensure_uv() {
         die "$EXIT_INTEGRITY" "SHA256 mismatch on Astral installer ${UV_VERSION}." \
             "expected: ${ASTRAL_INSTALLER_SHA256}" \
             "actual:   ${actual}" \
-            "Refusing to execute. Re-run later or report at ${DOCS_URL}."
+            "Refusing to execute. Do NOT retry; investigate or report at ${DOCS_URL}."
     fi
 
     UV_INSTALL_VERSION="$UV_VERSION" sh "$installer" >/dev/null 2>&1 || {
