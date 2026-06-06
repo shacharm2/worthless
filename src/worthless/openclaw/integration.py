@@ -185,6 +185,58 @@ def _parse_oc_rollback_entry_record(
     return parsed
 
 
+CaptureKind = Literal["new", "reuse_prior", "relock_no_prior", "no_entry"]
+
+
+def classify_oc_entry_for_capture(
+    current_entry: dict | None,
+    *,
+    prior_entry_record_json: str | None,
+    prior_base_url: str | None,
+    proxy_base_url: str,
+) -> tuple[CaptureKind, str | None, str | None]:
+    """Decide WOR-621 F2 G3 rollback capture for one provider.
+
+    Pure + sync — the CLI (which holds the openclaw.json read and the async
+    ShardRepository) calls this for each provider it is about to lock and
+    threads the returned ``(base_url, entry_record_json)`` plus a freshly
+    computed MAC over ``entry_record_json`` into ``upsert_locked_shard``.
+
+    Decisions per WOR-649 Pass-1:
+
+    * ``current_entry is None`` → ``("no_entry", None, None)``. Nothing on
+      disk to capture (fresh OpenClaw, or the user removed the entry).
+      Lock-core still writes the new proxy entry; the rollback row stays
+      NULL and unlock fail-safe-skips that alias.
+    * Entry's ``baseUrl`` is proxy-shaped (a previous lock already rewrote
+      it) AND a ``prior_entry_record_json`` exists in the DB → re-lock:
+      reuse the prior record VERBATIM so the genuine pre-first-lock
+      original is preserved across N re-locks. Decision 2.
+    * Entry proxy-shaped AND no prior record → ``relock_no_prior``: caller
+      MUST warn + write NULL. We refuse to capture shard-A as "the
+      original" — that would let unlock declare success on a fake
+      restore. Decision 2 + WOR-514 honesty principle.
+    * Otherwise (the genuine pre-lock state) → ``("new", baseUrl, record)``
+      where ``record`` is :func:`build_oc_rollback_entry_record`'s
+      key-redacted full entry. Decision 4 always supplies both kwargs.
+
+    Test surface: ``tests/openclaw/test_lock_capture_oc_rollback.py``
+    pins the CLI-level outcomes of each branch.
+    """
+    if current_entry is None:
+        return ("no_entry", None, None)
+
+    raw_url = current_entry.get("baseUrl")
+    entry_url = raw_url if isinstance(raw_url, str) else ""
+    if entry_url and _is_proxy_url(entry_url, proxy_base_url):
+        if prior_entry_record_json is not None:
+            return ("reuse_prior", prior_base_url, prior_entry_record_json)
+        # Refuse to mint a fake "original" from the proxy entry.
+        return ("relock_no_prior", None, None)
+
+    return ("new", entry_url or None, build_oc_rollback_entry_record(current_entry))
+
+
 @dataclass(frozen=True)
 class OcRestore:
     """One provider's restore instruction for :func:`apply_unlock`.

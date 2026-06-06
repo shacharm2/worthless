@@ -49,6 +49,7 @@ from worthless.crypto.splitter import (
 from worthless.crypto.types import zero_buf
 from worthless.exceptions import ShardTamperedError
 from worthless.openclaw import audit as _oc_audit
+from worthless.openclaw import config as _openclaw_config_mod
 from worthless.openclaw import integration as _openclaw_integration
 from worthless.openclaw.errors import OpenclawErrorCode, OpenclawIntegrationError
 from worthless.storage.repository import ShardRepository, StoredShard
@@ -291,6 +292,87 @@ async def _delete_superseded_location_enrollments(
             await repo.delete_enrolled(stale_alias)
 
 
+async def _decide_oc_capture(
+    *,
+    repo: ShardRepository,
+    oc_config: dict | None,
+    proxy_base_url: str,
+    provider: str,
+    prior_base_url: str | None,
+    prior_record: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """G3 capture decision for one provider → (oc_base_url, oc_record, oc_mac).
+
+    Bridges the pure sync classifier in
+    :mod:`worthless.openclaw.integration` with the async MAC computation
+    on :class:`ShardRepository` and the operator-facing warning channel.
+
+    Returns the trio threaded into :meth:`ShardRepository.upsert_locked_shard`
+    (and :meth:`store_enrolled` on fresh enrollments). Each return value is
+    ``None`` on the no-capture branches:
+
+    * ``no_entry`` — no openclaw.json entry for this provider yet.
+    * ``relock_no_prior`` — entry is already proxy-shaped but the DB has
+      no prior record, so capturing shard-A as "the original" would let
+      unlock declare a fake success. Emits a CLI warning.
+
+    The MAC is computed in-process via the same fernet-derived HMAC
+    (:meth:`ShardRepository._compute_decoy_hash`) the G2 tamper-bind
+    uses. Caller pattern: no new crypto, no master-key oracle.
+    """
+    current_entry = None
+    if oc_config is not None:
+        providers = oc_config.get("models", {}).get("providers", {})
+        candidate = providers.get(provider)
+        if isinstance(candidate, dict):
+            current_entry = candidate
+
+    kind, base_url, record_json = _openclaw_integration.classify_oc_entry_for_capture(
+        current_entry,
+        prior_entry_record_json=prior_record,
+        prior_base_url=prior_base_url,
+        proxy_base_url=proxy_base_url,
+    )
+
+    if kind == "relock_no_prior":
+        get_console().print_warning(
+            f"OpenClaw {provider!r} entry is already proxy-shaped with no "
+            "stored rollback record (relock_no_prior); leaving rollback "
+            "columns unset. Run `worthless unlock` first if you want the "
+            "original captured."
+        )
+        return (None, None, None)
+
+    if record_json is None:
+        # 'no_entry' branch — nothing on disk to capture, no MAC to compute.
+        return (None, None, None)
+
+    mac = await repo._compute_decoy_hash(record_json)
+    return (base_url, record_json, mac)
+
+
+def _read_openclaw_providers_for_capture() -> dict | None:
+    """Read openclaw.json once for G3 rollback capture.
+
+    Returns the parsed config dict (so the caller can look up each
+    provider entry by name), or ``None`` if OpenClaw is absent, the
+    file is missing, or any read error fires. Capture is best-effort:
+    a failure here lets lock-core proceed without a rollback record
+    (unlock will fail-safe-skip later), which is strictly safer than
+    aborting the lock or crashing in pass1.
+    """
+    state = _openclaw_integration.detect()
+    if not state.present:
+        return None
+    try:
+        config_path = _openclaw_integration._resolve_active_config_path(
+            state, state.home_dir
+        )
+        return _openclaw_config_mod.read_config(config_path)
+    except Exception:  # noqa: BLE001 — fail-safe: missing rollback row is acceptable
+        return None
+
+
 async def _pass1_db_writes(
     repo: ShardRepository,
     candidates: list[tuple[str, str, str]],
@@ -307,7 +389,22 @@ async def _pass1_db_writes(
     *env_values* is the parsed ``.env`` (from ``dotenv_values``) so we can
     read the user's existing ``*_BASE_URL`` value at lock time and store
     that as the upstream URL in the DB.
+
+    WOR-621 F2 G3: reads openclaw.json once at the top + per-candidate
+    classifies the current entry against the prior shards-row record
+    (via :func:`integration.classify_oc_entry_for_capture`). The rollback
+    trio (``oc_original_base_url``, ``oc_original_api_key_json``,
+    ``oc_rollback_mac``) rides into the DB on the existing
+    :meth:`ShardRepository.upsert_locked_shard` write so a crash between
+    here and ``_apply_openclaw`` still leaves a row unlock can roll back
+    from (SM-2: StashDB → Rewrite).
     """
+    # G3: snapshot openclaw.json BEFORE we touch the DB. We classify each
+    # provider against this snapshot so a concurrent OpenClaw write doesn't
+    # poison our capture, and so the DB write is the first mutation.
+    oc_config = _read_openclaw_providers_for_capture()
+    oc_proxy_base_url = _openclaw_integration._resolve_proxy_base_url()
+
     for var_name, value, detected_provider in candidates:
         # Translate registry-name → wire-protocol. Post-HF1,
         # ``detect_provider`` returns registry names like ``openrouter``
@@ -404,6 +501,23 @@ async def _pass1_db_writes(
                     db_shard.prefix,
                     db_shard.charset,
                 )
+                # G3 capture (re-lock branch): the row already exists so the
+                # prior rollback record (if any) lives on db_shard. The classifier
+                # decides whether to reuse it, refuse to overwrite with shard-A
+                # ('relock_no_prior'), or — if the entry was untouched since the
+                # last unlock — re-capture as 'new'.
+                (
+                    oc_capture_base_url,
+                    oc_capture_record,
+                    oc_capture_mac,
+                ) = await _decide_oc_capture(
+                    repo=repo,
+                    oc_config=oc_config,
+                    proxy_base_url=oc_proxy_base_url,
+                    provider=provider,
+                    prior_base_url=db_shard.oc_original_base_url,
+                    prior_record=db_shard.oc_original_api_key_json,
+                )
                 # INSERT OR REPLACE keeps shard_a_enc in sync with the auth token
                 # written to openclaw.json.  INSERT OR IGNORE would leave the old
                 # shard_b in DB on re-lock, causing XOR reconstruction to fail permanently.
@@ -413,6 +527,9 @@ async def _pass1_db_writes(
                     prefix=db_shard.prefix,
                     charset=db_shard.charset,
                     base_url=db_shard.base_url or upstream_base_url,
+                    oc_original_base_url=oc_capture_base_url,
+                    oc_original_api_key_json=oc_capture_record,
+                    oc_rollback_mac=oc_capture_mac,
                 )
                 await repo.add_enrollment(alias, var_name=var_name, env_path=env_str)
                 await _delete_superseded_location_enrollments(
@@ -455,6 +572,23 @@ async def _pass1_db_writes(
                 nonce=sr.nonce,
                 provider=provider,
             )
+            # G3 capture (fresh-enroll branch): no prior row, so prior_* are
+            # None. The classifier will return 'new' for a genuine original
+            # entry, 'relock_no_prior' if the user managed to leave openclaw.json
+            # already proxy-shaped without a DB row (legacy), or 'no_entry' if
+            # the provider has no entry at all yet.
+            (
+                oc_capture_base_url,
+                oc_capture_record,
+                oc_capture_mac,
+            ) = await _decide_oc_capture(
+                repo=repo,
+                oc_config=oc_config,
+                proxy_base_url=oc_proxy_base_url,
+                provider=provider,
+                prior_base_url=None,
+                prior_record=None,
+            )
             # store_enrolled() handles enrollment rows; upsert_locked_shard()
             # writes the shards row with shard_a_enc included from the first lock.
             await repo.upsert_locked_shard(
@@ -463,6 +597,9 @@ async def _pass1_db_writes(
                 prefix=sr.prefix,
                 charset=sr.charset,
                 base_url=upstream_base_url,
+                oc_original_base_url=oc_capture_base_url,
+                oc_original_api_key_json=oc_capture_record,
+                oc_rollback_mac=oc_capture_mac,
             )
             await repo.store_enrolled(
                 alias,
@@ -473,6 +610,9 @@ async def _pass1_db_writes(
                 prefix=sr.prefix,
                 charset=sr.charset,
                 base_url=upstream_base_url,
+                oc_original_base_url=oc_capture_base_url,
+                oc_original_api_key_json=oc_capture_record,
+                oc_rollback_mac=oc_capture_mac,
             )
             planned_out.append(
                 _PlannedUpdate(
