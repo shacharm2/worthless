@@ -42,26 +42,54 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
 # WOR-664: plant the operator's OpenRouter key + baseUrl + a real model so
 # the GUI chat works immediately (skips the manual "Settings → add key" dance).
-# Key comes from $OPENROUTER_API_KEY in the operator's shell — never hardcoded,
-# never committed. The token transits a tmp file inside the container only.
+# Key sourced from $OPENROUTER_API_KEY in ~/.zshrc so it works regardless of
+# what shell `up` was invoked from. Never hardcoded, never committed.
+#
+# Source-read finding: OpenClaw's openai provider plugin calls
+# resolveUsableCustomProviderApiKey (model-auth-DauuBD3l.js:56-101), which
+# reads `models.providers.openai.apiKey` DIRECTLY from openclaw.json. No
+# auth-profiles.json needed for the OpenRouter case. `models auth
+# paste-token` writes a token-mode profile that openai's api_key path
+# ignores → why our earlier attempt silently no-op'd.
 _wire_provider() {
-  if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-    echo "(skipping provider wire-up: \$OPENROUTER_API_KEY not set in shell)"
+  local tok
+  # Pull the key from zshrc (works under bash/sh too). Single sourcing point.
+  tok="$(zsh -ic 'printf %s "${OPENROUTER_API_KEY:-}"' 2>/dev/null)"
+  if [ -z "$tok" ]; then
+    echo "(skipping provider wire-up: \$OPENROUTER_API_KEY not in ~/.zshrc)"
     return 0
   fi
-  # Point OpenAI's baseUrl at OpenRouter so the openai provider plugin
-  # actually talks to OpenRouter. Use a real OpenRouter-served default model.
+
+  # baseUrl + api + default model — argv-safe (no secret material).
+  # --merge so re-runs don't try to overwrite an already-set apiKey field.
   docker exec "$NAME" node openclaw.mjs config set models.providers.openai \
     '{"baseUrl":"https://openrouter.ai/api/v1","api":"openai-completions","models":[]}' \
-    --strict-json >/dev/null
+    --strict-json --merge >/dev/null
   docker exec "$NAME" node openclaw.mjs config set agents.defaults.model.primary \
     openai/gpt-4o-mini >/dev/null
-  # Paste the token non-interactively (paste-token reads stdin).
-  printf '%s' "$OPENROUTER_API_KEY" \
-    | docker exec -i "$NAME" node openclaw.mjs models auth paste-token \
-        --provider openai --profile-id openai:openrouter >/dev/null \
+
+  # Plant the apiKey by piping over stdin → reading inside the container.
+  # NEVER on argv (process listings) or environ (avoid). NEVER on host disk.
+  printf '%s' "$tok" \
+    | docker exec -i "$NAME" sh -c '
+        KEY=$(cat)
+        [ -n "$KEY" ] || { echo "  ! empty key from stdin" >&2; exit 1; }
+        node openclaw.mjs config set models.providers.openai.apiKey "$KEY" >/dev/null
+      ' \
     && echo "  wired: OpenRouter key + baseUrl + default model openai/gpt-4o-mini" \
-    || echo "  ! provider wire-up failed (the chat will work after you add a key in Settings)"
+    || { echo "  ! provider wire-up failed (the chat will work after you add a key in Settings)"; return 1; }
+  unset tok
+
+  # The provider config writer logs "Restart the gateway to apply." — even
+  # though some changes hot-reload, the apiKey path is safest restarted, and
+  # restart also clears any auth rate-limit from earlier 401s.
+  docker restart "$NAME" >/dev/null
+  for _ in $(seq 1 40); do
+    docker exec "$NAME" node openclaw.mjs config get gateway >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  echo "  ! container not ready after restart"
+  return 1
 }
 
 _url() {
@@ -113,16 +141,11 @@ DF
     _url; echo
     ;;
   reset)
-    # Clear OpenClaw's gateway-auth rate-limit ("too many failed attempts").
-    # In-memory counter, so a container restart drops it. The skill, the
-    # local wheel, and any state under ~/.openclaw / ~/.worthless persist
-    # because the container keeps its layer state across restart.
-    docker restart "$NAME" >/dev/null && echo "restarted $NAME (auth rate-limit cleared)"
-    for _ in $(seq 1 40); do
-      docker exec "$NAME" node openclaw.mjs config get gateway >/dev/null 2>&1 && break
-      sleep 2
-    done
-    _wire_provider
+    # _wire_provider handles its own restart (planted apiKey needs gateway
+    # reload), and that same restart clears OpenClaw's in-memory auth-attempt
+    # rate-limit — so one restart, not two. State under ~/.openclaw and
+    # ~/.worthless persists across the restart (layer state).
+    _wire_provider || true
     "$0" open
     ;;
   stop)
