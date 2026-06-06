@@ -479,8 +479,19 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
             clean_headers = _strip_worthless_headers(adapter_resp.headers)
             provider = encrypted.provider
 
-            async def _do_record_spend(data: bytes):
-                """Extract usage and record spend — shared by streaming and non-streaming."""
+            async def _do_record_spend(data: bytes, *, provider_succeeded: bool = True):
+                """Settle / record spend after the upstream call.
+
+                * If the provider reported usage, honour it (provider DID bill input
+                  tokens even on a 4xx error response).
+                * If usage is absent and provider FAILED (>= 400): refund the hold
+                  (capped) / skip (uncapped) — the provider rejected the call.
+                * If usage is absent and provider SUCCEEDED (200 but parse failure /
+                  mid-stream disconnect): settle at estimate (capped) so the cap is
+                  billed immediately — closes the cost-griefing window where the
+                  sweeper TTL would otherwise let an attacker pay only estimate via
+                  many aborted streams. For uncapped: warn-only, no phantom spend.
+                """
                 if provider == "anthropic":
                     usage = extract_usage_anthropic(data)
                 else:
@@ -492,24 +503,40 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     # python-logger-credential-disclosure rule fires on
                     # the word "Token" in log messages, but here we mean
                     # the LLM response usage-tokens count (for metering),
-                    # not an auth token. Renaming clears the rule
-                    # without needing a # nosemgrep annotation.
+                    # not an auth token.
                     logger.warning(
                         "Usage extraction failed for alias=%s provider=%s",
                         alias,
                         provider,
                     )
-                try:
-                    if spend_handle is not None:
-                        # Capped: settle the durable hold to actual usage. If usage was
-                        # unreadable, leave the hold standing — fail-closed; the sweep
-                        # reaps it at estimate (never settle a capped request at 0).
+                if spend_handle is not None:
+                    try:
                         if usage is not None:
                             await rules_engine.settle_spend(spend_handle, tokens)
-                    else:
+                        elif provider_succeeded:
+                            await rules_engine.settle_spend_at_estimate(spend_handle)
+                        else:
+                            await rules_engine.refund_spend(spend_handle)
+                    except Exception:
+                        logger.warning(
+                            "settle failed for alias=%s; falling back to estimate", alias
+                        )
+                        try:
+                            await rules_engine.settle_spend_at_estimate(spend_handle)
+                        except Exception:
+                            logger.warning(
+                                "settle_at_estimate also failed for alias=%s; "
+                                "sweeper is the last backstop",
+                                alias,
+                            )
+                elif usage is not None or not provider_succeeded:
+                    # Uncapped: record actual usage when present; on error paths with
+                    # no usage, still record(0) as an audit trail of the failed call.
+                    try:
                         await record_spend(settings.db_path, alias, tokens, model, provider)
-                except Exception:
-                    logger.warning("Failed to record spend for alias=%s", alias)
+                    except Exception:
+                        logger.warning("Failed to record spend for alias=%s", alias)
+                # Else: uncapped + success + no usage → warn-only, no phantom spend.
                 # Release the in-memory token-budget reservation (WOR-242).
                 await rules_engine.release_spend_reservation(alias, amount=_spend_reservation)
 
@@ -522,7 +549,9 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                     status_code=adapter_resp.status_code,
                     headers={"content-type": "application/json"},
                     media_type="application/json",
-                    background=BackgroundTask(_do_record_spend, adapter_resp.body),
+                    background=BackgroundTask(
+                        _do_record_spend, adapter_resp.body, provider_succeeded=False
+                    ),
                 )
 
             if adapter_resp.is_streaming and adapter_resp.stream is not None:
@@ -539,13 +568,36 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
 
                 async def _record_metering():
                     usage = usage_collector.result()
-                    try:
-                        if spend_handle is not None:
-                            # Capped: settle the durable hold to actual. Unreadable
-                            # usage → leave the hold (fail-closed; reaped by the sweep).
+                    if spend_handle is not None:
+                        # Capped: settle hold to actual, or to estimate if usage is
+                        # unreadable (mid-stream client disconnect, SSE format change).
+                        # Settling at estimate IMMEDIATELY closes the cost-griefing
+                        # window where an attacker aborts streams to pay only estimate
+                        # via the sweeper TTL backstop.
+                        try:
                             if usage is not None:
                                 await rules_engine.settle_spend(spend_handle, usage.total_tokens)
-                        elif usage is not None:
+                            else:
+                                logger.warning(
+                                    "Could not extract usage from streaming response "
+                                    "for alias=%s; settling at estimate",
+                                    alias,
+                                )
+                                await rules_engine.settle_spend_at_estimate(spend_handle)
+                        except Exception:
+                            logger.warning(
+                                "settle failed for alias=%s; falling back to estimate", alias
+                            )
+                            try:
+                                await rules_engine.settle_spend_at_estimate(spend_handle)
+                            except Exception:
+                                logger.warning(
+                                    "settle_at_estimate also failed for alias=%s; "
+                                    "sweeper is the last backstop",
+                                    alias,
+                                )
+                    elif usage is not None:
+                        try:
                             await record_spend(
                                 settings.db_path,
                                 alias,
@@ -553,17 +605,16 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                                 usage.model,
                                 encrypted.provider,
                             )
-                        else:
-                            # Zero friction: if we can't extract usage (provider
-                            # changed SSE format, etc.), log a warning but don't
-                            # penalize the user with phantom spend.
-                            logger.warning(
-                                "Could not extract usage from streaming response "
-                                "for alias=%s; spend not recorded",
-                                alias,
-                            )
-                    except Exception:
-                        logger.warning("Failed to record spend for alias=%s", alias)
+                        except Exception:
+                            logger.warning("Failed to record spend for alias=%s", alias)
+                    else:
+                        # Uncapped + no usage: zero friction, don't penalise the user
+                        # with phantom spend (the cap mechanism isn't engaged here).
+                        logger.warning(
+                            "Could not extract usage from streaming response "
+                            "for alias=%s; spend not recorded",
+                            alias,
+                        )
                     # Release the in-memory token-budget reservation (WOR-242).
                     await rules_engine.release_spend_reservation(alias, amount=_spend_reservation)
 

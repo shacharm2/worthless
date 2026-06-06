@@ -157,6 +157,18 @@ class RulesEngine:
                 await rule.ledger.settle(spend_handle, actual)
                 return
 
+    async def settle_spend_at_estimate(self, spend_handle: str | None) -> None:
+        """Settle a hold at its STORED estimate — fail-closed fallback when actual
+        usage can't be read (e.g. client disconnect mid-stream, response parse
+        failure). Bills the cap immediately rather than waiting for the sweeper.
+        No-op if there was no hold."""
+        if spend_handle is None:
+            return
+        for rule in self.rules:
+            if isinstance(rule, SpendCapRule):
+                await rule.ledger.settle_at_estimate(spend_handle)
+                return
+
     async def release_spend_reservation(self, alias: str, amount: int) -> None:
         """Release an in-memory token-budget reservation placed during evaluate().
 
