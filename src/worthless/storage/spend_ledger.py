@@ -27,9 +27,12 @@ class SpendLedger:
 
     __slots__ = ("_db", "_lock")
 
-    def __init__(self, db: aiosqlite.Connection) -> None:
+    def __init__(self, db: aiosqlite.Connection, lock: asyncio.Lock | None = None) -> None:
         self._db = db
-        self._lock = asyncio.Lock()  # serialise our txns so BEGIN IMMEDIATE can't collide
+        # One lock per CONNECTION serialises BEGIN IMMEDIATE. Share it with every other
+        # code path that opens a txn on this same connection (e.g. TokenBudgetRule), or two
+        # different locks would let concurrent requests nest a transaction → crash.
+        self._lock = lock if lock is not None else asyncio.Lock()
 
     async def hold(
         self,
