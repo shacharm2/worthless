@@ -9,24 +9,30 @@ metadata:
       bins:
         - worthless
     install:
+      - id: local-wheel
+        kind: shell
+        command: sh -c 'uv tool install /opt/worthless/worthless-*.whl 2>/dev/null || pip install /opt/worthless/worthless-*.whl'
+        bins:
+          - worthless
+        label: Install Worthless (LOCAL WHEEL — dev environments; tries this FIRST so a pre-staged wheel under /opt/worthless wins over published)
       - id: worthless-sh
         kind: shell
         command: curl -sSL https://worthless.sh | sh
         bins:
           - worthless
-        label: Install Worthless (recommended — worthless.sh)
+        label: Install Worthless (worthless.sh — recommended for end users)
       - id: uv
         kind: shell
         command: uv tool install worthless
         bins:
           - worthless
-        label: Install Worthless (uv)
+        label: Install Worthless (uv from PyPI)
       - id: pip
         kind: shell
         command: pip install worthless
         bins:
           - worthless
-        label: Install Worthless (pip)
+        label: Install Worthless (pip from PyPI)
 ---
 
 # Worthless — make leaked LLM keys worthless
