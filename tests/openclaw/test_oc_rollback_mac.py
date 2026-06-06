@@ -119,9 +119,7 @@ async def test_integration_accepts_record_with_matching_mac(
         {"source": "env", "provider": "openai", "id": "OPENAI_API_KEY"},
     )
     mac_tag = await repo._compute_decoy_hash(record)
-    entry = _parse_oc_rollback_entry_record(
-        record, expected_mac=mac_tag, recomputed_mac=mac_tag
-    )
+    entry = _parse_oc_rollback_entry_record(record, expected_mac=mac_tag, recomputed_mac=mac_tag)
     # build_oc_rollback_entry_record(apiKey={"$ref": <pointer>}) stores the
     # ENTIRE {"$ref": …} dict as the secretref `ref` pointer (verbatim) —
     # ensuring unlock can write it back verbatim and never re-interpret.
