@@ -49,6 +49,7 @@ from worthless.crypto.splitter import (
 from worthless.crypto.types import zero_buf
 from worthless.exceptions import ShardTamperedError
 from worthless.openclaw import audit as _oc_audit
+from worthless.openclaw import config as _openclaw_config_mod
 from worthless.openclaw import integration as _openclaw_integration
 from worthless.openclaw.errors import OpenclawErrorCode, OpenclawIntegrationError
 from worthless.storage.repository import ShardRepository, StoredShard
@@ -113,20 +114,69 @@ def _derive_base_url_var(var_name: str, provider: str) -> str:
     return _PROVIDER_ENV_MAP.get(provider, "OPENAI_BASE_URL")
 
 
+def _read_openclaw_provider_baseurls() -> dict[str, str]:
+    """Return {provider_name: baseUrl} from openclaw.json's models.providers tree.
+
+    worthless-thuu (P0): the OpenClaw config IS the source of truth for which
+    upstream a user actually wants OpenClaw to call. Lock must consult it,
+    not just the .env's ``*_BASE_URL`` var. Returns an empty dict when:
+
+    * OpenClaw is not detected on this host (most users)
+    * openclaw.json is unreadable / malformed
+    * The providers tree is missing or wrong-shaped
+
+    Best-effort: any error returns ``{}`` so lock falls back to the existing
+    .env-or-registry-default behavior. This never raises — it just augments
+    the data ``_resolve_upstream_base_url`` already has.
+    """
+    state = _openclaw_integration.detect()
+    if not state.present:
+        return {}
+    try:
+        config_path = _openclaw_integration._resolve_active_config_path(state, state.home_dir)
+        config = _openclaw_config_mod.read_config(config_path)
+    except Exception:  # noqa: BLE001 — best-effort augmentation, never block lock
+        return {}
+    providers = config.get("models", {}).get("providers", {})
+    if not isinstance(providers, dict):
+        return {}
+    out: dict[str, str] = {}
+    for name, entry in providers.items():
+        if isinstance(entry, dict):
+            url = entry.get("baseUrl")
+            if isinstance(url, str) and url:
+                out[name] = url
+    return out
+
+
 def _resolve_upstream_base_url(
-    base_url_var: str, env_values: dict[str, str | None], provider: str
+    base_url_var: str,
+    env_values: dict[str, str | None],
+    provider: str,
+    openclaw_baseurls: dict[str, str] | None = None,
 ) -> str:
     """Pick the upstream URL for the DB row.
 
-    Prefers the user's explicit ``*_BASE_URL`` value from ``.env`` when set
-    AND when that URL is in the provider registry. Otherwise falls back to
-    the bundled registry default for the provider.
+    Precedence (worthless-thuu, 2026-06-07):
 
-    Refuses unregistered user URLs (M3 / Blocker #1): an attacker who can
-    write to .env should not be able to redirect the proxy at an arbitrary
-    upstream. worthless-rzi1 (P1 follow-up) adds per-request re-validation
-    to close the post-lock-tamper variant; worthless-8fbg adds RFC1918 /
-    loopback hardening. See seam 2 in worthless-8rqs design notes.
+    1. **.env's** ``*_BASE_URL`` (highest). The user's most explicit
+       expression of intent for THIS .env. Must be registry-registered
+       (M3 / Blocker #1 — see security note below).
+    2. **openclaw.json's** ``models.providers.X.baseUrl`` (NEW). When
+       OpenClaw is detected and the entry exists with a registry-known
+       URL, that's the OpenClaw user's truth — the URL OpenClaw itself
+       will route to absent the proxy. An unregistered openclaw URL is
+       SKIPPED (not raised) — we fall through to the registry default
+       rather than refusing the lock, since OpenClaw config drift is
+       not a worthless-side error condition.
+    3. **Registry default** for the wire protocol (fallback).
+
+    Refuses unregistered user URLs from .env (M3 / Blocker #1): an
+    attacker who can write to .env should not be able to redirect the
+    proxy at an arbitrary upstream. worthless-rzi1 (P1 follow-up) adds
+    per-request re-validation to close the post-lock-tamper variant;
+    worthless-8fbg adds RFC1918 / loopback hardening. See seam 2 in
+    worthless-8rqs design notes.
     """
     user_value = env_values.get(base_url_var)
     if user_value:
@@ -138,6 +188,16 @@ def _resolve_upstream_base_url(
                 "--url <url> --protocol openai|anthropic'.",
             )
         return user_value
+
+    # worthless-thuu: try openclaw.json's baseUrl for this provider.
+    # Only honored if the URL is in the bundled provider registry — keeps the
+    # M3 attacker-can't-redirect-at-arbitrary-upstream invariant intact: even
+    # if openclaw.json is tampered with, we won't follow an unregistered URL.
+    if openclaw_baseurls:
+        oc_url = openclaw_baseurls.get(provider)
+        if oc_url and lookup_by_url(oc_url) is not None:
+            return oc_url
+
     entry = lookup_by_name(provider)
     if entry is None:  # pragma: no cover — provider is validated above
         return "https://api.openai.com/v1"
@@ -307,7 +367,14 @@ async def _pass1_db_writes(
     *env_values* is the parsed ``.env`` (from ``dotenv_values``) so we can
     read the user's existing ``*_BASE_URL`` value at lock time and store
     that as the upstream URL in the DB.
+
+    worthless-thuu: also reads openclaw.json's per-provider baseUrl ONCE at
+    the top of the loop, so each provider's upstream resolution can fall
+    back to the OpenClaw user's truth before the bundled registry default.
+    Best-effort: an absent/unreadable openclaw.json returns ``{}`` and lock
+    falls through to the existing env-or-default behavior unchanged.
     """
+    openclaw_baseurls = _read_openclaw_provider_baseurls()
     for var_name, value, detected_provider in candidates:
         # Translate registry-name → wire-protocol. Post-HF1,
         # ``detect_provider`` returns registry names like ``openrouter``
@@ -355,7 +422,9 @@ async def _pass1_db_writes(
                 f"follow <PROVIDER>_API_KEY to silence this warning."
             )
 
-        upstream_base_url = _resolve_upstream_base_url(base_url_var, env_values, provider)
+        upstream_base_url = _resolve_upstream_base_url(
+            base_url_var, env_values, provider, openclaw_baseurls
+        )
 
         alias = _make_alias(provider, value)
 
@@ -733,9 +802,7 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
     try:
         skipped: list[SkippedFile] = []
         deadline = time.monotonic() + SCAN_TIME_BUDGET_S
-        findings = scan_for_hardcoded_provider_urls(
-            [cwd], deadline=deadline, skipped=skipped
-        )
+        findings = scan_for_hardcoded_provider_urls([cwd], deadline=deadline, skipped=skipped)
         if skipped:
             # Advisory note ONLY — lock already succeeded; we don't prompt and
             # we don't change the exit code. The user can re-run the scan
@@ -748,8 +815,7 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
             # rendered "{count} {reason}" reading order and gives a stable
             # output for the same input.
             reason_summary = ", ".join(
-                f"{n} {r}"
-                for r, n in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                f"{n} {r}" for r, n in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
             )
             typer.echo(
                 f"\nNote: post-lock source scan incomplete ({reason_summary}). "
@@ -1034,9 +1100,7 @@ def _lock_keys(
         reason_counts: dict[str, int] = {}
         for s in hang_class_skipped:
             reason_counts[s.reason] = reason_counts.get(s.reason, 0) + 1
-        reason_summary = ", ".join(
-            f"{n} {r}" for r, n in sorted(reason_counts.items())
-        )
+        reason_summary = ", ".join(f"{n} {r}" for r, n in sorted(reason_counts.items()))
         skip_lines = [
             f"worthless: source scan incomplete ({reason_summary}) — refusing to lock.",
             "An incomplete scan can't prove no hardcoded provider URLs slipped past.",
@@ -1054,9 +1118,7 @@ def _lock_keys(
             # the bypass-findings path below already uses.
             safe_file = _oc_audit.sanitise_for_message(s.file)
             skip_lines.append(f"  {safe_file}  [{s.reason}]")
-        skip_lines.append(
-            "Resolve the cause (oversized source, permission, slow disk) and re-run."
-        )
+        skip_lines.append("Resolve the cause (oversized source, permission, slow disk) and re-run.")
         raise WorthlessError(
             ErrorCode.SCAN_ERROR,
             "\n".join(skip_lines),
