@@ -41,6 +41,7 @@ from worthless.proxy.metering import (
     extract_usage_openai,
     record_spend,
 )
+from worthless.proxy.response_model_audit import record_if_mismatch
 from worthless.proxy.rules import (
     RateLimitRule,
     RulesEngine,
@@ -263,6 +264,12 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
     # proxy_auth_token is no longer used — kept for tests that set it to None
     # to indicate "target state: no stable token". The proxy ignores this field.
     app.state.proxy_auth_token = None
+    # WOR-696 T7: response-model mismatch counter. Dict keyed by
+    # (request_model, response_model) → int. Observation only — surfaces
+    # silent provider re-routes (gpt-4o-mini → gpt-5) in metrics. Init at
+    # app construction (not in lifespan) so tests that build app.state by
+    # hand still see it.
+    app.state.response_model_mismatch_counter = {}
 
     # Middleware stack (reverse order: last registered runs first)
     app.add_middleware(CORSMiddleware, allow_origins=[], allow_methods=["GET"], allow_headers=[])
@@ -372,6 +379,19 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         # Pre-read body ONCE before rules engine (WOR-182: eliminates
         # Starlette body-caching coupling — rules receive bytes, not stream)
         body = await request.body()
+
+        # WOR-696 T7: pull request.model for the response-model mismatch
+        # audit. Best-effort — non-JSON body, missing field, wrong type
+        # all yield None and the audit becomes a no-op. Never raises.
+        _request_model: str | None = None
+        try:
+            _parsed_for_model = json.loads(body)
+            if isinstance(_parsed_for_model, dict):
+                _candidate = _parsed_for_model.get("model")
+                if isinstance(_candidate, str) and _candidate:
+                    _request_model = _candidate
+        except (ValueError, TypeError):
+            pass
 
         # Token-budget reservation amount (WOR-242). The spend CAP no longer uses
         # this — its reservation is the durable ledger hold below.
@@ -641,6 +661,21 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                                 )
                                 break
                             usage_collector.feed(chunk)
+                            # WOR-696 T7: passive audit — increments
+                            # app.state.response_model_mismatch_counter on
+                            # silent provider re-routes. Wrapped in try so
+                            # an audit bug can never break the stream.
+                            try:
+                                record_if_mismatch(
+                                    app.state.response_model_mismatch_counter,
+                                    _request_model,
+                                    chunk,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "WOR-696: response-model audit failed; stream continues",
+                                    exc_info=True,
+                                )
                             yield chunk
                     finally:
                         # Client disconnect, stream end, or T7 kill: close
