@@ -186,6 +186,24 @@ class ProxySettings:
     streaming_timeout: float = field(
         default_factory=lambda: float(os.environ.get("WORTHLESS_STREAMING_TIMEOUT", "300.0"))
     )
+    # WOR-696: total wall-clock cap on a single streaming response. Anthropic's
+    # own docs recommend batch API beyond ~15min (system timeouts + open
+    # connection limits). 15min covers Claude Code agentic loops (8-12 min
+    # legit) while killing slow-drip attackers who keep streams open forever.
+    max_stream_duration_seconds: float = field(
+        default_factory=lambda: float(
+            os.environ.get("WORTHLESS_MAX_STREAM_DURATION_SECONDS", "900.0")
+        )
+    )
+    # WOR-696: hard cut when a stream goes silent between chunks. 90s covers
+    # Anthropic extended-thinking pauses (45-60s legit; documented `ping`
+    # events keep the connection alive) while killing slow-drip variants
+    # where an attacker drips bytes minutes apart.
+    max_idle_between_chunks_seconds: float = field(
+        default_factory=lambda: float(
+            os.environ.get("WORTHLESS_MAX_IDLE_BETWEEN_CHUNKS_SECONDS", "90.0")
+        )
+    )
     allow_insecure: bool = field(default_factory=lambda: _env_bool("WORTHLESS_ALLOW_INSECURE"))
     sidecar_socket_path: str = field(
         default_factory=lambda: os.environ.get(

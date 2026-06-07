@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -586,14 +587,67 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
 
             if adapter_resp.is_streaming and adapter_resp.stream is not None:
                 usage_collector = StreamingUsageCollector(provider=encrypted.provider)
+                # WOR-696: stream wall-clock + idle-chunk kills. Tests may pin
+                # tight values via app.state; production reads from settings.
+                # time.monotonic() — NOT wall clock — so system clock skew on a
+                # long stream doesn't falsely fire or skip the cap.
+                _max_stream_duration = float(
+                    getattr(
+                        app.state,
+                        "max_stream_duration_seconds",
+                        settings.max_stream_duration_seconds,
+                    )
+                )
+                _max_idle_between_chunks = float(
+                    getattr(
+                        app.state,
+                        "max_idle_between_chunks_seconds",
+                        settings.max_idle_between_chunks_seconds,
+                    )
+                )
 
                 async def _stream_with_metering() -> AsyncIterator[bytes]:
+                    start = time.monotonic()
+                    stream_iter = adapter_resp.stream.__aiter__()  # type: ignore[union-attr]
                     try:
-                        async for chunk in adapter_resp.stream:  # type: ignore[union-attr]
+                        while True:
+                            # Total-duration kill: closes slow-drip attackers
+                            # who keep streams open past the cap.
+                            if time.monotonic() - start > _max_stream_duration:
+                                logger.warning(
+                                    "WOR-696: stream killed at "
+                                    "max_stream_duration_seconds=%s for "
+                                    "alias=%s; settling at ceiling",
+                                    _max_stream_duration,
+                                    alias,
+                                )
+                                break
+                            # Idle-chunk kill: closes the variant where a
+                            # stream drips one byte every N minutes.
+                            try:
+                                chunk = await asyncio.wait_for(
+                                    stream_iter.__anext__(),
+                                    timeout=_max_idle_between_chunks,
+                                )
+                            except StopAsyncIteration:
+                                break
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "WOR-696: stream killed at "
+                                    "max_idle_between_chunks_seconds=%s for "
+                                    "alias=%s; settling at ceiling",
+                                    _max_idle_between_chunks,
+                                    alias,
+                                )
+                                break
                             usage_collector.feed(chunk)
                             yield chunk
                     finally:
-                        # Client disconnect or stream end: close upstream
+                        # Client disconnect, stream end, or T7 kill: close
+                        # upstream. The BackgroundTask settle path runs after
+                        # this; usage_collector will likely lack a complete
+                        # usage block on a kill, so settle_at_estimate fires
+                        # and the ledger floors at GLOBAL_CEILING_TOKENS.
                         await upstream_resp.aclose()  # type: ignore[union-attr]
 
                 async def _record_metering():
