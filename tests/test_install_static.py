@@ -164,11 +164,16 @@ def test_env_scrub_lists_every_known_redirect_var(install_text: str) -> None:
         "install.sh must contain a multi-line `unset` block scrubbing "
         "UV_*/PIP_* redirect vars (WOR-673 / A2). Got no match."
     )
-    block = match.group(0)
-    missing = [v for v in _SCRUBBED_VARS if v not in block]
+    # CodeRabbit catch: substring `v in block` false-passes — `UV_INDEX` is
+    # "found" inside `UV_INDEX_URL`. Tokenize the block instead so each var
+    # is matched as a whole identifier (uppercase OR lowercase for the proxy
+    # alias class: all_proxy, http_proxy, https_proxy).
+    block_body = match.group(1)
+    present = set(re.findall(r"\b[A-Za-z][A-Za-z0-9_]*\b", block_body))
+    missing = [v for v in _SCRUBBED_VARS if v not in present]
     assert not missing, (
         f"install.sh `unset` block is missing these env vars from the "
-        f"WOR-673 scrub list: {missing}\nfound block:\n{block}"
+        f"WOR-673 scrub list: {missing}\nfound block:\n{match.group(0)}"
     )
 
 
