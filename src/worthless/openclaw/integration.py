@@ -68,11 +68,15 @@ from worthless.openclaw.errors import (
 _DEEP_REDACT_SENTINEL = {"kind": "redacted-deep"}
 
 
-def _deep_redact_key_strings(value):
+_DEEP_REDACT_KEY_PLACEHOLDER = "<redacted-deep-key>"
+
+
+def _deep_redact_key_strings(value: object) -> object:
     """Walk *value* recursively; replace any key-shaped string with the
     G5-B sentinel. Dicts and lists are descended into; tuples are not (the
     rollback record JSON has no tuples). Returns a NEW structure — the
-    caller's input is never mutated.
+    caller's input is never mutated. JSON-only precondition (cyclic Python
+    dicts would recurse to ``RecursionError`` — not a valid rollback shape).
 
     Detection uses ``KEY_PATTERN.search`` (same SR-05 patterns the scanner
     uses), so a key embedded in a larger string (e.g.
@@ -81,13 +85,32 @@ def _deep_redact_key_strings(value):
     to look like a key than to leak an actual one. The user can re-paste
     nested credentials on unlock — they were never safe in the rollback
     record anyway.
+
+    Asymmetric replacement (intentional):
+    * **values** become the dict sentinel ``{"kind":"redacted-deep"}`` so
+      the type-mismatch is loud on restore.
+    * **dict keys** must remain hashable, so they become the literal
+      string placeholder ``"<redacted-deep-key>"``. JSON dict keys are
+      always strings, so this is the only path that needs the asymmetry.
+
+    **Coverage limitation (residual; tracked).** ``KEY_PATTERN`` is a
+    prefix-allowlist (``sk-``, ``sk-or-``, ``sk-ant-``, ``anthropic-``,
+    ``AIza``, ``xai-``). Tokens that do NOT carry a recognized provider
+    prefix — a bare UUID/JWT/hex admin token from a self-hosted gateway —
+    are NOT detected and survive into the rollback record. Follow-up
+    ``worthless-3l5l`` adds an entropy fallback for unprefixed tokens.
     """
     if isinstance(value, str):
         if KEY_PATTERN.search(value):
-            return dict(_DEEP_REDACT_SENTINEL)
+            return {"kind": "redacted-deep"}
         return value
     if isinstance(value, dict):
-        return {k: _deep_redact_key_strings(v) for k, v in value.items()}
+        return {
+            (_DEEP_REDACT_KEY_PLACEHOLDER if KEY_PATTERN.search(k) else k)
+            if isinstance(k, str)
+            else k: _deep_redact_key_strings(v)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         return [_deep_redact_key_strings(v) for v in value]
     # int, float, bool, None — nothing to redact.

@@ -186,6 +186,29 @@ def test_redacted_record_round_trips_through_parser() -> None:
     assert parsed["headers"]["Authorization"] == DEEP_REDACT_SENTINEL
 
 
+def test_key_shaped_dict_key_is_replaced_with_string_placeholder() -> None:
+    """Pathological case (extremely unlikely in OpenClaw's strict schema
+    but cheap to close): a user puts a key-shaped string AS a dict KEY,
+    not a value. JSON dict keys must remain hashable, so they become the
+    literal string placeholder ``"<redacted-deep-key>"`` rather than the
+    value-side dict sentinel.
+    """
+    original = {
+        "baseUrl": "https://gateway.example.com/v1",
+        "apiKey": "top",
+        "tokens": {_PLANTED_KEY: "label-for-this-token"},
+    }
+    record_json = build_oc_rollback_entry_record(original)
+    record = json.loads(record_json)
+
+    assert _PLANTED_KEY not in record_json, (
+        "key-shaped string used as a dict KEY survived into rollback record"
+    )
+    tokens = record["tokens"]
+    assert "<redacted-deep-key>" in tokens
+    assert tokens["<redacted-deep-key>"] == "label-for-this-token"
+
+
 def test_key_inside_secretref_pointer_is_redacted_defense_in_depth() -> None:
     """A SecretRef ``ref`` is meant to be a NON-secret pointer (env var name,
     secret-manager id). If a user mistakenly puts the literal key value
