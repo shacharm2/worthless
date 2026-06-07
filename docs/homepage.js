@@ -4,10 +4,10 @@ const cinema = document.querySelector(".cinema");
 const beatLabel = document.getElementById("beat-label");
 const beatTitle = document.getElementById("beat-title");
 const beatBody = document.getElementById("beat-body");
-const beatTrust = document.querySelector(".beat-trust");
-const beatTrustLinks = Array.from(document.querySelectorAll(".beat-trust a"));
 const installCopy = document.getElementById("copy-install");
 const installStatus = document.getElementById("copy-install-status");
+const promiseExplainer = document.querySelector(".promise-explainer");
+const promiseSummary = promiseExplainer?.querySelector("summary");
 const receiptRail = document.querySelector(".receipt-rail");
 const receiptPause = document.getElementById("receipt-pause");
 const installCommand = "curl -sSL https://worthless.sh | sh";
@@ -38,15 +38,6 @@ const beats = [
 ];
 let currentBeat = "0";
 
-function setBeatTrustActive(active) {
-  if (!beatTrust) return;
-  beatTrust.setAttribute("aria-hidden", String(!active));
-  beatTrust.inert = !active;
-  beatTrustLinks.forEach((link) => {
-    link.tabIndex = active ? 0 : -1;
-  });
-}
-
 function setBeat(beat) {
   const next = beats[Number(beat)];
   if (!next || beat === currentBeat) return;
@@ -56,7 +47,6 @@ function setBeat(beat) {
   beatLabel.textContent = next.label;
   beatTitle.textContent = next.title;
   beatBody.textContent = next.body;
-  setBeatTrustActive(beat === "3");
 }
 
 function clamp(value, min = 0, max = 1) {
@@ -100,7 +90,34 @@ const observer = new IntersectionObserver(
   },
 );
 sentinels.forEach((el) => observer.observe(el));
-setBeatTrustActive(false);
+
+function syncPromiseDisclosure() {
+  promiseSummary?.setAttribute(
+    "aria-expanded",
+    String(Boolean(promiseExplainer?.open)),
+  );
+}
+
+promiseSummary?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  promiseExplainer.open = !promiseExplainer.open;
+});
+promiseExplainer?.addEventListener("toggle", syncPromiseDisclosure);
+syncPromiseDisclosure();
+
+function showCopiedState() {
+  installStatus.textContent = "Install command copied.";
+  installCopy.classList.add("is-copied");
+  installCopy.setAttribute("aria-label", "Install command copied");
+  window.setTimeout(() => {
+    installCopy.classList.remove("is-copied");
+    installCopy.setAttribute(
+      "aria-label",
+      "Copy install command: " + installCommand,
+    );
+  }, 1600);
+}
 
 installCopy?.addEventListener("click", async () => {
   const copyFromTextarea = () => {
@@ -126,14 +143,10 @@ installCopy?.addEventListener("click", async () => {
       throw new Error("Clipboard API unavailable");
     }
     await navigator.clipboard.writeText(installCommand);
-    installStatus.textContent = "Install command copied.";
-    installCopy.classList.add("is-copied");
-    window.setTimeout(() => installCopy.classList.remove("is-copied"), 1600);
+    showCopiedState();
   } catch (_error) {
     if (copyFromTextarea()) {
-      installStatus.textContent = "Install command copied.";
-      installCopy.classList.add("is-copied");
-      window.setTimeout(() => installCopy.classList.remove("is-copied"), 1600);
+      showCopiedState();
     } else {
       installStatus.textContent =
         "Copy unavailable. Select the install command text.";

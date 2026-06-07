@@ -91,14 +91,9 @@ def _public_text_files() -> list[Path]:
 
 
 def _relative_luminance(hex_color: str) -> float:
-    channels = [
-        int(hex_color[index : index + 2], 16) / 255
-        for index in range(1, 7, 2)
-    ]
+    channels = [int(hex_color[index : index + 2], 16) / 255 for index in range(1, 7, 2)]
     linear = [
-        channel / 12.92
-        if channel <= 0.04045
-        else ((channel + 0.055) / 1.055) ** 2.4
+        channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
         for channel in channels
     ]
     return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
@@ -287,6 +282,10 @@ def test_non_red_seo_copy_avoids_disallowed_claim_boundaries() -> None:
     for path in NON_RED_SEO_COPY_FILES:
         text = (REPO_ROOT / path).read_text(encoding="utf-8")
         text = text.replace(
+            "Your API key just got leaked. Or stolen. Doesn't matter.",
+            "",
+        )
+        text = text.replace(
             "Your API key gets leaked. Or stolen. Doesn't matter. It won't work.",
             "",
         )
@@ -299,20 +298,94 @@ def test_non_red_seo_copy_avoids_disallowed_claim_boundaries() -> None:
     assert offenders == []
 
 
-def test_homepage_uses_approved_original_hero_tagline() -> None:
+def test_homepage_uses_approved_hero_tagline() -> None:
     index = (DOCS / "index.html").read_text(encoding="utf-8")
     coming_soon = (DOCS / "coming-soon.html").read_text(encoding="utf-8")
 
+    assert "Your API key just got leaked. Or stolen. Doesn't matter." in index
     assert (
-        "Your API key gets leaked. Or stolen. Doesn't matter. It won't work."
-        in index
+        '<summary role="button" aria-expanded="false">'
+        "Worthless makes leaked keys worthless. How?</summary>" in index
     )
-    assert "<strong>Worthless makes leaked keys worthless.</strong>" in index
     assert (
         "Your API key gets leaked. Or stolen. Doesn't matter. It won't work. "
-        "It's Worthless."
-        in coming_soon
+        "It's Worthless." in coming_soon
     )
+
+
+def test_homepage_explains_the_product_without_hiding_the_install_path() -> None:
+    index = (DOCS / "index.html").read_text(encoding="utf-8")
+
+    assert (
+        "Worthless replaces each protected API key in your <code>.env</code> "
+        "with a share that cannot call the provider alone." in index
+    )
+    assert ".promise-explainer:not([open]) > :not(summary)" in index
+    assert 'href="how-it-works.html">See how it works</a>' in index
+    assert '<p class="install-eyebrow">Protect your keys</p>' in index
+    assert "curl -sSL https://worthless.sh | sh" in index
+    assert '<span class="copy-success" aria-hidden="true">Copied</span>' in index
+    assert 'class="copy-check"' in index
+    assert ".install:hover" in index
+    assert ".install:focus-visible" in index
+    assert "Protected first. Your LLMs still work." not in index
+
+
+def test_homepage_uses_visible_unboxed_audit_icons() -> None:
+    index = (DOCS / "index.html").read_text(encoding="utf-8")
+    script = (DOCS / "homepage.js").read_text(encoding="utf-8")
+
+    assert '<svg hidden aria-hidden="true" style="display: none">' in index
+    assert index.count("Don’t trust us. Audit with AI.") == 2
+    assert index.count('class="audit-icon"') == 8
+    assert index.count('href="#audit-claude"') == 2
+    assert index.count('href="#audit-chatgpt"') == 2
+    assert index.count('href="#audit-gemini"') == 2
+    assert index.count('href="#audit-grok"') == 2
+    assert "audit-letter" not in index
+    assert "beat-trust" not in index
+    assert "beatTrust" not in script
+    assert ".audit-icon {" in index
+    audit_rule = index.split(".audit-icon {", 1)[1].split("}", 1)[0]
+    assert "border: 0;" in audit_rule
+    assert "background: transparent;" in audit_rule
+    assert "flex-direction: column;" in index
+
+
+def test_homepage_mobile_navigation_keeps_primary_actions_visible() -> None:
+    index = (DOCS / "index.html").read_text(encoding="utf-8")
+
+    assert '.nav-links a[href="memes.html"]' in index
+    assert "@media (max-width: 520px)" in index
+    assert 'class="nav-early" href="#early-access" aria-label="Early access"' in index
+    assert '<span class="nav-early-label">Early access</span>' in index
+    assert 'class="nav-early-icon"' in index
+    nav_icon_rule = index.split(".nav-early-icon {", 1)[1].split("}", 1)[0]
+    assert "display: block;" in nav_icon_rule
+    assert "white-space: nowrap;" in index
+    assert 'aria-label="Buy me a coffee on Ko-fi"' in index
+    mobile_kofi_rule = index.split("@media (max-width: 820px)", 1)[1]
+    mobile_kofi_rule = mobile_kofi_rule.split("@media", 1)[0]
+    assert "width: 2.15rem;" in mobile_kofi_rule
+    assert "height: 2.15rem;" in mobile_kofi_rule
+    assert "border-radius: 999px;" in mobile_kofi_rule
+
+
+def test_homepage_moves_the_hero_up_on_tall_viewports() -> None:
+    index = (DOCS / "index.html").read_text(encoding="utf-8")
+
+    assert "@media (max-aspect-ratio: 4 / 5)" in index
+    portrait_rule = index.split("@media (max-aspect-ratio: 4 / 5)", 1)[1]
+    portrait_rule = portrait_rule.split("@media", 1)[0]
+    assert "align-items: start;" in portrait_rule
+    assert "padding-top: max(7rem, 12svh);" in portrait_rule
+
+
+def test_how_it_works_has_an_obvious_quiet_return_home_link() -> None:
+    page = (DOCS / "how-it-works.html").read_text(encoding="utf-8")
+
+    assert 'href="index.html" class="nav-logo" aria-label="Back to Worthless home"' in page
+    assert '<span aria-hidden="true">&larr;</span> Worthless' in page
 
 
 def test_launch_pages_are_compatible_with_live_content_security_policy() -> None:
@@ -376,8 +449,7 @@ def test_non_red_pages_do_not_use_restricted_faq_schema() -> None:
         path
         for path in NON_RED_SEO_COPY_FILES
         if any(
-            schema in (REPO_ROOT / path).read_text(encoding="utf-8")
-            for schema in restricted_schema
+            schema in (REPO_ROOT / path).read_text(encoding="utf-8") for schema in restricted_schema
         )
     ]
 
