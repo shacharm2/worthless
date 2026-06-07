@@ -449,7 +449,6 @@ async def _build_oc_restores(
                     _openclaw_integration.OcRestore(
                         provider=p.provider,
                         alias=p.alias,
-                        oc_original_base_url=None,
                         oc_original_api_key_json=None,
                         plaintext_key=None,
                     )
