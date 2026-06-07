@@ -89,6 +89,11 @@ from tests._fakes.fake_ipc_supervisor import FakeIPCSupervisor
 # 100 iterations is the floor for "this isn't a one-time fluke."
 N_ITERATIONS = 100
 
+# Exact tokens the BG task's settle should write per iteration. Pinned to
+# the `total_tokens` value in the SSE usage chunk below — invariant 2
+# asserts exact equality so a double-count bug is caught.
+EXPECTED_SETTLE_TOKENS = 15
+
 ALIAS = "chaos-key"
 API_KEY = "sk-CHAOS-1234567890abcdefghij"
 OPENAI_COMPLETIONS = "https://api.openai.com/v1/chat/completions"
@@ -315,11 +320,20 @@ async def test_row_check_blocks_settle_after_consumed_hold() -> None:
                             # settled. Two more settle attempts against the
                             # consumed handle MUST no-op via the row-check
                             # inside BEGIN IMMEDIATE.
-                            await asyncio.gather(
+                            # CodeRabbit: don't swallow real settle errors —
+                            # the no-op path should NEVER raise; if it does,
+                            # the test must fail loudly.
+                            results = await asyncio.gather(
                                 rules_engine.settle_spend_at_estimate(handle),
                                 rules_engine.settle_spend_at_estimate(handle),
                                 return_exceptions=True,
                             )
+                            for r in results:
+                                if isinstance(r, BaseException):
+                                    raise AssertionError(
+                                        f"iter {i}: settle_at_estimate raised "
+                                        f"{type(r).__name__}: {r}"
+                                    )
 
                         # Real yield so any in-flight BG task lands.
                         await asyncio.sleep(0.01)
@@ -342,15 +356,23 @@ async def test_row_check_blocks_settle_after_consumed_hold() -> None:
                             f"cap counter dishonest"
                         )
 
-                        # Invariant 2: total tokens moved by ONE settle
-                        # amount, not zero (no-op) and not two (double-count
-                        # into the same row). Catches a bug row-count alone
-                        # would miss. Post-code panel: docstring promised
-                        # this invariant; original test never asserted it.
+                        # Invariant 2: total tokens moved by EXACTLY one
+                        # settle amount. The SSE mock in _sse_chunks()
+                        # hard-codes total_tokens=15 in the usage block, so
+                        # the BG task's settle(handle, 15) is deterministic.
+                        # An "anything > 0" check would let a double-count-
+                        # into-one-row bug pass; asserting exact 15 catches
+                        # it. CodeRabbit catch: tighten the assertion to
+                        # match the deterministic settled amount.
                         tokens_added = tokens_final - tokens_before
-                        assert tokens_added > 0, (
-                            f"iter {i} handle={handle!r}: tokens delta == 0 "
-                            f"— settle never moved the counter"
+                        assert tokens_added == EXPECTED_SETTLE_TOKENS, (
+                            f"iter {i} handle={handle!r}: expected tokens "
+                            f"delta == {EXPECTED_SETTLE_TOKENS} (one settle's "
+                            f"worth from the SSE mock), got {tokens_added}. "
+                            f"Counter is dishonest — settle either no-op'd "
+                            f"(0), double-counted into one row (>15), or the "
+                            f"adapter silently downgraded settle → "
+                            f"settle_at_estimate (different value)."
                         )
 
                         # Invariant 3: the hold is consumed (no orphan).
