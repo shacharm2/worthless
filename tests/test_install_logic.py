@@ -223,8 +223,11 @@ def test_env_scrub_strips_poisoned_uv_pip_vars(tmp_path: Path) -> None:
     bin_dir.mkdir()
     write_stub(bin_dir, "uname", "echo Darwin")
     write_stub(bin_dir, "sw_vers", 'echo "14.5"')
-    # uv stub that dumps every UV_*/PIP_* env var it actually receives.
-    # If install.sh's scrub works, the log shows NONE of the poisoned values.
+    # uv stub that dumps every env var it actually receives, so we can assert
+    # against every namespace install.sh scrubs.
+    # Unhandled subcommands exit 99 (NOT 1) — exit 1 collides with install.sh's
+    # set -e propagation and looks like EXIT_INTERNAL=40, misdirecting diagnosis.
+    # 99 is unmistakably "test stub gap" (Panel C FIX-NOW).
     write_stub(
         bin_dir,
         "uv",
@@ -234,10 +237,10 @@ def test_env_scrub_strips_poisoned_uv_pip_vars(tmp_path: Path) -> None:
         '  tool) shift; case "$1" in\n'
         '    install|upgrade) echo "ok" ;;\n'
         "    list) ;;\n"
-        '    *) echo "uv tool: unhandled: $*" >&2; exit 1 ;;\n'
+        '    *) echo "UNHANDLED_UV_CALL (test stub gap): uv tool $*" >&2; exit 99 ;;\n'
         "  esac ;;\n"
         '  run) echo "worthless 0.3.7" ;;\n'
-        '  *) echo "uv: unhandled: $*" >&2; exit 1 ;;\n'
+        '  *) echo "UNHANDLED_UV_CALL (test stub gap): uv $*" >&2; exit 99 ;;\n'
         "esac",
     )
     write_stub(bin_dir, "worthless", 'echo "worthless 0.3.7"')
@@ -285,6 +288,34 @@ def test_env_scrub_strips_poisoned_uv_pip_vars(tmp_path: Path) -> None:
             "BASH_ENV": "/tmp/attacker-bashenv.sh",  # noqa: S108
             "ENV": "/tmp/attacker-env.sh",  # noqa: S108
             "CDPATH": "/tmp/attacker-cd",  # noqa: S108
+            "GLOBIGNORE": "/tmp/attacker-glob",  # noqa: S108
+            # Dynamic loader class — Panel B re-review BLOCKER. .so/.dylib
+            # loads into curl's process, intercepts open() to serve different
+            # bytes to sha256sum vs sh — SHA pin bypassed.
+            "LD_PRELOAD": "/tmp/attacker.so",  # noqa: S108
+            "LD_AUDIT": "/tmp/attacker-audit.so",  # noqa: S108
+            "LD_LIBRARY_PATH": "/tmp/attacker-libs",  # noqa: S108
+            "DYLD_INSERT_LIBRARIES": "/tmp/attacker.dylib",  # noqa: S108
+            "DYLD_LIBRARY_PATH": "/tmp/attacker-libs",  # noqa: S108
+            "DYLD_FORCE_FLAT_NAMESPACE": "1",
+            # Auth / keyring class
+            "UV_KEYRING_PROVIDER": "/tmp/attacker-keyring",  # noqa: S108
+            "PIP_KEYRING_PROVIDER": "/tmp/attacker-keyring",  # noqa: S108
+            # Remaining index-class vars Panel C flagged missing
+            "UV_INDEX": poisoned + "/uv_index_single",
+            "UV_INDEX_STRATEGY": "first-index",
+            "PIP_EXTRA_INDEX_URL": poisoned + "/pip-extra",
+            "PIP_NO_INDEX": "1",
+            # Remaining cert/MitM-class vars Panel C flagged missing
+            "SSL_CERT_DIR": "/tmp/attacker-ca-dir",  # noqa: S108
+            "CURL_CA_BUNDLE": "/tmp/attacker-curl-ca",  # noqa: S108
+            "PIP_CLIENT_CERT": "/tmp/attacker-client.pem",  # noqa: S108
+            # Proxy alias class — Panel B re-review FIX-NOW. curl honors
+            # lowercase + ALL_PROXY in addition to documented uppercase.
+            "ALL_PROXY": "http://attacker.example:8080",
+            "all_proxy": "http://attacker.example:8080",
+            "http_proxy": "http://attacker.example:8080",
+            "https_proxy": "http://attacker.example:8080",
         },
     )
     assert result.returncode == 0, (
@@ -295,28 +326,38 @@ def test_env_scrub_strips_poisoned_uv_pip_vars(tmp_path: Path) -> None:
     env_log = tmp_path / "uv-env.log"
     log = env_log.read_text() if env_log.exists() else ""
     forbidden = [
-        # Index URL class
+        # Index URL class (all 8)
+        "UV_INDEX=",
         "UV_INDEX_URL=",
         "UV_DEFAULT_INDEX=",
         "UV_EXTRA_INDEX_URL=",
+        "UV_INDEX_STRATEGY=",
         "UV_FIND_LINKS=",
         "PIP_INDEX_URL=",
+        "PIP_EXTRA_INDEX_URL=",
         "PIP_FIND_LINKS=",
+        "PIP_NO_INDEX=",
         # Config-file class
         "UV_CONFIG_FILE=",
         "PIP_CONFIG_FILE=",
         # Cache / offline class
         "UV_OFFLINE=",
         "UV_NO_CACHE=",
-        # TLS / cert-bundle class
+        # TLS / cert-bundle class (all 9)
         "PIP_TRUSTED_HOST=",
         "UV_INSECURE_HOST=",
         "UV_NATIVE_TLS=",
         "SSL_CERT_FILE=",
+        "SSL_CERT_DIR=",
         "REQUESTS_CA_BUNDLE=",
+        "CURL_CA_BUNDLE=",
         "PIP_CERT=",
-        # Python source class
+        "PIP_CLIENT_CERT=",
+        # Python source class (UV_PYTHON_PREFERENCE asserted separately below)
         "UV_PYTHON_INSTALL_MIRROR=",
+        # Auth / keyring class
+        "UV_KEYRING_PROVIDER=",
+        "PIP_KEYRING_PROVIDER=",
         # Astral installer redirect class
         "UV_INSTALL_DIR=",
         "UV_UNMANAGED_INSTALL=",
@@ -324,6 +365,25 @@ def test_env_scrub_strips_poisoned_uv_pip_vars(tmp_path: Path) -> None:
         # Python hijack class
         "PYTHONPATH=",
         "PYTHONSTARTUP=",
+        # Shell init class (Panel C BLOCKER: was missing entirely)
+        "BASH_ENV=",
+        "ENV=",
+        "CDPATH=",
+        "GLOBIGNORE=",
+        # Dynamic loader class (Panel B re-review BLOCKER)
+        "LD_PRELOAD=",
+        "LD_AUDIT=",
+        "LD_LIBRARY_PATH=",
+        "DYLD_INSERT_LIBRARIES=",
+        "DYLD_LIBRARY_PATH=",
+        "DYLD_FALLBACK_LIBRARY_PATH=",
+        "DYLD_FRAMEWORK_PATH=",
+        "DYLD_FORCE_FLAT_NAMESPACE=",
+        # Proxy alias class (Panel B re-review FIX-NOW)
+        "ALL_PROXY=",
+        "all_proxy=",
+        "http_proxy=",
+        "https_proxy=",
     ]
     log_lines = log.splitlines()
     # Line-prefix matching — substring `ENV=` could false-match inside

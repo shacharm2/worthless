@@ -133,6 +133,22 @@ _SCRUBBED_VARS = (
     "ENV",
     "CDPATH",
     "GLOBIGNORE",
+    # Dynamic loader injection class (Panel B re-review BLOCKER)
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+    "DYLD_FORCE_FLAT_NAMESPACE",
+    # Proxy alias class (curl honors lowercase + ALL_PROXY in addition to
+    # documented uppercase HTTP_PROXY / HTTPS_PROXY; scrub the aliases so
+    # only the documented MitM lane stays open)
+    "ALL_PROXY",
+    "all_proxy",
+    "http_proxy",
+    "https_proxy",
 )
 
 
@@ -143,7 +159,7 @@ def test_env_scrub_lists_every_known_redirect_var(install_text: str) -> None:
     silently widens — A2's whole point lost.
     """
     # Find the `unset` block — must be a single multi-line statement.
-    match = re.search(r"^unset\s*\\?\n((?:\s+.*\\?\n)+)", install_text, re.MULTILINE)
+    match = re.search(r"^unset\s*\\?\n((?:[ \t]+.*\\?\n)+)", install_text, re.MULTILINE)
     assert match is not None, (
         "install.sh must contain a multi-line `unset` block scrubbing "
         "UV_*/PIP_* redirect vars (WOR-673 / A2). Got no match."
@@ -153,6 +169,26 @@ def test_env_scrub_lists_every_known_redirect_var(install_text: str) -> None:
     assert not missing, (
         f"install.sh `unset` block is missing these env vars from the "
         f"WOR-673 scrub list: {missing}\nfound block:\n{block}"
+    )
+
+
+def test_env_scrub_block_has_no_extra_vars(install_text: str) -> None:
+    """Drift guard (reverse direction of the previous test). Every var that
+    appears in install.sh's `unset` block MUST also appear in `_SCRUBBED_VARS`.
+    Catches "added to install.sh, forgot to update test list" — the silent
+    drift class that the runtime forbidden list in test_install_logic.py
+    won't catch on its own.
+    """
+    match = re.search(r"^unset\s*\\?\n((?:[ \t]+.*\\?\n)+)", install_text, re.MULTILINE)
+    assert match is not None, "expected an `unset` block"
+    block_body = match.group(1)
+    # Extract every identifier-looking token from the block body.
+    block_vars = set(re.findall(r"\b([A-Z][A-Z0-9_]*|[a-z][a-z0-9_]*proxy)\b", block_body))
+    extras = sorted(block_vars - set(_SCRUBBED_VARS))
+    assert not extras, (
+        f"install.sh `unset` block contains vars NOT in _SCRUBBED_VARS: "
+        f"{extras}. Add them to the tracking tuple so the runtime forbidden "
+        f"list in tests/test_install_logic.py can be updated to match."
     )
 
 
@@ -201,6 +237,28 @@ def test_path_prepend_defense_present(install_text: str) -> None:
         "install.sh must prepend /usr/bin:/bin:/usr/local/bin:$HOME/.local/bin "
         "to PATH so a poisoned caller PATH can't redirect external calls "
         "(WOR-673 PATH lockdown, Panel B BLOCKER fix)."
+    )
+
+
+def test_worthless_trust_path_uses_exact_string_compare(install_text: str) -> None:
+    """The PATH-lockdown escape hatch must use exact-string comparison to "1"
+    so attacker-tolerant values ("01", "true", "yes", "1 ", lowercase "1\\n")
+    don't silently bypass the lockdown. The test harness sets literal "1";
+    anyone (attacker or otherwise) supplying anything else gets the lockdown.
+
+    Defense-in-depth: the env scrub still fires regardless of WORTHLESS_TRUST_PATH,
+    so even bypassing the lockdown leaves the 48-var scrub intact.
+    """
+    # Look for the exact `!= "1"` pattern. Bans variants like `!= 1` (numeric),
+    # `-eq 1`, `= "true"`, case-insensitive matches, etc.
+    assert re.search(
+        r'\bWORTHLESS_TRUST_PATH:-\}?"\s*!=\s*"1"',
+        install_text,
+    ), (
+        'install.sh must use exact-string compare against literal "1" for '
+        "the WORTHLESS_TRUST_PATH escape hatch — looser parsing (`-eq`, "
+        "case-insensitive, true/yes acceptance) lets an attacker bypass the "
+        "PATH lockdown with attacker-tolerant values."
     )
 
 

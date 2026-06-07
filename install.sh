@@ -47,9 +47,8 @@ ASTRAL_INSTALLER_URL="https://astral.sh/uv/${UV_VERSION}/install.sh"
 DOCS_URL="https://docs.wless.io"
 WINDOWS_DOCS_URL="https://docs.wless.io/install/wsl"
 
-# Hermetic install: ignore caller env. uv+pip+Astral honor ~36 redirect/MitM
-# vars (index URL, config file, Python mirror, cert bundle, Astral install
-# dir, sitecustomize, shell init) — same lanes a poisoned rc/.envrc/workspace
+# Hermetic install: ignore caller env. uv+pip+Astral honor ~48 redirect/MitM
+# vars across 11 attack classes — same lanes a poisoned rc/.envrc/workspace
 # ENV uses. Pin defaults; scrub env. Closes ENV vector only — repo-local
 # uv.toml / pyproject.toml [tool.uv] is A3's job. (WOR-673 / A2)
 # Index:        UV_INDEX{,_URL}, UV_DEFAULT_INDEX, UV_EXTRA_INDEX_URL, UV_INDEX_STRATEGY,
@@ -64,7 +63,16 @@ WINDOWS_DOCS_URL="https://docs.wless.io/install/wsl"
 # Astral install dir: UV_INSTALL_DIR, UV_UNMANAGED_INSTALL, INSTALLER_DOWNLOAD_URL
 # Python hijack: PYTHONPATH, PYTHONSTARTUP
 # Shell init:   BASH_ENV, ENV, CDPATH, GLOBIGNORE
-# Keep:         HTTP{,S}_PROXY (legit corp egress; pair with system trust store)
+# Dynamic loader: LD_PRELOAD, LD_AUDIT, LD_LIBRARY_PATH (Linux), DYLD_INSERT_LIBRARIES,
+#               DYLD_LIBRARY_PATH, DYLD_FALLBACK_LIBRARY_PATH, DYLD_FRAMEWORK_PATH,
+#               DYLD_FORCE_FLAT_NAMESPACE (macOS). Classic .so/.dylib injection lane:
+#               attacker's lib loads into curl's process, intercepts open() to serve
+#               one file to sha256sum and a different one to sh — SHA pin bypassed.
+# Proxy aliases: ALL_PROXY, all_proxy, http_proxy, https_proxy (lowercase) — curl
+#               honors these in addition to HTTP{,S}_PROXY; same MitM lane but
+#               undocumented for users. Scrub the aliases; keep documented uppercase.
+# Keep:         HTTP{,S}_PROXY (legit corp egress, documented; user accepts MitM risk
+#               at their corporate gateway by setting them)
 unset \
     UV_INDEX UV_INDEX_URL UV_DEFAULT_INDEX UV_EXTRA_INDEX_URL UV_INDEX_STRATEGY \
     UV_FIND_LINKS \
@@ -78,25 +86,42 @@ unset \
     UV_KEYRING_PROVIDER PIP_KEYRING_PROVIDER \
     UV_INSTALL_DIR UV_UNMANAGED_INSTALL INSTALLER_DOWNLOAD_URL \
     PYTHONPATH PYTHONSTARTUP \
-    BASH_ENV ENV CDPATH GLOBIGNORE
+    BASH_ENV ENV CDPATH GLOBIGNORE \
+    LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH \
+    DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH \
+    DYLD_FRAMEWORK_PATH DYLD_FORCE_FLAT_NAMESPACE \
+    ALL_PROXY all_proxy http_proxy https_proxy
+
+# IFS hardening is deferred — pinning POSIX-default IFS in a static file is
+# brittle (literal tab/newline encoding) and most expansions are already
+# quoted. Tracked as a Tier A follow-up under WOR-669.
 
 # uv-managed Python, unconditional. The `:-default` pattern honored hostile
 # non-empty values (UV_PYTHON_PREFERENCE=system → install onto attacker-
 # controllable Python with sitecustomize.py hijack). Scrub above + hard set.
 export UV_PYTHON_PREFERENCE=only-managed
 
+# Capture caller's actual PATH BEFORE lockdown — used by `command_in_original_path`
+# to tell the user whether `worthless` is reachable in THEIR shell (not just in
+# our locked-down PATH). Capturing post-lockdown would lie to the user.
+ORIGINAL_PATH="${PATH:-}"
+
 # Caller PATH lockdown. A poisoned ~/evil/bin in $PATH wins over /usr/bin for
 # curl, sh, sha256sum, awk, mktemp, uv — every external call becomes RCE
 # regardless of how clean our env is, and the Astral SHA pin computed by
 # attacker's `sha256sum` is worthless. Prepend system dirs + the uv install
 # dir so legitimate binaries always outrank caller-controlled prefixes.
-# WORTHLESS_TRUST_PATH=1 disables this — set ONLY by the test harness which
-# injects stub binaries via tmp_path PATH and would otherwise lose them.
+# Strict parsing: only literal "1" disables. WORTHLESS_TRUST_PATH=true / yes /
+# 01 / "1 " / etc. all keep lockdown active — attacker can't bypass with a
+# typo-tolerant value. Test harness sets exact "1" to inject stubs.
 if [ "${WORTHLESS_TRUST_PATH:-}" != "1" ]; then
-    PATH="/usr/bin:/bin:/usr/local/bin:${HOME:-/root}/.local/bin:${PATH:-}"
+    # Guard against HOME=/ (would yield //.local/bin) and HOME= (empty).
+    # `${HOME:-/root}` fires on unset OR empty per POSIX `:-` semantics.
+    home_for_path="${HOME:-/root}"
+    [ "$home_for_path" = "/" ] && home_for_path="/root"
+    PATH="/usr/bin:/bin:/usr/local/bin:${home_for_path}/.local/bin:${PATH:-}"
     export PATH
 fi
-ORIGINAL_PATH="${PATH:-}"
 
 # --- Output helpers ----------------------------------------------------------
 
