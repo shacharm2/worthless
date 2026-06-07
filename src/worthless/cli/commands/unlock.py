@@ -395,12 +395,20 @@ async def _build_oc_restores(
         # only computes the recompute (async — Stage A is sync) and threads
         # both values through the OcRestore. Legacy rows pass both as None
         # and fall back to shape-only validation per the G1 docstring.
+        # ``is not None`` (not truthy) matches the parser's contract verbatim
+        # at integration.py:159 — an empty-string MAC would otherwise
+        # silently downgrade the gate to shape-only.
         expected_mac = p.oc_rollback_mac
-        recomputed_mac = await repo._compute_decoy_hash(record) if expected_mac else None
+        recomputed_mac = (
+            await repo._compute_decoy_hash(record) if expected_mac is not None else None
+        )
 
         # Shape-only parse here so we can route plaintext-vs-secretref.
         # Stage A re-runs the full parse with MAC args; that's the
-        # load-bearing check. If the record is structurally invalid we
+        # load-bearing check. INVARIANT: the same ``record`` object is
+        # passed to BOTH this parse and the OcRestore.oc_original_api_key_json
+        # field below — Stage A re-parses the identical string, so the two
+        # parses cannot disagree. If the record is structurally invalid we
         # surface it now (saves the .env re-read on the plaintext branch)
         # and let Stage A's identical refusal fire as the canonical event.
         try:
