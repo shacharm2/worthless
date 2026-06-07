@@ -44,6 +44,7 @@ if sys.platform != "win32":
 else:
     _pwd = None  # type: ignore[assignment]
 
+from worthless.cli.key_patterns import KEY_PATTERN
 from worthless.crypto.types import zero_buf
 from worthless.openclaw import config as _config_mod
 from worthless.openclaw import skill as _skill_mod
@@ -57,6 +58,41 @@ from worthless.openclaw.errors import (
     OpenclawIntegrationError,
     OpenclawIntegrationEvent,
 )
+
+# G5-B sentinel: any string that ``KEY_PATTERN`` flags as key-shaped at ANY
+# nesting depth in a captured OpenClaw provider entry is replaced by this
+# dict before the entry is persisted as a rollback record. A dict (not a
+# string placeholder) is intentional: on restore the type mismatch makes
+# the substitution loud and self-documenting rather than silent partial
+# leakage. See ``_deep_redact_key_strings`` and ``build_oc_rollback_entry_record``.
+_DEEP_REDACT_SENTINEL = {"kind": "redacted-deep"}
+
+
+def _deep_redact_key_strings(value):
+    """Walk *value* recursively; replace any key-shaped string with the
+    G5-B sentinel. Dicts and lists are descended into; tuples are not (the
+    rollback record JSON has no tuples). Returns a NEW structure — the
+    caller's input is never mutated.
+
+    Detection uses ``KEY_PATTERN.search`` (same SR-05 patterns the scanner
+    uses), so a key embedded in a larger string (e.g.
+    ``"Bearer sk-..."``) triggers replacement of the WHOLE string. False
+    positives are accepted: better to redact a description that happens
+    to look like a key than to leak an actual one. The user can re-paste
+    nested credentials on unlock — they were never safe in the rollback
+    record anyway.
+    """
+    if isinstance(value, str):
+        if KEY_PATTERN.search(value):
+            return dict(_DEEP_REDACT_SENTINEL)
+        return value
+    if isinstance(value, dict):
+        return {k: _deep_redact_key_strings(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_deep_redact_key_strings(v) for v in value]
+    # int, float, bool, None — nothing to redact.
+    return value
+
 
 _SKILL_SUBPATH = ("skills", "worthless")
 _DEFAULT_PROXY_BASE_URL = "http://127.0.0.1:8787"
@@ -126,6 +162,13 @@ def build_oc_rollback_entry_record(original_entry: dict) -> str:
         # Inline string key (or absent) — plaintext shape; value dropped.
         shape = build_oc_rollback_apikey_record("plaintext")
     entry["apiKey"] = json.loads(shape)
+    # G5-B Gap 2a: scrub key-shaped strings hiding in any other field
+    # (e.g. ``headers.Authorization: "Bearer sk-..."``) at any nesting
+    # depth. Defense-in-depth: also catches a key value mistakenly placed
+    # inside a SecretRef pointer. Runs AFTER the top-level apiKey
+    # substitution so the {"kind":"plaintext"|"secretref"} shape is what
+    # the walk sees (and leaves untouched — those have no key bytes).
+    entry = _deep_redact_key_strings(entry)
     return json.dumps(entry, separators=(",", ":"), sort_keys=True)
 
 
