@@ -29,12 +29,14 @@ class EncryptedShard(NamedTuple):
     # Target state (post-16x2-revert): upsert_locked_shard does NOT write this field;
     # proxy reads shard-A from the Bearer header, not from the DB.
     shard_a_enc: bytes | None = None
-    # WOR-651/F4: shape-only OpenClaw rollback record so unlock (F2) can restore
-    # the original provider entry without ever storing the real key. These are
-    # NON-secret: oc_original_base_url is the ORIGINAL OpenClaw provider baseUrl
-    # (distinct from base_url above, the UPSTREAM url); oc_original_api_key_json
-    # is a shape-only {"kind":...} record, never key material.
-    oc_original_base_url: str | None = None
+    # WOR-651/F4 + G5-C: shape-only OpenClaw rollback record so unlock (F2)
+    # can restore the original provider entry without ever storing the real
+    # key. ``oc_original_api_key_json`` is the full key-redacted original
+    # entry (including its baseUrl) — non-secret, MAC-bound via
+    # ``oc_rollback_mac`` below. A prior ``oc_original_base_url`` field was
+    # dropped in G5-C: it duplicated the URL already in the JSON and was
+    # NOT MAC-bound (a DB-write attacker could flip it silently). Stage A
+    # unlock parses the URL from the JSON record — the source of truth.
     oc_original_api_key_json: str | None = None
     # WOR-621 F2 G2: HMAC-SHA256 hex tag over oc_original_api_key_json,
     # keyed by the fernet-derived MAC subkey. Unlock recomputes + compares;

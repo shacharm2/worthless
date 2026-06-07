@@ -780,7 +780,9 @@ async def test_fresh_db_has_oc_rollback_columns(tmp_path) -> None:
         cursor = await db.execute("PRAGMA table_info(shards)")
         columns = {row[1] for row in await cursor.fetchall()}
 
-    assert "oc_original_base_url" in columns, "oc_original_base_url not in SCHEMA"
+    # G5-C: oc_original_base_url was dropped — the URL lives inside
+    # oc_original_api_key_json (the MAC-bound source of truth).
+    assert "oc_original_base_url" not in columns, "G5-C: oc_original_base_url must be gone"
     assert "oc_original_api_key_json" in columns, "oc_original_api_key_json not in SCHEMA"
 
 
@@ -815,7 +817,12 @@ async def test_migrate_adds_oc_rollback_columns(tmp_path) -> None:
         cursor = await db.execute("PRAGMA table_info(shards)")
         columns = {row[1] for row in await cursor.fetchall()}
 
-    assert "oc_original_base_url" in columns, "oc_original_base_url not added by migrate"
+    # G5-C: migration no longer adds oc_original_base_url; an existing
+    # old DB carrying that column will have it dropped (SQLite ≥3.35);
+    # an old DB without it stays without it.
+    assert "oc_original_base_url" not in columns, (
+        "G5-C: migration must not add oc_original_base_url"
+    )
     assert "oc_original_api_key_json" in columns, "oc_original_api_key_json not added by migrate"
 
 
@@ -834,7 +841,8 @@ async def test_migrate_oc_rollback_columns_idempotent(tmp_path) -> None:
     async with aiosqlite.connect(db_path) as db:
         cursor = await db.execute("PRAGMA table_info(shards)")
         columns = {row[1] for row in await cursor.fetchall()}
-    assert "oc_original_base_url" in columns
+    # G5-C: oc_original_base_url was dropped from the schema.
+    assert "oc_original_base_url" not in columns
     assert "oc_original_api_key_json" in columns
 
 
@@ -853,13 +861,13 @@ async def test_upsert_locked_shard_oc_rollback_roundtrips(
         prefix="sk-",
         charset="abc",
         base_url="https://api.worthless.local/oc-roundtrip/v1",
-        oc_original_base_url="https://api.openai.com/v1",
         oc_original_api_key_json=build_oc_rollback_apikey_record("plaintext"),
     )
 
     enc = await repo.fetch_encrypted("oc-roundtrip")
     assert enc is not None
-    assert enc.oc_original_base_url == "https://api.openai.com/v1"
+    # G5-C: oc_original_base_url is gone; the URL is inside the
+    # oc_original_api_key_json record (see test_lock_capture_oc_rollback).
     assert enc.oc_original_api_key_json == '{"kind":"plaintext"}'
 
 
@@ -880,7 +888,7 @@ async def test_upsert_locked_shard_without_oc_rollback_defaults_none(
 
     enc = await repo.fetch_encrypted("oc-omit")
     assert enc is not None
-    assert enc.oc_original_base_url is None
+    # G5-C: oc_original_base_url is gone from the row entirely.
     assert enc.oc_original_api_key_json is None
 
 
@@ -900,13 +908,12 @@ async def test_store_enrolled_oc_rollback_roundtrips(
         var_name="OPENAI_API_KEY",
         env_path=None,
         base_url="https://api.openai.com/v1",
-        oc_original_base_url="https://api.openai.com/v1",
         oc_original_api_key_json=build_oc_rollback_apikey_record("secretref", ref),
     )
 
     enc = await repo.fetch_encrypted("oc-enrolled")
     assert enc is not None
-    assert enc.oc_original_base_url == "https://api.openai.com/v1"
+    # G5-C: oc_original_base_url is gone — apiKey record carries the shape.
     import json as _json
 
     decoded = _json.loads(enc.oc_original_api_key_json)
@@ -976,7 +983,6 @@ async def test_oc_rollback_no_key_at_rest(
         prefix="sk-",
         charset="abc",
         base_url="https://api.worthless.local/no-key-at-rest/v1",
-        oc_original_base_url="https://api.openai.com/v1",
         oc_original_api_key_json=build_oc_rollback_apikey_record("plaintext"),
     )
 
@@ -1020,11 +1026,10 @@ async def test_upsert_locked_shard_overwrites_existing_oc_rollback_record(
         prefix="sk-",
         charset="abc",
         base_url="https://api.worthless.local/oc-overwrite/v1",
-        oc_original_base_url="https://api.openai.com/v1",
         oc_original_api_key_json=build_oc_rollback_apikey_record("plaintext"),
     )
 
-    # Second upsert: same alias, DIFFERENT oc_original_* values.
+    # Second upsert: same alias, DIFFERENT oc rollback record.
     ref = {"source": "env", "provider": "anthropic", "id": "ANTHROPIC_API_KEY"}
     await repo.upsert_locked_shard(
         "oc-overwrite",
@@ -1032,13 +1037,12 @@ async def test_upsert_locked_shard_overwrites_existing_oc_rollback_record(
         prefix="sk-",
         charset="abc",
         base_url="https://api.worthless.local/oc-overwrite/v1",
-        oc_original_base_url="https://api.anthropic.com/v1",
         oc_original_api_key_json=build_oc_rollback_apikey_record("secretref", ref),
     )
 
     enc = await repo.fetch_encrypted("oc-overwrite")
     assert enc is not None
-    assert enc.oc_original_base_url == "https://api.anthropic.com/v1"
+    # G5-C: oc_original_base_url is gone; the shape record carries the truth.
     import json as _json
 
     assert _json.loads(enc.oc_original_api_key_json) == {"kind": "secretref", "ref": ref}
@@ -1064,7 +1068,6 @@ async def test_upsert_relock_omitting_oc_params_nulls_record(
         prefix="sk-",
         charset="abc",
         base_url="https://api.worthless.local/oc-relock/v1",
-        oc_original_base_url="https://api.openai.com/v1",
         oc_original_api_key_json=build_oc_rollback_apikey_record("plaintext"),
     )
 
@@ -1079,7 +1082,7 @@ async def test_upsert_relock_omitting_oc_params_nulls_record(
 
     enc = await repo.fetch_encrypted("oc-relock")
     assert enc is not None
-    assert enc.oc_original_base_url is None
+    # G5-C: oc_original_base_url is gone from the row entirely.
     assert enc.oc_original_api_key_json is None
 
 
@@ -1100,7 +1103,7 @@ async def test_store_enrolled_without_oc_rollback_defaults_none(
 
     enc = await repo.fetch_encrypted("enrolled-no-oc")
     assert enc is not None
-    assert enc.oc_original_base_url is None
+    # G5-C: oc_original_base_url is gone from the row entirely.
     assert enc.oc_original_api_key_json is None
 
 
@@ -1144,26 +1147,24 @@ async def test_fetch_encrypted_legacy_row_predating_oc_columns_returns_none_fiel
     repo = ShardRepository(db_path, fernet_key)
     enc = await repo.fetch_encrypted("legacy-oc")
     assert enc is not None
-    assert enc.oc_original_base_url is None
+    # G5-C: oc_original_base_url is gone from the row entirely.
     assert enc.oc_original_api_key_json is None
 
 
 def test_encrypted_shard_repr_omits_oc_fields() -> None:
-    """SR-04 regression lock: repr() of an EncryptedShard with non-None
-    oc_original_* values must NOT leak those values into the string form."""
-    sensitive_base_url = "https://internal.example.invalid/secret-rollback-url"
+    """SR-04 regression lock: repr() of an EncryptedShard with a non-None
+    oc_original_api_key_json must NOT leak the JSON into the string form.
+    (G5-C: oc_original_base_url is gone, so this now only covers the JSON.)"""
     sensitive_json = '{"kind":"secretref","ref":{"id":"OPENAI_API_KEY"}}'
     enc = EncryptedShard(
         shard_b_enc=b"x" * 16,
         commitment=b"c" * 8,
         nonce=b"n" * 12,
         provider="openai",
-        oc_original_base_url=sensitive_base_url,
         oc_original_api_key_json=sensitive_json,
     )
 
     text = repr(enc)
-    assert sensitive_base_url not in text
     assert sensitive_json not in text
     # Sanity: it is still a useful repr.
     assert "EncryptedShard(" in text
@@ -1174,22 +1175,22 @@ async def test_fetch_encrypted_against_hand_inserted_raw_row(
     repo: ShardRepository,
     tmp_db_path: str,
 ) -> None:
-    """Hand-INSERT a shards row via raw SQL with known oc_original_* values,
-    then read it via fetch_encrypted. Pins the SELECT column list independent
-    of the write path (upsert/store_enrolled)."""
+    """Hand-INSERT a shards row via raw SQL with a known
+    oc_original_api_key_json, then read it via fetch_encrypted. Pins the
+    SELECT column list independent of the write path (upsert/store_enrolled).
+    G5-C: oc_original_base_url is no longer a column."""
     async with aiosqlite.connect(tmp_db_path) as db:
         await db.execute(
             "INSERT INTO shards "
             "(key_alias, shard_b_enc, commitment, nonce, provider, "
-            "oc_original_base_url, oc_original_api_key_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "oc_original_api_key_json) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (
                 "hand-row",
                 b"enc-b",
                 b"commit",
                 b"nonce",
                 "openai",
-                "https://api.openai.com/v1",
                 '{"kind":"plaintext"}',
             ),
         )
@@ -1197,5 +1198,4 @@ async def test_fetch_encrypted_against_hand_inserted_raw_row(
 
     enc = await repo.fetch_encrypted("hand-row")
     assert enc is not None
-    assert enc.oc_original_base_url == "https://api.openai.com/v1"
     assert enc.oc_original_api_key_json == '{"kind":"plaintext"}'

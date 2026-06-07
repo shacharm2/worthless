@@ -58,10 +58,11 @@ async def test_shards_table_has_no_oc_original_base_url_column(tmp_path) -> None
 
 
 def test_encrypted_shard_dataclass_has_no_oc_original_base_url() -> None:
-    """The Python dataclass mirror must lose the field too — otherwise
+    """The Python record mirror must lose the field too — otherwise
     fetch_encrypted has nothing to populate it from but callers still
-    expect it."""
-    names = {f.name for f in fields(EncryptedShard)}
+    expect it. ``EncryptedShard`` is a NamedTuple, so introspect via
+    ``_fields`` rather than ``dataclasses.fields``."""
+    names = set(EncryptedShard._fields)
     assert "oc_original_base_url" not in names, (
         f"EncryptedShard still carries dead field oc_original_base_url; fields={sorted(names)}"
     )
@@ -86,12 +87,11 @@ def test_upsert_locked_shard_rejects_oc_original_base_url_kwarg() -> None:
     )
 
 
-def test_upsert_locked_shard_with_unique_alias_rejects_oc_original_base_url_kwarg() -> None:
-    """Same contract on the unique-alias variant."""
-    sig = inspect.signature(ShardRepository.upsert_locked_shard_with_unique_alias)
+def test_store_enrolled_rejects_oc_original_base_url_kwarg() -> None:
+    """Same contract on the fresh-enroll variant (``store_enrolled``)."""
+    sig = inspect.signature(ShardRepository.store_enrolled)
     assert "oc_original_base_url" not in sig.parameters, (
-        f"upsert_locked_shard_with_unique_alias still accepts oc_original_base_url; "
-        f"params={list(sig.parameters)}"
+        f"store_enrolled still accepts oc_original_base_url; params={list(sig.parameters)}"
     )
 
 

@@ -135,9 +135,10 @@ def test_g3_captures_plaintext_original_entry_with_mac(
     Lock has not yet touched openclaw.json at the moment ``_pass1_db_writes``
     runs (SM-2: DB → .env → openclaw.json). G3 reads openclaw.json BEFORE
     the DB write so the captured record reflects the pre-lock entry, and
-    threads ``oc_original_base_url`` / ``oc_original_api_key_json`` /
-    ``oc_rollback_mac`` into ``upsert_locked_shard``. Without G3 these
-    columns are NULL and unlock has nothing to restore.
+    threads ``oc_original_api_key_json`` / ``oc_rollback_mac`` into
+    ``upsert_locked_shard``. (G5-C: ``oc_original_base_url`` was dropped —
+    the original URL lives inside the MAC-bound JSON record.) Without G3
+    these columns are NULL and unlock has nothing to restore.
     """
     original_entry = {
         "baseUrl": "https://api.openai.com/v1",
@@ -161,17 +162,15 @@ def test_g3_captures_plaintext_original_entry_with_mac(
     enc = asyncio.run(_fetch(home_dir, alias))
     assert enc is not None, f"shards row missing for {alias!r}"
 
-    assert enc.oc_original_base_url == "https://api.openai.com/v1", (
-        f"expected pre-lock baseUrl captured, got {enc.oc_original_base_url!r}"
-    )
-
-    # The stored record is the FULL entry with apiKey redacted to its shape.
-    # An idiomatic recompute over the same original entry should round-trip
-    # byte-identical (build_oc_rollback_entry_record is sort_keys=True).
+    # G5-C: the original URL is inside the MAC-bound JSON record (NOT a
+    # separate column). The stored record is the FULL entry with apiKey
+    # redacted to its shape. An idiomatic recompute over the same original
+    # entry should round-trip byte-identical (build_oc_rollback_entry_record
+    # is sort_keys=True).
     expected_record = build_oc_rollback_entry_record(original_entry)
     assert enc.oc_original_api_key_json == expected_record
 
-    # Shape-level sanity: parse OK, plaintext kind.
+    # Shape-level sanity: parse OK, plaintext kind, URL still in the record.
     parsed = _parse_oc_rollback_entry_record(enc.oc_original_api_key_json)
     assert parsed["apiKey"] == {"kind": "plaintext"}
     assert parsed["baseUrl"] == "https://api.openai.com/v1"
@@ -234,8 +233,9 @@ def test_g3_captures_secretref_original_entry(
     enc = asyncio.run(_fetch(home_dir, alias))
     assert enc is not None
 
-    assert enc.oc_original_base_url == "https://api.openai.com/v1"
+    # G5-C: URL lives inside the MAC-bound JSON record.
     parsed = _parse_oc_rollback_entry_record(enc.oc_original_api_key_json)
+    assert parsed["baseUrl"] == "https://api.openai.com/v1"
     assert parsed["apiKey"]["kind"] == "secretref"
     assert parsed["apiKey"]["ref"] == secretref, (
         "SecretRef pointer must round-trip verbatim — unlock will write it back as-is"
@@ -284,7 +284,6 @@ def test_g3_relock_reuses_prior_record_when_entry_is_proxy_shaped(
     enc1 = asyncio.run(_fetch(home_dir, alias))
     assert enc1 is not None
     record_before = enc1.oc_original_api_key_json
-    base_url_before = enc1.oc_original_base_url
     mac_before = enc1.oc_rollback_mac
     assert record_before, "first lock must seed the rollback record (G3 happy path)"
 
@@ -299,9 +298,8 @@ def test_g3_relock_reuses_prior_record_when_entry_is_proxy_shaped(
 
     enc2 = asyncio.run(_fetch(home_dir, alias))
     assert enc2 is not None
-    assert enc2.oc_original_base_url == base_url_before, (
-        "re-lock must NOT replace the captured original baseUrl with the proxy URL"
-    )
+    # G5-C: URL is inside the JSON record — preserving the record verbatim
+    # also preserves the URL. No separate base_url assertion needed.
     assert enc2.oc_original_api_key_json == record_before, (
         "re-lock must NOT overwrite the original entry record with the proxy-shaped one"
     )
@@ -354,9 +352,8 @@ def test_g3_relock_proxy_shaped_without_prior_record_does_not_capture_shard_a(
     assert enc is not None
 
     # The rollback columns stay NULL — nothing safe to capture.
-    assert enc.oc_original_base_url is None, (
-        f"must not capture proxy baseUrl as 'original' (got {enc.oc_original_base_url!r})"
-    )
+    # (G5-C: oc_original_base_url column is gone; the JSON record is the
+    # only place a URL could be captured, and it must be None here.)
     assert enc.oc_original_api_key_json is None, (
         "must not capture proxy-shaped entry record as 'original' "
         f"(got {enc.oc_original_api_key_json!r})"

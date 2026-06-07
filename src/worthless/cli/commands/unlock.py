@@ -170,7 +170,8 @@ class _PlannedRestore:
     var_name: str | None
     env_path: Path | None
     key_buf: bytearray = field(repr=False)
-    oc_original_base_url: str | None = None
+    # G5-C: original baseUrl lives INSIDE oc_original_api_key_json (the
+    # MAC-bound source of truth); Stage A parses it from there.
     oc_original_api_key_json: str | None = None
     oc_rollback_mac: str | None = None
 
@@ -228,11 +229,11 @@ async def _pass1_reconstruct(
                     var_name=var_name,
                     env_path=env_path,
                     key_buf=key_buf,
-                    # G4: lift the captured trio off the encrypted row HERE
+                    # G4: lift the captured pair off the encrypted row HERE
                     # so it survives _pass3_db_cleanup's row delete. The
                     # CLI later MAC-verifies + builds an OcRestore from
                     # this snapshot + the just-restored plaintext from .env.
-                    oc_original_base_url=encrypted.oc_original_base_url,
+                    # G5-C: dropped the dead third element (oc_original_base_url).
                     oc_original_api_key_json=encrypted.oc_original_api_key_json,
                     oc_rollback_mac=encrypted.oc_rollback_mac,
                 )
@@ -384,7 +385,6 @@ async def _build_oc_restores(
                 _openclaw_integration.OcRestore(
                     provider=p.provider,
                     alias=p.alias,
-                    oc_original_base_url=None,
                     oc_original_api_key_json=None,
                     plaintext_key=None,
                 )
@@ -422,7 +422,6 @@ async def _build_oc_restores(
                 _openclaw_integration.OcRestore(
                     provider=p.provider,
                     alias=p.alias,
-                    oc_original_base_url=None,
                     oc_original_api_key_json=None,
                     plaintext_key=None,
                 )
@@ -461,7 +460,6 @@ async def _build_oc_restores(
             _openclaw_integration.OcRestore(
                 provider=p.provider,
                 alias=p.alias,
-                oc_original_base_url=p.oc_original_base_url,
                 oc_original_api_key_json=record,
                 plaintext_key=plaintext_key,
                 expected_mac=expected_mac,

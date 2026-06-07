@@ -52,9 +52,12 @@ CREATE TABLE IF NOT EXISTS shards (
     shard_a_enc BLOB,
     -- WOR-651/F4: shape-only OpenClaw rollback record so unlock (F2) can
     -- restore the original provider entry WITHOUT ever storing the real key.
-    -- ``oc_original_base_url`` is the ORIGINAL OpenClaw provider baseUrl —
-    -- distinct from ``base_url`` above, which is the UPSTREAM provider url.
-    oc_original_base_url     TEXT,
+    -- The full key-redacted original entry (including its baseUrl) lives in
+    -- ``oc_original_api_key_json`` and is MAC-bound via ``oc_rollback_mac``.
+    -- A prior ``oc_original_base_url`` column was dropped in G5-C: it
+    -- duplicated data already present in the MAC-bound JSON and was NOT
+    -- MAC-bound itself — a footgun. Stage A of unlock parses the URL from
+    -- the JSON record (the source of truth), never from a fast column.
     oc_original_api_key_json TEXT,
     -- WOR-621 F2 G2 (decision 4): HMAC-SHA256 tag (hex) over
     -- ``oc_original_api_key_json``, keyed by the fernet-derived MAC subkey
@@ -129,19 +132,26 @@ async def _migrate_shard_format_columns(db: aiosqlite.Connection, shard_columns:
 
 
 async def _migrate_oc_rollback_columns(db: aiosqlite.Connection, shard_columns: set[str]) -> None:
-    """WOR-651/F4 + WOR-621 F2 G2: add OpenClaw rollback columns to ``shards``.
+    """WOR-651/F4 + WOR-621 F2 G2 + G5-C: OpenClaw rollback columns on ``shards``.
 
-    ``oc_original_base_url`` is the ORIGINAL OpenClaw provider baseUrl
-    (distinct from the ``base_url`` column, which is the UPSTREAM provider
-    url). ``oc_original_api_key_json`` holds a shape-only record (kind +
-    optional non-secret ref) — never the real key. ``oc_rollback_mac`` (G2)
-    binds that JSON to a fernet-keyed HMAC so a DB-write attacker can't flip
-    the record (e.g. secretref→plaintext) without the next unlock noticing.
+    ``oc_original_api_key_json`` holds the full key-redacted original entry
+    (including its baseUrl) — shape-only / non-secret. ``oc_rollback_mac``
+    (G2) binds that JSON to a fernet-keyed HMAC so a DB-write attacker
+    can't flip the record (e.g. secretref→plaintext) without the next
+    unlock noticing.
+
+    G5-C drop: a prior ``oc_original_base_url`` column duplicated data
+    already in the MAC-bound JSON AND was NOT MAC-bound itself (a DB-write
+    attacker could flip it silently). Forward-only ALTER TABLE DROP COLUMN
+    removes it from any DB carrying it. SQLite ≥3.35 (March 2021). The
+    column is also removed from the SCHEMA DDL above so a fresh DB never
+    creates it. Stage A of unlock has always parsed the URL from the JSON
+    record (the source of truth), so the drop is byte-stable on restore.
+
     Mirrors :func:`_migrate_shard_format_columns`: duplicate-column-tolerant
     ALTERs, nullable, no backfill.
     """
     _OC_MIGRATIONS = {
-        "oc_original_base_url": "ALTER TABLE shards ADD COLUMN oc_original_base_url TEXT",
         "oc_original_api_key_json": "ALTER TABLE shards ADD COLUMN oc_original_api_key_json TEXT",
         "oc_rollback_mac": "ALTER TABLE shards ADD COLUMN oc_rollback_mac TEXT",
     }
@@ -152,6 +162,19 @@ async def _migrate_oc_rollback_columns(db: aiosqlite.Connection, shard_columns: 
             except Exception as exc:
                 if "duplicate column" not in str(exc).lower():
                     raise
+    # G5-C: drop the dead duplicate column if present on an existing DB.
+    # SQLite ≥3.35 supports ALTER TABLE … DROP COLUMN; on older runtimes
+    # this raises and the column is left in place (the column being dead
+    # data already, leaving it costs nothing).
+    if "oc_original_base_url" in shard_columns:
+        try:
+            await db.execute("ALTER TABLE shards DROP COLUMN oc_original_base_url")
+        except Exception as exc:
+            msg = str(exc).lower()
+            # Pre-3.35 SQLite reports "near 'DROP': syntax error" — accept
+            # the column lingering rather than failing init.
+            if "syntax error" not in msg and "no such column" not in msg:
+                raise
     await db.commit()
 
 

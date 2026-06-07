@@ -338,23 +338,26 @@ async def _decide_oc_capture(
     oc_config: dict | None,
     proxy_base_url: str,
     provider: str,
-    prior_base_url: str | None,
     prior_record: str | None,
-) -> tuple[str | None, str | None, str | None]:
-    """G3 capture decision for one provider → (oc_base_url, oc_record, oc_mac).
+) -> tuple[str | None, str | None]:
+    """G3 capture decision for one provider → (oc_record, oc_mac).
 
     Bridges the pure sync classifier in
     :mod:`worthless.openclaw.integration` with the async MAC computation
     on :class:`ShardRepository` and the operator-facing warning channel.
 
-    Returns the trio threaded into :meth:`ShardRepository.upsert_locked_shard`
-    (and :meth:`store_enrolled` on fresh enrollments). Each return value is
+    Returns the pair threaded into :meth:`ShardRepository.upsert_locked_shard`
+    (and :meth:`store_enrolled` on fresh enrollments). Both values are
     ``None`` on the no-capture branches:
 
     * ``no_entry`` — no openclaw.json entry for this provider yet.
     * ``relock_no_prior`` — entry is already proxy-shaped but the DB has
       no prior record, so capturing shard-A as "the original" would let
       unlock declare a fake success. Emits a CLI warning.
+
+    G5-C: the original ``baseUrl`` lives INSIDE ``oc_record`` (the
+    MAC-bound source of truth), so we don't return a separate base-URL
+    slot any more. Stage A unlock parses the URL out of the JSON record.
 
     The MAC is computed in-process via the same fernet-derived HMAC
     (:meth:`ShardRepository._compute_decoy_hash`) the G2 tamper-bind
@@ -367,10 +370,9 @@ async def _decide_oc_capture(
         if isinstance(candidate, dict):
             current_entry = candidate
 
-    kind, base_url, record_json = _openclaw_integration.classify_oc_entry_for_capture(
+    kind, _base_url, record_json = _openclaw_integration.classify_oc_entry_for_capture(
         current_entry,
         prior_entry_record_json=prior_record,
-        prior_base_url=prior_base_url,
         proxy_base_url=proxy_base_url,
     )
 
@@ -381,14 +383,14 @@ async def _decide_oc_capture(
             "columns unset. Run `worthless unlock` first if you want the "
             "original captured."
         )
-        return (None, None, None)
+        return (None, None)
 
     if record_json is None:
         # 'no_entry' branch — nothing on disk to capture, no MAC to compute.
-        return (None, None, None)
+        return (None, None)
 
     mac = await repo._compute_decoy_hash(record_json)
-    return (base_url, record_json, mac)
+    return (record_json, mac)
 
 
 def _read_openclaw_providers_for_capture() -> dict | None:
@@ -431,11 +433,12 @@ async def _pass1_db_writes(
     WOR-621 F2 G3: reads openclaw.json once at the top + per-candidate
     classifies the current entry against the prior shards-row record
     (via :func:`integration.classify_oc_entry_for_capture`). The rollback
-    trio (``oc_original_base_url``, ``oc_original_api_key_json``,
-    ``oc_rollback_mac``) rides into the DB on the existing
-    :meth:`ShardRepository.upsert_locked_shard` write so a crash between
-    here and ``_apply_openclaw`` still leaves a row unlock can roll back
-    from (SM-2: StashDB → Rewrite).
+    pair (``oc_original_api_key_json``, ``oc_rollback_mac``) rides into
+    the DB on the existing :meth:`ShardRepository.upsert_locked_shard`
+    write so a crash between here and ``_apply_openclaw`` still leaves
+    a row unlock can roll back from (SM-2: StashDB → Rewrite). G5-C
+    dropped the dead third element (``oc_original_base_url``) — the
+    original URL lives inside the MAC-bound JSON record.
     """
     # G3: snapshot openclaw.json BEFORE we touch the DB. We classify each
     # provider against this snapshot so a concurrent OpenClaw write doesn't
@@ -545,7 +548,6 @@ async def _pass1_db_writes(
                 # ('relock_no_prior'), or — if the entry was untouched since the
                 # last unlock — re-capture as 'new'.
                 (
-                    oc_capture_base_url,
                     oc_capture_record,
                     oc_capture_mac,
                 ) = await _decide_oc_capture(
@@ -553,7 +555,6 @@ async def _pass1_db_writes(
                     oc_config=oc_config,
                     proxy_base_url=oc_proxy_base_url,
                     provider=provider,
-                    prior_base_url=db_shard.oc_original_base_url,
                     prior_record=db_shard.oc_original_api_key_json,
                 )
                 # INSERT OR REPLACE keeps shard_a_enc in sync with the auth token
@@ -565,7 +566,6 @@ async def _pass1_db_writes(
                     prefix=db_shard.prefix,
                     charset=db_shard.charset,
                     base_url=db_shard.base_url or upstream_base_url,
-                    oc_original_base_url=oc_capture_base_url,
                     oc_original_api_key_json=oc_capture_record,
                     oc_rollback_mac=oc_capture_mac,
                 )
@@ -616,7 +616,6 @@ async def _pass1_db_writes(
             # already proxy-shaped without a DB row (legacy), or 'no_entry' if
             # the provider has no entry at all yet.
             (
-                oc_capture_base_url,
                 oc_capture_record,
                 oc_capture_mac,
             ) = await _decide_oc_capture(
@@ -624,7 +623,6 @@ async def _pass1_db_writes(
                 oc_config=oc_config,
                 proxy_base_url=oc_proxy_base_url,
                 provider=provider,
-                prior_base_url=None,
                 prior_record=None,
             )
             # store_enrolled() handles enrollment rows; upsert_locked_shard()
@@ -635,7 +633,6 @@ async def _pass1_db_writes(
                 prefix=sr.prefix,
                 charset=sr.charset,
                 base_url=upstream_base_url,
-                oc_original_base_url=oc_capture_base_url,
                 oc_original_api_key_json=oc_capture_record,
                 oc_rollback_mac=oc_capture_mac,
             )
@@ -648,7 +645,6 @@ async def _pass1_db_writes(
                 prefix=sr.prefix,
                 charset=sr.charset,
                 base_url=upstream_base_url,
-                oc_original_base_url=oc_capture_base_url,
                 oc_original_api_key_json=oc_capture_record,
                 oc_rollback_mac=oc_capture_mac,
             )

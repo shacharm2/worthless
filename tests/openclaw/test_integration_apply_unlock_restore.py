@@ -16,9 +16,10 @@ entry back WITHOUT the DB ever having held the real key:
     OcRestore(
         provider,                  # original provider id, e.g. "openai"
         alias,                     # globally-unique shard-row id
-        oc_original_base_url,      # the address to restore
-        oc_original_api_key_json,  # shape-only record: {"kind":"plaintext"}
-                                   #   or {"kind":"secretref","ref":{...}}
+        oc_original_api_key_json,  # shape-only record carrying the URL +
+                                   #   {"kind":"plaintext"} or {"kind":"secretref","ref":{...}}
+                                   #   (G5-C: oc_original_base_url field was dropped;
+                                   #   the URL is inside this MAC-bound JSON record.)
         plaintext_key,             # bytearray|None — reconstructed CLIENT-side
                                    #   (shard-A ⊕ shard-B), owned+zeroed by unlock;
                                    #   None for the secretref branch
@@ -91,7 +92,6 @@ def test_lock_then_unlock_round_trip_byte_identical_plaintext(
             integration.OcRestore(
                 provider="openai",
                 alias="openai-deadbeef",
-                oc_original_base_url=_ORIG_BASE_URL,
                 oc_original_api_key_json=integration.build_oc_rollback_entry_record(
                     {"baseUrl": _ORIG_BASE_URL, "apiKey": _REAL_KEY}
                 ),
@@ -132,7 +132,6 @@ def test_unlock_restores_secretref_verbatim_never_plaintext(
             integration.OcRestore(
                 provider="openai",
                 alias="openai-deadbeef",
-                oc_original_base_url=_ORIG_BASE_URL,
                 oc_original_api_key_json=integration.build_oc_rollback_entry_record(
                     {"baseUrl": _ORIG_BASE_URL, "apiKey": {"$ref": secret_ref}}
                 ),
@@ -169,7 +168,6 @@ def test_unlock_corrupt_rollback_record_fails_safe(
             integration.OcRestore(
                 provider="openai",
                 alias="openai-deadbeef",
-                oc_original_base_url=_ORIG_BASE_URL,
                 oc_original_api_key_json="{not valid json",
                 plaintext_key=bytearray(_REAL_KEY.encode("utf-8")),
             )

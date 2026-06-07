@@ -62,7 +62,6 @@ async def test_oc_rollback_mac_round_trips_through_storage(
         prefix="sk-",
         charset="abc",
         base_url="https://api.worthless.local/oc-mac-roundtrip/v1",
-        oc_original_base_url="https://api.openai.com/v1",
         oc_original_api_key_json=record,
         oc_rollback_mac=mac_tag,
     )
@@ -154,7 +153,6 @@ async def test_db_attacker_secretref_to_plaintext_flip_detected_at_unlock(
         prefix="sk-",
         charset="abc",
         base_url="https://api.worthless.local/oc-mac-flip/v1",
-        oc_original_base_url="https://api.openai.com/v1",
         oc_original_api_key_json=legit_record,
         oc_rollback_mac=legit_mac,
     )

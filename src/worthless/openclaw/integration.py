@@ -258,7 +258,6 @@ def classify_oc_entry_for_capture(
     current_entry: dict | None,
     *,
     prior_entry_record_json: str | None,
-    prior_base_url: str | None,
     proxy_base_url: str,
 ) -> tuple[CaptureKind, str | None, str | None]:
     """Decide WOR-621 F2 G3 rollback capture for one provider.
@@ -277,7 +276,9 @@ def classify_oc_entry_for_capture(
     * Entry's ``baseUrl`` is proxy-shaped (a previous lock already rewrote
       it) AND a ``prior_entry_record_json`` exists in the DB → re-lock:
       reuse the prior record VERBATIM so the genuine pre-first-lock
-      original is preserved across N re-locks. Decision 2.
+      original is preserved across N re-locks. Decision 2. (G5-C: the
+      original ``baseUrl`` lives INSIDE the MAC-bound JSON record, not in
+      a separate column — Stage A unlock reads it from there.)
     * Entry proxy-shaped AND no prior record → ``relock_no_prior``: caller
       MUST warn + write NULL. We refuse to capture shard-A as "the
       original" — that would let unlock declare success on a fake
@@ -296,7 +297,10 @@ def classify_oc_entry_for_capture(
     entry_url = raw_url if isinstance(raw_url, str) else ""
     if entry_url and _is_proxy_url(entry_url, proxy_base_url):
         if prior_entry_record_json is not None:
-            return ("reuse_prior", prior_base_url, prior_entry_record_json)
+            # G5-C: the prior URL is inside ``prior_entry_record_json`` (the
+            # MAC-bound source of truth); we don't echo it as a separate
+            # slot any more. Middle slot is None for reuse_prior.
+            return ("reuse_prior", None, prior_entry_record_json)
         # Refuse to mint a fake "original" from the proxy entry.
         return ("relock_no_prior", None, None)
 
@@ -314,11 +318,11 @@ class OcRestore:
     * ``provider`` — original provider id, e.g. ``"openai"`` (the entry
       ``lock`` rewrote; no ``worthless-`` prefix any more).
     * ``alias`` — globally-unique shard-row id; the proxy URL path segment.
-    * ``oc_original_base_url`` — the original address. G3 light-recognition
-      scaffolding; not read by Stage A in G1 (the address comes from the
-      full entry record below).
     * ``oc_original_api_key_json`` — the key-redacted full entry record
-      (see :func:`build_oc_rollback_entry_record`).
+      (see :func:`build_oc_rollback_entry_record`). The original ``baseUrl``
+      is INSIDE this MAC-bound JSON; Stage A reads it from there. (A prior
+      ``oc_original_base_url`` field on this dataclass was dropped in G5-C
+      because it duplicated the JSON's URL AND was not MAC-bound.)
     * ``plaintext_key`` — the real key reconstructed CLIENT-side
       (shard-A ⊕ shard-B), owned by unlock and zeroed after use; ``None``
       for the SecretRef branch (which restores a pointer, never plaintext).
@@ -338,7 +342,6 @@ class OcRestore:
 
     provider: str
     alias: str
-    oc_original_base_url: str | None
     oc_original_api_key_json: str | None
     plaintext_key: bytearray | None = field(repr=False)
     expected_mac: str | None = None

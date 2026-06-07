@@ -191,7 +191,7 @@ class ShardRepository:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT shard_b_enc, commitment, nonce, provider, prefix, charset, base_url, "
-                "shard_a_enc, oc_original_base_url, oc_original_api_key_json, "
+                "shard_a_enc, oc_original_api_key_json, "
                 "oc_rollback_mac "
                 "FROM shards WHERE key_alias = ?",
                 (alias,),
@@ -219,7 +219,6 @@ class ShardRepository:
                 ).tobytes()
                 if raw_a is not None
                 else None,
-                oc_original_base_url=row["oc_original_base_url"],
                 oc_original_api_key_json=row["oc_original_api_key_json"],
                 oc_rollback_mac=row["oc_rollback_mac"],
             )
@@ -373,7 +372,6 @@ class ShardRepository:
         prefix: str,
         charset: str,
         base_url: str,
-        oc_original_base_url: str | None = None,
         oc_original_api_key_json: str | None = None,
         oc_rollback_mac: str | None = None,
     ) -> None:
@@ -426,9 +424,9 @@ class ShardRepository:
             await db.execute(
                 "INSERT INTO shards "
                 "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset, "
-                " base_url, shard_a_enc, oc_original_base_url, oc_original_api_key_json, "
+                " base_url, shard_a_enc, oc_original_api_key_json, "
                 " oc_rollback_mac) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?) "
                 "ON CONFLICT(key_alias) DO UPDATE SET "
                 "  shard_b_enc = excluded.shard_b_enc, "
                 "  commitment  = excluded.commitment, "
@@ -438,7 +436,6 @@ class ShardRepository:
                 "  charset     = excluded.charset, "
                 "  base_url    = excluded.base_url, "
                 "  shard_a_enc = NULL, "
-                "  oc_original_base_url     = excluded.oc_original_base_url, "
                 "  oc_original_api_key_json = excluded.oc_original_api_key_json, "
                 "  oc_rollback_mac          = excluded.oc_rollback_mac",
                 (
@@ -450,7 +447,6 @@ class ShardRepository:
                     prefix,
                     charset,
                     base_url,
-                    oc_original_base_url,
                     oc_original_api_key_json,
                     oc_rollback_mac,
                 ),
@@ -473,7 +469,6 @@ class ShardRepository:
         prefix: str | None = None,
         charset: str | None = None,
         base_url: str | None = None,
-        oc_original_base_url: str | None = None,
         oc_original_api_key_json: str | None = None,
         oc_rollback_mac: str | None = None,
     ) -> None:
@@ -502,9 +497,9 @@ class ShardRepository:
             await db.execute(
                 "INSERT OR IGNORE INTO shards "
                 "(key_alias, shard_b_enc, commitment, nonce, provider, prefix, charset, "
-                " base_url, oc_original_base_url, oc_original_api_key_json, "
+                " base_url, oc_original_api_key_json, "
                 " oc_rollback_mac) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     alias,
                     shard_b_enc,
@@ -514,7 +509,6 @@ class ShardRepository:
                     prefix,
                     charset,
                     base_url,
-                    oc_original_base_url,
                     oc_original_api_key_json,
                     oc_rollback_mac,
                 ),

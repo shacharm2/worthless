@@ -136,7 +136,6 @@ def test_stage_a_refuses_when_expected_mac_disagrees_with_recomputed_mac(
     restore = _oi.OcRestore(
         provider="openai",
         alias="openai-ab5091b7",
-        oc_original_base_url="https://api.openai.com/v1",
         oc_original_api_key_json=record,
         plaintext_key=plaintext_key,
         expected_mac="aa" * 32,  # what the DB returned
@@ -198,7 +197,6 @@ def test_stage_a_accepts_when_macs_match(
     restore = _oi.OcRestore(
         provider="openai",
         alias="openai-ab5091b7",
-        oc_original_base_url="https://api.openai.com/v1",
         oc_original_api_key_json=record,
         plaintext_key=plaintext_key,
         expected_mac=matching_mac,
@@ -241,7 +239,6 @@ def test_stage_a_falls_back_to_shape_only_when_macs_are_none(
     restore = _oi.OcRestore(
         provider="openai",
         alias="openai-ab5091b7",
-        oc_original_base_url="https://api.openai.com/v1",
         oc_original_api_key_json=record,
         plaintext_key=plaintext_key,
         expected_mac=None,  # legacy: no MAC stored
@@ -288,7 +285,6 @@ def test_stage_a_refuses_secretref_on_mac_mismatch(
     restore = _oi.OcRestore(
         provider="openai",
         alias="openai-ab5091b7",
-        oc_original_base_url="https://api.openai.com/v1",
         oc_original_api_key_json=secretref_record,
         plaintext_key=None,  # secretref branch — no live key
         expected_mac="aa" * 32,
