@@ -1021,11 +1021,10 @@ async def test_spend_cap_counts_input_not_just_max_tokens(tmp_path):
     be DENIED — the cap reserves the ESTIMATED INPUT cost, not just the declared
     output budget.
 
-    Today ``_estimate_tokens`` reads only ``max_tokens`` (=1), so a 200K-char
-    prompt reserves ~1 token and slips under a 1000-token cap. Once the gate holds
-    against ``estimate_request_tokens`` (which counts the input ~100K), the request
-    is refused. This test FAILS on current code (evaluate returns None) and turns
-    green when the input estimator is wired into the hold.
+    A 200K-char prompt with ``max_tokens=1`` must still be denied under a
+    1000-token cap, because the gate reserves the full
+    ``estimate_request_tokens`` admission cost (input + declared output).
+    This guards against under-counting large-input / tiny-output requests.
     """
     db_path = str(tmp_path / "input_cap.db")
     async with aiosqlite.connect(db_path) as setup_db:
