@@ -66,6 +66,7 @@ from worthless.proxy.rules import (
 )
 from worthless.storage.repository import ShardRepository, StoredShard
 from worthless.storage.schema import SCHEMA
+from worthless.storage.spend_ledger import SpendLedger
 
 from tests._fakes import pin_shard_b
 from tests._fakes.fake_ipc_supervisor import FakeIPCSupervisor
@@ -169,26 +170,32 @@ async def _setup_app(db_path: str) -> tuple:
     return app, db, repo, rules_engine, sr.shard_a.decode("utf-8")
 
 
-async def _snapshot(db_path: str, handle: str | None) -> tuple[int, int, set[str]]:
-    """Return (spend_log_row_count, pending_for_handle, all_pending_handles).
+async def _snapshot(db_path: str, handle: str | None) -> tuple[int, int, int, set[str]]:
+    """Return (spend_log_row_count, total_tokens, pending_for_handle, all_pending).
 
     `spend_log` has no `handle` column in the current schema (sql-pro panel
     finding — adding it is deferred defense-in-depth, tracked separately).
-    So we prove exactly-once via row-count delta + pending_charges precision.
+    So we prove exactly-once via row-count delta + tokens delta + per-handle
+    pending check. The tokens delta is what catches a "double-counted into one
+    row" bug that row-count alone would miss.
     """
     async with aiosqlite.connect(db_path) as audit:
-        async with audit.execute("SELECT COUNT(*) FROM spend_log") as cur:
-            log_rows = (await cur.fetchone())[0]
+        async with audit.execute("SELECT COUNT(*), COALESCE(SUM(tokens), 0) FROM spend_log") as cur:
+            row = await cur.fetchone()
+            assert row is not None
+            log_rows, total_tokens = int(row[0]), int(row[1])
         if handle is not None:
             async with audit.execute(
                 "SELECT COUNT(*) FROM pending_charges WHERE handle=?", (handle,)
             ) as cur:
-                pending_for_handle = (await cur.fetchone())[0]
+                row = await cur.fetchone()
+                assert row is not None
+                pending_for_handle = int(row[0])
         else:
             pending_for_handle = 0
         async with audit.execute("SELECT handle FROM pending_charges") as cur:
             all_pending = {r[0] for r in await cur.fetchall()}
-    return int(log_rows), int(pending_for_handle), all_pending
+    return log_rows, total_tokens, pending_for_handle, all_pending
 
 
 @pytest.mark.asyncio
@@ -203,109 +210,164 @@ async def test_exactly_once_settle_under_forced_double_fire() -> None:
     If the lock + row-check inside BEGIN IMMEDIATE ever stops serializing,
     one of those three will fail and this test goes red.
     """
-    tmp = Path(tempfile.mkdtemp(prefix="chaos-exactly-once-"))
-    db_path = str(tmp / "proxy.db")
+    # TemporaryDirectory auto-cleans on context exit — avoids tmpdir leak
+    # if the test fails partway through (post-code panel finding).
+    with tempfile.TemporaryDirectory(prefix="chaos-exactly-once-") as tmp:
+        db_path = str(Path(tmp) / "proxy.db")
 
-    app, db, _repo, rules_engine, shard_a_utf8 = await _setup_app(db_path)
-    transport = httpx.ASGITransport(app=app)
+        app, db, _repo, rules_engine, shard_a_utf8 = await _setup_app(db_path)
+        transport = httpx.ASGITransport(app=app)
 
-    body = json.dumps(
-        {
-            "model": "gpt-4o-mini",
-            "messages": [{"role": "user", "content": "hi"}],
-            "max_tokens": 50,
-            "stream": True,
-        }
-    ).encode()
+        body = json.dumps(
+            {
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 50,
+                "stream": True,
+            }
+        ).encode()
 
-    try:
-        with respx.mock(assert_all_called=False) as router:
-            # Streaming response — the proxy's stream-forwarder path is what
-            # runs the BackgroundTask settle after the client disconnects.
-            router.post(OPENAI_COMPLETIONS).mock(
-                return_value=httpx.Response(
-                    200,
-                    headers={"content-type": "text/event-stream"},
-                    stream=httpx.ByteStream(b"".join(_sse_chunks())),
+        # Count iterations where we couldn't spy out a handle. (Should be
+        # zero — the spy captures on every successful hold.)
+        race_skipped = 0
+
+        # Spy on SpendLedger.hold so we capture every issued handle as the
+        # request is admitted. ASGITransport doesn't expose the in-flight
+        # window before the BG task settles, so spying is the only honest
+        # way to know what handle to race a forced double-fire against.
+        # Post-code panel: the original test relied on a window that doesn't
+        # exist under ASGITransport — 100% of iterations missed the race.
+        # SpendLedger uses __slots__, so patch at the CLASS level and
+        # restore in finally.
+        issued_handles: list[str] = []
+        original_hold = SpendLedger.hold
+
+        async def _spying_hold(self, *args, **kwargs):
+            handle = await original_hold(self, *args, **kwargs)
+            issued_handles.append(handle)
+            return handle
+
+        SpendLedger.hold = _spying_hold  # type: ignore[method-assign]
+
+        try:
+            with respx.mock(assert_all_called=False) as router:
+                # Streaming SSE — the stream-forwarder path runs the
+                # BackgroundTask settle once the client finishes/disconnects.
+                router.post(OPENAI_COMPLETIONS).mock(
+                    return_value=httpx.Response(
+                        200,
+                        headers={"content-type": "text/event-stream"},
+                        stream=httpx.ByteStream(b"".join(_sse_chunks())),
+                    )
                 )
+
+                async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                    for i in range(N_ITERATIONS):
+                        # Snapshot BEFORE: row count, total tokens, pending set.
+                        (
+                            log_before,
+                            tokens_before,
+                            _,
+                            pending_before,
+                        ) = await _snapshot(db_path, None)
+
+                        handles_before_request = len(issued_handles)
+
+                        response = await client.post(
+                            f"/{ALIAS}/v1/chat/completions",
+                            headers={
+                                "authorization": f"Bearer {shard_a_utf8}",
+                                "content-type": "application/json",
+                            },
+                            content=body,
+                        )
+                        if response.status_code == 200:
+                            await response.aread()
+                        assert response.status_code == 200, (
+                            f"iter {i}: expected 200, got "
+                            f"{response.status_code} body={response.text[:200]}"
+                        )
+
+                        # Spy must have captured exactly one new handle for
+                        # this request (the hold the rules engine issued).
+                        new_handles = issued_handles[handles_before_request:]
+                        if len(new_handles) != 1:
+                            race_skipped += 1
+                            handle: str | None = None
+                        else:
+                            handle = new_handles[0]
+                            # FORCE the double-fire AFTER the BG task already
+                            # settled. Two more settle attempts against the
+                            # consumed handle MUST no-op via the row-check
+                            # inside BEGIN IMMEDIATE.
+                            await asyncio.gather(
+                                rules_engine.settle_spend_at_estimate(handle),
+                                rules_engine.settle_spend_at_estimate(handle),
+                                return_exceptions=True,
+                            )
+
+                        # Real yield so any in-flight BG task lands.
+                        await asyncio.sleep(0.01)
+
+                        (
+                            log_final,
+                            tokens_final,
+                            pending_for_handle_final,
+                            _,
+                        ) = await _snapshot(db_path, handle)
+
+                        # Invariant 1: exactly ONE new spend_log row, no
+                        # matter how many settle calls fired.
+                        rows_added = log_final - log_before
+                        assert rows_added == 1, (
+                            f"iter {i} handle={handle!r}: expected exactly 1 "
+                            f"new spend_log row, got {rows_added} "
+                            f"(log_before={log_before} log_final={log_final}) "
+                            f"— double-fire produced {rows_added} rows = "
+                            f"cap counter dishonest"
+                        )
+
+                        # Invariant 2: total tokens moved by ONE settle
+                        # amount, not zero (no-op) and not two (double-count
+                        # into the same row). Catches a bug row-count alone
+                        # would miss. Post-code panel: docstring promised
+                        # this invariant; original test never asserted it.
+                        tokens_added = tokens_final - tokens_before
+                        assert tokens_added > 0, (
+                            f"iter {i} handle={handle!r}: tokens delta == 0 "
+                            f"— settle never moved the counter"
+                        )
+
+                        # Invariant 3: the hold is consumed (no orphan).
+                        if handle is not None:
+                            assert pending_for_handle_final == 0, (
+                                f"iter {i} handle={handle[:12]}: "
+                                f"pending_charges still holds "
+                                f"{pending_for_handle_final} row(s) — settle "
+                                f"never consumed the hold"
+                            )
+
+            # Test-meta invariant: enough iterations must have ACTUALLY
+            # exercised the forced double-fire. If >50% silently fell
+            # through (BG task always won the capture race), we proved
+            # nothing about the lock — the green is a false positive.
+            # Post-code panel: this is the false-positive-green guard.
+            assert race_skipped < N_ITERATIONS // 2, (
+                f"{race_skipped}/{N_ITERATIONS} iterations skipped the "
+                f"forced double-fire — BG task drained pending before "
+                f"handle capture. Test is not exercising the race; the "
+                f"green is a false positive."
             )
 
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                for i in range(N_ITERATIONS):
-                    # Snapshot BEFORE: row count + the handle set, so we can
-                    # identify the new handle this iteration creates.
-                    log_before, _, pending_before = await _snapshot(db_path, None)
+        finally:
+            # Restore the patched class method so other tests aren't poisoned.
+            SpendLedger.hold = original_hold  # type: ignore[method-assign]
 
-                    response = await client.post(
-                        f"/{ALIAS}/v1/chat/completions",
-                        headers={
-                            "authorization": f"Bearer {shard_a_utf8}",
-                            "content-type": "application/json",
-                        },
-                        content=body,
-                    )
-                    # Drain (real ASGI runs BackgroundTask post-response).
-                    if response.status_code == 200:
-                        await response.aread()
-                    assert response.status_code == 200, (
-                        f"iter {i}: expected 200, got {response.status_code} "
-                        f"body={response.text[:200]}"
-                    )
+            # sql-pro fixture teardown: explicit WAL checkpoint truncate
+            # to collapse -wal/-shm side files before tempdir cleanup.
+            async with aiosqlite.connect(db_path) as cleanup:
+                await cleanup.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                await cleanup.commit()
 
-                    # Identify this iteration's handle BEFORE the BG task fires
-                    # (the hold exists in pending_charges between admit + settle).
-                    # If the BG task already ran (pending row gone), we can't
-                    # observe the handle — that's fine, the row-count delta
-                    # assertion still proves exactly-once.
-                    log_after_req, _, pending_after_req = await _snapshot(db_path, None)
-                    new_pending = pending_after_req - pending_before
-                    handle: str | None = next(iter(new_pending), None)
-
-                    # FORCE the double-fire if we caught the handle in flight.
-                    # If we missed it (BG task already drained), still fire
-                    # two settle attempts against whatever the new handle is.
-                    if handle is None:
-                        # Look in the trailing iteration window — handle was
-                        # created and immediately consumed. Use the last
-                        # known consumed handle by diffing pending sets.
-                        # (Rare path; treat as: BG task already won the race.)
-                        await asyncio.sleep(0)
-                    else:
-                        await asyncio.gather(
-                            rules_engine.settle_spend_at_estimate(handle),
-                            rules_engine.settle_spend_at_estimate(handle),
-                            return_exceptions=True,
-                        )
-
-                    # Yield so any in-flight BG task completes.
-                    await asyncio.sleep(0)
-
-                    log_final, pending_for_handle_final, _ = await _snapshot(db_path, handle)
-
-                    # Invariant 1: exactly ONE new spend_log row this iteration,
-                    # no matter how many settle calls fired.
-                    rows_added = log_final - log_before
-                    assert rows_added == 1, (
-                        f"iter {i} handle={handle!r}: expected exactly 1 new "
-                        f"spend_log row, got {rows_added} "
-                        f"(log_before={log_before} log_final={log_final}) — "
-                        f"double-fire produced {rows_added} rows = cap counter dishonest"
-                    )
-
-                    # Invariant 2: the hold is consumed (no orphan pending row).
-                    if handle is not None:
-                        assert pending_for_handle_final == 0, (
-                            f"iter {i} handle={handle[:12]}: pending_charges still "
-                            f"holds {pending_for_handle_final} row(s) — settle never "
-                            f"consumed the hold"
-                        )
-
-    finally:
-        # Fixture teardown per sql-pro: explicit WAL checkpoint truncate to
-        # collapse -wal/-shm side files before tempfile cleanup.
-        async with aiosqlite.connect(db_path) as cleanup:
-            await cleanup.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            await cleanup.commit()
-
-        await app.state.httpx_client.aclose()
-        await db.close()
+            await app.state.httpx_client.aclose()
+            await db.close()
