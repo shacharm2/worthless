@@ -31,6 +31,7 @@ from starlette.middleware.cors import CORSMiddleware
 from worthless.adapters.registry import get_adapter
 from worthless.adapters.types import INTERNAL_HEADER_PREFIX
 from worthless.crypto.reconstruction import reconstruct_key, reconstruct_key_fp, secure_key
+from worthless.proxy.ceiling import is_known_model
 from worthless.proxy.config import DeployMode, ProxySettings
 from worthless.proxy.errors import _error_body, auth_error_response, gateway_error_response
 from worthless.proxy.ipc_supervisor import IPCSupervisor, IPCUnavailable
@@ -103,6 +104,27 @@ def _extract_shard_a(request: Request) -> bytearray | None:
         return bytearray(api_key, "utf-8")
 
     return None
+
+
+def _extract_request_model(body: bytes) -> str | None:
+    """Pull the `model` field out of a JSON request body. None on parse fail.
+
+    WOR-696 admission path uses this for fail-closed reject on unknown
+    models. Parse errors return None (no reject — the rules engine /
+    upstream will surface the real error). We never raise on bad JSON
+    because the caller may be sending a non-JSON body (e.g. multipart
+    audio) that's valid for some endpoints.
+    """
+    try:
+        payload = json.loads(body)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    model = payload.get("model")
+    if not isinstance(model, str) or not model:
+        return None
+    return model
 
 
 def _extract_alias_and_path(raw_path: str) -> tuple[str, str] | None:
@@ -371,6 +393,36 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         # Pre-read body ONCE before rules engine (WOR-182: eliminates
         # Starlette body-caching coupling — rules receive bytes, not stream)
         body = await request.body()
+
+        # WOR-696: fail-closed reject on unknown model BEFORE the rules engine
+        # reserves anything and BEFORE the proxy attempts key reconstruction.
+        # Inverts the industry default of silently billing $0 when a new model
+        # ships before the operator updates the ceiling table.
+        _model_for_admission = _extract_request_model(body)
+        if _model_for_admission is not None and not is_known_model(
+            encrypted.provider, _model_for_admission
+        ):
+            logger.info(
+                "WRTLS-150: unknown model rejected at admission alias=%s provider=%s model=%s",
+                alias,
+                encrypted.provider,
+                _model_for_admission,
+            )
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "code": "WRTLS-150",
+                        "type": "unknown_model",
+                        "message": (
+                            f"Unknown model {_model_for_admission!r} for "
+                            f"provider {encrypted.provider!r}. Add "
+                            f"(provider, model) to ceiling.KNOWN_MODELS "
+                            "before retrying."
+                        ),
+                    }
+                },
+            )
 
         # Token-budget reservation amount (WOR-242). The spend CAP no longer uses
         # this — its reservation is the durable ledger hold below.
