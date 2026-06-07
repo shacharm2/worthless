@@ -284,31 +284,82 @@ async def test_zero_reservation_disconnect_uses_ceiling() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 3 — unknown model fail-closed reject
+# Test 3 — any model name is accepted (passthrough), cap handled via fallback
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_unknown_model_rejected_pre_reconstruction() -> None:
-    """Request to a model not in the ceiling table → reject before reconstruct.
+def test_ceiling_module_has_no_registry() -> None:
+    """Worthless does NOT maintain a model registry — lock that into code.
 
-    FAILS today: the proxy admits any model name and the request reaches
-    reconstruction. Cap silently doesn't engage because no ceiling lookup
-    happens (no ceiling code yet).
-
-    Passes when T7 ships: admission resolves the (provider, model) ceiling
-    BEFORE the rules engine reserves; an unknown model triggers a 4xx with a
-    clear error code (WRTLS-150 or similar). Zero spend_log rows. Zero
-    pending_charges rows. Upstream never called.
+    If anyone ever re-introduces is_known_model / ceiling_for / KNOWN_MODELS,
+    this test goes red and they have to confront the decision explicitly.
+    The simplification (operator + 2026-06-07 panel) is load-bearing for
+    OpenRouter / Azure / Enterprise / custom-URL deployments — undoing it
+    silently would re-introduce friction on hundreds of legitimate
+    deployments.
     """
-    with tempfile.TemporaryDirectory(prefix="wor696-unkmodel-") as tmp:
+    from worthless.proxy import ceiling
+
+    # The constant exists and is what the AC pinned.
+    assert hasattr(ceiling, "GLOBAL_CEILING_TOKENS")
+    assert ceiling.GLOBAL_CEILING_TOKENS == 128_000
+
+    # The forbidden registry attrs DO NOT exist.
+    for forbidden in ("is_known_model", "ceiling_for", "KNOWN_MODELS"):
+        assert not hasattr(ceiling, forbidden), (
+            f"ceiling module re-introduced {forbidden!r} — this would "
+            f"silently re-add a model registry. WOR-696 simplification "
+            f"explicitly forbids it (see Linear ticket history); the "
+            f"global ceiling makes the registry pointless friction. "
+            f"If you genuinely need to track models, do it as "
+            f"observability (a metric), not as a gate."
+        )
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        # OpenRouter-style vendor/model alias
+        "openrouter/some-vendor/some-model-v2",
+        # Azure-style custom deployment ID
+        "azure-prod-deployment-xyz-789",
+        # Brand-new OpenAI release that just landed
+        "gpt-6-experimental-preview",
+        # Anthropic future snapshot
+        "claude-5-opus-20271231",
+        # Internal proxy / fine-tune
+        "internal-finetune-abc123",
+        # Unicode / non-ASCII — should pass through
+        "modèle-français-v1",
+    ],
+)
+@pytest.mark.asyncio
+async def test_any_model_name_admitted_cap_handled_via_global_ceiling(
+    model_name: str,
+) -> None:
+    """Worthless does NOT maintain a model registry — any model string passes.
+
+    This was originally a "fail-closed reject unknown model" test, but
+    operator + research convergence (2026-06-07): with a global ceiling,
+    the registry is pure friction (especially for OpenRouter / Azure /
+    Enterprise / custom URLs that ship hundreds of model strings). The
+    cap is honest without a registry because the global ceiling fires on
+    the settle_at_estimate fallback regardless of model name.
+
+    Parametrized over diverse model strings so a hardcoded allowlist
+    matching only one specific string would still fail at least N-1 of
+    the runs (Jenny panel: single-string version was a loophole).
+    """
+    with tempfile.TemporaryDirectory(prefix="wor696-passthrough-") as tmp:
         db_path = str(Path(tmp) / "proxy.db")
         app, db, _rules, shard_a_utf8 = await _setup_proxy(db_path)
         transport = httpx.ASGITransport(app=app)
 
+        # A model string Worthless has never seen — could be OpenRouter,
+        # Azure custom deployment, internal proxy, brand-new release.
         body = json.dumps(
             {
-                "model": "made-up-model-that-does-not-exist-xyz",
+                "model": model_name,
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 50,
             }
@@ -316,11 +367,28 @@ async def test_unknown_model_rejected_pre_reconstruction() -> None:
 
         try:
             with respx.mock(assert_all_called=False) as router:
-                # If the proxy somehow lets the request through, respx will
-                # 200 it — but the test asserts the proxy rejects BEFORE
-                # this mock is called.
                 route = router.post(OPENAI_COMPLETIONS).mock(
-                    return_value=httpx.Response(200, json={"choices": []})
+                    return_value=httpx.Response(
+                        200,
+                        json={
+                            "id": "chatcmpl-x",
+                            "model": model_name,
+                            "choices": [
+                                {
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": "hi",
+                                    },
+                                    "finish_reason": "stop",
+                                }
+                            ],
+                            "usage": {
+                                "prompt_tokens": 5,
+                                "completion_tokens": 5,
+                                "total_tokens": 10,
+                            },
+                        },
+                    )
                 )
 
                 async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -333,26 +401,22 @@ async def test_unknown_model_rejected_pre_reconstruction() -> None:
                         content=body,
                     )
 
-                # T7 assertion: must reject with 4xx before upstream is hit.
-                assert 400 <= response.status_code < 500, (
-                    f"unknown-model leak: expected 4xx reject, got "
-                    f"{response.status_code}. Body: {response.text[:200]}"
+                # The proxy MUST admit the request — no model-registry
+                # friction. Worthless is passthrough on the model string;
+                # the cap is honest via the global-ceiling fallback path,
+                # not via a registry of known models.
+                assert response.status_code == 200, (
+                    f"model-registry friction: expected 200 passthrough "
+                    f"for an unknown model name, got {response.status_code}. "
+                    f"Worthless should not enforce a model registry — the "
+                    f"global ceiling handles the cap regardless of model."
                 )
 
-                # Upstream MUST NOT have been called — reject happens
-                # before key reconstruction, before HTTP egress.
-                assert route.call_count == 0, (
-                    f"unknown-model leak: upstream was called "
-                    f"{route.call_count} times. T7 must reject BEFORE "
-                    f"reconstruct so the key never reassembles for an "
-                    f"unknown model."
+                # Upstream WAS called — passthrough confirmed.
+                assert route.call_count >= 1, (
+                    f"upstream call_count={route.call_count} — proxy "
+                    f"didn't pass the request through"
                 )
-
-            # No spend_log, no pending_charges for a rejected request.
-            spent = await _total_spent(db_path)
-            pending = await _pending_count(db_path)
-            assert spent == 0, f"unknown-model request created spend_log entry: {spent} tokens"
-            assert pending == 0, f"unknown-model request left pending_charges: {pending} row(s)"
 
         finally:
             await app.state.httpx_client.aclose()
