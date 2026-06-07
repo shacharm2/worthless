@@ -16,6 +16,8 @@ import secrets
 
 import aiosqlite
 
+from worthless.proxy.ceiling import GLOBAL_CEILING_TOKENS
+
 __all__ = ["SpendLedger"]
 
 # 128-bit CSPRNG handle (SR-08: CSPRNG only — never the stdlib ``random``).
@@ -128,11 +130,18 @@ class SpendLedger:
                     await self._db.rollback()
                     return
                 alias, estimate, provider, model = row
+                # WOR-696: fail-closed metering. settle_at_estimate fires when
+                # the actual usage is unreadable (disconnect, parse fail, stream
+                # kill). The stored estimate may be tiny — or zero — for a
+                # request that omitted max_tokens. Charge at least the global
+                # ceiling so the cap counter moves honestly. Direction of error
+                # is conservative; we never under-bill on the fallback path.
+                charge = max(estimate, GLOBAL_CEILING_TOKENS)
                 await self._db.execute("DELETE FROM pending_charges WHERE handle = ?", (handle,))
                 await self._db.execute(
                     "INSERT INTO spend_log (key_alias, tokens, model, provider)"
                     " VALUES (?, ?, ?, ?)",
-                    (alias, estimate, model, provider),
+                    (alias, charge, model, provider),
                 )
                 await self._db.commit()
             except BaseException:  # noqa: BLE001 — roll back open txn on any exit (incl. cancel)

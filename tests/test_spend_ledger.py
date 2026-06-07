@@ -124,18 +124,44 @@ async def test_settle_is_idempotent_by_handle(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_settle_at_estimate_bills_the_stored_estimate(tmp_path) -> None:
-    """When actual usage can't be read (mid-stream disconnect, parse failure),
-    settle_at_estimate must atomically convert the hold to a spend_log row at
-    the hold's STORED estimate — same shape as settle, but with the conservative
-    admission value instead of waiting for the background sweeper.
+    """When the stored estimate ALREADY exceeds the global ceiling floor,
+    settle_at_estimate writes that estimate verbatim — no over-bill on top
+    of an already-large reservation. The floor only applies when estimate
+    is below the ceiling (see sibling leak-fix test below).
     """
     db = await _open(tmp_path)
     try:
         ledger = SpendLedger(db)
-        h = await ledger.hold("k1", estimate=42, cap=100, provider="openai")
+        # Estimate > 128K floor → ledger writes estimate unchanged.
+        h = await ledger.hold("k1", estimate=200_000, cap=1_000_000, provider="openai")
         await ledger.settle_at_estimate(h)
         assert await _held(db, "k1") == 0  # hold gone
-        assert await _committed(db, "k1") == 42  # exactly the estimate
+        assert await _committed(db, "k1") == 200_000  # exactly the estimate
+        assert await _spend_rows(db, "k1") == 1
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_settle_at_estimate_floors_small_estimate_at_global_ceiling(tmp_path) -> None:
+    """WOR-696: when the stored estimate is BELOW the global ceiling (the
+    common case for a request that omitted max_tokens — T3 estimator counts
+    only input tokens, so estimate is tiny), settle_at_estimate must charge
+    the global ceiling instead. Otherwise a disconnected no-max_tokens
+    request silently writes a near-zero spend_log row and the cap leaks.
+    Direction of error is conservative — we never under-bill on the
+    fallback path.
+    """
+    from worthless.proxy.ceiling import GLOBAL_CEILING_TOKENS
+
+    db = await _open(tmp_path)
+    try:
+        ledger = SpendLedger(db)
+        # Tiny estimate (think: input-only, no max_tokens) — must floor at ceiling.
+        h = await ledger.hold("k1", estimate=42, cap=GLOBAL_CEILING_TOKENS * 10, provider="openai")
+        await ledger.settle_at_estimate(h)
+        assert await _held(db, "k1") == 0
+        assert await _committed(db, "k1") == GLOBAL_CEILING_TOKENS
         assert await _spend_rows(db, "k1") == 1
     finally:
         await db.close()
@@ -148,11 +174,12 @@ async def test_settle_at_estimate_is_idempotent_by_handle(tmp_path) -> None:
     db = await _open(tmp_path)
     try:
         ledger = SpendLedger(db)
-        h = await ledger.hold("k1", estimate=42, cap=100, provider="openai")
+        # Estimate above the 128K floor — exercises the same-estimate path.
+        h = await ledger.hold("k1", estimate=200_000, cap=1_000_000, provider="openai")
         await ledger.settle_at_estimate(h)
         await ledger.settle_at_estimate(h)  # second call must do nothing
         assert await _spend_rows(db, "k1") == 1
-        assert await _committed(db, "k1") == 42
+        assert await _committed(db, "k1") == 200_000
     finally:
         await db.close()
 
@@ -163,17 +190,20 @@ async def test_settle_at_estimate_unblocks_cap_without_waiting_for_sweep(tmp_pat
     the cap so the next request sees an honest budget, not a stale one. Without
     settle_at_estimate the hold would only be cleared by the background sweeper —
     a window an attacker could use to fire many requests cheaply.
+
+    Scaled above the 128K ceiling floor so the assertion shape matches the
+    pre-WOR-696 behavior (estimate written verbatim above the floor).
     """
     db = await _open(tmp_path)
     try:
         ledger = SpendLedger(db)
-        # Fill the cap to 90/100 with a hold; usage is unreadable.
-        h1 = await ledger.hold("k1", estimate=90, cap=100, provider="openai")
+        # Fill the cap to 900K/1M with a hold; usage is unreadable.
+        h1 = await ledger.hold("k1", estimate=900_000, cap=1_000_000, provider="openai")
         await ledger.settle_at_estimate(h1)
-        # The very next request sees the cap honestly accounted for — only 10 left.
-        h2 = await ledger.hold("k1", estimate=11, cap=100, provider="openai")
+        # The very next request sees the cap honestly accounted for — only 100K left.
+        h2 = await ledger.hold("k1", estimate=110_000, cap=1_000_000, provider="openai")
         assert h2 is None  # would exceed cap
-        h3 = await ledger.hold("k1", estimate=10, cap=100, provider="openai")
+        h3 = await ledger.hold("k1", estimate=100_000, cap=1_000_000, provider="openai")
         assert h3 is not None  # fits exactly
     finally:
         await db.close()
