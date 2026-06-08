@@ -143,7 +143,13 @@ class ShardRepository:
         # bytes(), which would make an un-zeroable immutable copy of the key.
         # HKDF reads the buffer identically, so output stays byte-identical.
         mac_secret = derive_mac_secret(self._fernet_key_bytes)
-        return hmac.new(mac_secret, value.encode(), hashlib.sha256).hexdigest()
+        # CodeQL false positive: this is HMAC-SHA256 MAC derivation (G2
+        # tamper-bind), NOT password hashing. The rule misclassifies any
+        # ``hashlib.sha256`` near key material as "weak password hash."
+        # Same suppression pattern PR #172 added to splitter._make_commitment.
+        return hmac.new(  # nosec B324 — HMAC-SHA256 MAC  # lgtm[py/weak-sensitive-data-hashing]
+            mac_secret, value.encode(), hashlib.sha256
+        ).hexdigest()
 
     # ------------------------------------------------------------------
     # Shard CRUD
