@@ -1,5 +1,19 @@
 # WOR-435 expanded scope — synthesis of brutus + ux-researcher + architect-reviewer
 
+> **STATUS — BLOCKED for implementation (2026-06-08).** Thermo-nuclear review on PR #286
+> flagged the recovery manifest design (§5) as a High-severity SR-04/SR-05 conflict:
+> it writes reconstructed `sk-*` API keys in plaintext to `~/worthless-recovery-<ts>.txt`,
+> creating a durable secret bundle that survives via Time Machine, iCloud, Dropbox, and
+> post-uninstall theft. **Do not implement §5 as written.** Resolve via one of three
+> alternatives before WOR-435 code lands:
+>
+> 1. **Restore-in-place only** for Safe tier — manifest = paths + status only, no key export.
+> 2. **Fernet-encrypted manifest** keyed to machine keyring (same trust boundary as shard-B).
+> 3. **`worthless recover` (reinstall + unlock) BEFORE wipe** — keys never written to a file.
+>
+> Full review: `reviews/thermo-nuclear/pr-286.md` (H1, H2, M1, M3). Schema (§1), tiered
+> uninstall flow (§4), grandfathering (§6.6), and cross-ticket impact remain valid.
+
 ## The bug, in one sentence
 
 `worthless lock` rewrites user-owned `.env` files; current uninstall recipe wipes `~/.worthless` (deleting shard-B) without touching those `.env` files — projects are silently bricked, real keys unrecoverable.
