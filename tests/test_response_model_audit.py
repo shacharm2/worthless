@@ -126,9 +126,14 @@ def test_bounded_increment_caps_cardinality_at_1024() -> None:
     counter: dict[tuple[str, str], int] = {}
     for i in range(2000):
         bounded_increment(counter, (f"req-{i}", f"resp-{i}"))
-    assert len(counter) <= 1024, (
-        f"counter grew to {len(counter)} entries — unbounded growth is an "
-        f"OOM vector (worthless-cchq)"
+    # Exactly 1024: the first 1024 keys land, the remaining 976 are
+    # dropped at the cap. == catches both unbounded growth AND the
+    # silent-stop-early regression that <= would hide.
+    assert len(counter) == 1024, (
+        f"counter has {len(counter)} entries, expected exactly 1024 "
+        f"(first 1024 land, 976 dropped at cap) — either unbounded "
+        f"growth (OOM vector, worthless-cchq) or implementation stops "
+        f"growing before reaching the cap (silent loss of legit signal)"
     )
 
 
