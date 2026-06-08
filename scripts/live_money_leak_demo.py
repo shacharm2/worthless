@@ -153,7 +153,7 @@ async def _amain() -> int:
     print("WOR-696 live e2e demo — money-leak closure")
     print("=" * 72)
 
-    with tempfile.TemporaryDirectory(prefix="wor696-live-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="ceiling-live-") as tmp:
         db_path = str(Path(tmp) / "proxy.db")
         fernet_key = Fernet.generate_key()
         repo, split_result = await _enroll(db_path, fernet_key)

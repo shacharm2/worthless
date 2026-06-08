@@ -61,8 +61,8 @@ from tests._fakes import pin_shard_b
 from tests._fakes.fake_ipc_supervisor import FakeIPCSupervisor
 
 
-ALIAS = "wor696-key"
-API_KEY = "sk-WOR696-1234567890abcdefghij"
+ALIAS = "ceiling-test-key"
+API_KEY = "sk-" + "CEILING-test-fixture-" + "1234567890abcd"  # noqa: S105
 OPENAI_COMPLETIONS = "https://api.openai.com/v1/chat/completions"
 
 # Pinned floor that every fail-closed metering path must bill at. Mirrors
@@ -219,7 +219,7 @@ async def test_zero_reservation_disconnect_uses_ceiling() -> None:
     (provider, model) and charges the model's documented max output tokens
     instead of 0.
     """
-    with tempfile.TemporaryDirectory(prefix="wor696-zeroreserv-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="ceiling-zeroreserv-") as tmp:
         db_path = str(Path(tmp) / "proxy.db")
         app, db, _rules, shard_a_utf8 = await _setup_proxy(db_path)
         transport = httpx.ASGITransport(app=app)
@@ -357,7 +357,7 @@ async def test_any_model_name_admitted_cap_handled_via_global_ceiling(
     matching only one specific string would still fail at least N-1 of
     the runs (Jenny panel: single-string version was a loophole).
     """
-    with tempfile.TemporaryDirectory(prefix="wor696-passthrough-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="ceiling-passthrough-") as tmp:
         db_path = str(Path(tmp) / "proxy.db")
         app, db, _rules, shard_a_utf8 = await _setup_proxy(db_path)
         transport = httpx.ASGITransport(app=app)
@@ -451,7 +451,7 @@ async def test_stream_duration_kill_fires() -> None:
     Test uses a 0.5s duration limit so the test is fast; production
     default is 15min, operator-tunable.
     """
-    with tempfile.TemporaryDirectory(prefix="wor696-dur-kill-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="ceiling-dur-kill-") as tmp:
         db_path = str(Path(tmp) / "proxy.db")
         app, db, _rules, shard_a_utf8 = await _setup_proxy(db_path)
         # T7 will introduce these settings on app.state or ProxySettings.
@@ -534,7 +534,7 @@ async def test_idle_chunk_kill_fires() -> None:
     chunk arrival; fires if the gap exceeds the threshold; settle at
     ceiling. Test uses a 0.3s idle limit.
     """
-    with tempfile.TemporaryDirectory(prefix="wor696-idle-kill-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="ceiling-idle-kill-") as tmp:
         db_path = str(Path(tmp) / "proxy.db")
         app, db, _rules, shard_a_utf8 = await _setup_proxy(db_path)
         app.state.max_idle_between_chunks_seconds = 0.3
@@ -616,7 +616,7 @@ async def test_response_model_mismatch_counter_increments() -> None:
     Counter shape: worthless_response_model_mismatch_total{request_model,
     response_model}.
     """
-    with tempfile.TemporaryDirectory(prefix="wor696-mismatch-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="ceiling-mismatch-") as tmp:
         db_path = str(Path(tmp) / "proxy.db")
         app, db, _rules, shard_a_utf8 = await _setup_proxy(db_path)
         transport = httpx.ASGITransport(app=app)
@@ -711,7 +711,7 @@ async def test_reconnect_does_not_reset_request_timer() -> None:
     the operator decides X-Request-Id is overkill for v1, this test can
     be deferred — but the design must explicitly say so.
     """
-    with tempfile.TemporaryDirectory(prefix="wor696-reconnect-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="ceiling-reconnect-") as tmp:
         db_path = str(Path(tmp) / "proxy.db")
         app, db, _rules, shard_a_utf8 = await _setup_proxy(db_path)
         app.state.max_stream_duration_seconds = 0.5
