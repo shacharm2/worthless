@@ -125,13 +125,18 @@ def _detect_already_locked_env(env_values: dict[str, str | None]) -> str | None:
     """
     proxy_host = os.environ.get("WORTHLESS_PROXY_HOST", "127.0.0.1")
     proxy_port = resolve_port(None)
+    # SONAR python:S5332 hotspot: these are LOOPBACK proxy URL prefixes used
+    # for host:port matching, not network endpoints. The worthless proxy
+    # binds 127.0.0.1 by design (see WOR-621 plan + security-reviewer
+    # signoff: "loopback http acceptable; SSRF guards apply to server-side
+    # outbound only"). HTTPS is meaningless on loopback. NOSONAR.
     proxy_netloc_prefixes = (
-        f"http://{proxy_host}:{proxy_port}/",
+        f"http://{proxy_host}:{proxy_port}/",  # NOSONAR python:S5332 — loopback proxy
         # Loopback aliases — ``127.0.0.1`` and ``localhost`` resolve to the
         # same socket, so an entry written by one match still binds to the
         # other. Catch both regardless of how WORTHLESS_PROXY_HOST is set.
-        f"http://127.0.0.1:{proxy_port}/",
-        f"http://localhost:{proxy_port}/",
+        f"http://127.0.0.1:{proxy_port}/",  # NOSONAR python:S5332 — loopback proxy
+        f"http://localhost:{proxy_port}/",  # NOSONAR python:S5332 — loopback proxy
     )
     for var_name, value in env_values.items():
         if not (var_name.endswith("_BASE_URL") and isinstance(value, str)):
