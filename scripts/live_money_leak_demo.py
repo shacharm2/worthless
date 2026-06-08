@@ -35,7 +35,7 @@ from fastapi.responses import StreamingResponse
 
 from worthless.crypto.splitter import split_key_fp
 from worthless.proxy.app import create_app
-from worthless.proxy.ceiling import GLOBAL_CEILING_TOKENS
+from worthless.proxy.config import GLOBAL_CEILING_TOKENS
 from worthless.proxy.config import ProxySettings
 from worthless.proxy.rules import RateLimitRule, RulesEngine, SpendCapRule, TokenBudgetRule
 from worthless.storage.repository import ShardRepository, StoredShard

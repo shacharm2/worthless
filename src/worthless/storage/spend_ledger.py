@@ -16,7 +16,7 @@ import secrets
 
 import aiosqlite
 
-from worthless.proxy.ceiling import GLOBAL_CEILING_TOKENS
+from worthless.proxy.config import GLOBAL_CEILING_TOKENS
 
 __all__ = ["SpendLedger"]
 

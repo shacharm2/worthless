@@ -41,13 +41,14 @@ from worthless.proxy.metering import (
     extract_usage_openai,
     record_spend,
 )
-from worthless.proxy.response_model_audit import record_if_mismatch
+from worthless.proxy.response_model_audit import extract_response_model
 from worthless.proxy.rules import (
     RateLimitRule,
     RulesEngine,
     SpendCapRule,
     TokenBudgetRule,
     _estimate_tokens,
+    extract_model,
 )
 from worthless.storage.schema import SCHEMA
 from worthless.storage.shard_reader import ShardReader
@@ -380,18 +381,10 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         # Starlette body-caching coupling — rules receive bytes, not stream)
         body = await request.body()
 
-        # WOR-696 T7: pull request.model for the response-model mismatch
-        # audit. Best-effort — non-JSON body, missing field, wrong type
-        # all yield None and the audit becomes a no-op. Never raises.
-        _request_model: str | None = None
-        try:
-            _parsed_for_model = json.loads(body)
-            if isinstance(_parsed_for_model, dict):
-                _candidate = _parsed_for_model.get("model")
-                if isinstance(_candidate, str) and _candidate:
-                    _request_model = _candidate
-        except (ValueError, TypeError):
-            pass
+        # WOR-696 T7: request model for the response-model mismatch audit.
+        # Shares the same helper the rules engine uses for hold bookkeeping
+        # (single source of truth for "best-effort model from body bytes").
+        _request_model = extract_model(body)
 
         # Token-budget reservation amount (WOR-242). The spend CAP no longer uses
         # this — its reservation is the durable ledger hold below.
@@ -629,60 +622,63 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
                 async def _stream_with_metering() -> AsyncIterator[bytes]:
                     start = time.monotonic()
                     stream_iter = adapter_resp.stream.__aiter__()  # type: ignore[union-attr]
+                    # WOR-696 T7: response.model can only be observed once per
+                    # stream (it doesn't change mid-stream). Skip the per-chunk
+                    # audit after the first observation — saves ~9999 JSON
+                    # parses on a 10k-chunk stream.
+                    audit_done = False
                     try:
                         while True:
-                            # Total-duration kill: closes slow-drip attackers
-                            # who keep streams open past the cap.
+                            kill_reason: tuple[str, float] | None = None
                             if time.monotonic() - start > _max_stream_duration:
-                                logger.warning(
-                                    "WOR-696: stream killed at "
-                                    "max_stream_duration_seconds=%s for "
-                                    "alias=%s; settling at ceiling",
+                                kill_reason = (
+                                    "max_stream_duration_seconds",
                                     _max_stream_duration,
-                                    alias,
                                 )
-                                break
-                            # Idle-chunk kill: closes the variant where a
-                            # stream drips one byte every N minutes.
-                            try:
-                                chunk = await asyncio.wait_for(
-                                    stream_iter.__anext__(),
-                                    timeout=_max_idle_between_chunks,
-                                )
-                            except StopAsyncIteration:
-                                break
-                            except asyncio.TimeoutError:
+                            else:
+                                try:
+                                    chunk = await asyncio.wait_for(
+                                        stream_iter.__anext__(),
+                                        timeout=_max_idle_between_chunks,
+                                    )
+                                except StopAsyncIteration:
+                                    break
+                                except asyncio.TimeoutError:
+                                    kill_reason = (
+                                        "max_idle_between_chunks_seconds",
+                                        _max_idle_between_chunks,
+                                    )
+                            if kill_reason is not None:
                                 logger.warning(
-                                    "WOR-696: stream killed at "
-                                    "max_idle_between_chunks_seconds=%s for "
+                                    "WOR-696: stream killed at %s=%s for "
                                     "alias=%s; settling at ceiling",
-                                    _max_idle_between_chunks,
+                                    *kill_reason,
                                     alias,
                                 )
                                 break
                             usage_collector.feed(chunk)
-                            # WOR-696 T7: passive audit — increments
-                            # app.state.response_model_mismatch_counter on
-                            # silent provider re-routes. Wrapped in try so
-                            # an audit bug can never break the stream.
-                            try:
-                                record_if_mismatch(
-                                    app.state.response_model_mismatch_counter,
-                                    _request_model,
-                                    chunk,
-                                )
-                            except Exception:
-                                logger.debug(
-                                    "WOR-696: response-model audit failed; stream continues",
-                                    exc_info=True,
-                                )
+                            if not audit_done:
+                                # extract_response_model() and the dict
+                                # mutation below both swallow internally; the
+                                # outer try is a final stream-boundary guard.
+                                try:
+                                    response_model = extract_response_model(chunk)
+                                    if response_model is not None:
+                                        audit_done = True
+                                        if _request_model and response_model != _request_model:
+                                            counter = app.state.response_model_mismatch_counter
+                                            key = (_request_model, response_model)
+                                            counter[key] = counter.get(key, 0) + 1
+                                except Exception:
+                                    logger.debug(
+                                        "WOR-696: response-model audit failed",
+                                        exc_info=True,
+                                    )
                             yield chunk
                     finally:
-                        # Client disconnect, stream end, or T7 kill: close
-                        # upstream. The BackgroundTask settle path runs after
-                        # this; usage_collector will likely lack a complete
-                        # usage block on a kill, so settle_at_estimate fires
-                        # and the ledger floors at GLOBAL_CEILING_TOKENS.
+                        # On any exit (disconnect / end / kill), close upstream.
+                        # settle_at_estimate then runs in the BackgroundTask and
+                        # floors at GLOBAL_CEILING_TOKENS when usage is unreadable.
                         await upstream_resp.aclose()  # type: ignore[union-attr]
 
                 async def _record_metering():

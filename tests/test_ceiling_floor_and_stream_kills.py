@@ -66,7 +66,7 @@ API_KEY = "sk-" + "CEILING-test-fixture-" + "1234567890abcd"  # noqa: S105
 OPENAI_COMPLETIONS = "https://api.openai.com/v1/chat/completions"
 
 # Pinned floor that every fail-closed metering path must bill at. Mirrors
-# the production constant `GLOBAL_CEILING_TOKENS` in worthless.proxy.ceiling.
+# the production constant `GLOBAL_CEILING_TOKENS` in worthless.proxy.config.
 # Under the global-ceiling design (Simplification 1, 2026-06-07), there is
 # no per-model ceiling map — one floor applies to every model name.
 EXPECTED_FLOOR_TOKENS = 128_000
@@ -295,7 +295,7 @@ async def test_zero_reservation_disconnect_uses_ceiling() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_ceiling_module_has_no_registry() -> None:
+def test_ceiling_has_no_registry() -> None:
     """Worthless does NOT maintain a model registry — lock that into code.
 
     If anyone ever re-introduces is_known_model / ceiling_for / KNOWN_MODELS,
@@ -304,23 +304,40 @@ def test_ceiling_module_has_no_registry() -> None:
     OpenRouter / Azure / Enterprise / custom-URL deployments — undoing it
     silently would re-introduce friction on hundreds of legitimate
     deployments.
+
+    The constant lives in worthless.proxy.config (alongside the other
+    WOR-696 tunable defaults). The originally-anticipated `ceiling.py`
+    module was deleted as anticipatory abstraction. This test grep-bans
+    the registry symbols from the whole `worthless.proxy` package so a
+    future contributor can't sneak them in under any module name.
     """
-    from worthless.proxy import ceiling
+    import pkgutil
 
-    # The constant exists and is what the AC pinned.
-    assert hasattr(ceiling, "GLOBAL_CEILING_TOKENS")
-    assert ceiling.GLOBAL_CEILING_TOKENS == 128_000
+    from worthless.proxy import config as proxy_config
 
-    # The forbidden registry attrs DO NOT exist.
-    for forbidden in ("is_known_model", "ceiling_for", "KNOWN_MODELS"):
-        assert not hasattr(ceiling, forbidden), (
-            f"ceiling module re-introduced {forbidden!r} — this would "
-            f"silently re-add a model registry. WOR-696 simplification "
-            f"explicitly forbids it (see Linear ticket history); the "
-            f"global ceiling makes the registry pointless friction. "
-            f"If you genuinely need to track models, do it as "
-            f"observability (a metric), not as a gate."
-        )
+    # The constant exists at its new home and is what the AC pinned.
+    assert hasattr(proxy_config, "GLOBAL_CEILING_TOKENS")
+    assert proxy_config.GLOBAL_CEILING_TOKENS == 128_000
+
+    # The forbidden registry attrs DO NOT exist on config — and don't
+    # appear as module attributes anywhere in worthless.proxy.
+    import worthless.proxy as proxy_pkg
+
+    forbidden = ("is_known_model", "ceiling_for", "KNOWN_MODELS")
+    for module_info in pkgutil.iter_modules(proxy_pkg.__path__):
+        try:
+            mod = __import__(f"worthless.proxy.{module_info.name}", fromlist=["_"])
+        except Exception:  # noqa: S112 — modules with import-time side effects skip
+            continue
+        for name in forbidden:
+            assert not hasattr(mod, name), (
+                f"worthless.proxy.{module_info.name} re-introduced {name!r} — "
+                f"this would silently re-add a model registry. WOR-696 "
+                f"simplification explicitly forbids it; the global ceiling "
+                f"makes the registry pointless friction. If you genuinely "
+                f"need to track models, do it as observability (a metric), "
+                f"not as a gate."
+            )
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,6 @@
-"""Unit tests for the response-model audit module (WOR-696).
+"""Unit tests for the response-model extractor (WOR-696).
 
-These tests exercise the pure extractor + recorder helpers directly,
-without a full proxy spin-up. They pin BOTH provider SSE wire shapes:
+Tests the pure parser directly, pinning BOTH provider SSE wire shapes:
 
 - OpenAI Chat Completions: ``data: {"model":"gpt-...","choices":...}`` per chunk
 - Anthropic Messages: ``data: {"type":"message_start","message":{"model":"claude-...","..."}}``
@@ -15,7 +14,7 @@ test.
 
 from __future__ import annotations
 
-from worthless.proxy.response_model_audit import extract_response_model, record_if_mismatch
+from worthless.proxy.response_model_audit import extract_response_model
 
 
 # ---------------------------------------------------------------------------
@@ -101,61 +100,3 @@ def test_extract_returns_none_when_data_is_a_json_array_not_object() -> None:
     """Hypothetical upstream that wraps events in an array → extractor refuses."""
     chunk = b'data: [{"model":"x"}]\n\n'
     assert extract_response_model(chunk) is None
-
-
-# ---------------------------------------------------------------------------
-# record_if_mismatch — counter behavior
-# ---------------------------------------------------------------------------
-
-
-def test_record_if_mismatch_increments_on_real_mismatch() -> None:
-    counter: dict[tuple[str, str], int] = {}
-    chunk = b'data: {"model":"gpt-5","choices":[]}\n\n'
-    record_if_mismatch(counter, request_model="gpt-4o-mini", chunk=chunk)
-    assert counter == {("gpt-4o-mini", "gpt-5"): 1}
-
-
-def test_record_if_mismatch_noop_on_equal_models() -> None:
-    counter: dict[tuple[str, str], int] = {}
-    chunk = b'data: {"model":"gpt-4o-mini","choices":[]}\n\n'
-    record_if_mismatch(counter, request_model="gpt-4o-mini", chunk=chunk)
-    assert counter == {}
-
-
-def test_record_if_mismatch_noop_on_missing_request_model() -> None:
-    counter: dict[tuple[str, str], int] = {}
-    chunk = b'data: {"model":"gpt-5","choices":[]}\n\n'
-    record_if_mismatch(counter, request_model=None, chunk=chunk)
-    assert counter == {}
-
-
-def test_record_if_mismatch_noop_on_no_model_in_chunk() -> None:
-    counter: dict[tuple[str, str], int] = {}
-    chunk = b'data: {"choices":[]}\n\n'
-    record_if_mismatch(counter, request_model="gpt-4o-mini", chunk=chunk)
-    assert counter == {}
-
-
-def test_record_if_mismatch_accumulates_across_calls() -> None:
-    counter: dict[tuple[str, str], int] = {}
-    chunk = b'data: {"model":"gpt-5","choices":[]}\n\n'
-    record_if_mismatch(counter, request_model="gpt-4o-mini", chunk=chunk)
-    record_if_mismatch(counter, request_model="gpt-4o-mini", chunk=chunk)
-    record_if_mismatch(counter, request_model="gpt-4o-mini", chunk=chunk)
-    assert counter[("gpt-4o-mini", "gpt-5")] == 3
-
-
-def test_record_if_mismatch_tracks_distinct_pairs_separately() -> None:
-    counter: dict[tuple[str, str], int] = {}
-    record_if_mismatch(
-        counter,
-        request_model="gpt-4o-mini",
-        chunk=b'data: {"model":"gpt-5"}\n\n',
-    )
-    record_if_mismatch(
-        counter,
-        request_model="claude-haiku-4-5",
-        chunk=b'data: {"type":"message_start","message":{"model":"claude-opus-4-5"}}\n\n',
-    )
-    assert counter[("gpt-4o-mini", "gpt-5")] == 1
-    assert counter[("claude-haiku-4-5", "claude-opus-4-5")] == 1

@@ -27,6 +27,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from worthless.proxy.config import GLOBAL_CEILING_TOKENS
 from worthless.storage.schema import SCHEMA
 from worthless.storage.spend_ledger import SpendLedger
 
@@ -152,8 +153,6 @@ async def test_settle_at_estimate_floors_small_estimate_at_global_ceiling(tmp_pa
     Direction of error is conservative — we never under-bill on the
     fallback path.
     """
-    from worthless.proxy.ceiling import GLOBAL_CEILING_TOKENS
-
     db = await _open(tmp_path)
     try:
         ledger = SpendLedger(db)
