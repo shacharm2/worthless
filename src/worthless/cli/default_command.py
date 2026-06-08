@@ -27,13 +27,13 @@ from worthless.cli.process import resolve_port
 from worthless.cli.console import get_console
 from worthless.cli.dotenv_rewriter import build_enrolled_locations, scan_env_keys
 from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.commands.service._common import ServiceState
+from worthless.cli.commands.service.proxy_state import detect_proxy_runtime
 from worthless.cli.process import (
     build_proxy_env,
-    check_pid,
     disable_core_dumps,
     pid_path,
     poll_health,
-    read_pid,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,33 +70,28 @@ def _has_enrolled_keys(home: WorthlessHome) -> bool:
 
 
 def _proxy_is_running(home: WorthlessHome) -> tuple[bool, int | None, int]:
-    """Check if the proxy is running via PID file or health probe.
-
-    Returns (running, pid, port).
-
-    The PID file can be stale (daemon wrapper PID exits while the
-    actual uvicorn child stays alive).  As a fallback, probe the
-    default port's /healthz endpoint.
-    """
-    port = resolve_port(None)
-
-    # Try PID file first
-    pf = pid_path(home)
-    if pf.exists():
-        info = read_pid(pf)
-        if info is not None:
-            pid, recorded_port = info
-            if check_pid(pid):
-                return True, pid, recorded_port
-            # PID is dead — clean up stale file
-            pf.unlink(missing_ok=True)
-            port = recorded_port  # use the port from the stale file for health probe
-
-    # Fallback: health probe on default port (catches orphaned proxies)
-    if poll_health(port, timeout=1.0):
-        return True, None, port
-
+    """Check proxy liveness via PID file, health probe, or service state."""
+    runtime = detect_proxy_runtime(home)
+    if runtime.running:
+        return True, runtime.pid, runtime.port
     return False, None, 0
+
+
+def _service_start_hint(home: WorthlessHome, console) -> bool:
+    """If a platform service is installed but down, tell the user and stop."""
+    runtime = detect_proxy_runtime(home)
+    if runtime.service_state == ServiceState.STOPPED:
+        console.print_hint(
+            "  Proxy not running. Service is installed but stopped — run `worthless service start`."
+        )
+        return True
+    if runtime.service_state == ServiceState.FAILED:
+        console.print_hint(
+            "  Proxy not running. Service failed — "
+            "run `worthless service status` or `worthless service restart`."
+        )
+        return True
+    return False
 
 
 def show_detected_keys(
@@ -228,6 +223,8 @@ def run_default(
 
     # Phase 2: Proxy
     running, pid, port = _proxy_is_running(home)
+    if not running and _service_start_hint(home, console):
+        return
     if not running:
         disable_core_dumps()
         proxy_env = build_proxy_env(home)
