@@ -1392,7 +1392,19 @@ def _apply_unlock_stage_a(
             record = restore.oc_original_api_key_json
             try:
                 if record is None:
-                    raise ValueError("no rollback entry record stored")
+                    # G5-C clarification: distinguish "never captured" from
+                    # "captured then nulled." Lock writes (record=None, mac=None)
+                    # together when there was no openclaw entry to capture
+                    # (no_entry / relock_no_prior branches in _decide_oc_capture)
+                    # — that's a clean no-op for this provider, not a failure.
+                    # An attacker who nulls only the record while leaving the
+                    # MAC intact still fails the (record is None AND mac is not
+                    # None) tamper check below; the fernet key keeps them out
+                    # of forging a matching MAC on (None, *).
+                    if restore.expected_mac is None:
+                        # Genuine no-rollback-captured. Skip silently.
+                        continue
+                    raise ValueError("rollback mac present but record missing — tamper")
                 # G5-A (Gap 3a): enforce the G2 MAC tamper-bind HERE — the
                 # lowest layer that touches the record — so a caller that
                 # bypasses _build_oc_restores cannot skip the gate. The CLI

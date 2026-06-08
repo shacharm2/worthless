@@ -96,7 +96,17 @@ def _worker_apply_unlock(args: tuple[str, str]) -> dict[str, list]:
     provider_id = f"conc46-{alias_suffix}"
     alias = f"conc46-alias-{alias_suffix}"
 
-    result = integration.apply_unlock(aliases=[(provider_id, alias)])
+    # WOR-621 F2: apply_unlock takes list[OcRestore], not aliases tuples.
+    # The flock-race contract under test fires regardless of payload.
+    restores = [
+        integration.OcRestore(
+            provider=provider_id,
+            alias=alias,
+            oc_original_api_key_json=None,
+            plaintext_key=None,
+        )
+    ]
+    result = integration.apply_unlock(restores=restores)
 
     return {
         "providers_set": list(result.providers_set),
