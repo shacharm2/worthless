@@ -29,12 +29,16 @@ def test_extract_openai_per_chunk_model() -> None:
 
 
 def test_extract_openai_picks_first_data_event_when_chunk_carries_many() -> None:
-    """Multiple SSE events in one chunk → first ``model`` field wins."""
+    """Multiple SSE events in one chunk → FIRST ``model`` field wins.
+
+    Distinct models per event so a regression that picks the second
+    (or last, or random) event fails this test loudly.
+    """
     chunk = (
-        b'data: {"model":"gpt-5","choices":[{"delta":{"role":"assistant"}}]}\n\n'
+        b'data: {"model":"gpt-4o-mini","choices":[{"delta":{"role":"assistant"}}]}\n\n'
         b'data: {"model":"gpt-5","choices":[{"delta":{"content":"hi"}}]}\n\n'
     )
-    assert extract_response_model(chunk) == "gpt-5"
+    assert extract_response_model(chunk) == "gpt-4o-mini"
 
 
 # ---------------------------------------------------------------------------
@@ -82,10 +86,13 @@ def test_extract_returns_none_on_malformed_json() -> None:
 
 
 def test_extract_returns_none_on_non_utf8_bytes() -> None:
-    """Random binary noise (e.g. compressed framing artifacts) → None, no raise."""
+    """Random binary noise (e.g. compressed framing artifacts) → None, no raise.
+
+    The contract is None on non-extractable input. Empty-string would
+    be a parser regression (model values must be non-empty strings).
+    """
     chunk = b"\xff\xfe\x00\x01data: {\xc3\x28"
-    # extractor is forgiving (errors="ignore" on decode)
-    assert extract_response_model(chunk) in (None, "")
+    assert extract_response_model(chunk) is None
 
 
 def test_extract_returns_none_when_model_is_not_a_string() -> None:

@@ -163,9 +163,10 @@ async def _amain() -> int:
 
     class _LogCapture(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
+            # Capture handlers MUST NOT raise — would break global logging.
             try:
                 _proxy_logs.append(record.getMessage())
-            except Exception:
+            except Exception:  # noqa: S110 — intentional swallow per logging contract
                 pass
 
     _proxy_logger = logging.getLogger("worthless.proxy.app")
