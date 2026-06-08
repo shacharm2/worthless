@@ -798,3 +798,119 @@ async def test_reconnect_does_not_reset_request_timer() -> None:
         finally:
             await app.state.httpx_client.aclose()
             await db.close()
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — end-to-end: settle-at-ceiling → next request is DENIED with 402
+# ---------------------------------------------------------------------------
+
+
+async def test_cap_actually_denies_next_request_after_ceiling_settle() -> None:
+    """The user-visible promise: 'Budget blown = key never forms.'
+
+    Per the task-completion-validator finding (Wave A), the existing tests
+    prove TWO things in isolation: (1) settle floors at 128K when reservation
+    was 0, (2) the rules engine returns 402 when cumulative spend exceeds
+    the cap. Nothing chains them. This test asserts the composition:
+
+        1. Set a cap < GLOBAL_CEILING_TOKENS (here: 100_000)
+        2. Fire a no-`max_tokens` request, disconnect mid-stream
+        3. Settle floors at 128_000 → cap exceeded
+        4. Fire a SECOND request → expect 402, not 200
+
+    Without the WOR-696 floor, step 3 would write ~0 tokens, cap would not be
+    exceeded, and the next request would be ALLOWED — the leak. With the
+    floor, the cap counter actually moves and the next request is denied,
+    delivering the user-visible promise end-to-end.
+    """
+    with tempfile.TemporaryDirectory(prefix="ceiling-cap-denies-") as tmp:
+        db_path = str(Path(tmp) / "proxy.db")
+        # Tight cap: 100_000 < GLOBAL_CEILING_TOKENS (128_000), so the
+        # settle floor alone exhausts the budget.
+        app, db, _rules, shard_a_utf8 = await _setup_proxy(db_path, cap=100_000)
+        transport = httpx.ASGITransport(app=app)
+
+        body = json.dumps(
+            {
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            }
+        ).encode()
+
+        # SSE has NO usage block → BG settle hits settle_at_estimate,
+        # which floors at GLOBAL_CEILING_TOKENS.
+        sse = (
+            b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+            b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+            b"data: [DONE]\n\n"
+        )
+
+        try:
+            with respx.mock(assert_all_called=False) as router:
+                router.post(OPENAI_COMPLETIONS).mock(
+                    return_value=httpx.Response(
+                        200,
+                        headers={"content-type": "text/event-stream"},
+                        stream=httpx.ByteStream(sse),
+                    )
+                )
+
+                async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                    # ---- Request 1: leak path → settle at ceiling ----
+                    r1 = await client.post(
+                        f"/{ALIAS}/v1/chat/completions",
+                        headers={
+                            "authorization": f"Bearer {shard_a_utf8}",
+                            "content-type": "application/json",
+                        },
+                        content=body,
+                    )
+                    if r1.status_code == 200:
+                        await r1.aread()
+                    assert r1.status_code == 200, (
+                        f"setup: expected first request to succeed, got {r1.status_code}"
+                    )
+
+                    await asyncio.sleep(0.05)  # let BG settle land
+
+                    # Sanity: spend_log actually moved by the ceiling.
+                    spent_after_first = await _total_spent(db_path)
+                    assert spent_after_first >= EXPECTED_FLOOR_TOKENS, (
+                        f"precondition broken: spend after first request was "
+                        f"{spent_after_first}, expected ≥ {EXPECTED_FLOOR_TOKENS}. "
+                        f"Either settle didn't fire or the floor regressed."
+                    )
+
+                    # ---- Request 2: should be DENIED ----
+                    # Use a non-stream body to keep the test fast; the cap
+                    # check is upstream of the streaming code path.
+                    deny_body = json.dumps(
+                        {
+                            "model": "gpt-4o-mini",
+                            "messages": [{"role": "user", "content": "again"}],
+                        }
+                    ).encode()
+                    r2 = await client.post(
+                        f"/{ALIAS}/v1/chat/completions",
+                        headers={
+                            "authorization": f"Bearer {shard_a_utf8}",
+                            "content-type": "application/json",
+                        },
+                        content=deny_body,
+                    )
+
+                    # The end-to-end promise: cap denies. Today the rules
+                    # engine emits 402 (or whatever spend_cap_error_response
+                    # returns) when cumulative spend exceeds the cap.
+                    assert r2.status_code == 402, (
+                        f"end-to-end promise broken: after settle moved cap "
+                        f"counter to {spent_after_first} ≥ cap=100_000, the "
+                        f"NEXT request should be denied. Got status="
+                        f"{r2.status_code}. The leak fix is half-built if "
+                        f"the cap doesn't actually deny."
+                    )
+
+        finally:
+            await app.state.httpx_client.aclose()
+            await db.close()
