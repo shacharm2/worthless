@@ -131,9 +131,12 @@ def start_daemon(
 ) -> int:
     """Start proxy in daemon mode (setsid, write PID, detach).
 
+    .. deprecated::
+        Sidecar-less daemon start. Prefer ``start_supervised_proxy`` (default
+        command) or foreground ``worthless up``. Target removal v1.2.
+
     Returns the daemon PID on success.  Importable by other modules
-    (e.g. the default command pipeline) that need to start the proxy
-    programmatically.
+    (e.g. legacy tests) that need to start the proxy programmatically.
     """
     cmd = proxy_cmd(port)
 
