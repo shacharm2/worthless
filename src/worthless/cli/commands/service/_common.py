@@ -113,6 +113,15 @@ def service_paths(home: WorthlessHome) -> tuple[Path, str]:
     return log_path, str(home.base_dir)
 
 
+def unit_file_matches_home(path: Path, home: WorthlessHome) -> bool:
+    """Return True when *path* is a unit/plist for this ``WORTHLESS_HOME``."""
+    if not path.is_file():
+        return False
+    expected = str(home.base_dir.resolve())
+    content = path.read_text()
+    return f"<string>{expected}</string>" in content or f"WORTHLESS_HOME={expected}" in content
+
+
 def current_platform_backend_name() -> str:
     if sys.platform == "darwin":
         return "launchd"

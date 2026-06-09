@@ -129,6 +129,19 @@ class TestLaunchdBackend:
 
         assert any("bootout" in str(c) for c in calls)
 
+    def test_detect_ignores_plist_for_other_home(self, home: WorthlessHome, tmp_path: Path) -> None:
+        plist = tmp_path / "dev.worthless.proxy.plist"
+        plist.write_text(
+            templates.render_launchd_plist(
+                binary="/usr/local/bin/worthless",
+                worthless_home=str(tmp_path / "other-home"),
+                log_path=str(tmp_path / "other-home" / "proxy.log"),
+            )
+        )
+        with patch.object(launchd, "plist_path", return_value=plist):
+            status = launchd.detect_status(home, 8787)
+        assert status.state == ServiceState.NOT_INSTALLED
+
 
 class TestSystemdBackend:
     def test_install_writes_unit_enables_linger(self, home: WorthlessHome, tmp_path: Path) -> None:
@@ -223,6 +236,18 @@ class TestSystemdBackend:
         ):
             status = systemd.detect_status(home, 8787)
         assert status.state == ServiceState.FAILED
+
+    def test_detect_ignores_unit_for_other_home(self, home: WorthlessHome, tmp_path: Path) -> None:
+        unit = tmp_path / "worthless-proxy.service"
+        unit.write_text(
+            templates.render_systemd_unit(
+                binary="/usr/local/bin/worthless",
+                worthless_home=str(tmp_path / "other-home"),
+            )
+        )
+        with patch.object(systemd, "unit_path", return_value=unit):
+            status = systemd.detect_status(home, 8787)
+        assert status.state == ServiceState.NOT_INSTALLED
 
 
 def _owned_launchd_plist(home: WorthlessHome, tmp_path: Path) -> Path:

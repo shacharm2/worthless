@@ -14,6 +14,7 @@ from worthless.cli.commands.service._common import (
     resolve_worthless_binary,
     run_cmd,
     service_paths,
+    unit_file_matches_home,
     verify_proxy_health,
 )
 from worthless.cli.errors import ErrorCode, WorthlessError
@@ -83,7 +84,7 @@ def _active_state() -> str:
 
 def detect_status(home: WorthlessHome, port: int) -> ServiceStatus:
     path = unit_path()
-    if not path.is_file():
+    if not unit_file_matches_home(path, home):
         return ServiceStatus(
             state=ServiceState.NOT_INSTALLED,
             unit_path=None,
