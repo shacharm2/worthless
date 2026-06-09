@@ -315,6 +315,7 @@ def test_homepage_uses_approved_hero_tagline() -> None:
 
 def test_homepage_explains_the_product_without_hiding_the_install_path() -> None:
     index = (DOCS / "index.html").read_text(encoding="utf-8")
+    script = (DOCS / "homepage.js").read_text(encoding="utf-8")
 
     assert (
         "Worthless replaces each protected API key in your <code>.env</code> "
@@ -326,6 +327,9 @@ def test_homepage_explains_the_product_without_hiding_the_install_path() -> None
     assert "curl -sSL https://worthless.sh | sh" in index
     assert '<span class="copy-success" aria-hidden="true">Copied</span>' in index
     assert 'class="copy-check"' in index
+    assert 'id="copy-install-help"' in index
+    assert "Copy unavailable. Use the install guide below." in script
+    assert "Select the install command text." not in script
     assert ".install:hover" in index
     assert ".install:focus-visible" in index
     assert "Protected first. Your LLMs still work." not in index
@@ -350,6 +354,21 @@ def test_homepage_uses_visible_unboxed_audit_icons() -> None:
     assert "border: 0;" in audit_rule
     assert "background: transparent;" in audit_rule
     assert "flex-direction: column;" in index
+    assert 'href="#" data-audit=' not in index
+    assert index.count('href="https://claude.ai/new" data-audit="claude"') == 2
+    assert index.count('href="https://chatgpt.com/" data-audit="chatgpt"') == 2
+    assert index.count('href="https://gemini.google.com/app" data-audit="gemini"') == 2
+    assert index.count('href="https://grok.com/" data-audit="grok"') == 2
+
+
+def test_launch_page_utility_text_meets_wcag_aa_contrast() -> None:
+    index = (DOCS / "index.html").read_text(encoding="utf-8")
+    how_it_works = (DOCS / "how-it-works.html").read_text(encoding="utf-8")
+
+    assert "--ink-faint: oklch(54% 0.035 226);" in index
+    assert "color: var(--ink);" in index.split(".nav-actions .kofi {", 1)[1].split("}", 1)[0]
+    assert "--text2: #586b82;" in how_it_works
+    assert "color: var(--text);" in how_it_works.split(".nav-kofi {", 1)[1].split("}", 1)[0]
 
 
 def test_homepage_mobile_navigation_keeps_primary_actions_visible() -> None:

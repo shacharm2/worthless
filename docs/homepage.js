@@ -6,6 +6,7 @@ const beatTitle = document.getElementById("beat-title");
 const beatBody = document.getElementById("beat-body");
 const installCopy = document.getElementById("copy-install");
 const installStatus = document.getElementById("copy-install-status");
+const installHelp = document.getElementById("copy-install-help");
 const promiseExplainer = document.querySelector(".promise-explainer");
 const promiseSummary = promiseExplainer?.querySelector("summary");
 const receiptRail = document.querySelector(".receipt-rail");
@@ -107,6 +108,7 @@ promiseExplainer?.addEventListener("toggle", syncPromiseDisclosure);
 syncPromiseDisclosure();
 
 function showCopiedState() {
+  installHelp.hidden = true;
   installStatus.textContent = "Install command copied.";
   installCopy.classList.add("is-copied");
   installCopy.setAttribute("aria-label", "Install command copied");
@@ -120,6 +122,7 @@ function showCopiedState() {
 }
 
 installCopy?.addEventListener("click", async () => {
+  installHelp.hidden = true;
   const copyFromTextarea = () => {
     const textarea = document.createElement("textarea");
     textarea.value = installCommand;
@@ -148,8 +151,12 @@ installCopy?.addEventListener("click", async () => {
     if (copyFromTextarea()) {
       showCopiedState();
     } else {
-      installStatus.textContent =
-        "Copy unavailable. Select the install command text.";
+      installHelp.hidden = false;
+      installStatus.textContent = "Copy unavailable. Use the install guide below.";
+      installCopy.setAttribute(
+        "aria-label",
+        "Copy unavailable. Use the install guide below.",
+      );
     }
   }
 });

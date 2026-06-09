@@ -30,7 +30,7 @@
       --paper-deep: oklch(92.2% 0.038 224);
       --ink: oklch(29% 0.065 220);
       --ink-soft: oklch(47% 0.046 222);
-      --ink-faint: oklch(62% 0.035 226);
+      --ink-faint: oklch(54% 0.035 226);
       --accent: oklch(49% 0.105 205);
       --accent-dark: oklch(37% 0.095 205);
       --line: oklch(83% 0.035 215);
@@ -219,7 +219,7 @@
       align-items: center;
       gap: 0.35rem;
       white-space: nowrap;
-      color: oklch(99% 0.01 30);
+      color: var(--ink);
       background: oklch(76% 0.14 24);
       border-radius: 8px;
     }
@@ -473,6 +473,17 @@
       font-size: 0.8rem;
       font-weight: 750;
       text-underline-offset: 0.18em;
+    }
+
+    .copy-install-help {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 0.78rem;
+      line-height: 1.45;
+    }
+
+    .copy-install-help[hidden] {
+      display: none;
     }
 
     .copy-divider {
@@ -1697,16 +1708,16 @@
           <div class="promise-audit" aria-label="Audit Worthless with AI">
             <p>Don’t trust us. Audit with AI.</p>
             <div class="audit-icons">
-              <a class="audit-icon" href="#" data-audit="claude" aria-label="Audit with Claude" title="Audit with Claude">
+              <a class="audit-icon" href="https://claude.ai/new" data-audit="claude" aria-label="Audit with Claude" title="Audit with Claude">
                 <svg aria-hidden="true"><use href="#audit-claude"></use></svg>
               </a>
-              <a class="audit-icon" href="#" data-audit="chatgpt" aria-label="Audit with ChatGPT" title="Audit with ChatGPT">
+              <a class="audit-icon" href="https://chatgpt.com/" data-audit="chatgpt" aria-label="Audit with ChatGPT" title="Audit with ChatGPT">
                 <svg aria-hidden="true"><use href="#audit-chatgpt"></use></svg>
               </a>
-              <a class="audit-icon" href="#" data-audit="gemini" aria-label="Audit with Gemini" title="Audit with Gemini">
+              <a class="audit-icon" href="https://gemini.google.com/app" data-audit="gemini" aria-label="Audit with Gemini" title="Audit with Gemini">
                 <svg aria-hidden="true"><use href="#audit-gemini"></use></svg>
               </a>
-              <a class="audit-icon" href="#" data-audit="grok" aria-label="Audit with Grok" title="Audit with Grok">
+              <a class="audit-icon" href="https://grok.com/" data-audit="grok" aria-label="Audit with Grok" title="Audit with Grok">
                 <svg aria-hidden="true"><use href="#audit-grok"></use></svg>
               </a>
             </div>
@@ -1731,6 +1742,9 @@
                 </svg>
               </span>
             </button>
+            <p class="copy-install-help" id="copy-install-help" hidden>
+              Copy unavailable. Use the install guide below.
+            </p>
             <a class="install-guide-link" href="https://docs.wless.io/install/">Install guide</a>
           </div>
           <span class="sr-only" id="copy-install-status" aria-live="polite"></span>
@@ -1908,16 +1922,16 @@
         <div class="footer-audit" aria-label="Trust check">
           <p>Don’t trust us. Audit with AI.</p>
           <div class="audit-buttons">
-            <a class="audit-icon" href="#" data-audit="claude" aria-label="Audit with Claude" title="Audit with Claude">
+            <a class="audit-icon" href="https://claude.ai/new" data-audit="claude" aria-label="Audit with Claude" title="Audit with Claude">
               <svg aria-hidden="true"><use href="#audit-claude"></use></svg>
             </a>
-            <a class="audit-icon" href="#" data-audit="chatgpt" aria-label="Audit with ChatGPT" title="Audit with ChatGPT">
+            <a class="audit-icon" href="https://chatgpt.com/" data-audit="chatgpt" aria-label="Audit with ChatGPT" title="Audit with ChatGPT">
               <svg aria-hidden="true"><use href="#audit-chatgpt"></use></svg>
             </a>
-            <a class="audit-icon" href="#" data-audit="gemini" aria-label="Audit with Gemini" title="Audit with Gemini">
+            <a class="audit-icon" href="https://gemini.google.com/app" data-audit="gemini" aria-label="Audit with Gemini" title="Audit with Gemini">
               <svg aria-hidden="true"><use href="#audit-gemini"></use></svg>
             </a>
-            <a class="audit-icon" href="#" data-audit="grok" aria-label="Audit with Grok" title="Audit with Grok">
+            <a class="audit-icon" href="https://grok.com/" data-audit="grok" aria-label="Audit with Grok" title="Audit with Grok">
               <svg aria-hidden="true"><use href="#audit-grok"></use></svg>
             </a>
           </div>
