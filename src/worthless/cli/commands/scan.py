@@ -291,7 +291,6 @@ def _is_test_path(path: str) -> bool:
     name = parts[-1] if parts else ""
     return (
         "tests" in parts
-        or "test" in parts
         or name.startswith("test_")
         or name.endswith("_test.py")
         or name == "conftest.py"
@@ -323,7 +322,7 @@ def _format_code_findings_human(
         for file, group in by_file.items():
             count = len(group)
             env_vars = ", ".join(sorted({f.suggested_env_var for f in group}))
-            suffix = f" ×{count}" if count > 1 else ""
+            suffix = f" x{count}" if count > 1 else ""
             lines.append(f"[code] {file}  ({env_vars}){suffix}")
         if lines:
             lines.append("")
