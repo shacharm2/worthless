@@ -155,7 +155,7 @@ class TestSystemdBackend:
             calls.append(args)
             result = MagicMock()
             result.returncode = 0
-            result.stdout = "Linger=yes" if args[:3] == ["loginctl", "show-user"] else "active"
+            result.stdout = "Linger=yes" if args[:2] == ["loginctl", "show-user"] else "active"
             return result
 
         with (
