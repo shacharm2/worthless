@@ -57,13 +57,21 @@ def test_lock_routes_agent_through_proxy_or_does_not_claim_success(tmp_path):
     base_url = (
         after.get("models", {}).get("providers", {}).get(provider_name, {}).get("baseUrl", "")
     )
-    # F1 routes by rewriting the original provider's baseUrl to the proxy
-    # (``http://<host>/<alias>/v1``). A surviving real upstream means the
-    # agent still bypasses the proxy.
-    routed = base_url != "" and "api.openai.com" not in base_url
+    # F1 routes by rewriting the provider's baseUrl to the proxy:
+    # ``http://<proxy-host>/<alias>/v1`` where alias is ``<provider>-<hash>``.
+    # Assert that proxy-alias structure -- a bare "not api.openai.com" check
+    # would also accept ANY other real upstream (api.anthropic.com, openrouter)
+    # or an attacker host, so a regression routing off the proxy would ship
+    # green. The alias path is the host-independent F1 signature.
+    routed = (
+        f"/{provider_name}-" in base_url
+        and base_url.rstrip("/").endswith("/v1")
+        and "api.openai.com" not in base_url
+    )
     assert routed or result.returncode != 0, (
         f"lock exited {result.returncode} but the agent's default provider "
-        f"{provider_name!r} still has baseUrl {base_url!r} -- OpenClaw bypasses the proxy"
+        f"{provider_name!r} has baseUrl {base_url!r} -- not a proxy alias URL, "
+        "OpenClaw bypasses the proxy"
     )
 
 
