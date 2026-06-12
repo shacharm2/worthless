@@ -386,10 +386,11 @@ def _format_lock_block_human(
     if src:
         file_count = len({f.file for f in src})
         noun = "file" if file_count == 1 else "files"
+        verb = "has" if file_count == 1 else "have"
         if blocking:
-            lines.append(f"Can't lock — {file_count} {noun} have hardcoded provider URLs.")
+            lines.append(f"Can't lock — {file_count} {noun} {verb} hardcoded provider URLs.")
         else:
-            lines.append(f"Warning: {file_count} {noun} have hardcoded provider URLs.")
+            lines.append(f"Warning: {file_count} {noun} {verb} hardcoded provider URLs.")
     else:
         if blocking:
             lines.append("Can't lock — hardcoded provider URLs in test files.")
