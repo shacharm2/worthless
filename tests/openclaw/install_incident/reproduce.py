@@ -116,11 +116,23 @@ def seed(root: Path) -> dict[str, Path]:
 
 
 def run_lock(paths: dict[str, Path]) -> subprocess.CompletedProcess[str]:
-    """Invoke the real ``worthless lock`` CLI, as a user would."""
-    env = dict(os.environ)
+    """Invoke the real ``worthless lock`` CLI, as a user would.
+
+    The child env is built HERMETICALLY: every inherited ``WORTHLESS_*`` var is
+    stripped, then only the vars this harness controls are set. Without this the
+    subprocess inherits whatever ``WORTHLESS_*`` a sibling test left in
+    ``os.environ`` -- e.g. a leaked ``WORTHLESS_OPENCLAW_BIN`` makes the audit gate
+    run against the seeded *plaintext* ``openclaw.json`` and exit 73, or a
+    ``monkeypatch.delenv("WORTHLESS_KEYRING_BACKEND")`` makes ``lock`` hit a real
+    keyring in headless CI. Under ``pytest-randomly`` + xdist that flipped the
+    xfail-strict invariants below to XPASS in CI only (never locally on macOS).
+    Stripping the namespace makes ``lock``'s exit deterministic regardless of order.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("WORTHLESS_")}
     env["HOME"] = str(paths["home"])
     env["USERPROFILE"] = str(paths["home"])
     env["WORTHLESS_HOME"] = str(paths["whome"])
+    env["WORTHLESS_KEYRING_BACKEND"] = "null"
     return subprocess.run(
         ["uv", "run", "worthless", "lock", "--env", str(paths["env"])],
         cwd=str(REPO),

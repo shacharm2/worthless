@@ -36,6 +36,20 @@ from tests.openclaw.install_incident.reproduce import (
 # Each test invokes the real ``worthless lock`` CLI via subprocess.
 pytestmark = pytest.mark.timeout(240)
 
+# ``lock`` signals "protection did not take" with a DELIBERATE audit exit code:
+#   73 -- blocking plaintext present (the key is still exposed); lock refused
+#   87 -- audit could not verify / state changed; lock refused
+# The "or fails loud" half of the invariants below must accept ONLY these
+# deliberate refusals. A bare non-zero exit (an unrelated crash, or a leaked env
+# var tripping a spurious failure) is NOT the agent loudly refusing -- counting it
+# as a pass is the false-XPASS that flaked these xfail-strict tests in CI.
+_LOCK_REFUSED_EXITS = frozenset({73, 87})
+
+
+def _lock_refused(result) -> bool:
+    """True iff ``lock`` deliberately refused (audit exit), not merely crashed."""
+    return result.returncode in _LOCK_REFUSED_EXITS
+
 
 def test_lock_routes_agent_through_proxy_or_does_not_claim_success(tmp_path):
     """After a successful ``lock``, the provider the default agent uses must
@@ -90,9 +104,10 @@ def test_lock_neutralizes_cached_credential_or_fails_loud(tmp_path):
     after_auth = read_json_lenient(paths["auth_profiles"])
 
     cached_key_live = REAL_KEY in json.dumps(after_auth)
-    assert (not cached_key_live) or result.returncode != 0, (
-        "lock exited 0 but the real key is still cached in auth-profiles.json "
-        "-- OpenClaw will use it and bypass the proxy"
+    assert (not cached_key_live) or _lock_refused(result), (
+        f"lock exited {result.returncode} but the real key is still cached in "
+        "auth-profiles.json -- OpenClaw will use it and bypass the proxy "
+        "(a deliberate refusal would exit 73/87, not silently succeed)"
     )
 
 
@@ -127,7 +142,8 @@ def test_lock_preserves_openclaw_file_mode(tmp_path):
     result = run_lock(paths)
     after_mode = stat.S_IMODE(paths["cfg"].stat().st_mode)
 
-    assert after_mode == before_mode or result.returncode != 0, (
+    assert after_mode == before_mode or _lock_refused(result), (
         f"lock exited {result.returncode} and changed openclaw.json mode "
-        f"{oct(before_mode)} -> {oct(after_mode)}"
+        f"{oct(before_mode)} -> {oct(after_mode)} "
+        "(a deliberate refusal would exit 73/87, not crash)"
     )
