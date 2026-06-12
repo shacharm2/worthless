@@ -28,6 +28,18 @@ class _Sentinel(Enum):
 _USE_DEFAULT = _Sentinel.USE_DEFAULT
 
 
+def _perm_bits(mode: int | None) -> int | None:
+    """Permission bits (``0o777``) of a POSIX ``st_mode``, or ``None``.
+
+    ``enrollments.original_mode`` must store permission bits only — not the
+    full ``st_mode``, which carries file-type bits (``S_IFREG`` = ``0o100000``).
+    ``chmod`` ignores the type bits, but storing them would make ``f"{mode:o}"``
+    print ``100644`` and any ``& 0o777``-assuming reader wrong. Mask at the
+    storage boundary so no caller can persist type bits by accident.
+    """
+    return None if mode is None else mode & 0o777
+
+
 class ShardRepository:
     """Async repository that encrypts Shard B at rest with Fernet.
 
@@ -459,6 +471,7 @@ class ShardRepository:
         prefix: str | None = None,
         charset: str | None = None,
         base_url: str | None = None,
+        original_mode: int | None = None,
     ) -> None:
         """Atomically store a shard, enrollment record, and enrollment config.
 
@@ -497,11 +510,19 @@ class ShardRepository:
                     base_url,
                 ),
             )
+            # original_mode contract: INSERT OR IGNORE keeps the FIRST row for a
+            # (key_alias, var_name, env_path) tuple. That is correct on purpose —
+            # the true pre-lock mode is only knowable at the very first lock,
+            # before safe_rewrite tightens the file to 0o600. A re-lock would
+            # stat an already-0o600 file, so re-capturing would record the wrong
+            # value; keeping the first capture (or NULL, for pre-715 rows that
+            # were never captured) is the only correct behavior. Do NOT "fix"
+            # this into a backfill/UPSERT — it would persist 0o600 as "original".
             await db.execute(
                 "INSERT OR IGNORE INTO enrollments "
-                "(key_alias, var_name, env_path) "
-                "VALUES (?, ?, ?)",
-                (alias, var_name, env_path),
+                "(key_alias, var_name, env_path, original_mode) "
+                "VALUES (?, ?, ?, ?)",
+                (alias, var_name, env_path, _perm_bits(original_mode)),
             )
             await db.execute(
                 "INSERT OR IGNORE INTO enrollment_config"
@@ -512,7 +533,12 @@ class ShardRepository:
             await db.commit()
 
     async def add_enrollment(
-        self, alias: str, *, var_name: str, env_path: str | None = None
+        self,
+        alias: str,
+        *,
+        var_name: str,
+        env_path: str | None = None,
+        original_mode: int | None = None,
     ) -> None:
         """Add an enrollment row without touching the shards table.
 
@@ -521,9 +547,10 @@ class ShardRepository:
         """
         async with self._connect() as db:
             await db.execute(
-                "INSERT OR IGNORE INTO enrollments (key_alias, var_name, env_path) "
-                "VALUES (?, ?, ?)",
-                (alias, var_name, env_path),
+                "INSERT OR IGNORE INTO enrollments "
+                "(key_alias, var_name, env_path, original_mode) "
+                "VALUES (?, ?, ?, ?)",
+                (alias, var_name, env_path, _perm_bits(original_mode)),
             )
             await db.commit()
 

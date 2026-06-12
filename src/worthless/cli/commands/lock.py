@@ -308,6 +308,17 @@ async def _pass1_db_writes(
     read the user's existing ``*_BASE_URL`` value at lock time and store
     that as the upstream URL in the DB.
     """
+    # WOR-715: capture the .env's pre-lock permission bits ONCE, here in
+    # pass-1, BEFORE pass-2 (``_batch_rewrite``) rewrites the file via
+    # ``safe_rewrite`` and forces it to 0o600. During pass-1 the file is still
+    # untouched, so this is the true original mode — capturing any later would
+    # read the already-tightened 0o600 and silently record the wrong value.
+    # ``None`` on stat failure = "mode unknown, leave file as-is" at restore.
+    try:
+        original_mode: int | None = Path(env_str).stat().st_mode & 0o777
+    except OSError:
+        original_mode = None
+
     for var_name, value, detected_provider in candidates:
         # Translate registry-name → wire-protocol. Post-HF1,
         # ``detect_provider`` returns registry names like ``openrouter``
@@ -414,7 +425,9 @@ async def _pass1_db_writes(
                     charset=db_shard.charset,
                     base_url=db_shard.base_url or upstream_base_url,
                 )
-                await repo.add_enrollment(alias, var_name=var_name, env_path=env_str)
+                await repo.add_enrollment(
+                    alias, var_name=var_name, env_path=env_str, original_mode=original_mode
+                )
                 await _delete_superseded_location_enrollments(
                     repo,
                     alias=alias,
@@ -473,6 +486,7 @@ async def _pass1_db_writes(
                 prefix=sr.prefix,
                 charset=sr.charset,
                 base_url=upstream_base_url,
+                original_mode=original_mode,
             )
             planned_out.append(
                 _PlannedUpdate(
@@ -733,9 +747,7 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
     try:
         skipped: list[SkippedFile] = []
         deadline = time.monotonic() + SCAN_TIME_BUDGET_S
-        findings = scan_for_hardcoded_provider_urls(
-            [cwd], deadline=deadline, skipped=skipped
-        )
+        findings = scan_for_hardcoded_provider_urls([cwd], deadline=deadline, skipped=skipped)
         if skipped:
             # Advisory note ONLY — lock already succeeded; we don't prompt and
             # we don't change the exit code. The user can re-run the scan
@@ -748,8 +760,7 @@ def _maybe_prompt_code_scan(cwd: Path) -> None:
             # rendered "{count} {reason}" reading order and gives a stable
             # output for the same input.
             reason_summary = ", ".join(
-                f"{n} {r}"
-                for r, n in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                f"{n} {r}" for r, n in sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
             )
             typer.echo(
                 f"\nNote: post-lock source scan incomplete ({reason_summary}). "
@@ -1034,9 +1045,7 @@ def _lock_keys(
         reason_counts: dict[str, int] = {}
         for s in hang_class_skipped:
             reason_counts[s.reason] = reason_counts.get(s.reason, 0) + 1
-        reason_summary = ", ".join(
-            f"{n} {r}" for r, n in sorted(reason_counts.items())
-        )
+        reason_summary = ", ".join(f"{n} {r}" for r, n in sorted(reason_counts.items()))
         skip_lines = [
             f"worthless: source scan incomplete ({reason_summary}) — refusing to lock.",
             "An incomplete scan can't prove no hardcoded provider URLs slipped past.",
@@ -1054,9 +1063,7 @@ def _lock_keys(
             # the bypass-findings path below already uses.
             safe_file = _oc_audit.sanitise_for_message(s.file)
             skip_lines.append(f"  {safe_file}  [{s.reason}]")
-        skip_lines.append(
-            "Resolve the cause (oversized source, permission, slow disk) and re-run."
-        )
+        skip_lines.append("Resolve the cause (oversized source, permission, slow disk) and re-run.")
         raise WorthlessError(
             ErrorCode.SCAN_ERROR,
             "\n".join(skip_lines),
