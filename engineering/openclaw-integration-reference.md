@@ -106,6 +106,13 @@ Then: `docker restart` (reload config) → `worthless up` (proxy does not auto-s
 **No `worthless lock` needed between iterations** — the key split is unchanged; only OpenClaw
 config changes.
 
+> **Pre-flight (worthless-side):** before trusting *any* live result, run
+> `scripts/verify-live-rig.sh`. It greps the F1 signature (`provider_name = provider`) in both
+> the worktree source **and** the installed package inside the container, and fails with an exact
+> rebuild recipe if they diverge. This catches the "I tested the wrong code" trap — the same one
+> that made F1 look un-shipped mid-debug on this PR. The OpenClaw-side re-verify (below) answers
+> "did line numbers move?"; this answers "am I even running branch HEAD?".
+
 ### Failure ladder (each error = one missing piece)
 
 | Symptom | Missing piece |
