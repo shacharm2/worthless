@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 import sys
 import tempfile
@@ -37,6 +38,11 @@ import uvicorn
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from worthless.crypto.splitter import split_key_fp
 from worthless.proxy.app import create_app
@@ -48,6 +54,12 @@ from worthless.storage.schema import SCHEMA
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
 from _fakes import pin_shard_b  # noqa: E402
 from _fakes.fake_ipc_supervisor import FakeIPCSupervisor  # noqa: E402
+
+# The proxy logs a WARNING on every settle-at-estimate; expected here (it's how
+# the floor fires) — silence it so the TUI output stays clean.
+logging.getLogger("worthless.proxy").setLevel(logging.ERROR)
+
+console = Console()
 
 OVERRIDE_ALIAS = "override-key"
 CONTROL_ALIAS = "control-key"
@@ -143,9 +155,19 @@ async def _fire_and_disconnect(port: int, alias: str, shard_a: str) -> None:
 
 
 async def _amain() -> int:
-    print("=" * 72)
-    print("WOR-705 live demo — per-key ceiling override")
-    print("=" * 72)
+    console.print()
+    console.print(
+        Panel(
+            Text(
+                "Per-key spend-cap ceiling override — live end-to-end\n"
+                "real proxy · real SQLite · real mid-stream disconnect",
+                justify="center",
+            ),
+            title="[bold]WOR-705[/bold]",
+            border_style="cyan",
+            box=box.ROUNDED,
+        )
+    )
     with tempfile.TemporaryDirectory(prefix="override-live-") as tmp:
         db_path = str(Path(tmp) / "proxy.db")
         fernet_key = Fernet.generate_key()
@@ -195,41 +217,76 @@ async def _amain() -> int:
             print("FAIL: servers never bound")
             return 1
 
-        print(f"  proxy http://127.0.0.1:9498  |  SQLite {db_path}")
-        print(f"  {OVERRIDE_ALIAS}: ceiling_override = {OVERRIDE_VALUE}")
-        print(f"  {CONTROL_ALIAS}: no override (global {GLOBAL_CEILING_TOKENS})")
-        print()
-        print("Firing a no-max_tokens request at each, disconnecting mid-stream...")
-        await _fire_and_disconnect(9498, OVERRIDE_ALIAS, sr_override.shard_a.decode())
-        await _fire_and_disconnect(9498, CONTROL_ALIAS, sr_control.shard_a.decode())
-        await asyncio.sleep(0.3)  # let the BackgroundTask settle land
+        console.print(f"  [dim]proxy[/dim] http://127.0.0.1:9498   [dim]sqlite[/dim] {db_path}")
+        with console.status(
+            "[cyan]firing no-max_tokens requests, disconnecting mid-stream…[/cyan]"
+        ):
+            await _fire_and_disconnect(9498, OVERRIDE_ALIAS, sr_override.shard_a.decode())
+            await _fire_and_disconnect(9498, CONTROL_ALIAS, sr_control.shard_a.decode())
+            await asyncio.sleep(0.3)  # let the BackgroundTask settle land
 
         over = _spend_total(db_path, OVERRIDE_ALIAS)
         ctrl = _spend_total(db_path, CONTROL_ALIAS)
-        print()
-        print("Query the spend_log yourself:")
-        # The next line is a printed copy-paste hint, NOT an executed query.
+
+        table = Table(box=box.SIMPLE_HEAVY, header_style="bold", pad_edge=False)
+        table.add_column("key")
+        table.add_column("override", justify="right")
+        table.add_column("billed live", justify="right")
+        table.add_column("expected", justify="right")
+        table.add_column("", justify="center")
+        for alias, ov, billed, expected in (
+            (OVERRIDE_ALIAS, f"{OVERRIDE_VALUE:,}", over, OVERRIDE_VALUE),
+            (CONTROL_ALIAS, "— (global)", ctrl, GLOBAL_CEILING_TOKENS),
+        ):
+            good = billed == expected
+            table.add_row(
+                alias,
+                ov,
+                f"[bold]{billed:,}[/bold]",
+                f"{expected:,}",
+                "[green]✓[/green]" if good else "[red]✗[/red]",
+            )
+        console.print()
+        console.print(table)
+
         hint = (
-            f"  $ sqlite3 {db_path} "  # noqa: S608 — display string, not a real query
+            f"sqlite3 {db_path} "  # noqa: S608 — display string, not a real query
             '"SELECT key_alias, SUM(tokens) FROM spend_log GROUP BY key_alias"'
         )
-        print(hint)
-        print(f"  {OVERRIDE_ALIAS}|{over}")
-        print(f"  {CONTROL_ALIAS}|{ctrl}")
-        print()
+        console.print(
+            Panel(
+                Text(hint, style="dim"),
+                title="verify it yourself",
+                border_style="dim",
+                box=box.ROUNDED,
+            )
+        )
 
         ok = over == OVERRIDE_VALUE and ctrl == GLOBAL_CEILING_TOKENS
-        print("=" * 72)
         if ok:
-            print(f"PASS: override key floored at {over} (its 200K override),")
-            print(f"      control key floored at {ctrl} (the global {GLOBAL_CEILING_TOKENS}).")
-            print("      Per-key override honored live; global untouched for everyone else.")
-        else:
-            print(
-                f"FAIL: override={over} (want {OVERRIDE_VALUE}), control={ctrl} "
-                f"(want {GLOBAL_CEILING_TOKENS})"
+            console.print(
+                Panel(
+                    Text.from_markup(
+                        "[bold green]PASS[/bold green]  per-key override honored live — "
+                        f"override-key floored at its 200K, control-key at the global "
+                        f"{GLOBAL_CEILING_TOKENS:,}; everyone else untouched."
+                    ),
+                    border_style="green",
+                    box=box.ROUNDED,
+                )
             )
-        print("=" * 72)
+        else:
+            console.print(
+                Panel(
+                    Text.from_markup(
+                        f"[bold red]FAIL[/bold red]  override={over:,} "
+                        f"(want {OVERRIDE_VALUE:,}), control={ctrl:,} "
+                        f"(want {GLOBAL_CEILING_TOKENS:,})"
+                    ),
+                    border_style="red",
+                    box=box.ROUNDED,
+                )
+            )
 
         await app.state.httpx_client.aclose()
         await db.close()
