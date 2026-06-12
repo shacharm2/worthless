@@ -20,9 +20,43 @@ PROHIBITED_PATHS = [
     WEBSITE / "risk-key-material-in-python-memory.md",
     WEBSITE / "DOMAIN_PLAN.md",
     WEBSITE / "superpowers",
+    WEBSITE / "planning",
 ]
 
 TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".txt", ".xml", ""}
+
+INTERNAL_REFERENCE_NEEDLES = (
+    "website/research/",
+    "/research/",
+    "website/adversarial/",
+    "/adversarial/",
+    "website/ARCHITECTURE.md",
+    "/ARCHITECTURE.md",
+    "security-model.md",
+    "risk-key-material-in-python-memory.md",
+    "DOMAIN_PLAN.md",
+    "superpowers/plans/",
+    "website/planning/",
+    ".planning/",
+    "ROADMAP.md",
+    "worthless" + "-" + "cloud",
+)
+
+DISCOVERY_SURFACE_PATHS = (
+    WEBSITE / "sitemap.xml",
+    WEBSITE / "llms.txt",
+    WEBSITE / "robots.txt",
+)
+
+INTERNAL_URL_FRAGMENTS = (
+    "/research/",
+    "/adversarial/",
+    "ARCHITECTURE.md",
+    "security-model.md",
+    "risk-key-material-in-python-memory.md",
+    "DOMAIN_PLAN.md",
+    "/superpowers/",
+)
 
 
 def _public_text_files() -> list[Path]:
@@ -45,20 +79,24 @@ def test_website_tree_excludes_internal_planning_sources() -> None:
 
 
 def test_website_text_files_do_not_reference_internal_paths() -> None:
-    needle_patterns = (
-        "website/research/",
-        "/research/README.md",
-        "website/adversarial/",
-        "/adversarial/",
-        "DOMAIN_PLAN.md",
-        "superpowers/plans/",
-    )
     offenders: list[str] = []
     for path in _public_text_files():
         text = path.read_text(encoding="utf-8")
-        for needle in needle_patterns:
+        for needle in INTERNAL_REFERENCE_NEEDLES:
             if needle in text:
                 offenders.append(f"{path.relative_to(REPO_ROOT).as_posix()}: {needle}")
+                break
+
+    assert offenders == []
+
+
+def test_website_discovery_surfaces_exclude_internal_urls() -> None:
+    offenders: list[str] = []
+    for path in DISCOVERY_SURFACE_PATHS:
+        text = path.read_text(encoding="utf-8")
+        for fragment in INTERNAL_URL_FRAGMENTS:
+            if fragment in text:
+                offenders.append(f"{path.relative_to(REPO_ROOT).as_posix()}: {fragment}")
                 break
 
     assert offenders == []
