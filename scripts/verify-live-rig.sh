@@ -15,7 +15,6 @@ set -euo pipefail
 CONTAINER="${1:-worthless-oc-gui}"
 SIG="${2:-provider_name = provider$}"
 BRANCH_INTEGRATION="src/worthless/openclaw/integration.py"
-CONTAINER_INTEGRATION="/home/node/.local/share/uv/tools/worthless/lib/python3.11/site-packages/worthless/openclaw/integration.py"
 
 WORKTREE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 echo "worktree=$WORKTREE_ROOT branch=$(git -C "$WORKTREE_ROOT" rev-parse --abbrev-ref HEAD) head=$(git -C "$WORKTREE_ROOT" rev-parse --short HEAD)"
@@ -40,6 +39,18 @@ if [ "$BRANCH_HITS" -eq 0 ]; then
 fi
 
 # 4. installed signature?
+# Resolve the actual path INSIDE the container via Python introspection so we
+# don't hardcode the python3.NN site-packages segment (CR finding on PR #276:
+# uv tool path includes a version-specific segment; pinning python3.11 missed
+# any other Python build).
+CONTAINER_INTEGRATION=$(docker exec "$CONTAINER" bash -c \
+  "WORTHLESS_KEYRING_BACKEND=null python3 -c 'import worthless.openclaw.integration as m; print(m.__file__)' 2>/dev/null" \
+  | tr -d '[:space:]')
+if [ -z "$CONTAINER_INTEGRATION" ]; then
+  echo "FAIL: could not resolve installed integration.py path inside $CONTAINER" >&2
+  exit 5
+fi
+echo "container_integration_path=$CONTAINER_INTEGRATION"
 INSTALLED_HITS=$(docker exec "$CONTAINER" bash -c "grep -cE '$SIG' '$CONTAINER_INTEGRATION' 2>/dev/null || true" | head -1 | tr -d '[:space:]')
 INSTALLED_HITS=${INSTALLED_HITS:-0}
 echo "installed_signature_hits=$INSTALLED_HITS"

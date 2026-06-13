@@ -12,7 +12,7 @@ recognize the situation. Newest at the top.
 
 **Rule:** Capture every emergent discovery in beads. Export to Linear ONLY when team-visibility, scheduling, or non-engineer eyes actually need it — and even then, draft the proposed Linear ticket(s) inline in chat for operator confirmation before calling `save_issue`. Never mirror a bd issue to Linear by default.
 
-Originated from a session correction on 2026-06-06. The operator asked for the bd issues `worthless-ftmg` and `worthless-2ygy` to "relate back to Linear". I interpreted this as create-new-tickets and immediately fired two `save_issue` calls (WOR-692 + WOR-693) without confirmation. The operator pushed back: *"wait we reated linear tickets?"* and *"why do we need bead then if u went ahead and do linear?"* — three problems:
+Originated from a session correction on 2026-06-06. The operator asked for the bd issues `worthless-ftmg` and `worthless-2ygy` to "relate back to Linear". I interpreted this as create-new-tickets and immediately fired two `save_issue` calls (WOR-692 + WOR-693) without confirmation. The operator pushed back: *"wait we created linear tickets?"* and *"why do we need bead then if u went ahead and do linear?"* — three problems:
 
 1. **Violated** `feedback_two_eyes_for_linear_edits` — non-trivial Linear edits require inline draft + operator OK before save.
 2. **Conflated scopes.** Beads = local operator-level discoveries during execution. Linear = team-level milestone/scheduled work. These are different tools for different audiences. Mirroring one to the other adds tracking surface without value.

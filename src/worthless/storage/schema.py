@@ -115,19 +115,45 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_enrollments_null_path
 """
 
 
+async def _add_columns_if_missing(
+    db: aiosqlite.Connection,
+    migrations: dict[str, str],
+    existing_columns: set[str],
+) -> None:
+    """Run ``ALTER TABLE ... ADD COLUMN`` statements for each missing column.
+
+    Each entry in ``migrations`` is ``{col_name: full_ALTER_statement}``.
+    Columns already present in ``existing_columns`` are skipped. A racing
+    "duplicate column" error (two callers initialising the DB at once) is
+    swallowed; any other error propagates. Caller is responsible for the
+    enclosing ``db.commit()`` -- this helper does NOT commit so the caller
+    can batch multiple migrations into one transaction.
+
+    Extracts the pattern that ``_migrate_shard_format_columns`` and
+    ``_migrate_oc_rollback_columns`` both used to inline -- consolidating
+    drops cognitive complexity on the latter back under the SonarCloud
+    ceiling (PR #276 CodeRabbit nit).
+    """
+    for col_name, stmt in migrations.items():
+        if col_name in existing_columns:
+            continue
+        try:
+            await db.execute(stmt)
+        except Exception as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+
+
 async def _migrate_shard_format_columns(db: aiosqlite.Connection, shard_columns: set[str]) -> None:
     """WOR-207: prefix/charset columns for format-preserving split."""
-    _SHARD_MIGRATIONS = {
-        "prefix": "ALTER TABLE shards ADD COLUMN prefix TEXT",
-        "charset": "ALTER TABLE shards ADD COLUMN charset TEXT",
-    }
-    for col_name, stmt in _SHARD_MIGRATIONS.items():
-        if col_name not in shard_columns:
-            try:
-                await db.execute(stmt)
-            except Exception as exc:
-                if "duplicate column" not in str(exc).lower():
-                    raise
+    await _add_columns_if_missing(
+        db,
+        {
+            "prefix": "ALTER TABLE shards ADD COLUMN prefix TEXT",
+            "charset": "ALTER TABLE shards ADD COLUMN charset TEXT",
+        },
+        shard_columns,
+    )
     await db.commit()
 
 
@@ -151,17 +177,11 @@ async def _migrate_oc_rollback_columns(db: aiosqlite.Connection, shard_columns: 
     Mirrors :func:`_migrate_shard_format_columns`: duplicate-column-tolerant
     ALTERs, nullable, no backfill.
     """
-    _OC_MIGRATIONS = {
-        "oc_original_api_key_json": "ALTER TABLE shards ADD COLUMN oc_original_api_key_json TEXT",
+    _oc_migrations = {
+        "oc_original_api_key_json": ("ALTER TABLE shards ADD COLUMN oc_original_api_key_json TEXT"),
         "oc_rollback_mac": "ALTER TABLE shards ADD COLUMN oc_rollback_mac TEXT",
     }
-    for col_name, stmt in _OC_MIGRATIONS.items():
-        if col_name not in shard_columns:
-            try:
-                await db.execute(stmt)
-            except Exception as exc:
-                if "duplicate column" not in str(exc).lower():
-                    raise
+    await _add_columns_if_missing(db, _oc_migrations, shard_columns)
     # G5-C: drop the dead duplicate column if present on an existing DB.
     # SQLite ≥3.35 supports ALTER TABLE … DROP COLUMN; on older runtimes
     # this raises and the column is left in place (the column being dead
