@@ -196,14 +196,22 @@ def _run_uninstall(*, assume_yes: bool) -> None:
     # Remove the home dir last (outside the lock — we're deleting its dir).
     shutil.rmtree(home.base_dir, ignore_errors=True)
 
+    n = len(restored)
     if home.base_dir.exists():
+        # Partial wipe (e.g. an immutable/locked file survived rmtree). Tell the
+        # truth — do NOT claim "~/.worthless removed" right after warning it wasn't.
         console.print_warning(
             f"~/.worthless could not be fully removed ({home.base_dir}); delete it manually."
         )
-    console.print_success(
-        f"Worthless uninstalled. {len(restored)} .env file(s) restored to their real keys; "
-        "keychain entry and ~/.worthless removed."
-    )
+        console.print_success(
+            f"Worthless uninstalled. {n} .env file(s) restored to their real keys; "
+            "keychain entry removed (some ~/.worthless files remain — see the warning above)."
+        )
+    else:
+        console.print_success(
+            f"Worthless uninstalled. {n} .env file(s) restored to their real keys; "
+            "keychain entry and ~/.worthless removed."
+        )
 
 
 def register_uninstall_commands(app: typer.Typer) -> None:

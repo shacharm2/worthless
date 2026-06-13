@@ -219,3 +219,30 @@ def test_uninstall_calls_openclaw_undo_with_restored_aliases(
     assert calls[0], "OpenClaw undo called with an empty (provider, alias) list"
     provider, alias = calls[0][0]
     assert provider and alias, f"bad (provider, alias) tuple: {calls[0][0]!r}"
+
+
+def test_uninstall_partial_rmtree_message_is_accurate(
+    home_dir: WorthlessHome, tmp_path, monkeypatch
+) -> None:
+    """Thermo cosmetic fix: if ~/.worthless can't be fully removed, the final
+    message must NOT claim it was removed — it must disclose that files remain.
+    """
+    import worthless.cli.commands.uninstall as uninstall_mod
+    from tests.helpers import fake_key
+
+    env = tmp_path / ".env"
+    env.write_text(f"OPENAI_API_KEY={fake_key('sk-')}\n")
+    runner.invoke(app, ["lock", "--env", str(env)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+
+    # Simulate rmtree leaving the dir behind (e.g. an immutable/locked file).
+    monkeypatch.setattr(uninstall_mod.shutil, "rmtree", lambda *a, **k: None)
+
+    result = runner.invoke(
+        app, ["uninstall", "--yes"], env={"WORTHLESS_HOME": str(home_dir.base_dir)}
+    )
+    assert result.exit_code == 0, result.output
+    out = result.output.lower()
+    assert "remain" in out, "must disclose that ~/.worthless files remain"
+    assert "and ~/.worthless removed" not in out, (
+        "must NOT claim full removal when it didn't happen"
+    )
