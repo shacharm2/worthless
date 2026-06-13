@@ -141,9 +141,7 @@ def test_g4_round_trip_restores_plaintext_apikey_byte_identical(
 
     # Sanity: lock did rewrite to the proxy.
     after_lock = json.loads(seeded["config_path"].read_text(encoding="utf-8"))
-    assert after_lock["models"]["providers"]["openai"]["baseUrl"].startswith(
-        "http://127.0.0.1:"
-    )
+    assert after_lock["models"]["providers"]["openai"]["baseUrl"].startswith("http://127.0.0.1:")
     assert after_lock["models"]["providers"]["openai"]["apiKey"] != fixed_key
 
     unlocked = _unlock(home_dir, env_file)
@@ -266,6 +264,7 @@ def test_g4_db_tamper_of_rollback_record_fails_safe_at_unlock(
         separators=(",", ":"),
         sort_keys=True,
     )
+
     async def _tamper() -> None:
         async with aiosqlite.connect(str(home_dir.db_path)) as db:
             await db.execute(
@@ -274,6 +273,7 @@ def test_g4_db_tamper_of_rollback_record_fails_safe_at_unlock(
                 (attacker_record,),
             )
             await db.commit()
+
     asyncio.run(_tamper())
 
     unlocked = _unlock(home_dir, env_file)
