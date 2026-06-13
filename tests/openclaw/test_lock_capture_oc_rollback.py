@@ -46,6 +46,7 @@ from worthless.cli.bootstrap import WorthlessHome
 from worthless.openclaw.integration import (
     _parse_oc_rollback_entry_record,
     build_oc_rollback_entry_record,
+    classify_oc_entry_for_capture,
 )
 from worthless.storage.repository import ShardRepository
 
@@ -375,3 +376,56 @@ def test_g3_relock_proxy_shaped_without_prior_record_does_not_capture_shard_a(
     data = json.loads(seeded["config_path"].read_text(encoding="utf-8"))
     new_url = data["models"]["providers"]["openai"]["baseUrl"]
     assert new_url.endswith(f"/{alias}/v1"), new_url
+
+
+# ---------------------------------------------------------------------------
+# Re-lock when the live entry is GONE but a prior rollback record exists
+# (Cursor thermo-nuclear finding — re-lock data-loss bug)
+#
+# Tested at the CLASSIFIER altitude — the bug is in the pure-function
+# decision (``current_entry=None`` propagating ``(None, None)`` into the
+# upsert). The CLI surface has a re-lock preflight (ENV_ALREADY_LOCKED)
+# that masks the user-visible path on a shard-A-bearing .env, but the
+# classifier-level invariant ("a NULL live entry must never erase a prior
+# DB record") protects every caller (CLI today, programmatic API tomorrow,
+# the broad-except branch in _read_openclaw_providers_for_capture).
+# ---------------------------------------------------------------------------
+
+
+def test_classifier_no_entry_with_prior_record_reuses_prior() -> None:
+    """Pure unit: ``current_entry=None`` + a non-None prior record → ``reuse_prior``.
+
+    Mirrors the proxy-shaped reuse-prior branch. Without this rule the
+    classifier returned ``("no_entry", None, None)`` and the caller nulled
+    the DB column (see e2e test above).
+    """
+    prior = build_oc_rollback_entry_record(
+        {"baseUrl": "https://api.openai.com/v1", "apiKey": fake_openai_key()}
+    )
+
+    kind, base_url_slot, record_slot = classify_oc_entry_for_capture(
+        current_entry=None,
+        prior_entry_record_json=prior,
+        proxy_base_url="http://127.0.0.1:8787",
+    )
+
+    assert kind == "reuse_prior"
+    assert base_url_slot is None
+    assert record_slot == prior
+
+
+def test_classifier_no_entry_without_prior_returns_no_entry() -> None:
+    """Pure unit: ``current_entry=None`` + no prior → ``no_entry`` (unchanged).
+
+    Pins the original behaviour for the fresh-install path so the reuse-prior
+    fix doesn't accidentally flip new locks to a reuse semantics.
+    """
+    kind, base_url_slot, record_slot = classify_oc_entry_for_capture(
+        current_entry=None,
+        prior_entry_record_json=None,
+        proxy_base_url="http://127.0.0.1:8787",
+    )
+
+    assert kind == "no_entry"
+    assert base_url_slot is None
+    assert record_slot is None

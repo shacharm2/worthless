@@ -269,8 +269,19 @@ def classify_oc_entry_for_capture(
 
     Decisions per WOR-649 Pass-1:
 
-    * ``current_entry is None`` → ``("no_entry", None, None)``. Nothing on
-      disk to capture (fresh OpenClaw, or the user removed the entry).
+    * ``current_entry is None`` AND a ``prior_entry_record_json`` exists →
+      ``("reuse_prior", None, prior_entry_record_json)``. The live entry is
+      gone from openclaw.json (deleted by hand, parse failure swallowed by
+      :func:`_read_openclaw_providers_for_capture`'s broad except) but the
+      DB row carries the genuine pre-first-lock original. Reuse it verbatim
+      — same principle as the proxy-shaped reuse-prior branch below. The
+      prior record IS the source of truth about what was there before lock;
+      a missing live entry must NEVER null the DB column (the upsert SQL is
+      ``ON CONFLICT DO UPDATE SET oc_original_api_key_json = excluded.oc_original_api_key_json``,
+      so propagating ``None`` here is destructive — caught by Cursor's
+      thermo-nuclear review).
+    * ``current_entry is None`` AND no prior record → ``("no_entry", None, None)``.
+      Truly nothing to capture (fresh install, never locked this alias).
       Lock-core still writes the new proxy entry; the rollback row stays
       NULL and unlock fail-safe-skips that alias.
     * Entry's ``baseUrl`` is proxy-shaped (a previous lock already rewrote
@@ -291,6 +302,11 @@ def classify_oc_entry_for_capture(
     pins the CLI-level outcomes of each branch.
     """
     if current_entry is None:
+        if prior_entry_record_json is not None:
+            # Reuse-prior on missing live entry: identical principle to the
+            # proxy-shaped reuse-prior branch below — a NULL live entry must
+            # never erase a prior DB record.
+            return ("reuse_prior", None, prior_entry_record_json)
         return ("no_entry", None, None)
 
     raw_url = current_entry.get("baseUrl")
