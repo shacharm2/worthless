@@ -123,6 +123,12 @@ jobs:
 
       # ===== Assertion 1b: docs image tags match the released version =======
       - name: A1b — docs/ pinned image tags == released version
+        # Run even if A1 / the resolve step failed: a transient PyPI/GH network
+        # blip must not silently skip this daily docs-drift backstop (the one
+        # run meant to catch a release that moved with no docs PR). If the
+        # network-resolved version is empty, check_docs_versions.py falls back
+        # to install.sh's in-repo pin — still a useful no-network check.
+        if: ${{ !cancelled() }}
         env:
           LATEST_VERSION: ${{ steps.versions.outputs.latest_version }}
         run: |
