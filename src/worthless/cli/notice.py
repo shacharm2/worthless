@@ -47,10 +47,14 @@ def maybe_show_as_is_notice(console: WorthlessConsole) -> bool:
     console.print_notice(AS_IS_NOTICE)
 
     try:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.touch(mode=0o600, exist_ok=True)
+        # Never CREATE the home dir from a legal notice: doing so would flip
+        # the `base_dir.exists()` first-run heuristic other commands rely on
+        # (e.g. status provisions a keystore only if the home already exists).
+        # Persist the marker only once the home exists; until then the notice
+        # may show again, which is legally harmless ("shown at least once").
+        if marker.parent.exists():
+            marker.touch(mode=0o600, exist_ok=True)
     except OSError:
-        # Showing the notice is what matters; persisting the marker is
-        # best-effort. Worst case it shows again next run on a broken home.
+        # Showing the notice is what matters; persisting it is best-effort.
         pass
     return True

@@ -61,3 +61,21 @@ def test_notice_never_pollutes_json_stdout(tmp_path) -> None:
     env = {"WORTHLESS_HOME": str(tmp_path)}
     result = runner.invoke(_app(), ["status", "--json"], env=env)
     assert "AS IS" not in result.stdout
+
+
+def test_notice_does_not_create_home_dir(tmp_path, monkeypatch) -> None:
+    # A legal notice must never provision the home dir — that would flip the
+    # base_dir.exists() first-run heuristic other commands depend on.
+    home = tmp_path / "never-created"
+    monkeypatch.setenv("WORTHLESS_HOME", str(home))
+    console = WorthlessConsole()
+    assert maybe_show_as_is_notice(console) is True  # still shows
+    assert not home.exists()  # but did not create the home or the marker
+
+
+def test_notice_shows_under_quiet(tmp_path, monkeypatch) -> None:
+    # Legal intent: the AS-IS notice shows even under --quiet (once).
+    monkeypatch.setenv("WORTHLESS_HOME", str(tmp_path))
+    console = WorthlessConsole(quiet=True)
+    assert maybe_show_as_is_notice(console) is True
+    assert (tmp_path / ".warranty-ack").exists()
