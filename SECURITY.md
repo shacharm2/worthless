@@ -56,8 +56,11 @@ Your API key is split in two on the client using a format-preserving one-time
 pad. Shard A replaces the original key in your `.env`, it looks like a real
 key but is cryptographically useless alone. Shard B lives on the proxy,
 Fernet-encrypted at rest. Every request hits the rules engine **before** the
-key reconstructs: spend cap blown, rate limit exceeded, model not allowed =
-the key never forms and the request never leaves the proxy.
+key reconstructs: if a rule denies it (spend cap, rate limit, model not
+allowed), the key is not reconstructed and the request never leaves the proxy.
+Because the spend check estimates cost before each call, a single in-flight
+request can exceed a spend cap by up to the cost of one call before the next is
+denied.
 
 ## Full threat model
 
