@@ -1346,26 +1346,35 @@ def _lock_keys(
             _oc_gate = _openclaw_audit_preflight()
 
             # F7 (WOR-648 / WOR-621 AC5): proxy health gate, alongside the
-            # audit gate above — BEFORE any DB or .env write. Fires
-            # UNCONDITIONALLY (not gated on OpenClaw detection): the .env
-            # rewrite always points the *_BASE_URL at the proxy regardless of
-            # whether OpenClaw is present, so a dead proxy ALWAYS yields a
-            # half-locked .env (shard-A written + URL pointing at nothing) +
-            # DB row, stranding the key with no recovery path. Earlier guard
-            # (``if detect().present``) made this a fail-safe only when
-            # OpenClaw was detected — a detect() false-negative (container
-            # off at lock time, non-standard home, foreign-owned config) would
-            # silently skip the gate. Aborting HERE keeps .env, DB, and
-            # ~/.openclaw/openclaw.json (when present) byte-for-byte unchanged.
-            _probe_port = resolve_port(None)
-            if not check_proxy_health(_probe_port)["healthy"]:
-                raise WorthlessError(
-                    ErrorCode.PROXY_NOT_RUNNING,
-                    f"Worthless proxy is not responding on port {_probe_port}. "
-                    "Nothing was changed — your .env, database, and "
-                    "~/.openclaw/openclaw.json are untouched. Start the proxy "
-                    "(`worthless up`) and re-run `worthless lock`.",
-                )
+            # audit gate above — BEFORE any DB or .env write. Gated on
+            # ``_openclaw_integration.detect().present`` because non-OpenClaw
+            # users follow a documented ``worthless lock`` → ``worthless wrap``
+            # flow: lock writes ``*_BASE_URL`` pointing at the chosen port,
+            # then ``wrap`` binds that same port and forwards (the v0.3.4
+            # magic-moment contract, pinned by
+            # tests/user_flows/test_wrap_magic_moment.py). Requiring the proxy
+            # up at lock time would break that journey. For OpenClaw users
+            # the gate IS load-bearing: if the proxy is down, the lock
+            # would write the OpenClaw provider's baseUrl at a dead proxy
+            # and OpenClaw would route there permanently — a half-locked
+            # state that strands the key. Aborting here keeps .env, DB, and
+            # ~/.openclaw/openclaw.json byte-for-byte unchanged.
+            #
+            # KNOWN LIMITATION: ``detect()`` can false-negative on hosts
+            # that actually do have OpenClaw (foreign-owned ~/.openclaw in
+            # Docker shared-vol mode, non-standard home, container off at
+            # lock time). Tracked separately — harden detect() or add a
+            # raw-fs fallback so the gate fires even when detect() misses.
+            if _openclaw_integration.detect().present:
+                _probe_port = resolve_port(None)
+                if not check_proxy_health(_probe_port)["healthy"]:
+                    raise WorthlessError(
+                        ErrorCode.PROXY_NOT_RUNNING,
+                        f"Worthless proxy is not responding on port {_probe_port}. "
+                        "Nothing was changed — your .env, database, and "
+                        "~/.openclaw/openclaw.json are untouched. Start the proxy "
+                        "(`worthless up`) and re-run `worthless lock`.",
+                    )
 
             planned: list[_PlannedUpdate] = []
             try:
