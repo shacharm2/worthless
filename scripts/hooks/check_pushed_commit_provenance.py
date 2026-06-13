@@ -62,20 +62,41 @@ def check_commit(sha: str, cwd: str | None = None) -> list[str]:
 
 
 def pushed_commits(cwd: str | None = None) -> list[str]:
-    """Commits this push would add — the pre-commit range, else a safe fallback."""
+    """Commits this push would add — the pre-commit range, else a safe fallback.
+
+    Fails closed: if git cannot enumerate the range (non-zero exit), raise so
+    the hook BLOCKS the push rather than silently passing it unchecked. An
+    empty range (zero new commits) is legitimate and returns ``[]``.
+    """
     frm = os.environ.get("PRE_COMMIT_FROM_REF") or ""
     to = os.environ.get("PRE_COMMIT_TO_REF") or "HEAD"
     if frm and set(frm) != {"0"}:  # all-zero from-ref == brand-new branch
         rng = f"{frm}..{to}"
     else:
         rng = "origin/main..HEAD"
-    out = _git("rev-list", rng, cwd=cwd)
-    return out.split() if out else []
+    proc = subprocess.run(
+        ["git", "rev-list", rng],  # noqa: S607 — git resolved from PATH by design
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"git rev-list {rng!r} failed (exit {proc.returncode}): {proc.stderr.strip()}"
+        )
+    return proc.stdout.split()
 
 
 def main() -> int:
+    try:
+        shas = pushed_commits()
+    except RuntimeError as exc:
+        # Fail closed: cannot enumerate the pushed commits -> block the push.
+        print(f"pre-push BLOCKED: {exc} -- refusing to pass unchecked.", file=sys.stderr)
+        return 1
     violations: list[str] = []
-    for sha in pushed_commits():
+    for sha in shas:
         violations.extend(check_commit(sha))
     if not violations:
         return 0

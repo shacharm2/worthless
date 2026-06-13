@@ -11,6 +11,8 @@ import importlib.util
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _HOOK = (
     Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "check_pushed_commit_provenance.py"
 )
@@ -74,3 +76,18 @@ def test_wrong_author_is_flagged(tmp_path) -> None:
     assert any("not the canonical identity" in p for p in problems)
     # unsigned + wrong-author == two distinct problems
     assert len(problems) == 2
+
+
+def test_all_allowed_bots_pass() -> None:
+    # Every explicitly allowlisted bot identity must be accepted.
+    for email in hook.ALLOWED_BOT_AUTHORS:
+        assert hook.is_allowed_author(email), email
+
+
+def test_fails_closed_when_git_errors(tmp_path, monkeypatch) -> None:
+    # cwd is not a git repo -> `git rev-list` exits non-zero -> must RAISE so
+    # the hook blocks the push, never silently pass it unchecked (fail closed).
+    monkeypatch.delenv("PRE_COMMIT_FROM_REF", raising=False)
+    monkeypatch.delenv("PRE_COMMIT_TO_REF", raising=False)
+    with pytest.raises(RuntimeError):
+        hook.pushed_commits(cwd=str(tmp_path))
