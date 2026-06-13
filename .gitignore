@@ -97,6 +97,7 @@ dist/
 
 # Internal — not published to the public repo (WOR-532)
 .beads/
+tests/openclaw/_artifacts/
 .planning/
 .reviews/
 reviews/thermo-nuclear/
