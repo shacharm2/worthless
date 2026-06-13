@@ -351,8 +351,8 @@ def test_homepage_uses_approved_hero_tagline() -> None:
         "Worthless makes leaked keys worthless. How?</summary>" in index
     )
     assert (
-        "Your API key gets leaked. Or stolen. Doesn't matter. It won't work. "
-        "It's Worthless." in coming_soon
+        "Your API key ends up in a leaked .env. The half sitting there "
+        "can't call the provider on its own." in coming_soon
     )
 
 
