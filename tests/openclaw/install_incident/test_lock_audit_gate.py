@@ -678,6 +678,21 @@ class TestAC12WOR545LoadBearingTestExists:
             "criterion). Re-introducing it means the proxy bypass is back."
         )
 
+    def test_load_bearing_test_wired_in_docker_security_workflow(self) -> None:
+        """AC 12b: docker-security.yml runs the behavioral load-bearing test."""
+        workflow = Path(__file__).resolve().parents[3] / ".github/workflows/docker-security.yml"
+        content = workflow.read_text()
+        assert "test_proxy_load_bearing.py" in content, (
+            "WOR-621: load-bearing test must run in docker-security workflow"
+        )
+        assert "openclaw and docker" in content, (
+            'load-bearing pytest step must pass -m "openclaw and docker" '
+            "(pyproject addopts exclude docker/openclaw by default)"
+        )
+        assert "tests/openclaw/**" in content, (
+            "docker-security paths must include tests/openclaw/**"
+        )
+
 
 # =========================================================================== #
 # ADVERSARIAL TESTS                                                             #
