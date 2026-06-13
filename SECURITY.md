@@ -4,34 +4,33 @@
 
 | Version | Supported |
 |---------|-----------|
-| v0.x (Python PoC) | Yes — security fixes applied |
+| v0.x (Python PoC) | Yes, security fixes applied |
 
 ## Reporting a Vulnerability
 
-I take security seriously. Worthless exists to protect API keys — a vulnerability here has real consequences.
+Worthless exists to protect API keys, a vulnerability here has real consequences.
 
 ### How to Report
 
-- **Preferred:** [GitHub Private Vulnerability Reporting](https://github.com/worthless-dev/worthless/security/advisories/new)
-- **Alternative:** Email `security@worthless.dev`
+- **Preferred:** [GitHub Private Vulnerability Reporting](https://github.com/shacharm2/worthless/security/advisories/new)
+- **Alternative:** Email `security@wless.io`
 
-### Response Timeline
+### Response timeline
 
-| Stage | SLA |
-|-------|-----|
-| Acknowledgment | 48 hours |
-| Triage & severity assessment | 7 days |
-| Fix or mitigation | Best-effort, proportional to severity |
-| Public disclosure | 90 days (coordinated) |
+Solo maintainer, response time is bounded by real life. Acknowledgment,
+triage, fix, and coordinated disclosure are all handled on a best-effort
+basis, proportional to severity, with no committed timeframe. If a report
+sits without reply for a while, ping again or escalate publicly.
 
 ### Scope
 
 Vulnerabilities in the following areas are in scope:
 
-- **Crypto** — key splitting, reconstruction, commitment scheme, zeroing
-- **Proxy** — gate-before-reconstruct bypass, request smuggling, error leakage
-- **Storage** — shard encryption at rest, repository access controls
-- **CLI** — credential handling, shard exposure, command injection
+- **Crypto**, key splitting, reconstruction, commitment scheme, zeroing
+- **Proxy**, gate-before-reconstruct bypass, request smuggling, error leakage
+- **Storage**, shard encryption at rest, repository access controls
+- **CLI**, credential handling, shard exposure, command injection
+- **Installer**, the `curl -sSL https://worthless.sh | sh` supply chain. Trust roots and what `install.sh` verifies today: [docs/install-security.md](docs/install-security.md).
 
 ### Out of Scope
 
@@ -51,6 +50,22 @@ As an open-source project, you are encouraged to audit and test the code. Please
 
 English.
 
-## Security Posture
+## How the split-key model works (in one paragraph)
 
-For a complete threat model, architectural invariants, known limitations, and confidence levels, see [SECURITY_POSTURE.md](SECURITY_POSTURE.md).
+Your API key is split in two on the client using a format-preserving one-time
+pad. Shard A replaces the original key in your `.env`, it looks like a real
+key but is cryptographically useless alone. Shard B lives on the proxy,
+Fernet-encrypted at rest. Every request hits the rules engine **before** the
+key reconstructs: if a rule denies it (spend cap, rate limit, model not
+allowed), the key is not reconstructed and the request never leaves the proxy.
+Because the spend check estimates cost before each call, a single in-flight
+request can exceed a spend cap by up to the cost of one call before the next is
+denied.
+
+## Full threat model
+
+Architectural invariants, known limitations, breach scenarios, forensic
+logging gaps, and residual risk: [docs/security.md](docs/security.md).
+
+Contributor invariants (the SR-\* rules enforced by CI):
+[CONTRIBUTING-security.md](CONTRIBUTING-security.md).

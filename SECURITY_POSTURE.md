@@ -10,7 +10,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## TL;DR
 
-Worthless makes stolen API keys worthless to the thief. The real key is split into two XOR shards on the client — neither half reveals anything alone. Every request passes through a rules engine that enforces spend caps before the key ever reconstructs. Budget blown = key never forms = request never reaches the provider.
+Worthless makes stolen API keys worthless to the thief. The real key is split into two XOR shards on the client — neither half reveals anything alone. Every request passes through a rules engine that enforces spend caps before the key reconstructs: a denied request is not reconstructed and never reaches the provider. Because the spend check estimates cost before each call, a single in-flight request can exceed a cap by up to the cost of one call before the next is denied.
 
 Three architectural invariants protect this claim. All three are **Enforced** (CI-tested). The Python PoC has known memory-safety limitations documented below with a concrete Rust hardening path.
 
