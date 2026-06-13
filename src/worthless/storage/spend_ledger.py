@@ -23,6 +23,10 @@ __all__ = ["SpendLedger"]
 # 128-bit CSPRNG handle (SR-08: CSPRNG only — never the stdlib ``random``).
 _HANDLE_BYTES = 16
 
+# Largest value SQLite can store in a signed-64-bit INTEGER column. A charge
+# above this raises OverflowError on INSERT (brutus PR #294, _effective_ceiling).
+_SQLITE_INT64_MAX = 2**63 - 1
+
 
 class SpendLedger:
     """Hold / settle / refund / sweep over the ``pending_charges`` table."""
@@ -149,6 +153,11 @@ class SpendLedger:
         defensively — any conversion failure fails CLOSED to the global floor
         rather than crashing (and rolling back) the settle/sweep transaction.
         worthless-y14x: a float truncates toward zero, conservative for a floor.
+        brutus PR #294: a value >= 2**63 PARSES via int() but is too large for
+        SQLite's signed-64-bit INTEGER, so charging it would crash the spend_log
+        INSERT with OverflowError — which is NOT OperationalError, so the
+        settle/sweep guards would miss it and roll back (orphan + under-bill).
+        Treat a non-representable value as garbage → the global floor too.
         NULL → the global floor. The global is an inviolable minimum regardless
         of what is stored.
         """
@@ -157,6 +166,9 @@ class SpendLedger:
         try:
             value = int(override)  # type: ignore[arg-type]
         except (TypeError, ValueError, OverflowError):
+            return GLOBAL_CEILING_TOKENS
+        if value > _SQLITE_INT64_MAX:
+            # Not storable as a spend_log charge — fail closed, never crash.
             return GLOBAL_CEILING_TOKENS
         return max(value, GLOBAL_CEILING_TOKENS)
 

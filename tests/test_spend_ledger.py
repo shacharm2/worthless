@@ -889,3 +889,55 @@ async def test_sweep_fails_closed_on_unmigrated_db(tmp_path) -> None:
         assert await _committed(db, "k1") == GLOBAL_CEILING_TOKENS
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_oversized_override_fails_closed_to_global(tmp_path) -> None:
+    """worthless-8xdq follow-up (brutus PR #294): a stored override >= 2^63
+    PARSES via int() but is too large for SQLite's signed-64-bit INTEGER, so
+    charge=max(estimate, huge) would crash the spend_log INSERT with
+    OverflowError (NOT OperationalError — the fail-closed guards miss it).
+    Treat a non-representable value as garbage -> the global floor, no crash.
+    """
+    db = await _open(tmp_path)
+    try:
+        # Forced in via direct SQL (text; SQLite INTEGER affinity keeps it).
+        await db.execute(
+            "INSERT OR REPLACE INTO enrollment_config (key_alias, ceiling_override) "
+            "VALUES ('k1', '99999999999999999999999')"
+        )
+        await db.commit()
+        ledger = SpendLedger(db)
+        h = await ledger.hold("k1", estimate=0, cap=10_000_000, provider="openai")
+        await ledger.settle_at_estimate(h)
+        assert await _committed(db, "k1") == GLOBAL_CEILING_TOKENS, (
+            "oversized override must fail closed to the global floor, not crash"
+        )
+        assert await _held(db, "k1") == 0, "hold must not be orphaned"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_oversized_override_does_not_block_sweep_batch(tmp_path) -> None:
+    """A single oversized-override orphan must NOT roll back the whole sweep
+    batch (which would re-hit it forever). Both orphans get billed."""
+    db = await _open(tmp_path)
+    try:
+        await db.execute(
+            "INSERT OR REPLACE INTO enrollment_config (key_alias, ceiling_override) "
+            "VALUES ('poison', '99999999999999999999999')"
+        )
+        for alias in ("poison", "ok"):
+            await db.execute(
+                "INSERT INTO pending_charges (handle, key_alias, estimate, created_at, provider) "
+                "VALUES (?, ?, 0, datetime('now', '-1 hour'), 'openai')",
+                (f"h_{alias}", alias),
+            )
+        await db.commit()
+        ledger = SpendLedger(db)
+        assert await ledger.sweep(max_age_seconds=60) == 2
+        assert await _committed(db, "poison") == GLOBAL_CEILING_TOKENS
+        assert await _committed(db, "ok") == GLOBAL_CEILING_TOKENS
+    finally:
+        await db.close()
