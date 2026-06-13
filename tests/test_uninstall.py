@@ -95,3 +95,127 @@ def test_uninstall_idempotent_second_run_is_clean(home_dir: WorthlessHome, tmp_p
         app, ["uninstall", "--yes"], env={"WORTHLESS_HOME": str(home_dir.base_dir)}
     )
     assert second.exit_code == 0, second.output
+
+
+def test_uninstall_aborts_wipe_when_a_restore_fails(
+    home_dir: WorthlessHome, tmp_path, monkeypatch
+) -> None:
+    """Key-shredder guard: if ANY restore fails, the wipe must NOT run —
+    shard-B stays in the DB and ~/.worthless survives for a retry.
+    """
+    import sqlite3
+
+    import worthless.cli.commands.uninstall as uninstall_mod
+    from tests.helpers import fake_key
+
+    env = tmp_path / ".env"
+    env.write_text(f"OPENAI_API_KEY={fake_key('sk-')}\n")
+    runner.invoke(app, ["lock", "--env", str(env)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("simulated restore failure")
+
+    monkeypatch.setattr(uninstall_mod, "_unlock_batch", boom)
+
+    result = runner.invoke(
+        app, ["uninstall", "--yes"], env={"WORTHLESS_HOME": str(home_dir.base_dir)}
+    )
+    assert result.exit_code != 0, "uninstall must ABORT when a restore fails"
+    assert home_dir.base_dir.exists(), "shredder guard FAILED: home wiped despite a failed restore"
+    n_shards = (
+        sqlite3.connect(str(home_dir.db_path)).execute("SELECT COUNT(*) FROM shards").fetchone()[0]
+    )
+    assert n_shards >= 1, "shard-B deleted despite the abort"
+
+
+def test_uninstall_enroll_only_key_warns_but_does_not_block(
+    home_dir: WorthlessHome, tmp_path
+) -> None:
+    """An enroll-only enrollment (env_path IS NULL) must NOT trip the shredder
+    guard — it warns and the uninstall still completes (wipe runs).
+    """
+    import sqlite3
+
+    from tests.helpers import fake_key
+
+    env = tmp_path / ".env"
+    env.write_text(f"OPENAI_API_KEY={fake_key('sk-')}\n")
+    runner.invoke(app, ["lock", "--env", str(env)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+
+    # Seed a separate enroll-only key (no .env) directly in the DB.
+    con = sqlite3.connect(str(home_dir.db_path))
+    con.execute(
+        "INSERT INTO shards (key_alias, shard_b_enc, commitment, nonce, provider) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("enroll-only-alias", b"x", b"c", b"n", "openai"),
+    )
+    con.execute(
+        "INSERT INTO enrollments (key_alias, var_name, env_path) VALUES (?, ?, NULL)",
+        ("enroll-only-alias", "ENROLL_ONLY_KEY"),
+    )
+    con.commit()
+    con.close()
+
+    result = runner.invoke(
+        app, ["uninstall", "--yes"], env={"WORTHLESS_HOME": str(home_dir.base_dir)}
+    )
+    assert result.exit_code == 0, f"enroll-only key blocked uninstall: {result.output}"
+    assert "enroll-only" in result.output.lower(), "no warning surfaced for the enroll-only key"
+    assert not home_dir.base_dir.exists(), "wipe did not run"
+
+
+def test_uninstall_restores_multiple_envs(home_dir: WorthlessHome, tmp_path) -> None:
+    """Two locked .env files are both restored in one uninstall."""
+    from tests.helpers import fake_key
+
+    k1, k2 = fake_key("sk-"), fake_key("sk-")
+    e1 = tmp_path / "a" / ".env"
+    e1.parent.mkdir()
+    e1.write_text(f"OPENAI_API_KEY={k1}\n")
+    e2 = tmp_path / "b" / ".env"
+    e2.parent.mkdir()
+    e2.write_text(f"OPENAI_API_KEY={k2}\n")
+    for e in (e1, e2):
+        runner.invoke(
+            app, ["lock", "--env", str(e)], env={"WORTHLESS_HOME": str(home_dir.base_dir)}
+        )
+
+    result = runner.invoke(
+        app, ["uninstall", "--yes"], env={"WORTHLESS_HOME": str(home_dir.base_dir)}
+    )
+    assert result.exit_code == 0, result.output
+    assert k1 in e1.read_text(), "first .env not restored"
+    assert k2 in e2.read_text(), "second .env not restored"
+    assert not home_dir.base_dir.exists()
+
+
+def test_uninstall_calls_openclaw_undo_with_restored_aliases(
+    home_dir: WorthlessHome, tmp_path, monkeypatch
+) -> None:
+    """uninstall must invoke the OpenClaw symmetric undo with (provider, alias)
+    tuples for every restored key — so openclaw.json isn't left pointing at a
+    dead proxy. (OpenClaw isn't installed in CI, so we spy on the call.)
+    """
+    import worthless.cli.commands.uninstall as uninstall_mod
+    from tests.helpers import fake_key
+
+    calls: list[list] = []
+
+    def spy(unlocked, console, home):  # noqa: ANN001, ANN202
+        calls.append(list(unlocked))
+        return False
+
+    monkeypatch.setattr(uninstall_mod, "_apply_openclaw_unlock", spy)
+
+    env = tmp_path / ".env"
+    env.write_text(f"OPENAI_API_KEY={fake_key('sk-')}\n")
+    runner.invoke(app, ["lock", "--env", str(env)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+
+    result = runner.invoke(
+        app, ["uninstall", "--yes"], env={"WORTHLESS_HOME": str(home_dir.base_dir)}
+    )
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1, "uninstall did not call _apply_openclaw_unlock exactly once"
+    assert calls[0], "OpenClaw undo called with an empty (provider, alias) list"
+    provider, alias = calls[0][0]
+    assert provider and alias, f"bad (provider, alias) tuple: {calls[0][0]!r}"

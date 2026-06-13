@@ -23,7 +23,7 @@ import typer
 
 from worthless.cli._repo_factory import open_repo
 from worthless.cli.bootstrap import acquire_lock, get_home
-from worthless.cli.commands.unlock import _unlock_batch
+from worthless.cli.commands.unlock import _apply_openclaw_unlock, _unlock_batch
 from worthless.cli.console import get_console
 from worthless.cli.errors import ErrorCode, WorthlessError, error_boundary
 from worthless.cli.keystore import delete_fernet_key
@@ -95,21 +95,36 @@ def _decide_mode(
 
 async def _restore_all(
     home, repo, *, assume_yes: bool, console
-) -> tuple[list[tuple[str, int | None]], list[tuple[str, str]]]:
+) -> tuple[
+    list[tuple[str, int | None]],
+    list[tuple[str, str]],
+    list[tuple[str, str]],
+    list[str],
+]:
     """Reconstruct + restore every locked .env, applying the mode policy.
 
-    Returns ``(restored, failed)``. Each restore reuses ``unlock``'s
-    transactional ``_unlock_batch`` (which rewrites the .env with the real key
-    and deletes that file's shard rows), then applies :func:`_decide_mode`.
+    Returns ``(restored, failed, unlocked, enroll_only)``:
+    - ``restored`` — ``(env_path, applied_mode)`` per file put back.
+    - ``failed`` — ``(env_path, reason)`` per file that could NOT be restored
+      (triggers the no-wipe key-shredder guard in the caller).
+    - ``unlocked`` — ``(provider, alias)`` tuples for OpenClaw symmetric undo.
+    - ``enroll_only`` — aliases with no ``.env`` (from ``worthless enroll``);
+      nothing to restore, so they DON'T block the wipe — surfaced as a warning.
+
+    Each restore reuses ``unlock``'s transactional ``_unlock_batch`` (rewrites
+    the .env with the real key, deletes that file's shard rows), then applies
+    :func:`_decide_mode`.
     """
     await repo.initialize()
     enrollments = await repo.list_enrollments()
 
     by_path: dict[str, dict] = defaultdict(lambda: {"aliases": [], "mode": None})
-    grandfathered: list[str] = []
+    enroll_only: list[str] = []
     for e in enrollments:
         if e.env_path is None:
-            grandfathered.append(e.key_alias)
+            # No .env to restore (enroll-only key). Removing it on wipe is the
+            # only option — warn, but never block the whole uninstall on it.
+            enroll_only.append(e.key_alias)
             continue
         slot = by_path[e.env_path]
         slot["aliases"].append(e.key_alias)
@@ -118,9 +133,11 @@ async def _restore_all(
 
     restored: list[tuple[str, int | None]] = []
     failed: list[tuple[str, str]] = []
+    unlocked: list[tuple[str, str]] = []
     for env_path, slot in by_path.items():
         try:
-            await _unlock_batch(slot["aliases"], home, repo, Path(env_path))
+            planned = await _unlock_batch(slot["aliases"], home, repo, Path(env_path))
+            unlocked.extend((p.provider, p.alias) for p in planned)
             target = _decide_mode(env_path, slot["mode"], assume_yes=assume_yes, console=console)
             if target is not None:
                 os.chmod(env_path, target)  # noqa: PTH101
@@ -128,12 +145,7 @@ async def _restore_all(
         except Exception as exc:  # noqa: BLE001 — collect every failure, never abort mid-loop
             failed.append((env_path, str(exc)))
 
-    for alias in grandfathered:
-        failed.append(
-            (f"<no path for {alias}>", "enrollment predates path tracking; unlock manually")
-        )
-
-    return restored, failed
+    return restored, failed, unlocked, enroll_only
 
 
 def _run_uninstall(*, assume_yes: bool) -> None:
@@ -147,11 +159,17 @@ def _run_uninstall(*, assume_yes: bool) -> None:
             async with open_repo(home) as repo:
                 return await _restore_all(home, repo, assume_yes=assume_yes, console=console)
 
-        restored, failed = asyncio.run(_run())
+        restored, failed, unlocked, enroll_only = asyncio.run(_run())
 
         for env_path, mode in restored:
             shown = f"0o{mode:o}" if mode is not None else "unchanged"
             console.print_success(f"restored {env_path}  (mode {shown})")
+
+        for alias in enroll_only:
+            console.print_warning(
+                f"enroll-only key {alias!r} has no .env to restore — it will be removed. "
+                "Rotate it at your provider if you still need it."
+            )
 
         if failed:
             # Key-shredder guard: a restore failed → DO NOT wipe. shard-B for the
@@ -167,12 +185,21 @@ def _run_uninstall(*, assume_yes: bool) -> None:
                 "uninstall aborted: not all .env files restored",
             )
 
+        # OpenClaw symmetric undo — best-effort, NEVER blocks the wipe (L1).
+        # Removes worthless-* providers from openclaw.json so an OpenClaw-primary
+        # user isn't left pointing at the now-deleted proxy.
+        _apply_openclaw_unlock(unlocked, console, home)
+
         delete_fernet_key(home.base_dir)
         home.bootstrapped_marker.unlink(missing_ok=True)
 
     # Remove the home dir last (outside the lock — we're deleting its dir).
     shutil.rmtree(home.base_dir, ignore_errors=True)
 
+    if home.base_dir.exists():
+        console.print_warning(
+            f"~/.worthless could not be fully removed ({home.base_dir}); delete it manually."
+        )
     console.print_success(
         f"Worthless uninstalled. {len(restored)} .env file(s) restored to their real keys; "
         "keychain entry and ~/.worthless removed."
