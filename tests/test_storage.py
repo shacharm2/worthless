@@ -1164,6 +1164,8 @@ async def test_set_ceiling_override_rejects_nonpositive_and_bool(
             await repo.set_ceiling_override("k1", bad)
     with pytest.raises(ValueError):
         await repo.set_ceiling_override("k1", True)  # bool is an int subclass
+
+
 # ---------------------------------------------------------------------------
 # WOR-651 / WOR-621 F4: OpenClaw rollback columns (shape-only, no key at rest)
 # ---------------------------------------------------------------------------
