@@ -15,12 +15,20 @@ curl_code() {
     "$url"
 }
 
+curl_code_no_redirect() {
+  local url="$1"
+  curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+    -H "Cache-Control: no-cache" \
+    -H "Pragma: no-cache" \
+    "$url"
+}
+
 check_404() {
   local path="$1"
   local attempt=1
   local code=""
   while (( attempt <= MAX_ATTEMPTS )); do
-    code="$(curl_code "${BASE}${path}")"
+    code="$(curl_code_no_redirect "${BASE}${path}")"
     if [[ "$code" == "404" ]]; then
       echo "OK 404 ${path}"
       return 0

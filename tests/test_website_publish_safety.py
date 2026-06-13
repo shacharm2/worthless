@@ -81,13 +81,16 @@ EXTRA_REFERENCE_NEEDLES = (
 def _prohibited_reference_needles() -> tuple[str, ...]:
     needles: list[str] = []
     for path in PROHIBITED_PATHS:
-        if path.is_dir():
+        if not path.suffix:
             segment = path.name
             needles.extend(
                 (
                     f"website/{segment}/",
+                    f"website/{segment}",
                     f"/{segment}/",
+                    f"/{segment}",
                     f"wless.io/{segment}/",
+                    f"wless.io/{segment}",
                     f'href="/{segment}',
                     f"href='/{segment}",
                 )
@@ -112,8 +115,9 @@ def _prohibited_reference_needles() -> tuple[str, ...]:
 def _internal_url_fragments() -> tuple[str, ...]:
     fragments: list[str] = []
     for path in PROHIBITED_PATHS:
-        if path.is_dir():
+        if not path.suffix:
             fragments.append(f"/{path.name}/")
+            fragments.append(f"/{path.name}")
             continue
         rel = path.relative_to(WEBSITE).as_posix()
         fragments.append(rel)
