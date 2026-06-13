@@ -1346,22 +1346,26 @@ def _lock_keys(
             _oc_gate = _openclaw_audit_preflight()
 
             # F7 (WOR-648 / WOR-621 AC5): proxy health gate, alongside the
-            # audit gate above — BEFORE any DB or .env write. If OpenClaw is
-            # present but the proxy is down, the lock we'd write points the
-            # config + .env at a dead proxy; aborting HERE keeps .env, the DB,
-            # and openclaw.json all byte-for-byte unchanged (clean no-op). This
-            # avoids the partial-lock footgun where .env already holds shard-A
-            # but the DB shard was unwound, leaving the real key unrecoverable.
-            if _openclaw_integration.detect().present:
-                _probe_port = resolve_port(None)
-                if not check_proxy_health(_probe_port)["healthy"]:
-                    raise WorthlessError(
-                        ErrorCode.PROXY_NOT_RUNNING,
-                        f"Worthless proxy is not responding on port {_probe_port}. "
-                        "Nothing was changed — your .env, database, and "
-                        "~/.openclaw/openclaw.json are untouched. Start the proxy "
-                        "(`worthless up`) and re-run `worthless lock`.",
-                    )
+            # audit gate above — BEFORE any DB or .env write. Fires
+            # UNCONDITIONALLY (not gated on OpenClaw detection): the .env
+            # rewrite always points the *_BASE_URL at the proxy regardless of
+            # whether OpenClaw is present, so a dead proxy ALWAYS yields a
+            # half-locked .env (shard-A written + URL pointing at nothing) +
+            # DB row, stranding the key with no recovery path. Earlier guard
+            # (``if detect().present``) made this a fail-safe only when
+            # OpenClaw was detected — a detect() false-negative (container
+            # off at lock time, non-standard home, foreign-owned config) would
+            # silently skip the gate. Aborting HERE keeps .env, DB, and
+            # ~/.openclaw/openclaw.json (when present) byte-for-byte unchanged.
+            _probe_port = resolve_port(None)
+            if not check_proxy_health(_probe_port)["healthy"]:
+                raise WorthlessError(
+                    ErrorCode.PROXY_NOT_RUNNING,
+                    f"Worthless proxy is not responding on port {_probe_port}. "
+                    "Nothing was changed — your .env, database, and "
+                    "~/.openclaw/openclaw.json are untouched. Start the proxy "
+                    "(`worthless up`) and re-run `worthless lock`.",
+                )
 
             planned: list[_PlannedUpdate] = []
             try:
