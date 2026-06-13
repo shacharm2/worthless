@@ -99,6 +99,8 @@ dist/
 # /reviews/ = expert-panel artifacts. Blanket-ignored; keep one subfolder per
 # topic (reviews/<topic>/) so parallel panels never collide.
 .beads/
+
+testsprite_tests/tmp/config.json
 tests/openclaw/_artifacts/
 .planning/
 .reviews/
