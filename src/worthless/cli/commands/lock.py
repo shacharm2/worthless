@@ -780,6 +780,27 @@ def _fire_synthetic_request(host: str, port: int, alias: str) -> bool:
     return True
 
 
+def _coerce_counter(value: object) -> int:
+    """Best-effort widen of ``check_proxy_health()``'s ``requests_proxied``.
+
+    The healthz JSON is loosely-typed (``dict[str, object]``-shaped at the
+    Python boundary). We accept ``int`` directly, parse numeric strings (any
+    older proxy that surfaced the count as a string still works), and fall
+    back to 0 for anything else so bind-confirmation can't crash lock just
+    because a future schema change altered the type.
+    """
+    if isinstance(value, bool):  # bool is an int subclass; reject by intent
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
 def _confirm_bind(
     planned: list[_PlannedUpdate],
     *,
@@ -818,7 +839,7 @@ def _confirm_bind(
             "delta": 0,
             "aliases": aliases,
         }
-    before = int(before_health.get("requests_proxied", 0))
+    before = _coerce_counter(before_health.get("requests_proxied"))
 
     reached = 0
     for alias in aliases:
@@ -844,7 +865,7 @@ def _confirm_bind(
             "delta": 0,
             "aliases": aliases,
         }
-    after = int(after_health.get("requests_proxied", 0))
+    after = _coerce_counter(after_health.get("requests_proxied"))
 
     delta = after - before
 
