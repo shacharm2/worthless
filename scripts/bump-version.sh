@@ -35,7 +35,7 @@ cd "$repo_root"
 # Clean up tempfiles on any exit. Without this, a sed/mv failure under
 # `set -eu` would leave pyproject.toml.tmp / SKILL.md.tmp /
 # CHANGELOG.md.tmp on disk for the user to clean up manually.
-trap 'rm -f pyproject.toml.tmp SKILL.md.tmp CHANGELOG.md.tmp install.sh.tmp package.json.tmp docs/*.tmp' EXIT
+trap 'rm -f pyproject.toml.tmp SKILL.md.tmp CHANGELOG.md.tmp install.sh.tmp package.json.tmp; find docs/ -name "*.tmp" -delete 2>/dev/null || true' EXIT
 
 # --- 1. Validate input -------------------------------------------------------
 
@@ -112,17 +112,30 @@ fi
 # for loop (not piped while): a piped subshell swallows set -eu, so sed/mv
 #   failures would silently leave docs un-bumped. Word-split is safe here because
 #   docs/ filenames never contain spaces or shell-special characters.
-docs_hits=$(grep -rlF "worthless-proxy:${current_version}" --include="*.md" --include="*.mdx" docs/ 2>/dev/null || true)
-if [ -n "$docs_hits" ]; then
-    # Escape dots on the LHS so the sed pattern treats them as literals.
-    escaped_current=$(printf '%s\n' "$current_version" | sed 's/[.]/\\./g')
-    for f in $docs_hits; do
-        sed -E "s|worthless-proxy:${escaped_current}|worthless-proxy:${new_version}|g" "$f" > "$f.tmp"
-        mv "$f.tmp" "$f"
-        echo "  ✓ $f: worthless-proxy:$new_version"
-    done
+if [ ! -d docs/ ]; then
+    echo "  ⚠ docs/: directory not found — skipping Docker image tag bump"
 else
-    echo "  ⚠ docs/: no pinned worthless-proxy:$current_version tags found — nothing to bump"
+    # --include before the pattern: BSD grep (macOS) silently ignores --include
+    # when it appears after the path argument; option order matters there.
+    # grep -rlF: fixed-string match — version dots are literals, not regex wildcards.
+    # --include: matches only .md/.mdx, same types check_docs_versions.py validates.
+    # No 2>/dev/null: real grep errors (I/O, permissions) should surface, not be
+    #   swallowed — distinguishes "no matching tags" from a genuine failure.
+    # for loop (not piped while): a piped subshell swallows set -eu, so sed/mv
+    #   failures would silently leave docs un-bumped. Word-split is safe here because
+    #   docs/ filenames never contain spaces or shell-special characters.
+    docs_hits=$(grep -rlF --include="*.md" --include="*.mdx" "worthless-proxy:${current_version}" docs/ || true)
+    if [ -n "$docs_hits" ]; then
+        # Escape dots on the LHS so the sed pattern treats them as literals.
+        escaped_current=$(printf '%s\n' "$current_version" | sed 's/[.]/\\./g')
+        for f in $docs_hits; do
+            sed -E "s|worthless-proxy:${escaped_current}|worthless-proxy:${new_version}|g" "$f" > "$f.tmp"
+            mv "$f.tmp" "$f"
+            echo "  ✓ $f: worthless-proxy:$new_version"
+        done
+    else
+        echo "  ⚠ docs/: no pinned worthless-proxy:$current_version tags found — nothing to bump"
+    fi
 fi
 
 # --- 5. Append CHANGELOG.md link reference ----------------------------------
