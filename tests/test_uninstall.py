@@ -382,15 +382,18 @@ def test_uninstall_zeros_keys_when_a_restore_fails(
 
     monkeypatch.setattr(uninstall_mod, "_zero_restore_keys", _spy)
 
-    # Force the post-reconstruct chmod to fail → file collected as `failed` → guard aborts.
+    env = tmp_path / ".env"
+    env.write_text(f"OPENAI_API_KEY={fake_key('sk-')}\n")
+    runner.invoke(app, ["lock", "--env", str(env)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+
+    # Break chmod ONLY for the uninstall step (after lock, which needs real chmod
+    # on some platforms): the post-reconstruct chmod fails → file collected as
+    # `failed` → guard aborts → keys must be zeroed. Setting this before lock made
+    # lock itself fail on Linux/CI, so nothing was locked and the test was moot.
     def _boom(*_a, **_k):
         raise OSError("simulated chmod failure")
 
     monkeypatch.setattr(uninstall_mod.os, "chmod", _boom)
-
-    env = tmp_path / ".env"
-    env.write_text(f"OPENAI_API_KEY={fake_key('sk-')}\n")
-    runner.invoke(app, ["lock", "--env", str(env)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
 
     result = runner.invoke(
         app, ["uninstall", "--yes"], env={"WORTHLESS_HOME": str(home_dir.base_dir)}
