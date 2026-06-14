@@ -268,25 +268,25 @@ async def _lifespan(app: FastAPI):
     ledger = SpendLedger(db, db_lock)
     app.state.ledger = ledger
     sweep_task = asyncio.create_task(
-        _sweep_loop(ledger, settings.sweep_interval_seconds, settings.sweep_max_age_seconds)
+        _sweep_loop(ledger, settings.sweep_interval_seconds, settings.sweep_max_age_seconds),
+        name="worthless-sweeper",
     )
 
-    yield
-
-    # Shutdown: cancel the sweeper before closing the DB so it can't race
-    # against db.close(). Both cancel() and await are required — just cancelling
-    # leaves the task running until the event loop is closed, causing a
-    # "task was destroyed but it is pending" warning.
-    sweep_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await sweep_task
-
-    # Cleanup
     try:
-        await client.aclose()
-        await db.close()
+        yield
     finally:
-        await ipc.aclose()
+        # Cancel the sweeper before closing the DB — it MUST NOT race db.close().
+        # Both cancel() and await are required: cancel() alone leaves the task
+        # running until the event loop closes, causing "task was destroyed but it
+        # is pending" ResourceWarnings (caught as errors on Python 3.13+).
+        sweep_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sweep_task
+        try:
+            await client.aclose()
+            await db.close()
+        finally:
+            await ipc.aclose()
 
 
 def create_app(settings: ProxySettings | None = None) -> FastAPI:
