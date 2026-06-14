@@ -63,9 +63,13 @@ jobs:
           set -euo pipefail
           PYPROJECT_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           TAG_VERSION="${GITHUB_REF_NAME#v}"
+          # Injection-safe: TAG_VERSION is attacker-controlled (the git tag name).
+          # Export both vars; Python reads them via os.environ — the Python source
+          # string never contains ${TAG_VERSION} so shell expansion cannot inject code.
+          export PYPROJECT_VERSION TAG_VERSION
           if [ "${PYPROJECT_VERSION}" = "${TAG_VERSION}" ]; then
             echo "OK: tag ${GITHUB_REF_NAME} matches pyproject ${PYPROJECT_VERSION}"
-          elif python3 -c "from packaging.version import Version; exit(0 if Version('${PYPROJECT_VERSION}') == Version('${TAG_VERSION}') else 1)" 2>/dev/null; then
+          elif python3 -c "import os,sys; from packaging.version import Version; sys.exit(0 if Version(os.environ['PYPROJECT_VERSION'])==Version(os.environ['TAG_VERSION']) else 1)"; then
             echo "OK: tag ${GITHUB_REF_NAME} (${TAG_VERSION}) is PEP 440-equivalent to pyproject ${PYPROJECT_VERSION}"
           else
             echo "::error title=Tag/pyproject version drift::Pushed tag ${GITHUB_REF_NAME} (=> ${TAG_VERSION}) does not match pyproject.toml version ${PYPROJECT_VERSION}. Bump pyproject.toml first or push a matching tag."
