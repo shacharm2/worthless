@@ -418,7 +418,7 @@ def test_launch_page_utility_text_meets_wcag_aa_contrast() -> None:
     assert "--text2: #586b82;" in how_it_works
 
 
-def test_primary_navigation_stays_focused_on_product_routes() -> None:
+def test_homepage_primary_navigation_preserves_front_facing_brand_routes() -> None:
     index = (DOCS / "index.html").read_text(encoding="utf-8")
     features = (DOCS / "features.html").read_text(encoding="utf-8")
     how_it_works = (DOCS / "how-it-works.html").read_text(encoding="utf-8")
@@ -429,21 +429,36 @@ def test_primary_navigation_stays_focused_on_product_routes() -> None:
         assert "memes.html" not in primary_nav
         assert "ko-fi.com" not in primary_nav
 
-    assert "memes.html" not in homepage_nav
-    assert "ko-fi.com" not in homepage_nav
-    assert "#early-access" not in homepage_nav
+    assert 'href="memes.html"' in homepage_nav
+    assert 'href="https://ko-fi.com/shacharme"' in homepage_nav
+    assert 'href="#early-access"' in homepage_nav
+    assert 'aria-label="Buy me a coffee on Ko-fi"' in homepage_nav
+    assert ".nav-actions .kofi {" in index
+    assert "@media (max-width: 820px)" in index
+    assert "width: 2.15rem;" in index
+    assert "border-radius: 999px;" in index
 
 
-def test_homepage_omits_future_hosted_waitlist() -> None:
+def test_homepage_describes_hosted_early_access_as_a_separate_future_product() -> None:
     index = (DOCS / "index.html").read_text(encoding="utf-8")
 
-    for stale_copy in (
-        "Hosted Worthless",
+    assert 'id="early-access"' in index
+    assert "Hosted Worthless" in index
+    assert "A separate managed product we're exploring for later" in index
+    assert "not the open-source tool on this page" in index
+    assert (
+        "does not imply current hosted service, team support, or protection for every secret type"
+        in index
+    )
+    assert "Join early access" in index
+    assert "https://tally.so/r/WOpNVL" in index
+
+    for unsupported_copy in (
         "More secrets next.",
-        'id="early-access"',
-        "tally.so",
+        "all secret types",
+        "hosted today",
     ):
-        assert stale_copy not in index
+        assert unsupported_copy not in index
 
 
 def test_launch_copy_uses_bounded_supported_key_claims() -> None:
