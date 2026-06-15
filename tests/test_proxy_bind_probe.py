@@ -167,6 +167,47 @@ async def test_bind_probe_does_not_pollute_requests_proxied(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# LAN attacker resistance: an unauthenticated probe reachable from non-
+# loopback peers would reintroduce silent-bypass (brutus #1) — an attacker
+# can spam the endpoint to inflate the counter, making lock conclude "pass"
+# on a config that isn't actually routing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_bind_probe_rejects_non_loopback_peer(
+    proxy_app,
+) -> None:
+    """A non-loopback peer must be REFUSED with 404, AND the counter must
+    NOT tick. 404 (not 403) so the endpoint isn't advertised to remote
+    scanners as existing. Brutus #1 (WOR-658 Gate-6): without this check,
+    an attacker on the LAN can spam the endpoint to fake a successful
+    bind-confirmation and reintroduce the silent-bypass class WOR-658
+    exists to prevent.
+    """
+    transport = httpx.ASGITransport(
+        app=proxy_app, client=("203.0.113.42", 51234)
+    )  # documentation IP range; non-loopback
+    async with httpx.AsyncClient(transport=transport, base_url="http://probe.test") as c:
+        before = (await c.get("/healthz")).json()["bind_probe_count"]
+        r1 = await c.get("/_bind_probe/openai-abc123")
+        r2 = await c.head("/_bind_probe/openai-abc123")
+        after = (await c.get("/healthz")).json()["bind_probe_count"]
+    assert r1.status_code == 404, (
+        f"WOR-658 brutus #1: non-loopback GET must be refused with 404 "
+        f"(not 403, to avoid advertising the endpoint). Got {r1.status_code}."
+    )
+    assert r2.status_code == 404, (
+        f"WOR-658 brutus #1: non-loopback HEAD must be refused with 404. Got {r2.status_code}."
+    )
+    assert after == before, (
+        f"WOR-658 brutus #1: refused probes must NOT tick the counter. "
+        f"A LAN attacker who hits the endpoint cannot move the verdict. "
+        f"before={before} after={after}."
+    )
+
+
 @pytest.mark.asyncio
 async def test_healthz_bind_probe_count_present_proves_worthless_proxy(
     client: httpx.AsyncClient,

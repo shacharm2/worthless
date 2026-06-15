@@ -312,7 +312,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
     @app.get("/_bind_probe/{alias}")
     @app.head("/_bind_probe/{alias}")
     async def bind_probe(request: Request, alias: str) -> Response:  # noqa: ARG001
-        """WOR-658 bind-confirmation probe — intentionally public.
+        """WOR-658 bind-confirmation probe — loopback-only.
 
         ``worthless lock`` fires one GET/HEAD per managed alias here
         immediately after rewriting the OpenClaw config. We bump an
@@ -322,9 +322,18 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
 
         Security posture (this is by design — review carefully if changing):
 
-        * No auth, no body inspection, no upstream call. The probe is
-          BEFORE auth on purpose; the whole point is to exercise routing
-          without needing a real key.
+        * **Loopback-only.** Non-127.0.0.1/::1 peers get a 404 and the
+          counter does NOT tick. Brutus #1 (WOR-658 Gate-6 adversarial
+          review): an unauthenticated probe reachable from the LAN would
+          reintroduce silent-bypass — a co-located attacker on a non-
+          loopback deploy could spam the endpoint to inflate the counter
+          and make ``worthless lock`` conclude "pass" on a config that
+          isn't actually routing. The probe is a self-test only; no
+          legitimate remote caller has a reason to hit it. 404 (not 403)
+          so the endpoint isn't advertised to remote scanners.
+        * No auth on the loopback path. The probe runs BEFORE auth on
+          purpose; the whole point is to exercise routing without
+          needing a real key.
         * Response is identical for every alias (204, no body). No
           information about which aliases are registered leaks here.
         * Counter is in-memory and isolated from ``requests_proxied``.
@@ -334,6 +343,9 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
           lock side's signal that it's talking to a worthless proxy. A
           squatter on the port answering plain ``/healthz`` won't have it.
         """
+        client_host = request.client.host if request.client else None
+        if client_host not in ("127.0.0.1", "::1"):
+            return Response(status_code=404)
         request.app.state.bind_probe_count = getattr(request.app.state, "bind_probe_count", 0) + 1
         return Response(status_code=204)
 
