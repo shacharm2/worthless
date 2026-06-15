@@ -49,7 +49,7 @@ async def test_sweep_loop_cancels_cleanly() -> None:
     # CancelledError (which we suppress here as expected behaviour).
     try:
         await asyncio.wait_for(task, timeout=1.0)
-    except (asyncio.CancelledError, asyncio.TimeoutError):
+    except asyncio.CancelledError:
         pass
 
     assert task.done()
