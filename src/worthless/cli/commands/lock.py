@@ -941,6 +941,71 @@ def _confirm_bind(
     }
 
 
+def _finalise_openclaw_success(
+    planned: list[_PlannedUpdate],
+    result,  # noqa: ANN001 — OpenclawApplyResult is opaque from this layer
+    console,  # noqa: ANN001 — Console type is opaque from this layer
+    quiet: bool,
+    home: WorthlessHome,
+    *,
+    proxy_host: str,
+) -> int:
+    """WOR-658: finalise the success branch of ``_apply_openclaw``.
+
+    Runs bind-confirmation, writes the sentinel with the correct paired
+    ``status``/``openclaw`` state, prints the user-visible result block,
+    and returns the exit code (0 on success, 91 on bind-fail).
+
+    Extracted so ``_apply_openclaw`` stays under the project's xenon
+    complexity ceiling — the bind-confirmation classify branches push it
+    over otherwise.
+    """
+    if not quiet:
+        console.print_success("[OK] OpenClaw integration:")
+        for provider_name in result.providers_set:
+            console.print_hint(f"   • ~/.openclaw/openclaw.json — added provider '{provider_name}'")
+        if result.skill_installed:
+            console.print_hint("   • ~/.openclaw/workspace/skills/worthless/ — installed skill")
+        console.print_hint("   • Undo: worthless unlock")
+
+    # WOR-658: prove the rewrite actually routes. A "fail" verdict here
+    # means lock-core succeeded on disk but the OpenClaw entry isn't
+    # routing through the proxy — silent-bypass class (WOR-514).
+    bind_confirmation = _confirm_bind(planned, host=proxy_host, port=resolve_port(None))
+    # Bind-fail is a partial-success state at the trust layer:
+    # lock-core wrote the .env + DB, but the OpenClaw config isn't
+    # routing. ``openclaw="failed"`` (paired with ``status="partial"``)
+    # makes ``is_partial()`` fire so ``worthless status`` reports
+    # DEGRADED across sessions — the very failure mode WOR-658 was
+    # built to make visible.
+    bind_failed = bind_confirmation["status"] == "fail"
+    _write_lock_sentinel(
+        home,
+        status="partial" if bind_failed else "ok",
+        openclaw="failed" if bind_failed else "ok",
+        alias_count=len(result.providers_set),
+        events=tuple(e.to_dict() for e in result.events),
+        bind_confirmation=bind_confirmation,
+    )
+    if bind_failed:
+        if not quiet:
+            console.print_failure(
+                "[FAIL] Bind-confirmation: synthetic request did not "
+                "reach the proxy. The rewritten OpenClaw entry is NOT "
+                "routing — do NOT trust this lock."
+            )
+            console.print_warning(
+                "   Run `worthless status` for details; `worthless doctor` may help."
+            )
+        # Exit code 91 = bind-confirmation refusal. Distinct from
+        # 87 (CONFIG_UNREADABLE: infra blocked before any write) and
+        # 73 (OpenClaw integration partial-fail). Wrapping scripts can
+        # now branch on "lock didn't write" (87) vs "lock wrote but
+        # routing is broken" (91).
+        return 91
+    return 0
+
+
 def _apply_openclaw(
     planned: list[_PlannedUpdate],
     console,  # noqa: ANN001 — Console type is opaque from this layer
@@ -1010,53 +1075,9 @@ def _apply_openclaw(
     # (single-sourced — see integration.py docstring). Lock + unlock both
     # call this property.
     if not result.has_failure:
-        # Fully successful integration — record OK + enumerate to user.
-        if not quiet:
-            console.print_success("[OK] OpenClaw integration:")
-            for provider_name in result.providers_set:
-                console.print_hint(
-                    f"   • ~/.openclaw/openclaw.json — added provider '{provider_name}'"
-                )
-            if result.skill_installed:
-                console.print_hint("   • ~/.openclaw/workspace/skills/worthless/ — installed skill")
-            console.print_hint("   • Undo: worthless unlock")
-
-        # WOR-658: prove the rewrite actually routes. A "fail" verdict here
-        # means lock-core succeeded on disk but the OpenClaw entry isn't
-        # routing through the proxy — silent-bypass class (WOR-514).
-        bind_confirmation = _confirm_bind(planned, host=_proxy_host, port=resolve_port(None))
-        # Bind-fail is a partial-success state at the trust layer:
-        # lock-core wrote the .env + DB, but the OpenClaw config isn't
-        # routing. ``openclaw="failed"`` (paired with ``status="partial"``)
-        # makes ``is_partial()`` fire so ``worthless status`` reports
-        # DEGRADED across sessions — the very failure mode WOR-658 was
-        # built to make visible.
-        bind_failed = bind_confirmation["status"] == "fail"
-        _write_lock_sentinel(
-            home,
-            status="partial" if bind_failed else "ok",
-            openclaw="failed" if bind_failed else "ok",
-            alias_count=len(result.providers_set),
-            events=tuple(e.to_dict() for e in result.events),
-            bind_confirmation=bind_confirmation,
+        return _finalise_openclaw_success(
+            planned, result, console, quiet, home, proxy_host=_proxy_host
         )
-        if bind_failed:
-            if not quiet:
-                console.print_failure(
-                    "[FAIL] Bind-confirmation: synthetic request did not "
-                    "reach the proxy. The rewritten OpenClaw entry is NOT "
-                    "routing — do NOT trust this lock."
-                )
-                console.print_warning(
-                    "   Run `worthless status` for details; `worthless doctor` may help."
-                )
-            # Exit code 91 = bind-confirmation refusal. Distinct from
-            # 87 (CONFIG_UNREADABLE: infra blocked before any write) and
-            # 73 (OpenClaw integration partial-fail). Wrapping scripts
-            # can now branch on "lock didn't write" (87) vs "lock wrote
-            # but routing is broken" (91).
-            return 91
-        return 0
 
     # Detected + failed: the trust-failure path. Print [FAIL] block, write
     # sentinel as partial. Caller raises typer.Exit(openclaw_exit) after
