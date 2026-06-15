@@ -925,6 +925,22 @@ def _confirm_bind(
             "aliases": aliases,
             "reached": reached,
         }
+    if delta < 0:
+        # WOR-658 / Gate-3 chaos-engineer finding: the in-memory probe
+        # counter resets to 0 on proxy restart. If the proxy restarts
+        # between the before- and after-reads, ``after < before`` and
+        # the delta is large-negative. That's inconclusive (the proxy
+        # was probably fine — it just bounced), NOT a fail. Surfacing
+        # this as ``skipped`` keeps lock honest: we can't tell from
+        # this single observation whether the rewrite routes, and we
+        # refuse to manufacture a fail verdict against a moving target.
+        return {
+            "status": "skipped",
+            "reason": "proxy_restarted",
+            "delta": delta,
+            "aliases": aliases,
+            "reached": reached,
+        }
     if reached == 0:
         return {
             "status": "skipped",

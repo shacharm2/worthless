@@ -217,6 +217,77 @@ def test_lock_exits_nonzero_when_bind_confirmation_fails(
 
 
 # ---------------------------------------------------------------------------
+# Proxy-restart resilience: the probe counter is in-memory and resets to 0
+# when the proxy bounces. A restart between BEFORE and AFTER reads gives
+# negative delta — that's inconclusive, NOT a fail.
+# ---------------------------------------------------------------------------
+
+
+def test_lock_skipped_when_proxy_restart_resets_counter(
+    env_file: Path,
+    openclaw_present: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counter resets mid-flight (proxy restart) → negative delta. Lock
+    must classify ``skipped, reason=proxy_restarted`` and exit 0 — refusing
+    to manufacture a fail verdict against a moving target."""
+    from worthless.cli.commands import lock as lock_mod
+
+    state = {"counter": 500, "restart_after_n_health_reads": 1}
+
+    def fake_check_proxy_health(port):  # noqa: ANN001
+        # After the first read (the bind-confirm BEFORE), pretend the proxy
+        # restarted: counter resets to a small number (the synthetic fires
+        # in between bumped it 1-N times from 0).
+        result: dict[str, object] = {
+            "healthy": True,
+            "port": port,
+            "mode": "ok",
+            "requests_proxied": 0,
+            "bind_probe_count": state["counter"],
+        }
+        if state["restart_after_n_health_reads"] > 0:
+            state["restart_after_n_health_reads"] -= 1
+        else:
+            # Simulate the restart: in-memory counter is now ~0 + fires.
+            state["counter"] = 1
+        return result
+
+    def fake_fire_synthetic_request(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        return True
+
+    monkeypatch.setattr(lock_mod, "check_proxy_health", fake_check_proxy_health)
+    monkeypatch.setattr(
+        lock_mod, "_fire_synthetic_request", fake_fire_synthetic_request, raising=False
+    )
+
+    wl_home = openclaw_present["home"] / ".worthless"
+
+    result = runner.invoke(
+        app,
+        ["lock", "--env", str(env_file)],
+        env={
+            "WORTHLESS_KEYRING_BACKEND": "null",
+            "WORTHLESS_HOME": str(wl_home),
+        },
+    )
+    assert result.exit_code == 0, (
+        f"WOR-658: lock must exit 0 (skipped, not fail) when the proxy restarts "
+        f"between before/after reads — that's inconclusive, not a bypass. "
+        f"Got {result.exit_code}: {result.output}"
+    )
+
+    sentinel = json.loads(sentinel_path(wl_home).read_text())
+    bc = sentinel.get("bind_confirmation", {})
+    assert bc.get("status") == "skipped"
+    assert bc.get("reason") == "proxy_restarted", (
+        f"reason must name the restart case explicitly so doctor can suggest "
+        f"the right remediation. Got: {bc!r}"
+    )
+    assert bc.get("delta", 0) < 0, "delta must be negative (counter reset)"
+
+
+# ---------------------------------------------------------------------------
 # Squatter-resistance: a foreign HTTP server on the port is NOT a worthless
 # proxy. Lock must not interpret its counter as proof of routing.
 # ---------------------------------------------------------------------------
