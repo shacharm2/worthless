@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sqlite3
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -23,7 +24,7 @@ from pathlib import Path
 import typer
 
 from worthless.cli._repo_factory import open_repo
-from worthless.cli.bootstrap import acquire_lock, get_home
+from worthless.cli.bootstrap import WorthlessHome, acquire_lock
 from worthless.cli.commands.down import _stop_daemon
 from worthless.cli.commands.unlock import (
     _apply_openclaw_unlock,
@@ -120,15 +121,18 @@ async def _restore_all(
 ) -> tuple[
     list[tuple[str, int | None]],
     list[tuple[str, str]],
+    list[str],
     list,
     list[str],
 ]:
     """Reconstruct + restore every locked .env, applying the mode policy.
 
-    Returns ``(restored, failed, unlocked, enroll_only)``:
+    Returns ``(restored, failed, missing, unlocked, enroll_only)``:
     - ``restored`` — ``(env_path, applied_mode)`` per file put back.
-    - ``failed`` — ``(env_path, reason)`` per file that could NOT be restored
-      (triggers the no-wipe key-shredder guard in the caller).
+    - ``failed`` — ``(env_path, reason)`` per file that EXISTS but could NOT be
+      restored (triggers the no-wipe key-shredder guard in the caller).
+    - ``missing`` — ``env_path`` whose file was deleted (project removed): no key
+      to brick, so a skip+warn, NOT a block (BUG-2).
     - ``unlocked`` — ``OcRestore`` objects for OpenClaw symmetric undo.
     - ``enroll_only`` — aliases with no ``.env`` (from ``worthless enroll``);
       nothing to restore, so they DON'T block the wipe — surfaced as a warning.
@@ -155,11 +159,18 @@ async def _restore_all(
 
     restored: list[tuple[str, int | None]] = []
     failed: list[tuple[str, str]] = []
+    missing: list[str] = []
     # OcRestore objects for the OpenClaw symmetric undo — built by unlock's own
     # _build_oc_restores so uninstall feeds _apply_openclaw_unlock exactly what
     # it expects (WOR-621 changed the contract from (provider, alias) tuples).
     unlocked: list = []
     for env_path, slot in by_path.items():
+        if not Path(env_path).exists():
+            # BUG-2: the project's .env was deleted — no real key sits in a file
+            # to brick, so this is NOT a key-shredder risk. Skip + warn (never
+            # block); the dead enrollment row is dropped by the wipe.
+            missing.append(env_path)
+            continue
         try:
             planned = await _unlock_batch(slot["aliases"], home, repo, Path(env_path))
             unlocked.extend(await _build_oc_restores(planned, repo, console))
@@ -170,7 +181,19 @@ async def _restore_all(
         except Exception as exc:  # noqa: BLE001 — collect every failure, never abort mid-loop
             failed.append((env_path, str(exc)))
 
-    return restored, failed, unlocked, enroll_only
+    return restored, failed, missing, unlocked, enroll_only
+
+
+def _resolve_home_no_bootstrap() -> WorthlessHome:
+    """The WorthlessHome for the configured path WITHOUT bootstrapping.
+
+    uninstall must NOT re-create or re-init a home it's about to delete, and a
+    corrupt DB must surface as "broken install" (handled in _run_uninstall),
+    not crash get_home()/ensure_home()'s DB-init. So build the dataclass
+    directly — the same object get_home would, minus the bootstrap side effects.
+    """
+    env_home = os.environ.get("WORTHLESS_HOME")
+    return WorthlessHome(base_dir=Path(env_home)) if env_home else WorthlessHome()
 
 
 def _stdin_is_tty() -> bool:
@@ -178,10 +201,23 @@ def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
 
 
-def _run_uninstall(*, assume_yes: bool) -> None:
-    """Restore every locked .env, then (only if all succeeded) wipe Worthless."""
+def _run_uninstall(*, assume_yes: bool, force: bool = False) -> None:
+    """Restore every locked .env, then (only when it's safe) wipe Worthless.
+
+    ``force`` is the escape hatch for broken states: it wipes even when keys
+    can't be restored — a broken repo (no fernet key / corrupt DB) or a
+    present-but-unrestorable ``.env``. Without it, an unrestorable REAL key
+    blocks the wipe (key-shredder guard); a MISSING ``.env`` never blocks.
+    """
     console = get_console()
-    home = get_home()
+    # Don't bootstrap a home we're about to delete: resolve it directly so a
+    # corrupt DB surfaces as "broken install" (handled below) instead of
+    # crashing get_home()/ensure_home()'s DB-init (BUG-1, DB variant).
+    home = _resolve_home_no_bootstrap()
+
+    if not home.base_dir.exists():
+        console.print_success("Nothing to uninstall — Worthless is not installed here.")
+        return
 
     # jlco: confirm before this destructive op. A human at a TTY is asked; a
     # non-interactive caller (piped/CI/agent) must pass --yes instead — we refuse
@@ -211,11 +247,37 @@ def _run_uninstall(*, assume_yes: bool) -> None:
             async with open_repo(home) as repo:
                 return await _restore_all(home, repo, assume_yes=assume_yes, console=console)
 
-        restored, failed, unlocked, enroll_only = asyncio.run(_run())
+        try:
+            restored, failed, missing, unlocked, enroll_only = asyncio.run(_run())
+        except (WorthlessError, sqlite3.Error, OSError) as exc:
+            # BUG-1: the install can't even be read (no fernet key, corrupt DB),
+            # so NOTHING can be reconstructed. Without --force, refuse cleanly and
+            # point at --force (never the generic WRTLS-199 crash). With --force,
+            # wipe the broken remains — the keys are unrecoverable from here.
+            if not force:
+                console.print_failure(
+                    f"Can't read this Worthless install ({exc}). It looks broken, so "
+                    "keys can't be restored. Re-run with --force to wipe the remains "
+                    "anyway — your real keys are unrecoverable from here; rotate them "
+                    "at your provider."
+                )
+                raise typer.Exit(code=1) from exc
+            console.print_warning(
+                f"--force: could not restore keys (broken install: {exc}); wiping the "
+                "remains anyway. Rotate your keys at the provider."
+            )
+            restored, failed, missing, unlocked, enroll_only = [], [], [], [], []
 
         for env_path, mode in restored:
             shown = f"0o{mode:o}" if mode is not None else "unchanged"
             console.print_success(f"restored {env_path}  (mode {shown})")
+
+        for env_path in missing:
+            # BUG-2: project deleted — nothing to restore, never a block.
+            console.print_warning(
+                f"skipping {env_path}: the project file is gone — nothing to restore "
+                "(removing the dead record)."
+            )
 
         for alias in enroll_only:
             console.print_warning(
@@ -224,20 +286,25 @@ def _run_uninstall(*, assume_yes: bool) -> None:
             )
 
         if failed:
-            # Key-shredder guard: a restore failed → DO NOT wipe. shard-B for the
-            # failed files is still in the DB for a retry. Zero any reconstructed
-            # keys built before the abort — the OpenClaw undo that normally zeros
-            # them never runs on this path (SR-02, bead worthless-gcmp).
+            # A .env EXISTS but its key could not be reconstructed — a real
+            # key-shredder risk. Zero any keys we built first (SR-02, gcmp).
             _zero_restore_keys(unlocked)
             for env_path, why in failed:
                 console.print_warning(f"could NOT restore {env_path}: {why}")
-            console.print_failure(
-                f"Aborting uninstall — {len(failed)} file(s) could not be restored. "
-                "Nothing was wiped; fix the above and re-run, or unlock those files manually."
-            )
-            raise WorthlessError(
-                ErrorCode.SHARD_STORAGE_FAILED,
-                "uninstall aborted: not all .env files restored",
+            if not force:
+                # Key-shredder guard: DO NOT wipe — shard-B stays for a retry.
+                console.print_failure(
+                    f"Aborting uninstall — {len(failed)} file(s) could not be restored. "
+                    "Nothing was wiped; fix the above and re-run, or pass --force to wipe "
+                    "anyway (those keys become unrecoverable)."
+                )
+                raise WorthlessError(
+                    ErrorCode.SHARD_STORAGE_FAILED,
+                    "uninstall aborted: not all .env files restored",
+                )
+            console.print_warning(
+                f"--force: wiping despite {len(failed)} file(s) whose keys could not be "
+                "restored. Rotate those keys at your provider."
             )
 
         # fzbi: stop a running proxy daemon before wiping its home, so it isn't
@@ -254,7 +321,11 @@ def _run_uninstall(*, assume_yes: bool) -> None:
         # surfaced as a non-zero exit AFTER the wipe (jl13), mirroring unlock.
         oc_partial = _apply_openclaw_unlock(unlocked, console, home)
 
-        delete_fernet_key(home.base_dir)
+        # Cleanup is best-effort so a broken install (key already gone) still wipes.
+        try:
+            delete_fernet_key(home.base_dir)
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            console.print_warning(f"could not remove the keychain entry ({exc}); continuing.")
         home.bootstrapped_marker.unlink(missing_ok=True)
 
     # Remove the home dir last (outside the lock — we're deleting its dir).
@@ -295,10 +366,18 @@ def register_uninstall_commands(app: typer.Typer) -> None:
             "-y",
             help="Skip all confirmation prompts (for agents / scripts).",
         ),
+        force: bool = typer.Option(
+            False,
+            "--force",
+            help="Wipe even when keys can't be restored — a broken install "
+            "(missing fernet key / corrupt DB) or an unrestorable .env. Those "
+            "keys become unrecoverable; rotate them at your provider.",
+        ),
     ) -> None:
         """Restore every locked .env to its real key, then remove Worthless.
 
         Permissions are restored owner-only by default (never re-exposing a key
-        to other local users). If any .env can't be restored, nothing is wiped.
+        to other local users). A deleted project's .env is skipped; an
+        unrestorable real key blocks the wipe unless you pass --force.
         """
-        _run_uninstall(assume_yes=yes)
+        _run_uninstall(assume_yes=yes, force=force)

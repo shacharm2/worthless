@@ -76,7 +76,11 @@ def run(ctx: CheckContext) -> CheckResult:
     summary = (
         "No orphan enrollments found."
         if n == 0
-        else f"{n} broken record{'s' if n != 1 else ''} (.env line deleted)"
+        else (
+            f"{n} broken record{'s' if n != 1 else ''} (.env line deleted) — run "
+            "'worthless doctor --fix' to purge, or 'worthless uninstall --force' "
+            "for a clean removal."
+        )
     )
     return CheckResult(
         check_id=check_id,
