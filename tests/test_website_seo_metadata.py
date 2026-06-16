@@ -433,10 +433,19 @@ def test_homepage_primary_navigation_preserves_front_facing_brand_routes() -> No
     assert 'href="https://ko-fi.com/shacharme"' in homepage_nav
     assert 'href="#early-access"' in homepage_nav
     assert 'aria-label="Buy me a coffee on Ko-fi"' in homepage_nav
-    assert ".nav-actions .kofi {" in index
-    assert "@media (max-width: 820px)" in index
-    assert "width: 2.15rem;" in index
-    assert "border-radius: 999px;" in index
+    mobile_rules = index.split("@media (max-width: 820px)", 1)[1].split(
+        "@media (max-width: 520px)", 1
+    )[0]
+    compact_rules = index.split("@media (max-width: 520px)", 1)[1].split(
+        "@media (max-width: 370px)", 1
+    )[0]
+    assert ".nav-actions .ghost {\n        display: none;" in mobile_rules
+    assert ".nav-actions .kofi {" in mobile_rules
+    assert "width: 2.15rem;" in mobile_rules
+    assert "height: 2.15rem;" in mobile_rules
+    assert ".nav-links .nav-early {" in compact_rules
+    assert "width: 2.15rem;" in compact_rules
+    assert ".nav-early-label {\n        display: none;" in compact_rules
 
 
 def test_homepage_describes_hosted_early_access_as_a_separate_future_product() -> None:
@@ -486,6 +495,10 @@ def test_launch_copy_uses_bounded_supported_key_claims() -> None:
 
 def test_blog_uses_bounded_supported_key_claims() -> None:
     blog = (DOCS / "blog" / "index.html").read_text(encoding="utf-8")
+    approved_description = (
+        "Plain-English explainers on AI agent key leaks, scanners, vaults, "
+        "and how Worthless changes what a copied protected .env value can do."
+    )
     expected_copy = (
         "Why I built Worthless: change what a copied protected .env value can do",
         "Different tools cover different leak stages",
@@ -494,6 +507,7 @@ def test_blog_uses_bounded_supported_key_claims() -> None:
         "It does not protect a compromised host or attacker-controlled local code.",
     )
 
+    assert f'<meta name="description" content="{approved_description}" />' in blog
     assert "the copied .env value alone cannot call the provider" in blog.lower()
     for approved_copy in expected_copy:
         assert approved_copy in blog
@@ -502,6 +516,7 @@ def test_blog_uses_bounded_supported_key_claims() -> None:
         "change what a copied API key can do",
         "None protect you after it leaks",
         "post-leak API key protection",
+        "post-leak protection",
         "Worthless protects you after it leaks",
         "Useless on its own.",
         "They can't brute-force it.",
