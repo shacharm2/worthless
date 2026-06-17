@@ -362,6 +362,21 @@ def test_homepage_uses_approved_hero_tagline() -> None:
     )
 
 
+def test_homepage_scroll_hint_invites_the_leak_story_accessibly() -> None:
+    index = (DOCS / "index.html").read_text(encoding="utf-8")
+
+    assert 'href="#leak-story" aria-label="Scroll to the leak story"' in index
+    assert '<span class="scroll-hint__text">Follow the leak</span>' in index
+    assert '<span class="scroll-hint__wick" aria-hidden="true"></span>' in index
+    assert '<section class="cinema" id="leak-story" aria-label="Leak story">' in index
+    assert ".scroll-hint:focus-visible" in index
+    assert "@keyframes leak-drop" in index
+    assert "prefers-reduced-motion: reduce" in index
+    assert ".scroll-hint__wick::after" in index
+    assert "animation: none;" in index
+    assert "Scroll the leak" not in index
+
+
 def test_homepage_explains_the_product_without_hiding_the_install_path() -> None:
     index = (DOCS / "index.html").read_text(encoding="utf-8")
     script = (DOCS / "homepage.js").read_text(encoding="utf-8")

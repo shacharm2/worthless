@@ -571,12 +571,63 @@
     .scroll-hint {
       position: absolute;
       left: clamp(1.35rem, 8vw, 10rem);
-      bottom: 2rem;
+      bottom: max(2rem, env(safe-area-inset-bottom));
+      display: inline-flex;
+      align-items: center;
+      gap: 0.82rem;
+      min-height: 2.75rem;
       color: var(--ink-faint);
+      text-decoration: none;
+    }
+
+    .scroll-hint__text {
       font-size: clamp(0.68rem, 0.85vw, 0.78rem);
       font-weight: 800;
       letter-spacing: 0.12em;
       text-transform: uppercase;
+    }
+
+    .scroll-hint__wick {
+      position: relative;
+      width: clamp(2.8rem, 6vw, 4.5rem);
+      height: 1px;
+      background: linear-gradient(90deg, currentColor 0%, currentColor 68%, transparent 100%);
+      opacity: 0.74;
+    }
+
+    .scroll-hint__wick::after {
+      content: "";
+      position: absolute;
+      right: 0.2rem;
+      top: -0.2rem;
+      width: 0.42rem;
+      height: 0.42rem;
+      border-radius: 999px;
+      background: currentColor;
+      animation: leak-drop 2.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+    }
+
+    .scroll-hint:focus-visible {
+      outline: 2px solid currentColor;
+      outline-offset: 0.42rem;
+      border-radius: 0.42rem;
+    }
+
+    @keyframes leak-drop {
+      0%,
+      28% {
+        opacity: 0;
+        transform: translateY(0) scale(0.72);
+      }
+
+      42% {
+        opacity: 0.94;
+      }
+
+      100% {
+        opacity: 0;
+        transform: translateY(0.78rem) scale(1);
+      }
     }
 
     .cinema {
@@ -1611,6 +1662,12 @@
         animation: none !important;
       }
 
+      .scroll-hint__wick::after {
+        animation: none;
+        opacity: 1;
+        transform: translateY(0.54rem) scale(1);
+      }
+
       *,
       *::before,
       *::after {
@@ -1733,10 +1790,13 @@
           <span class="sr-only" id="copy-install-status" aria-live="polite"></span>
         </div>
       </div>
-      <div class="scroll-hint">Scroll the leak</div>
+      <a class="scroll-hint" href="#leak-story" aria-label="Scroll to the leak story">
+        <span class="scroll-hint__text">Follow the leak</span>
+        <span class="scroll-hint__wick" aria-hidden="true"></span>
+      </a>
     </section>
 
-    <section class="cinema" aria-label="Leak story">
+    <section class="cinema" id="leak-story" aria-label="Leak story">
       <div class="sentinel s0" data-beat-target="0"></div>
       <div class="sentinel s1" data-beat-target="1"></div>
       <div class="sentinel s2" data-beat-target="2"></div>
