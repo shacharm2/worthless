@@ -9,6 +9,8 @@ test_doctor_fix_behavior.py; we only need the unit contract here.
 
 from __future__ import annotations
 
+import pytest
+
 from worthless.cli.commands.doctor.checks import bind_confirmation
 
 
@@ -86,3 +88,64 @@ def test_check_is_registered_in_all_checks() -> None:
     checks = ensure_registered()
     ids = [c.check_id for c in checks]
     assert "bind_confirmation" in ids, f"bind_confirmation missing from {ids}"
+
+
+# ---------------------------------------------------------------------------
+# Coverage guard: every ``reason`` value lock-side _confirm_bind emits must
+# be handled by BOTH the doctor _classify AND the status _bind_confirmation_message.
+# This is the structural test the code-reviewer flagged was missing — without
+# it, lock can add a new skipped reason and both surfaces silently swallow
+# it (exactly the silent-pass class WOR-658 was built to expose).
+# ---------------------------------------------------------------------------
+
+
+# Every skipped reason _confirm_bind can emit (lock.py). Adding a new reason
+# to lock REQUIRES adding it here AND to both helpers — the test forces it.
+_ALL_SKIPPED_REASONS = (
+    "no_aliases",  # the one intentionally-silent reason (precondition, not a problem)
+    "proxy_check_raised_before",
+    "proxy_unhealthy_before",
+    "proxy_unrecognised",
+    "proxy_check_raised_after",
+    "proxy_unhealthy_after",
+    "proxy_unrecognised_after",
+    "proxy_restarted",
+    "synthetic_unreachable",
+)
+
+
+@pytest.mark.parametrize("reason", _ALL_SKIPPED_REASONS)
+def test_doctor_classify_handles_every_skipped_reason(reason: str) -> None:
+    """No reason _confirm_bind emits may fall through to the silent
+    'Bind-confirmation state is fine.' default. ``no_aliases`` is the one
+    exception — it means there was nothing to confirm in the first place.
+    """
+    status, summary = bind_confirmation._classify(
+        {"bind_confirmation": {"status": "skipped", "reason": reason}}
+    )
+    if reason == "no_aliases":
+        assert status is None, f"no_aliases is a precondition, not a finding — got {status!r}"
+        return
+    assert status == "warn", (
+        f"reason={reason!r} fell through to status={status!r} — doctor "
+        f"would silently mark this OK and the user would never know "
+        f"routing wasn't proven."
+    )
+    assert "Proof-of-routing" in summary or "inconclusive" in summary.lower(), (
+        f"reason={reason!r} got non-routing summary: {summary!r}"
+    )
+
+
+@pytest.mark.parametrize("reason", _ALL_SKIPPED_REASONS)
+def test_status_message_handles_every_skipped_reason(reason: str) -> None:
+    """Same structural guard for status's _bind_confirmation_message."""
+    from worthless.cli.commands.status import _bind_confirmation_message
+
+    msg = _bind_confirmation_message({"bind_confirmation": {"status": "skipped", "reason": reason}})
+    if reason == "no_aliases":
+        assert msg is None, f"no_aliases is a precondition, not a finding — got {msg!r}"
+        return
+    assert msg is not None and msg, (
+        f"reason={reason!r} produced no status message — user gets a "
+        f"silent skipped verdict and never knows routing wasn't proven."
+    )

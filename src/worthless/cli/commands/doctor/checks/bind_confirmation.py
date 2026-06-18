@@ -48,7 +48,7 @@ def _classify(sentinel: dict | None) -> tuple[_CheckStatus | None, str]:
 
     if status == "skipped":
         reason = bc.get("reason", "")
-        if reason == "proxy_unrecognised":
+        if reason in ("proxy_unrecognised", "proxy_unrecognised_after"):
             return "warn", (
                 "Proof-of-routing inconclusive — the service answering "
                 "/healthz on the configured port isn't a worthless proxy. "
@@ -64,6 +64,17 @@ def _classify(sentinel: dict | None) -> tuple[_CheckStatus | None, str]:
             return "warn", (
                 "Proof-of-routing inconclusive — proxy wasn't healthy when "
                 "lock ran. Start the proxy (`worthless up`) and re-run "
+                "`worthless lock`."
+            )
+        if reason == "proxy_restarted":
+            return "warn", (
+                "Proof-of-routing inconclusive — proxy restarted mid-"
+                "confirm. Re-run `worthless lock` once the proxy stabilises."
+            )
+        if reason == "synthetic_unreachable":
+            return "warn", (
+                "Proof-of-routing inconclusive — test request couldn't "
+                "reach the proxy. Check WORTHLESS_PORT and re-run "
                 "`worthless lock`."
             )
 

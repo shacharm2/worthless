@@ -56,13 +56,17 @@ def _bind_confirmation_message(sentinel: dict | None) -> str | None:
         )
     if status == "skipped":
         reason = bc.get("reason")
-        if reason == "proxy_unrecognised":
+        if reason in ("proxy_unrecognised", "proxy_unrecognised_after"):
             return "The service answering /healthz isn't a worthless proxy — routing wasn't proven."
         if reason in ("proxy_unhealthy_before", "proxy_unhealthy_after"):
             return "Proof-of-routing inconclusive — proxy wasn't healthy."
         if reason in ("proxy_check_raised_before", "proxy_check_raised_after"):
             return "Proof-of-routing inconclusive — proxy health check errored."
-    return None  # status=pass, or shape we don't recognise — stay quiet
+        if reason == "proxy_restarted":
+            return "Proof-of-routing inconclusive — proxy restarted mid-confirm."
+        if reason == "synthetic_unreachable":
+            return "Proof-of-routing inconclusive — test request never reached the proxy."
+    return None  # status=pass, no_aliases, or shape we don't recognise — stay quiet
 
 
 def _resolve_home_for_status() -> WorthlessHome | None:
