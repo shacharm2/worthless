@@ -498,7 +498,7 @@ def create_app(settings: ProxySettings | None = None) -> FastAPI:
         _decoy_hashes: frozenset[str] = getattr(request.app.state, "decoy_hashes", frozenset())
         if _decoy_hashes:
             try:
-                _mac_tag = await ipc.mac(bytes(shard_a))
+                _mac_tag = await ipc.mac(shard_a)
                 if _mac_tag.hex() in _decoy_hashes:
                     logger.warning("decoy bearer token detected for alias %r", alias)
                     shard_a[:] = b"\x00" * len(shard_a)
