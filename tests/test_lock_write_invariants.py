@@ -1,0 +1,179 @@
+"""WOR-646 guard tests for the shards/enrollment write paths.
+
+A 3-lens pre-mortem of the Part-2 atomic write surfaced two catastrophic paths
+with NO existing coverage, plus a drift risk from the duplicated SQL:
+
+* **R1 — shard-A leak.** Every write path must store ``shard_a_enc = NULL``;
+  shard-A lives only client-side (.env). A path that persisted it server-side
+  would defeat the whole key-split. Nothing asserted this.
+* **R2 — CASCADE wipe.** Re-locking a key from a *second* ``.env`` path must NOT
+  delete the first path's enrollment. The protection is the ``ON CONFLICT DO
+  UPDATE`` (never ``INSERT OR REPLACE``) choice — guarded only by comments.
+* **R3 — SQL drift.** The shards-UPSERT and enrollment/config INSERTs are copied
+  across methods; a future edit could change one copy and not the others.
+
+These are behavioral/structural guards, test-only, independent of the SQL text
+where possible.
+"""
+
+from __future__ import annotations
+
+import inspect
+import re
+
+import aiosqlite
+import pytest
+
+from worthless.storage.repository import ShardRepository
+
+from tests.conftest import stored_shard_from_split
+
+_BASE_URL = "https://api.openai.com/v1"
+# Routing metadata is stored verbatim; these tests inspect rows / enrollment
+# survival, not reconstruction, so any non-empty charset is valid here.
+_PREFIX = "sk-"
+_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+
+# ---------------------------------------------------------------------------
+# R1 — shard_a_enc must be NULL on every write path (no server-side shard-A)
+# ---------------------------------------------------------------------------
+
+
+class TestShardAEncNeverPersisted:
+    @pytest.mark.asyncio
+    async def test_shard_a_enc_null_and_routing_cols_set_on_all_write_paths(
+        self,
+        repo: ShardRepository,
+        sample_split_result,
+        tmp_db_path: str,
+    ) -> None:
+        sr = sample_split_result
+        shard = stored_shard_from_split(sr)
+
+        await repo.store_enrolled(
+            "p-store",
+            shard,
+            var_name="OPENAI_API_KEY",
+            env_path="/a/.env",
+            prefix=_PREFIX,
+            charset=_CHARSET,
+            base_url=_BASE_URL,
+        )
+        await repo.upsert_locked_shard(
+            "p-upsert",
+            shard,
+            prefix=_PREFIX,
+            charset=_CHARSET,
+            base_url=_BASE_URL,
+        )
+        await repo.upsert_locked_shard_and_enroll(
+            "p-atomic",
+            shard,
+            var_name="OPENAI_API_KEY",
+            env_path="/b/.env",
+            prefix=_PREFIX,
+            charset=_CHARSET,
+            base_url=_BASE_URL,
+        )
+
+        async with aiosqlite.connect(tmp_db_path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await (
+                await db.execute("SELECT key_alias, shard_a_enc, charset, base_url FROM shards")
+            ).fetchall()
+
+        seen = {r["key_alias"] for r in rows}
+        assert {"p-store", "p-upsert", "p-atomic"} <= seen
+        for r in rows:
+            assert r["shard_a_enc"] is None, (
+                f"{r['key_alias']}: shard_a_enc persisted server-side — key-split defeated"
+            )
+            # Routing columns must be populated or the proxy can't reconstruct.
+            assert r["charset"] is not None, f"{r['key_alias']}: NULL charset"
+            assert r["base_url"] is not None, f"{r['key_alias']}: NULL base_url"
+
+
+# ---------------------------------------------------------------------------
+# R2 — re-lock from a second env_path must NOT CASCADE-wipe the first enrollment
+# ---------------------------------------------------------------------------
+
+
+class TestSecondEnvPathDoesNotWipeFirst:
+    @pytest.mark.asyncio
+    async def test_relock_from_second_env_path_keeps_first_enrollment(
+        self,
+        repo: ShardRepository,
+        sample_split_result,
+    ) -> None:
+        sr = sample_split_result
+        shard = stored_shard_from_split(sr)
+
+        # Enroll the alias from env_path A (creates the shared shards row).
+        await repo.store_enrolled(
+            "multi",
+            shard,
+            var_name="OPENAI_API_KEY",
+            env_path="/a/.env",
+            prefix=_PREFIX,
+            charset=_CHARSET,
+            base_url=_BASE_URL,
+        )
+        # Re-lock the SAME alias from env_path B via the atomic path (write_config
+        # =False mirrors the re-lock branch). The shards row is patched in place;
+        # the env_path A enrollment must survive (no INSERT OR REPLACE CASCADE).
+        await repo.upsert_locked_shard_and_enroll(
+            "multi",
+            shard,
+            var_name="OPENAI_API_KEY",
+            env_path="/b/.env",
+            prefix=_PREFIX,
+            charset=_CHARSET,
+            base_url=_BASE_URL,
+            write_config=False,
+        )
+
+        enrollments = await repo.list_enrollments("multi")
+        paths = {e.env_path for e in enrollments}
+        assert paths == {"/a/.env", "/b/.env"}, (
+            f"re-lock from a second env_path wiped the first enrollment: {paths!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# R3 — drift guard: the duplicated statements must stay identical
+# ---------------------------------------------------------------------------
+
+
+def _norm_stmt(fn, pattern: str) -> str:
+    """Return the whitespace-normalised SQL literal matched by *pattern* in *fn*.
+
+    Compares the SQL across methods immune to source line-wrapping. A drifted
+    copy (e.g. a column added to one method but not the other) changes the
+    normalised string and trips the assertion.
+    """
+    src = inspect.getsource(fn)
+    matches = re.findall(pattern, src, re.DOTALL)
+    assert matches, f"pattern not found in {fn.__qualname__}"
+    return re.sub(r"\s+", " ", matches[0]).strip()
+
+
+class TestSqlDriftGuard:
+    def test_shards_upsert_identical_across_methods(self) -> None:
+        pat = r"INSERT INTO shards.*?oc_rollback_mac\s*=\s*excluded\.oc_rollback_mac"
+        a = _norm_stmt(ShardRepository.upsert_locked_shard, pat)
+        b = _norm_stmt(ShardRepository.upsert_locked_shard_and_enroll, pat)
+        assert a == b, "shards UPSERT SQL drifted between the two methods"
+
+    def test_enrollment_insert_identical_across_methods(self) -> None:
+        pat = r"INSERT OR IGNORE INTO enrollments.*?VALUES \(\?, \?, \?, \?\)"
+        store = _norm_stmt(ShardRepository.store_enrolled, pat)
+        add = _norm_stmt(ShardRepository.add_enrollment, pat)
+        atomic = _norm_stmt(ShardRepository.upsert_locked_shard_and_enroll, pat)
+        assert store == add == atomic, "enrollments INSERT drifted across methods"
+
+    def test_config_insert_identical_across_methods(self) -> None:
+        pat = r"INSERT OR IGNORE INTO enrollment_config.*?VALUES \(\?, \?, \?\)"
+        store = _norm_stmt(ShardRepository.store_enrolled, pat)
+        atomic = _norm_stmt(ShardRepository.upsert_locked_shard_and_enroll, pat)
+        assert store == atomic, "enrollment_config INSERT drifted across methods"
