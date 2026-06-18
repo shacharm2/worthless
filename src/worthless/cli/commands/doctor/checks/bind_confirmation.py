@@ -12,13 +12,17 @@ No ``--fix`` is offered: the remediation is to restart OpenClaw's daemon
 
 from __future__ import annotations
 
+from typing import Literal
+
 from worthless.cli.commands.doctor.registry import CheckContext, CheckResult
 from worthless.cli.sentinel import read_sentinel
 
 check_id = "bind_confirmation"
 
+_CheckStatus = Literal["ok", "warn", "error"]
 
-def _classify(sentinel: dict | None) -> tuple[str | None, str]:
+
+def _classify(sentinel: dict | None) -> tuple[_CheckStatus | None, str]:
     """Map the sentinel's ``bind_confirmation`` block to (status, summary).
 
     ``status`` is ``None`` when nothing user-actionable was found; the
