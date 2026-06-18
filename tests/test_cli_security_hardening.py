@@ -548,3 +548,50 @@ class TestDecoyHashWrittenAtEnrollment:
             "Fix: call repo.set_decoy_hash(alias, env_path, sr.shard_a.decode('utf-8')) "
             "inside _enroll_single after store_enrolled()."
         )
+
+    def test_lock_keys_fresh_lock_writes_decoy_hash(self, tmp_path: Path) -> None:
+        """The real CLI path _lock_keys() — not just _enroll_single — must
+        persist the decoy hash on a fresh lock.
+
+        _enroll_single coverage alone misses a regression where the
+        _lock_keys wrapper (or _pass1_db_writes) skips the decoy write.
+        """
+        home = ensure_home(tmp_path / ".worthless")
+        env_file = tmp_path / ".env"
+        env_file.write_text("OPENAI_API_KEY=sk-proj-a3x7bK9mQ2rT4vU5wE1dF6gH8jL0pN2sR\n")
+
+        assert _lock_keys(env_file, home) == 1
+
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        asyncio.run(repo.initialize())
+        hashes = asyncio.run(repo.all_decoy_hashes())
+        assert len(hashes) == 1, (
+            "Fresh _lock_keys must persist exactly one decoy hash; "
+            f"got {len(hashes)}. The tripwire is blind without it."
+        )
+
+    def test_relock_adds_decoy_hash_for_new_key(self, tmp_path: Path) -> None:
+        """Re-running _lock_keys against an existing DB (re-lock) must also
+        write the decoy hash for the newly locked key.
+
+        Guards against the decoy write being a one-time, fresh-DB-only side
+        effect: the second lock into a populated DB must add its own hash.
+        """
+        home = ensure_home(tmp_path / ".worthless")
+        env1 = tmp_path / "a" / ".env"
+        env1.parent.mkdir()
+        env1.write_text("OPENAI_API_KEY=sk-proj-a3x7bK9mQ2rT4vU5wE1dF6gH8jL0pN2sR\n")
+        assert _lock_keys(env1, home) == 1
+
+        env2 = tmp_path / "b" / ".env"
+        env2.parent.mkdir()
+        env2.write_text("ANTHROPIC_API_KEY=sk-ant-api03-a3x7bK9mQ2rT4vU5wE1dF6gH8jL0pN2sR\n")
+        assert _lock_keys(env2, home) == 1
+
+        repo = ShardRepository(str(home.db_path), home.fernet_key)
+        asyncio.run(repo.initialize())
+        hashes = asyncio.run(repo.all_decoy_hashes())
+        assert len(hashes) == 2, (
+            "Re-lock against an existing DB must add a decoy hash for the new "
+            f"key; expected 2 total, got {len(hashes)}."
+        )

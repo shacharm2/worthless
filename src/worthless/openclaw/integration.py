@@ -25,6 +25,7 @@ Predicate" and §"Failure modes" rows F01–F04, F36.
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -1146,24 +1147,31 @@ def _apply_lock_rollback(
 _ALLOWED_PROXY_HOSTS: frozenset[str] = frozenset(
     {"127.0.0.1", "localhost", "::1", "host.docker.internal"}
 )
+# Docker's default ``docker0`` bridge gateway lives in 172.17.0.0/16 — the
+# address _resolve_proxy_base_url() emits when OpenClaw runs in a container.
+# Scoped to the default-bridge /16 (not the full RFC-1918 172.16.0.0/12) so an
+# explicit override can't redirect to arbitrary private-range hosts.
+_DOCKER_BRIDGE_CIDR = ipaddress.ip_network("172.17.0.0/16")
 
 
 def _validate_proxy_base_url(url: str) -> None:
     """Raise ValueError if *url* does not resolve to a local proxy endpoint.
 
     Rejects remote hosts to prevent SSRF / key exfiltration via a tampered
-    MCP config. Only applied to explicit caller-supplied overrides; the
-    auto-resolved Docker-bridge URL from _resolve_proxy_base_url() bypasses
-    this check by design.
-
-    Docker bridge IPs (172.16.0.0/12) are a known gap for manually supplied
-    URLs — file a follow-up if Docker bridge support is needed.
+    MCP config. Allows localhost aliases and the Docker default-bridge gateway
+    range (172.17.0.0/16). Only applied to explicit caller-supplied overrides;
+    the auto-resolved URL from _resolve_proxy_base_url() bypasses this check.
     """
     parts = urlsplit(url)
-    if parts.scheme != "http" or (parts.hostname or "") not in _ALLOWED_PROXY_HOSTS:
+    host = parts.hostname or ""
+    try:
+        in_docker_bridge = ipaddress.ip_address(host) in _DOCKER_BRIDGE_CIDR
+    except ValueError:
+        in_docker_bridge = False
+    if parts.scheme != "http" or (host not in _ALLOWED_PROXY_HOSTS and not in_docker_bridge):
         raise ValueError(
             f"proxy_base_url must point to a local proxy endpoint "
-            f"(allowed hosts: {sorted(_ALLOWED_PROXY_HOSTS)}); got: {url!r}"
+            f"(allowed hosts: {sorted(_ALLOWED_PROXY_HOSTS)} or 172.17.0.0/16); got: {url!r}"
         )
 
 
