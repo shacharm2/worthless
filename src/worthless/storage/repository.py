@@ -768,37 +768,33 @@ class ShardRepository:
     # Decoy hash registry (WOR-31)
     # ------------------------------------------------------------------
 
-    async def set_decoy_hash(self, alias: str, env_path: str | None, decoy_value: str) -> None:
-        """Store the HMAC-SHA256 hash of *decoy_value* on the enrollment row."""
-        h = await self._compute_decoy_hash(decoy_value)
+    async def record_retired_decoy(self, retired_value: str) -> None:
+        """Record the HMAC of a now-RETIRED shard-A in the decoy tripwire set.
+
+        Called at unlock — the moment a shard-A is invalidated. NEVER call this
+        with a currently-active shard-A: that value is the legitimate Bearer
+        token and recording it would make the proxy 401 all live traffic.
+        """
+        h = await self._compute_decoy_hash(retired_value)
         async with self._connect() as db:
-            if env_path is None:
-                await db.execute(
-                    "UPDATE enrollments SET decoy_hash = ? "
-                    "WHERE key_alias = ? AND env_path IS NULL",
-                    (h, alias),
-                )
-            else:
-                await db.execute(
-                    "UPDATE enrollments SET decoy_hash = ? WHERE key_alias = ? AND env_path = ?",
-                    (h, alias, env_path),
-                )
+            await db.execute(
+                "INSERT OR IGNORE INTO retired_decoys (decoy_hash) VALUES (?)",
+                (h,),
+            )
             await db.commit()
 
     async def is_known_decoy(self, value: str) -> bool:
-        """Return True if *value* matches any stored decoy hash."""
+        """Return True if *value* matches a retired-decoy hash."""
         h = await self._compute_decoy_hash(value)
         async with self._connect() as db:
             cursor = await db.execute(
-                "SELECT 1 FROM enrollments WHERE decoy_hash = ? LIMIT 1",
+                "SELECT 1 FROM retired_decoys WHERE decoy_hash = ? LIMIT 1",
                 (h,),
             )
             return await cursor.fetchone() is not None
 
     async def all_decoy_hashes(self) -> set[str]:
-        """Return the set of all non-NULL decoy_hash values (for batch checks)."""
+        """Return the set of all retired-decoy hashes (for the proxy tripwire)."""
         async with self._connect() as db:
-            cursor = await db.execute(
-                "SELECT decoy_hash FROM enrollments WHERE decoy_hash IS NOT NULL"
-            )
+            cursor = await db.execute("SELECT decoy_hash FROM retired_decoys")
             return {row[0] for row in await cursor.fetchall()}
