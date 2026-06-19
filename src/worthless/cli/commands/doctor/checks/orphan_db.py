@@ -77,7 +77,7 @@ def run(ctx: CheckContext) -> CheckResult:
         "No orphan enrollments found."
         if n == 0
         else (
-            f"{n} broken record{'s' if n != 1 else ''} (.env line deleted) — run "
+            f"{n} broken record{'s' if n != 1 else ''} (.env file or key line gone) — run "
             "'worthless doctor --fix' to purge, or 'worthless uninstall --force' "
             "for a clean removal."
         )

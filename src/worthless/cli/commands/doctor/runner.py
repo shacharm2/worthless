@@ -43,7 +43,7 @@ def _count_enrollments(home) -> int:  # noqa: ANN001 — WorthlessHome opaque he
         finally:
             con.close()
     except Exception:  # noqa: BLE001 — diagnosis must never crash
-        return 0
+        return -1  # count unavailable (e.g. corrupt DB) — distinct from a real "none"
 
 
 def _fernet_missing_result(home) -> CheckResult:  # noqa: ANN001
@@ -54,21 +54,24 @@ def _fernet_missing_result(home) -> CheckResult:  # noqa: ANN001
     (b) points the user at ``worthless uninstall --force``.
     """
     n = _count_enrollments(home)
+    # n < 0 = the count itself failed (e.g. corrupt DB) — still a broken,
+    # unrecoverable install, NOT "0 enrollments". Only a confirmed 0 is a warn.
+    count_phrase = "an unknown number of" if n < 0 else str(n)
     return CheckResult(
         check_id="fernet_key_missing",
-        status="error" if n else "warn",
+        status="warn" if n == 0 else "error",
         findings=[
             {
                 "issue": "fernet_key_missing",
                 "enrollments": n,
                 "message": (
-                    f"fernet.key is missing but {n} enrollment(s) exist — the locked "
-                    "keys cannot be reconstructed (unrecoverable)."
+                    f"fernet.key is missing but {count_phrase} enrollment(s) exist — the "
+                    "locked keys cannot be reconstructed (unrecoverable)."
                 ),
                 "recommendation": "worthless uninstall --force",
             }
         ],
-        summary=f"Fernet key missing; {n} enrollment(s) unrecoverable.",
+        summary=f"Fernet key missing; {count_phrase} enrollment(s) unrecoverable.",
         fixable=False,
         fixed=[],
         skipped_reason=None,

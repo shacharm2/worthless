@@ -319,9 +319,11 @@ def test_uninstall_real_restore_failure_without_force_still_blocks(
 
     assert result.exit_code != 0, "a real restore failure must still block without --force"
     assert home_dir.base_dir.exists(), "shredder guard FAILED: home wiped despite a real failure"
-    n_shards = (
-        sqlite3.connect(str(home_dir.db_path)).execute("SELECT COUNT(*) FROM shards").fetchone()[0]
-    )
+    con = sqlite3.connect(str(home_dir.db_path))
+    try:
+        n_shards = con.execute("SELECT COUNT(*) FROM shards").fetchone()[0]
+    finally:
+        con.close()
     assert n_shards >= 1, "shard-B deleted despite the abort — real key now unrecoverable"
 
 

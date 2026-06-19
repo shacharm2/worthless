@@ -165,12 +165,6 @@ async def _restore_all(
     # it expects (WOR-621 changed the contract from (provider, alias) tuples).
     unlocked: list = []
     for env_path, slot in by_path.items():
-        if not Path(env_path).exists():
-            # BUG-2: the project's .env was deleted — no real key sits in a file
-            # to brick, so this is NOT a key-shredder risk. Skip + warn (never
-            # block); the dead enrollment row is dropped by the wipe.
-            missing.append(env_path)
-            continue
         try:
             planned = await _unlock_batch(slot["aliases"], home, repo, Path(env_path))
             unlocked.extend(await _build_oc_restores(planned, repo, console))
@@ -179,7 +173,15 @@ async def _restore_all(
                 os.chmod(env_path, target)  # noqa: PTH101
             restored.append((env_path, target))
         except Exception as exc:  # noqa: BLE001 — collect every failure, never abort mid-loop
-            failed.append((env_path, str(exc)))
+            # Route by the ACTUAL state, only AFTER attempting the restore — never
+            # pre-classify via exists() (CodeRabbit): a .env confirmed GONE
+            # (deleted project) is a skip+warn, nothing to brick (BUG-2); a file
+            # that's present but unrestorable (transient EACCES, tamper) falls to
+            # `failed` and still trips the key-shredder guard.
+            if not Path(env_path).exists():
+                missing.append(env_path)
+            else:
+                failed.append((env_path, str(exc)))
 
     return restored, failed, missing, unlocked, enroll_only
 

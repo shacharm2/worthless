@@ -206,6 +206,7 @@ def test_doctor_text_mode_survives_missing_fernet_key(home_dir: WorthlessHome, t
 
     result = runner.invoke(app, ["doctor"], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
 
+    assert result.exit_code == 0, f"text doctor must exit 0 on a broken install: {result.output}"
     # print_warning goes to stderr; the module runner is mix_stderr=False, so
     # combine both streams to assert on what the human actually sees.
     out = (result.stdout + (result.stderr or "")).lower()
@@ -225,6 +226,7 @@ def test_doctor_text_mode_survives_corrupt_db(home_dir: WorthlessHome, tmp_path)
 
     result = runner.invoke(app, ["doctor"], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
 
+    assert result.exit_code == 0, f"text doctor must exit 0 on a corrupt DB: {result.output}"
     out = (result.stdout + (result.stderr or "")).lower()
     assert "wrtls-103" not in out, f"text doctor crashed on a corrupt DB: {out}"
     assert "internal error" not in out, f"text doctor crashed with WRTLS-199: {out}"

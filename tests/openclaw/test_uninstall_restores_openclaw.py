@@ -175,9 +175,10 @@ def test_uninstall_leaves_unrelated_openclaw_provider_untouched(
 
     env = openclaw_present["home"] / ".env"
     env.write_text(f"OPENAI_API_KEY={real_key}\n")
-    runner.invoke(
+    locked = runner.invoke(
         app, ["lock", "--env", str(env)], env={"WORTHLESS_HOME": str(worthless_home.base_dir)}
     )
+    assert locked.exit_code == 0, locked.output
 
     uninst = runner.invoke(
         app, ["uninstall", "--yes"], env={"WORTHLESS_HOME": str(worthless_home.base_dir)}
