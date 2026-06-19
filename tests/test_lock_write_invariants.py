@@ -232,3 +232,61 @@ class TestAtomicWriteRollsBackMidTransaction:
             "shards INSERT was NOT rolled back when the transaction failed before "
             "COMMIT — the atomicity guarantee is broken"
         )
+
+
+# ---------------------------------------------------------------------------
+# Routing-metadata validation + spend_cap branch (the atomic method rejects
+# NULL routing columns up front, and honours an explicit spend cap).
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicWriteValidatesAndConfigures:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("override", "missing"),
+        [
+            ({"prefix": None}, "prefix"),
+            ({"charset": None}, "charset"),
+            ({"base_url": None}, "base_url"),
+        ],
+        ids=["prefix", "charset", "base_url"],
+    )
+    async def test_none_routing_metadata_is_rejected(
+        self,
+        repo: ShardRepository,
+        sample_split_result,
+        override: dict,
+        missing: str,
+    ) -> None:
+        shard = stored_shard_from_split(sample_split_result)
+        kwargs = {"prefix": _PREFIX, "charset": _CHARSET, "base_url": _BASE_URL, **override}
+        with pytest.raises(ValueError, match=missing):
+            await repo.upsert_locked_shard_and_enroll(
+                "validate", shard, var_name="OPENAI_API_KEY", env_path="/a/.env", **kwargs
+            )
+
+    @pytest.mark.asyncio
+    async def test_explicit_spend_cap_is_written(
+        self,
+        repo: ShardRepository,
+        sample_split_result,
+        tmp_db_path: str,
+    ) -> None:
+        shard = stored_shard_from_split(sample_split_result)
+        await repo.upsert_locked_shard_and_enroll(
+            "capped",
+            shard,
+            var_name="OPENAI_API_KEY",
+            env_path="/a/.env",
+            prefix=_PREFIX,
+            charset=_CHARSET,
+            base_url=_BASE_URL,
+            spend_cap=4242,
+        )
+        async with aiosqlite.connect(tmp_db_path) as db:
+            row = await (
+                await db.execute(
+                    "SELECT spend_cap FROM enrollment_config WHERE key_alias = 'capped'"
+                )
+            ).fetchone()
+        assert row is not None and row[0] == 4242
