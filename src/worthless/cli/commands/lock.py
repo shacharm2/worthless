@@ -920,11 +920,21 @@ def _confirm_bind(
             "aliases": aliases,
             "reached": reached,
         }
-    # Note: we don't re-check "bind_probe_count in after_health" here. If
-    # BEFORE had the field, AFTER will too — both reads go through the
-    # same ``check_proxy_health`` against the same loopback responder. A
-    # responder swap mid-call is squatter territory which the BEFORE
-    # gate already classified.
+    # CodeRabbit gate-10 finding: re-check the field on the AFTER read. If
+    # BEFORE had ``bind_probe_count`` but AFTER doesn't (responder swap /
+    # restart-to-a-different-server mid-call), ``_coerce_counter(None)`` would
+    # silently become 0 and ``delta = 0 - before`` would look like a large
+    # negative — misclassified as ``proxy_restarted``. Classify the missing
+    # field as its own ``proxy_unrecognised_after`` skip so the verdict names
+    # the real condition instead of guessing "restart".
+    if "bind_probe_count" not in after_health:
+        return {
+            "status": "skipped",
+            "reason": "proxy_unrecognised_after",
+            "delta": 0,
+            "aliases": aliases,
+            "reached": reached,
+        }
     after = _coerce_counter(after_health.get("bind_probe_count"))
 
     delta = after - before

@@ -69,7 +69,10 @@ def _patch_proxy_for_bind_fail(monkeypatch: pytest.MonkeyPatch, lock_mod) -> Non
         }
 
     monkeypatch.setattr(lock_mod, "check_proxy_health", fake_health)
-    monkeypatch.setattr(lock_mod, "_fire_synthetic_request", lambda *a, **k: True, raising=False)
+    # raising=True (default): _fire_synthetic_request is real code now, so if
+    # it's ever renamed this monkeypatch fails loud instead of silently
+    # creating a dead attribute (CodeRabbit gate-10).
+    monkeypatch.setattr(lock_mod, "_fire_synthetic_request", lambda *a, **k: True)
 
 
 def test_unlock_restores_original_env_after_bind_fail(

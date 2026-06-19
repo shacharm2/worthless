@@ -227,6 +227,40 @@ def test_confirm_bind_after_unhealthy_skips_proxy_unhealthy_after(
     assert out["reason"] == "proxy_unhealthy_after"
 
 
+def test_confirm_bind_after_missing_probe_field_is_unrecognised_not_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CodeRabbit gate-10: BEFORE has bind_probe_count, AFTER doesn't (a
+    responder swap mid-call). The field's absence must classify as
+    ``proxy_unrecognised_after`` — NOT as a large-negative-delta
+    ``proxy_restarted``, and NEVER as a fail. Pins the field re-check."""
+    calls = {"n": 0}
+
+    def health(_port):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {
+                "healthy": True,
+                "port": 0,
+                "mode": "ok",
+                "requests_proxied": 0,
+                "bind_probe_count": 5,
+            }
+        # AFTER: healthy, but the bind_probe_count field has vanished.
+        return {"healthy": True, "port": 0, "mode": "ok", "requests_proxied": 0}
+
+    monkeypatch.setattr(lock_mod, "check_proxy_health", health)
+    monkeypatch.setattr(lock_mod, "_fire_synthetic_request", lambda *a, **k: True)
+
+    out = lock_mod._confirm_bind([_Planned("a-1")], host="127.0.0.1", port=9999)
+    assert out["status"] == "skipped"
+    assert out["reason"] == "proxy_unrecognised_after", (
+        f"missing field on AFTER must be proxy_unrecognised_after, not a "
+        f"guessed restart. Got: {out!r}"
+    )
+    assert out["status"] != "fail"
+
+
 def test_confirm_bind_pass_when_counter_ticks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Counter delta > 0 + reached > 0 → pass with the observed delta."""
     state = {"counter": 100}

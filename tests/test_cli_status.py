@@ -331,6 +331,13 @@ class TestStatusSurfacesBindConfirmation:
         assert "unrecogn" in out.lower() or "worthless proxy" in out.lower(), (
             f"skipped/unrecognised must surface a distinct message. Got:\n{out}"
         )
+        # CodeRabbit gate-10: pin the exit contract. skipped/unrecognised is
+        # NOT a degraded state (status=ok, openclaw=ok) — it's inconclusive,
+        # so status must exit 0, not the 73 reserved for true DEGRADED.
+        assert result.exit_code == 0, (
+            f"skipped/unrecognised is inconclusive, not DEGRADED — must exit 0. "
+            f"Got {result.exit_code}"
+        )
 
     def test_status_quiet_when_bind_confirmation_passes(self, home_with_key: WorthlessHome) -> None:
         """status=ok + bind=pass → no DEGRADED, no [WARN]."""
