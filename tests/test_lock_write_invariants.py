@@ -290,3 +290,64 @@ class TestAtomicWriteValidatesAndConfigures:
                 )
             ).fetchone()
         assert row is not None and row[0] == 4242
+
+
+# ---------------------------------------------------------------------------
+# brutus finding (worthless-exx5): the superseded-enrollment cleanup runs
+# OUTSIDE the atomic Pass-1 transaction and is NOT covered by the compensating
+# unwind. An interrupt during a key-rotation re-lock can orphan the OLD alias's
+# shard. xfail until exx5 folds the cleanup into the transaction (or registers
+# the superseded aliases for unwind).
+# ---------------------------------------------------------------------------
+
+
+class TestSupersededCleanupInterruptOrphan:
+    @pytest.mark.xfail(
+        reason="WOR-646 worthless-exx5: _delete_superseded_location_enrollments "
+        "commits outside the atomic transaction; not yet covered by the unwind.",
+        strict=False,
+    )
+    @pytest.mark.asyncio
+    async def test_interrupt_during_superseded_cleanup_orphans_old_shard(
+        self,
+        repo: ShardRepository,
+        sample_split_result,
+        tmp_db_path: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import worthless.cli.commands.lock as lock_mod
+
+        shard = stored_shard_from_split(sample_split_result)
+        # An OLD alias enrolled at (var, path) — superseded once a NEW alias locks
+        # the same var/path during a rotation re-lock.
+        await repo.store_enrolled(
+            "old-alias",
+            shard,
+            var_name="OPENAI_API_KEY",
+            env_path="/a/.env",
+            prefix=_PREFIX,
+            charset=_CHARSET,
+            base_url=_BASE_URL,
+        )
+
+        # Interrupt mid-cleanup: the superseded SHARD delete fails AFTER its
+        # enrollment row was already deleted (separate commits, no transaction).
+        async def _boom(_alias: str) -> None:
+            raise RuntimeError("interrupt during superseded shard delete")
+
+        monkeypatch.setattr(repo, "delete_enrolled", _boom)
+
+        with pytest.raises(RuntimeError):
+            await lock_mod._delete_superseded_location_enrollments(
+                repo, alias="new-alias", var_name="OPENAI_API_KEY", env_path="/a/.env"
+            )
+
+        async with aiosqlite.connect(tmp_db_path) as db:
+            shards = {
+                r[0] for r in await (await db.execute("SELECT key_alias FROM shards")).fetchall()
+            }
+        enrolled = {e.key_alias for e in await repo.list_enrollments()}
+        orphans = shards - enrolled
+        assert not orphans, (
+            f"superseded-cleanup interrupt orphaned the old alias's shard: {orphans!r}"
+        )
