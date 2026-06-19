@@ -214,3 +214,20 @@ def test_doctor_text_mode_survives_missing_fernet_key(home_dir: WorthlessHome, t
     assert "uninstall --force" in out, (
         f"text doctor must point a stuck human at `uninstall --force`, got: {result.output}"
     )
+
+
+def test_doctor_text_mode_survives_corrupt_db(home_dir: WorthlessHome, tmp_path) -> None:
+    """7c (BUG-1, human path, DB variant): text `worthless doctor` on a corrupt
+    DB must NOT crash (WRTLS-103) and must point the human at `uninstall --force`.
+    """
+    _lock_one(home_dir, tmp_path)
+    home_dir.db_path.write_bytes(b"corrupt-not-sqlite\x00\xff garbage")
+
+    result = runner.invoke(app, ["doctor"], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+
+    out = (result.stdout + (result.stderr or "")).lower()
+    assert "wrtls-103" not in out, f"text doctor crashed on a corrupt DB: {out}"
+    assert "internal error" not in out, f"text doctor crashed with WRTLS-199: {out}"
+    assert "uninstall --force" in out, (
+        f"text doctor must point a stuck human at `uninstall --force`, got: {out}"
+    )

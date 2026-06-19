@@ -839,19 +839,19 @@ def _doctor_run(*, fix: bool, yes: bool, dry_run: bool) -> None:
     A clean state on all four reports ``No issues found.`` and exits 0.
     """
     console = get_console()
-    home = get_home()
 
-    # BUG-1: a broken install (encryption key missing / unreadable) can't be
-    # diagnosed by the key-dependent checks below, and reading the key would
-    # crash the very tool meant to help (WRTLS-102). Surface it in plain English
-    # and point at the fix instead of crashing. (--json mode does the same.)
+    # BUG-1: a broken install — a corrupt DB (crashes get_home's init) or a
+    # missing/unreadable encryption key — can't be diagnosed by the checks below
+    # and would crash the very tool meant to help (WRTLS-102/103). Surface it in
+    # plain English and point at the fix instead of crashing. (--json does too.)
     try:
+        home = get_home()
         _ = home.fernet_key
     except WorthlessError:
         console.print_warning(
-            "Worthless looks broken — its encryption key is missing, so your "
-            "locked keys can't be reconstructed. Remove it with "
-            "'worthless uninstall --force', then rotate those keys at your provider."
+            "Worthless looks broken — it can't be read (encryption key or database "
+            "missing/unreadable), so your locked keys can't be reconstructed. Remove "
+            "it with 'worthless uninstall --force', then rotate those keys at your provider."
         )
         return
 
