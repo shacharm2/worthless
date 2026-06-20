@@ -78,6 +78,35 @@ def _fernet_missing_result(home) -> CheckResult:  # noqa: ANN001
     )
 
 
+def _broken_install_result() -> CheckResult:
+    """Diagnose an install that can't even be opened — ``get_home()`` itself raised.
+
+    BUG-1 (corrupt DB / unreadable bootstrap): ``get_home()`` runs DB init and
+    throws WRTLS-103 before any check can run, so there is no ``home`` to count
+    against. Mirror the text-mode handler: the locked keys can't be
+    reconstructed, so the machine-facing diagnostic must still emit valid JSON
+    pointing at the forced removal instead of crashing.
+    """
+    return CheckResult(
+        check_id="broken_install",
+        status="error",
+        findings=[
+            {
+                "issue": "broken_install",
+                "message": (
+                    "Worthless can't be read (encryption key or database "
+                    "missing/unreadable) — the locked keys cannot be reconstructed."
+                ),
+                "recommendation": "worthless uninstall --force",
+            }
+        ],
+        summary="Worthless install unreadable; locked keys unrecoverable.",
+        fixable=False,
+        fixed=[],
+        skipped_reason=None,
+    )
+
+
 def _aggregate(results: list[CheckResult]) -> dict:
     """Combine per-check results into the top-level JSON envelope.
 
@@ -140,7 +169,15 @@ def _doctor_run_json(*, fix: bool, dry_run: bool) -> None:
     invocations and the iCloud-migration state machine that flock guards
     does not fire in JSON mode (no migration is performed in --json).
     """
-    home = get_home()
+    try:
+        home = get_home()
+    except WorthlessError:
+        # BUG-1: the install itself can't be opened (corrupt DB / unreadable
+        # bootstrap) — get_home() runs DB init and raises WRTLS-103 before any
+        # check can run. Mirror the text path: emit valid JSON pointing at the
+        # fix, never crash the machine-facing diagnostic.
+        typer.echo(json.dumps(_aggregate([_broken_install_result()])))
+        return
     try:
         fernet_key = bytearray(read_fernet_key(home.base_dir))  # SR-01: mutable for zeroing
     except WorthlessError:

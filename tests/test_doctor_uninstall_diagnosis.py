@@ -233,3 +233,38 @@ def test_doctor_text_mode_survives_corrupt_db(home_dir: WorthlessHome, tmp_path)
     assert "uninstall --force" in out, (
         f"text doctor must point a stuck human at `uninstall --force`, got: {out}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 7d — the MACHINE path: `worthless doctor --json` must ALSO survive a corrupt
+# DB, not just a missing key. An agent scripting --json on a broken install is
+# exactly who needs a parseable diagnosis, not a WRTLS-103 crash on stderr.
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_json_survives_corrupt_db(home_dir: WorthlessHome, tmp_path) -> None:
+    """7d (BUG-1, machine path, DB variant): `worthless doctor --json` on a
+    corrupt DB must NOT crash (WRTLS-103) and must still emit valid JSON with
+    ``ok=False`` that recommends ``worthless uninstall --force``.
+
+    Pre-fix ``_doctor_run_json`` called ``get_home()`` OUTSIDE its try/except,
+    so a corrupt DB raised WRTLS-103 before any JSON was produced — the very
+    state ``--json`` exists to diagnose crashed the machine-facing tool.
+    """
+    _lock_one(home_dir, tmp_path)
+    home_dir.db_path.write_bytes(b"corrupt-not-sqlite\x00\xff garbage")
+
+    result = _run_doctor_json(home_dir)
+
+    # A parseable JSON document must be on stdout despite the corrupt DB.
+    doc = json.loads(result.stdout)
+    assert "checks" in doc, f"doctor --json did not emit a checks envelope: {result.stdout!r}"
+    assert doc.get("ok") is False, f"a corrupt DB must be ok=False: {doc}"
+    out = result.output.lower()
+    assert "wrtls-103" not in out, f"doctor --json crashed on a corrupt DB: {out}"
+    assert "internal error" not in out, "doctor --json must not crash with WRTLS-199"
+
+    flat = _all_text(doc)
+    assert "uninstall --force" in flat, (
+        f"doctor --json must recommend `worthless uninstall --force` for a corrupt DB, got: {doc}"
+    )
