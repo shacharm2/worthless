@@ -71,3 +71,21 @@ def test_explain_unknown_lists_known_ids() -> None:
     result = runner.invoke(app, ["doctor", "--explain", "nope"])
     assert result.exit_code != 0
     assert "fernet_drift" in (result.stdout + result.stderr)
+
+
+def test_explain_list_shows_catalog() -> None:
+    result = runner.invoke(app, ["doctor", "--explain", "list"])
+    assert result.exit_code == 0
+    # the catalog names every check, on stdout (not an error)
+    assert "fernet_drift" in result.stdout
+    assert "orphan_db" in result.stdout
+
+
+def test_playbooks_lead_with_a_verdict() -> None:
+    """WOR-778: every playbook opens with a plain safe/gone/at-risk verdict."""
+    verdicts = ("safe", "gone", "at risk", "no secret", "nothing at risk", "exposed", "locked")
+    for cid, play in PLAYBOOKS.items():
+        first = play.lower()[:40]
+        assert any(v in first for v in verdicts), (
+            f"{cid} doesn't lead with a verdict: {play[:50]!r}"
+        )
