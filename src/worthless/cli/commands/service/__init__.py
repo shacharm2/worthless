@@ -111,8 +111,9 @@ def register_service_commands(app: typer.Typer) -> None:
         fail_if_windows()
         console = get_console()
         home = get_home()
-        port = resolve_port(None)
-        status = _backend().detect_status(home, port)
+        backend = _backend()
+        port = backend.installed_port() or resolve_port(None)
+        status = backend.detect_status(home, port)
         runtime = detect_proxy_runtime(home, port=port)
         if console.json_mode:
             sys.stdout.write(

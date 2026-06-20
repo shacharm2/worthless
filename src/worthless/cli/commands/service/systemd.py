@@ -61,6 +61,19 @@ def _ensure_linger() -> None:
     run_cmd(["loginctl", "enable-linger", _session_user()])
 
 
+def installed_port() -> int | None:
+    """Return WORTHLESS_PORT from the installed unit, if present."""
+    path = unit_path()
+    if not path.is_file():
+        return None
+    prefix = "Environment=WORTHLESS_PORT="
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            return int(stripped[len(prefix) :])
+    return None
+
+
 def _active_state() -> str:
     result = _systemctl("is-active", SYSTEMD_UNIT, check=False)
     if result.returncode != 0 and not (result.stdout or "").strip():

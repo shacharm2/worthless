@@ -55,9 +55,24 @@ class TestResolveWorthlessBinary:
         fallback = tmp_path / ".local" / "bin" / "worthless"
         fallback.parent.mkdir(parents=True)
         fallback.write_text("#!/bin/sh\n")
+        fallback.chmod(0o755)
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         with patch("worthless.cli.commands.service._common.shutil.which", return_value=None):
             assert resolve_worthless_binary() == fallback.resolve()
+
+    def test_ignores_non_executable_local_bin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fallback = tmp_path / ".local" / "bin" / "worthless"
+        fallback.parent.mkdir(parents=True)
+        fallback.write_text("not executable\n")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        with (
+            patch("worthless.cli.commands.service._common.shutil.which", return_value=None),
+            pytest.raises(WorthlessError) as exc_info,
+        ):
+            resolve_worthless_binary()
+        assert exc_info.value.code == ErrorCode.BOOTSTRAP_FAILED
 
     def test_raises_when_missing(self) -> None:
         with (

@@ -486,9 +486,17 @@ def register_up_commands(app: typer.Typer) -> None:
         actual_port = _resolve_port(port)
 
         # launchd/systemd may invoke ``up`` while a prior instance is still
-        # dying. Exit 0 when the port is already healthy — idempotent start.
-        if is_service_managed() and poll_health(actual_port, timeout=2.0):
-            return
+        # dying. Exit 0 only when our pidfile points at a live process and
+        # /healthz succeeds — a foreign listener must not short-circuit start.
+        if is_service_managed():
+            pid_file = pid_path(home)
+            existing = read_pid(pid_file) if pid_file.exists() else None
+            if (
+                existing is not None
+                and check_pid(existing[0])
+                and poll_health(actual_port, timeout=2.0)
+            ):
+                return
 
         # Daemon + sidecar IPC handle inheritance is unsolved. Reject
         # early — silently spawning a proxy without a sidecar would break

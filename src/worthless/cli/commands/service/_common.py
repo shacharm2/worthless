@@ -39,7 +39,7 @@ def resolve_worthless_binary() -> Path:
     if found:
         return Path(found).resolve()
     fallback = Path.home() / ".local" / "bin" / "worthless"
-    if fallback.is_file():
+    if fallback.is_file() and os.access(fallback, os.X_OK):
         return fallback.resolve()
     raise WorthlessError(
         ErrorCode.BOOTSTRAP_FAILED,

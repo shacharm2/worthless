@@ -17,7 +17,7 @@ from worthless.cli.commands.service._common import (
     verify_proxy_health,
 )
 from worthless.cli.errors import ErrorCode, WorthlessError
-from worthless.cli.process import resolve_port
+from worthless.cli.process import poll_health, resolve_port
 
 
 def plist_path() -> Path:
@@ -30,6 +30,23 @@ def _launchctl_domain() -> str:
 
 def _service_target() -> str:
     return f"{_launchctl_domain()}/{templates.LAUNCHD_LABEL}"
+
+
+def installed_port() -> int | None:
+    """Return WORTHLESS_PORT from the installed plist, if present."""
+    path = plist_path()
+    if not path.is_file():
+        return None
+    lines = path.read_text().splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != "<key>WORTHLESS_PORT</key>":
+            continue
+        if index + 1 >= len(lines):
+            break
+        value_line = lines[index + 1].strip()
+        if value_line.startswith("<string>") and value_line.endswith("</string>"):
+            return int(value_line[len("<string>") : -len("</string>")])
+    return None
 
 
 def _is_loaded() -> bool:
@@ -64,8 +81,6 @@ def detect_status(home: WorthlessHome, port: int) -> ServiceStatus:
             healthy=False,
             detail="LaunchAgent installed but not loaded.",
         )
-    from worthless.cli.process import poll_health
-
     healthy = poll_health(port, timeout=1.0)
     return ServiceStatus(
         state=ServiceState.RUNNING if healthy else ServiceState.FAILED,

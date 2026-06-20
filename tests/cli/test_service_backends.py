@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +12,7 @@ import pytest
 
 from worthless.cli.bootstrap import WorthlessHome
 from worthless.cli.commands.service import launchd, systemd, templates
-from worthless.cli.commands.service._common import ServiceState
+from worthless.cli.commands.service._common import ServiceState, ServiceStatus
 from worthless.cli.errors import ErrorCode, WorthlessError
 
 
@@ -79,7 +81,7 @@ class TestLaunchdBackend:
             patch.object(launchd, "plist_path", return_value=plist),
             patch.object(launchd, "resolve_worthless_binary", return_value=tmp_path / "worthless"),
             patch.object(launchd, "_is_loaded", return_value=True),
-            patch("worthless.cli.process.poll_health", return_value=True),
+            patch.object(launchd, "poll_health", return_value=True),
         ):
             status = launchd.detect_status(home, 8787)
         assert status.state == ServiceState.RUNNING
@@ -471,6 +473,133 @@ class TestTailLogs:
         ):
             systemd.tail_logs(home, follow=False)
         assert exc_info.value.code == ErrorCode.PROXY_NOT_RUNNING
+
+
+class TestInstalledPortRoundTrip:
+    """Install with --port must survive status without WORTHLESS_PORT in the shell."""
+
+    def test_systemd_status_uses_installed_port_not_default(
+        self, home: WorthlessHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        binary = tmp_path / "worthless"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        unit = tmp_path / "worthless-proxy.service"
+        custom_port = 9000
+        calls: list[int] = []
+
+        def fake_run(args: list[str], **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "Linger=yes" if args[:3] == ["loginctl", "show-user"] else "active"
+            return result
+
+        def capture_health(port: int, timeout: float = 1.0) -> bool:
+            calls.append(port)
+            return True
+
+        monkeypatch.delenv("WORTHLESS_PORT", raising=False)
+        with (
+            patch.object(systemd, "unit_path", return_value=unit),
+            patch.object(systemd, "resolve_worthless_binary", return_value=binary),
+            patch.object(systemd, "run_cmd", side_effect=fake_run),
+            patch.object(systemd, "verify_proxy_health"),
+            patch.object(systemd, "poll_health", side_effect=capture_health),
+            patch.dict("os.environ", {"USER": "testuser"}, clear=False),
+        ):
+            systemd.install(home, port=custom_port)
+            assert "Environment=WORTHLESS_PORT=9000" in unit.read_text()
+            assert systemd.installed_port() == custom_port
+            status = systemd.detect_status(home, systemd.installed_port() or 8787)
+            assert status.port == custom_port
+            assert calls == [custom_port]
+
+    def test_launchd_status_uses_installed_port_not_default(
+        self, home: WorthlessHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        binary = tmp_path / "worthless"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        plist = tmp_path / "dev.worthless.proxy.plist"
+        custom_port = 9000
+        calls: list[int] = []
+
+        def fake_run(args: list[str], **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            return result
+
+        def capture_health(port: int, timeout: float = 1.0) -> bool:
+            calls.append(port)
+            return True
+
+        monkeypatch.delenv("WORTHLESS_PORT", raising=False)
+        with (
+            patch.object(launchd, "plist_path", return_value=plist),
+            patch.object(launchd, "resolve_worthless_binary", return_value=binary),
+            patch.object(launchd, "run_cmd", side_effect=fake_run),
+            patch.object(launchd, "_is_loaded", return_value=True),
+            patch.object(launchd, "verify_proxy_health"),
+            patch.object(launchd, "poll_health", side_effect=capture_health),
+            patch.object(launchd.os, "getuid", return_value=501),
+        ):
+            launchd.install(home, port=custom_port)
+            assert "<key>WORTHLESS_PORT</key>" in plist.read_text()
+            assert launchd.installed_port() == custom_port
+            status = launchd.detect_status(home, launchd.installed_port() or 8787)
+            assert status.port == custom_port
+            assert calls == [custom_port]
+
+    def test_service_status_cli_uses_installed_port(
+        self, home: WorthlessHome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from typer.testing import CliRunner
+
+        from worthless.cli.app import app
+
+        unit = tmp_path / "worthless-proxy.service"
+        unit.write_text(
+            templates.render_systemd_unit(
+                binary="/usr/bin/worthless",
+                worthless_home=str(home.base_dir),
+                port=9000,
+            )
+        )
+        mock_backend = MagicMock()
+        mock_backend.installed_port.return_value = 9000
+        mock_backend.detect_status.return_value = ServiceStatus(
+            state=ServiceState.RUNNING,
+            unit_path=unit,
+            binary="/usr/bin/worthless",
+            port=9000,
+            healthy=True,
+        )
+        runtime = MagicMock(running=True, source="health", pid=42)
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("WORTHLESS_PORT", raising=False)
+        with (
+            patch("worthless.cli.commands.service._backend", return_value=mock_backend),
+            patch(
+                "worthless.cli.commands.service.current_platform_backend_name",
+                return_value="systemd",
+            ),
+            patch("worthless.cli.commands.service.detect_proxy_runtime", return_value=runtime),
+            patch("worthless.cli.commands.service.get_home") as mock_home,
+            patch("worthless.cli.commands.service.resolve_port", return_value=8787),
+        ):
+            mock_home.return_value.base_dir = home.base_dir
+            result = CliRunner().invoke(
+                app,
+                ["--json", "service", "status"],
+                env={"WORTHLESS_HOME": str(home.base_dir)},
+            )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["port"] == 9000
+        mock_backend.detect_status.assert_called_once()
+        assert mock_backend.detect_status.call_args.args[1] == 9000
 
 
 class TestVerifyProxyHealthIntegration:
