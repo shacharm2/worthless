@@ -1195,6 +1195,43 @@ def _apply_lock_rollback(
     providers_set.clear()
 
 
+def preview_unrecognized(
+    planned_updates: list[tuple[str, str, str]],
+    *,
+    proxy_base_url: str,
+    managed_aliases: set[str] | None,
+) -> list[str]:
+    """Provider names whose existing OpenClaw entry would be adopted-or-skipped.
+
+    WOR-650: the CLI calls this BEFORE any write so it can prompt the human
+    once for the unrecognized proxy-shaped entries (a synced config, reinstall,
+    or something else). Read-only — it classifies each planned provider via the
+    same read + :func:`_classify_adoption` path the real write uses, with a
+    no-consent probe policy, and returns the providers that produced an
+    adoption event. The binding decision is still re-made at write time off its
+    own read inside :func:`apply_lock` (TOCTOU-safe).
+    """
+    state = detect()
+    if not state.present:
+        return []
+    config_path = _resolve_active_config_path(state, state.home_dir)
+    probe = AdoptionPolicy(managed_aliases=managed_aliases, adopt_unrecognized=False)
+    unrecognized: list[str] = []
+    for provider, _alias, _shard in planned_updates:
+        existing, read_err = _get_provider_for_lock(config_path, provider)
+        if read_err is not None:
+            continue
+        _skip, event = _classify_adoption(
+            existing,
+            provider=provider,
+            resolved_proxy_base_url=proxy_base_url,
+            policy=probe,
+        )
+        if event is not None:
+            unrecognized.append(provider)
+    return unrecognized
+
+
 def apply_lock(
     planned_updates: list[tuple[str, str, str]],
     *,
