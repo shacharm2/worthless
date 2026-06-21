@@ -60,6 +60,7 @@ class TestServiceInstall:
     def test_status_not_installed(self, home_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sys, "platform", "linux")
         mock_backend = MagicMock()
+        mock_backend.installed_port.return_value = None
         mock_backend.detect_status.return_value = ServiceStatus(
             state=ServiceState.NOT_INSTALLED,
             unit_path=None,
@@ -73,6 +74,10 @@ class TestServiceInstall:
             patch(
                 "worthless.cli.commands.service.current_platform_backend_name",
                 return_value="systemd",
+            ),
+            patch(
+                "worthless.cli.commands.service.detect_proxy_runtime",
+                return_value=MagicMock(running=False, source=None, pid=None),
             ),
             patch("worthless.cli.commands.service.get_home") as mock_home,
         ):
@@ -196,6 +201,7 @@ class TestServiceInstall:
     def test_status_human_mode(self, home_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sys, "platform", "linux")
         mock_backend = MagicMock()
+        mock_backend.installed_port.return_value = None
         mock_backend.detect_status.return_value = ServiceStatus(
             state=ServiceState.RUNNING,
             unit_path=home_dir / "worthless-proxy.service",
