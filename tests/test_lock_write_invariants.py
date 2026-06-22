@@ -160,23 +160,124 @@ def _norm_stmt(fn, pattern: str) -> str:
 
 class TestSqlDriftGuard:
     def test_shards_upsert_identical_across_methods(self) -> None:
+        # The shards UPSERT is still inline in TWO methods (y8ir deduped only the
+        # enrollment/config INSERTs — never the shards statements, which differ:
+        # UPSERT here vs INSERT OR IGNORE in store_enrolled). Text-identity guard
+        # stays for the pair that remains duplicated.
         pat = r"INSERT INTO shards.*?oc_rollback_mac\s*=\s*excluded\.oc_rollback_mac"
         a = _norm_stmt(ShardRepository.upsert_locked_shard, pat)
         b = _norm_stmt(ShardRepository.upsert_locked_shard_and_enroll, pat)
         assert a == b, "shards UPSERT SQL drifted between the two methods"
 
-    def test_enrollment_insert_identical_across_methods(self) -> None:
-        pat = r"INSERT OR IGNORE INTO enrollments.*?VALUES \(\?, \?, \?, \?\)"
-        store = _norm_stmt(ShardRepository.store_enrolled, pat)
-        add = _norm_stmt(ShardRepository.add_enrollment, pat)
-        atomic = _norm_stmt(ShardRepository.upsert_locked_shard_and_enroll, pat)
-        assert store == add == atomic, "enrollments INSERT drifted across methods"
 
-    def test_config_insert_identical_across_methods(self) -> None:
-        pat = r"INSERT OR IGNORE INTO enrollment_config.*?VALUES \(\?, \?, \?\)"
-        store = _norm_stmt(ShardRepository.store_enrolled, pat)
-        atomic = _norm_stmt(ShardRepository.upsert_locked_shard_and_enroll, pat)
-        assert store == atomic, "enrollment_config INSERT drifted across methods"
+# ---------------------------------------------------------------------------
+# R3 (y8ir): the enrollment/config INSERTs are now single-sourced in
+# _exec_enrollment_insert / _exec_config_insert. The old source-identity
+# (inspect.getsource) drift tests are moot — there is one copy. Replace them
+# with a BEHAVIORAL guard: drive every write path with identical inputs and
+# assert byte-identical rows. This survives a future re-inline or signature
+# change that a "they call one helper" structural check would miss.
+# ---------------------------------------------------------------------------
+
+
+class TestWritePathsProduceIdenticalRows:
+    @pytest.mark.asyncio
+    async def test_enrollment_row_identical_across_write_paths(
+        self,
+        repo: ShardRepository,
+        sample_split_result,
+        tmp_db_path: str,
+    ) -> None:
+        shard = stored_shard_from_split(sample_split_result)
+        common = {
+            "var_name": "OPENAI_API_KEY",
+            "env_path": "/x/.env",
+            "original_mode": 0o640,
+        }
+        # Same enrollment inputs through all three write paths (distinct aliases
+        # so they coexist in one DB). store_enrolled + atomic also write a shard.
+        await repo.store_enrolled(
+            "via-store", shard, prefix=_PREFIX, charset=_CHARSET, base_url=_BASE_URL, **common
+        )
+        await repo.upsert_locked_shard_and_enroll(
+            "via-atomic",
+            shard,
+            prefix=_PREFIX,
+            charset=_CHARSET,
+            base_url=_BASE_URL,
+            write_config=False,
+            **common,
+        )
+        # add_enrollment writes only the enrollment row, so its alias needs an
+        # existing shard first (the enrollments→shards FK) — exactly how the
+        # re-lock-from-another-path caller uses it.
+        await repo.upsert_locked_shard(
+            "via-add", shard, prefix=_PREFIX, charset=_CHARSET, base_url=_BASE_URL
+        )
+        await repo.add_enrollment("via-add", **common)
+
+        async with aiosqlite.connect(tmp_db_path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = {
+                r["key_alias"]: (r["var_name"], r["env_path"], r["original_mode"])
+                for r in await (
+                    await db.execute(
+                        "SELECT key_alias, var_name, env_path, original_mode FROM enrollments"
+                    )
+                ).fetchall()
+            }
+        assert rows["via-store"] == rows["via-atomic"] == rows["via-add"], (
+            f"enrollment row diverged across write paths: {rows!r}"
+        )
+        assert rows["via-store"] == ("OPENAI_API_KEY", "/x/.env", 0o640)
+
+    @pytest.mark.asyncio
+    async def test_config_row_identical_across_write_paths(
+        self,
+        repo: ShardRepository,
+        sample_split_result,
+        tmp_db_path: str,
+    ) -> None:
+        shard = stored_shard_from_split(sample_split_result)
+        # The two config-writing paths (store_enrolled, atomic write_config=True)
+        # with identical spend_cap/token_budget inputs must produce identical rows.
+        await repo.store_enrolled(
+            "cfg-store",
+            shard,
+            var_name="OPENAI_API_KEY",
+            env_path="/x/.env",
+            prefix=_PREFIX,
+            charset=_CHARSET,
+            base_url=_BASE_URL,
+            spend_cap=1234,
+            token_budget_daily=77,
+        )
+        await repo.upsert_locked_shard_and_enroll(
+            "cfg-atomic",
+            shard,
+            var_name="OPENAI_API_KEY",
+            env_path="/y/.env",
+            prefix=_PREFIX,
+            charset=_CHARSET,
+            base_url=_BASE_URL,
+            write_config=True,
+            spend_cap=1234,
+            token_budget_daily=77,
+        )
+
+        async with aiosqlite.connect(tmp_db_path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = {
+                r["key_alias"]: (r["spend_cap"], r["token_budget_daily"])
+                for r in await (
+                    await db.execute(
+                        "SELECT key_alias, spend_cap, token_budget_daily FROM enrollment_config"
+                    )
+                ).fetchall()
+            }
+        assert rows["cfg-store"] == rows["cfg-atomic"] == (1234, 77), (
+            f"enrollment_config row diverged across write paths: {rows!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
