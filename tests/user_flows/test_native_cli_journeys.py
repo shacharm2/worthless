@@ -66,7 +66,10 @@ def test_default_command_yes_detects_and_locks_project_env(
     def _poll_health(*args: object, **kwargs: object) -> bool:
         return True
 
-    monkeypatch.setattr("worthless.cli.default_command.start_daemon", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "worthless.cli.default_command.start_supervised_proxy",
+        lambda *a, **kw: 4242,
+    )
     monkeypatch.setattr("worthless.cli.default_command.poll_health", _poll_health)
 
     result = _invoke(["--yes"], home)
