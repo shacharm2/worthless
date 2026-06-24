@@ -299,6 +299,87 @@ class TestReadFernetKeyCascade:
 
         assert result == bytearray(b"file-fallback-value")
 
+    def test_keyring_error_with_file_refuses_silent_fallback_interactive(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Interactive sessions must not silently read stale fernet.key (WOR-464)."""
+        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
+        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
+        monkeypatch.delenv("WORTHLESS_SERVICE_MANAGED", raising=False)
+
+        fernet_path = tmp_path / "fernet.key"
+        fernet_path.write_bytes(b"stale-file-key\n")
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            mock_kr.get_password.side_effect = RuntimeError("access denied")
+            with pytest.raises(WorthlessError) as exc_info:
+                read_fernet_key(home_dir=tmp_path)
+
+        assert exc_info.value.code == ErrorCode.KEY_NOT_FOUND
+        assert "refusing" in str(exc_info.value).lower()
+
+    def test_keyring_error_with_file_allowed_under_service_managed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """LaunchAgent sets WORTHLESS_SERVICE_MANAGED=1; synced fernet.key is OK."""
+        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
+        monkeypatch.delenv("WORTHLESS_FERNET_FD", raising=False)
+        monkeypatch.setenv("WORTHLESS_SERVICE_MANAGED", "1")
+
+        fernet_path = tmp_path / "fernet.key"
+        fernet_path.write_bytes(b"launchd-synced-key\n")
+        fernet_path.chmod(0o600)
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            mock_kr.get_password.side_effect = RuntimeError("access denied")
+            result = read_fernet_key(home_dir=tmp_path)
+
+        assert result == bytearray(b"launchd-synced-key")
+
+    def test_service_managed_prefers_file_over_keyring(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """WOR-748: launchd must use synced fernet.key, not a stale keyring entry."""
+        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
+        monkeypatch.setenv("WORTHLESS_SERVICE_MANAGED", "1")
+
+        fernet_path = tmp_path / "fernet.key"
+        fernet_path.write_bytes(b"synced-file-key\n")
+        fernet_path.chmod(0o600)
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            mock_kr.get_password.return_value = "stale-keyring-key"
+            result = read_fernet_key(home_dir=tmp_path)
+
+        assert result == bytearray(b"synced-file-key")
+        mock_kr.get_password.assert_not_called()
+
+    def test_service_managed_rejects_loose_fernet_file_perms(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """worthless-l3qj: world-readable fernet.key must fail under SERVICE_MANAGED."""
+        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
+        monkeypatch.setenv("WORTHLESS_SERVICE_MANAGED", "1")
+
+        fernet_path = tmp_path / "fernet.key"
+        fernet_path.write_bytes(b"leaked-key\n")
+        fernet_path.chmod(0o644)
+
+        with pytest.raises(WorthlessError) as exc_info:
+            read_fernet_key(home_dir=tmp_path)
+
+        assert exc_info.value.code == ErrorCode.KEY_NOT_FOUND
+        assert "0o600" in exc_info.value.message
+
 
 # ------------------------------------------------------------------
 # SR-01: return type is ALWAYS bytearray
