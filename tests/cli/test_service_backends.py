@@ -63,8 +63,7 @@ class TestLaunchdBackend:
         assert status.state == ServiceState.NOT_INSTALLED
 
     def test_detect_stopped_unloaded(self, home: WorthlessHome, tmp_path: Path) -> None:
-        plist = tmp_path / "dev.worthless.proxy.plist"
-        plist.write_text("plist")
+        plist = _owned_launchd_plist(home, tmp_path)
         with (
             patch.object(launchd, "plist_path", return_value=plist),
             patch.object(launchd, "resolve_worthless_binary", return_value=tmp_path / "worthless"),
@@ -75,8 +74,7 @@ class TestLaunchdBackend:
         assert status.healthy is False
 
     def test_detect_running_healthy(self, home: WorthlessHome, tmp_path: Path) -> None:
-        plist = tmp_path / "dev.worthless.proxy.plist"
-        plist.write_text("plist")
+        plist = _owned_launchd_plist(home, tmp_path)
         with (
             patch.object(launchd, "plist_path", return_value=plist),
             patch.object(launchd, "resolve_worthless_binary", return_value=tmp_path / "worthless"),
@@ -88,8 +86,7 @@ class TestLaunchdBackend:
         assert status.healthy is True
 
     def test_detect_failed_unhealthy(self, home: WorthlessHome, tmp_path: Path) -> None:
-        plist = tmp_path / "dev.worthless.proxy.plist"
-        plist.write_text("plist")
+        plist = _owned_launchd_plist(home, tmp_path)
         with (
             patch.object(launchd, "plist_path", return_value=plist),
             patch.object(launchd, "_is_loaded", return_value=True),
@@ -129,6 +126,45 @@ class TestLaunchdBackend:
 
         assert any("bootout" in str(c) for c in calls)
 
+    def test_detect_ignores_plist_for_other_home(self, home: WorthlessHome, tmp_path: Path) -> None:
+        plist = tmp_path / "dev.worthless.proxy.plist"
+        plist.write_text(
+            templates.render_launchd_plist(
+                binary="/usr/local/bin/worthless",
+                worthless_home=str(tmp_path / "other-home"),
+                log_path=str(tmp_path / "other-home" / "proxy.log"),
+            )
+        )
+        with patch.object(launchd, "plist_path", return_value=plist):
+            status = launchd.detect_status(home, 8787)
+        assert status.state == ServiceState.NOT_INSTALLED
+
+    def test_detect_matches_symlinked_home(self, tmp_path: Path) -> None:
+        """Plist stores unresolved symlink path; detect_status still finds RUNNING."""
+        real_home = tmp_path / "real-worthless-home"
+        real_home.mkdir()
+        link_home = tmp_path / "linked-home"
+        link_home.symlink_to(real_home, target_is_directory=True)
+        home = WorthlessHome(base_dir=link_home)
+
+        plist = tmp_path / "dev.worthless.proxy.plist"
+        plist.write_text(
+            templates.render_launchd_plist(
+                binary="/usr/local/bin/worthless",
+                worthless_home=str(link_home),
+                log_path=str(link_home / "proxy.log"),
+            )
+        )
+        with (
+            patch.object(launchd, "plist_path", return_value=plist),
+            patch.object(launchd, "resolve_worthless_binary", return_value=tmp_path / "worthless"),
+            patch.object(launchd, "_is_loaded", return_value=True),
+            patch.object(launchd, "poll_health", return_value=True),
+        ):
+            status = launchd.detect_status(home, 8787)
+        assert status.state == ServiceState.RUNNING
+        assert status.healthy is True
+
 
 class TestSystemdBackend:
     def test_install_writes_unit_enables_linger(self, home: WorthlessHome, tmp_path: Path) -> None:
@@ -142,7 +178,7 @@ class TestSystemdBackend:
             calls.append(args)
             result = MagicMock()
             result.returncode = 0
-            result.stdout = "Linger=yes" if args[:3] == ["loginctl", "show-user"] else "active"
+            result.stdout = "Linger=yes" if args[:2] == ["loginctl", "show-user"] else "active"
             return result
 
         with (
@@ -192,8 +228,7 @@ class TestSystemdBackend:
         assert status.state == ServiceState.NOT_INSTALLED
 
     def test_detect_stopped_when_inactive(self, home: WorthlessHome, tmp_path: Path) -> None:
-        unit = tmp_path / "worthless-proxy.service"
-        unit.write_text("unit")
+        unit = _owned_systemd_unit(home, tmp_path)
         with (
             patch.object(systemd, "unit_path", return_value=unit),
             patch.object(systemd, "_active_state", return_value="inactive"),
@@ -202,8 +237,7 @@ class TestSystemdBackend:
         assert status.state == ServiceState.STOPPED
 
     def test_systemd_detect_running(self, home: WorthlessHome, tmp_path: Path) -> None:
-        unit = tmp_path / "worthless-proxy.service"
-        unit.write_text("unit")
+        unit = _owned_systemd_unit(home, tmp_path)
         with (
             patch.object(systemd, "unit_path", return_value=unit),
             patch.object(systemd, "_active_state", return_value="active"),
@@ -214,8 +248,7 @@ class TestSystemdBackend:
         assert status.healthy is True
 
     def test_systemd_detect_failed(self, home: WorthlessHome, tmp_path: Path) -> None:
-        unit = tmp_path / "worthless-proxy.service"
-        unit.write_text("unit")
+        unit = _owned_systemd_unit(home, tmp_path)
         with (
             patch.object(systemd, "unit_path", return_value=unit),
             patch.object(systemd, "_active_state", return_value="failed"),
@@ -223,6 +256,42 @@ class TestSystemdBackend:
         ):
             status = systemd.detect_status(home, 8787)
         assert status.state == ServiceState.FAILED
+
+    def test_detect_ignores_unit_for_other_home(self, home: WorthlessHome, tmp_path: Path) -> None:
+        unit = tmp_path / "worthless-proxy.service"
+        unit.write_text(
+            templates.render_systemd_unit(
+                binary="/usr/local/bin/worthless",
+                worthless_home=str(tmp_path / "other-home"),
+            )
+        )
+        with patch.object(systemd, "unit_path", return_value=unit):
+            status = systemd.detect_status(home, 8787)
+        assert status.state == ServiceState.NOT_INSTALLED
+
+    def test_detect_matches_symlinked_home(self, tmp_path: Path) -> None:
+        """Unit stores unresolved symlink path; detect_status still finds RUNNING."""
+        real_home = tmp_path / "real-worthless-home"
+        real_home.mkdir()
+        link_home = tmp_path / "linked-home"
+        link_home.symlink_to(real_home, target_is_directory=True)
+        home = WorthlessHome(base_dir=link_home)
+
+        unit = tmp_path / "worthless-proxy.service"
+        unit.write_text(
+            templates.render_systemd_unit(
+                binary="/usr/local/bin/worthless",
+                worthless_home=str(link_home),
+            )
+        )
+        with (
+            patch.object(systemd, "unit_path", return_value=unit),
+            patch.object(systemd, "_active_state", return_value="active"),
+            patch.object(systemd, "poll_health", return_value=True),
+        ):
+            status = systemd.detect_status(home, 8787)
+        assert status.state == ServiceState.RUNNING
+        assert status.healthy is True
 
 
 def _owned_launchd_plist(home: WorthlessHome, tmp_path: Path) -> Path:
@@ -649,3 +718,15 @@ class TestSystemdSessionUser:
         fake_passwd = type("Passwd", (), {"pw_name": "runner"})()
         monkeypatch.setattr(pwd, "getpwuid", lambda uid: fake_passwd)
         assert systemd._session_user() == "runner"
+
+    def test_session_user_falls_back_to_uid_without_passwd_entry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("USER", raising=False)
+        monkeypatch.delenv("LOGNAME", raising=False)
+        monkeypatch.setattr(systemd.os, "getlogin", MagicMock(side_effect=OSError(25)))
+        monkeypatch.setattr(systemd.os, "getuid", lambda: 65534)
+        monkeypatch.setattr(
+            pwd, "getpwuid", MagicMock(side_effect=KeyError("getpwuid(): uid not found"))
+        )
+        assert systemd._session_user() == "65534"

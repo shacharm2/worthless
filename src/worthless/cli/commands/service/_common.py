@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess  # nosec B404
 import sys
@@ -111,6 +112,47 @@ def service_paths(home: WorthlessHome) -> tuple[Path, str]:
     """Return (log_path, worthless_home_str) for unit templates."""
     log_path = home.base_dir / "proxy.log"
     return log_path, str(home.base_dir)
+
+
+_LAUNCHD_HOME_RE = re.compile(
+    r"<key>WORTHLESS_HOME</key>\s*<string>([^<]+)</string>",
+    re.DOTALL,
+)
+_SYSTEMD_HOME_RE = re.compile(r"Environment=WORTHLESS_HOME=([^\s\n]+)")
+
+
+def _worthless_home_paths_in_unit(content: str) -> list[str]:
+    """Extract ``WORTHLESS_HOME`` path(s) embedded in a launchd plist or systemd unit."""
+    paths: list[str] = []
+    launchd_match = _LAUNCHD_HOME_RE.search(content)
+    if launchd_match:
+        paths.append(launchd_match.group(1))
+    systemd_match = _SYSTEMD_HOME_RE.search(content)
+    if systemd_match:
+        paths.append(systemd_match.group(1))
+    return paths
+
+
+def unit_file_matches_home(path: Path, home: WorthlessHome) -> bool:
+    """Return True when *path* is a unit/plist for this ``WORTHLESS_HOME``.
+
+    Install writes ``str(home.base_dir)`` (often unresolved, e.g. ``/tmp/...``).
+    Match by realpath so symlink aliases like ``/tmp`` → ``/private/tmp`` still match.
+    """
+    if not path.is_file():
+        return False
+    try:
+        expected = home.base_dir.resolve()
+    except OSError:
+        return False
+    content = path.read_text()
+    for raw in _worthless_home_paths_in_unit(content):
+        try:
+            if Path(raw).resolve() == expected:
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def current_platform_backend_name() -> str:
