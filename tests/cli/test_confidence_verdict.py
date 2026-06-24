@@ -293,5 +293,7 @@ class TestLockVerdictFirst:
         err = " ".join(capsys.readouterr().err.split()).lower()
         assert "you're protected" not in err, err
         assert "check anytime" not in err, err
+        # No success-flavored next-step above LOCK FAILED (CR finding).
+        assert "daemon mode" not in err, err
         # The factual split line is true even on a partial failure — keep it.
         assert "no longer contains a usable secret" in err, err

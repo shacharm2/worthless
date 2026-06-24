@@ -1476,7 +1476,9 @@ def _print_lock_result(
             typer.echo(
                 f"Warning: using non-default home {home_base_dir} (WORTHLESS_HOME is set)", err=True
             )
-        if fresh_count:
+        # WOR-779 (CR): the daemon-mode "Next:" cue is a success next-step — keep
+        # it off the partial-failure path so nothing above LOCK FAILED reads as OK.
+        if fresh_count and not openclaw_failed:
             console.print_hint(
                 "Next: run `worthless wrap <command>` or `worthless up` for daemon mode"
             )
