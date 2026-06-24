@@ -602,6 +602,30 @@ class TestAC10DoctorSurface:
 
         assert findings == []
 
+    def test_doctor_forwards_managed_aliases_for_recognition(self) -> None:
+        """WOR-777: doctor passes managed_aliases so the gate recognizes
+        worthless's own shard-A — its prediction matches ``worthless lock`` and
+        it does not false-alarm "key exposed" on an entry worthless created."""
+        from worthless.openclaw.audit import AuditClassification
+
+        from worthless.cli.commands.doctor.checks.openclaw import _audit_gate_findings
+
+        recognized_clean = AuditClassification(blocking=(), advisory_count=1, unknown_codes=())
+        with (
+            patch(
+                "worthless.cli.commands.doctor.checks.openclaw._oc_audit.resolve_openclaw_bin",
+                return_value=Path("/usr/local/bin/openclaw"),
+            ),
+            patch(
+                "worthless.cli.commands.doctor.checks.openclaw._oc_audit.run_and_classify",
+                return_value=(MagicMock(), recognized_clean),
+            ) as mock_rc,
+        ):
+            findings = _audit_gate_findings({"openai-a1b2c3d4"})
+
+        assert findings == []
+        assert mock_rc.call_args.kwargs.get("managed_aliases") == {"openai-a1b2c3d4"}
+
 
 # --------------------------------------------------------------------------- #
 # AC 11 — fixture-driven: real audit schema round-trip                        #
@@ -868,7 +892,7 @@ class TestAdversarial:
             return_value=(MagicMock(), mock_classification),
         ):
             with pytest.raises(typer.Exit) as exc_info:
-                _openclaw_audit_postflight(gate)
+                _openclaw_audit_postflight(gate, None)
 
         assert exc_info.value.exit_code == 87
 

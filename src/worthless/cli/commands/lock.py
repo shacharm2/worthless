@@ -1461,8 +1461,17 @@ def _print_lock_result(
         console.print_warning("No unprotected API keys found.")
 
 
-def _openclaw_audit_preflight() -> _oc_audit.AuditGateHandle | None:
+def _openclaw_audit_preflight(
+    managed_aliases: set[str] | None,
+) -> _oc_audit.AuditGateHandle | None:
     """Run OpenClaw secrets audit pre-flight before worthless lock writes.
+
+    ``managed_aliases`` is this machine's ``shards`` keys (the WOR-650 snapshot).
+    It lets the gate recognize worthless's own inert shard-A — written into the
+    user's real provider entry (F1/WOR-647) and carrying a proxy ``baseUrl``
+    alias — so a re-lock (rotation) is not aborted by worthless's own prior
+    shard (WOR-777 / bead worthless-b8me). ``None`` (snapshot failed) recognizes
+    nothing — fail-safe.
 
     Returns None if OpenClaw is not detected on this host or binary is not
     available (gate skipped, _apply_openclaw handles the partial-failure path).
@@ -1485,7 +1494,9 @@ def _openclaw_audit_preflight() -> _oc_audit.AuditGateHandle | None:
         return None
 
     try:
-        result, classification = _oc_audit.run_and_classify(openclaw_bin)
+        result, classification = _oc_audit.run_and_classify(
+            openclaw_bin, managed_aliases=managed_aliases
+        )
     except _oc_audit.AuditGateError as exc:
         typer.echo(f"worthless lock: openclaw audit gate failed: {exc}", err=True)
         raise typer.Exit(code=87) from exc
@@ -1508,7 +1519,10 @@ def _openclaw_audit_preflight() -> _oc_audit.AuditGateHandle | None:
     )
 
 
-def _openclaw_audit_postflight(gate: _oc_audit.AuditGateHandle) -> None:
+def _openclaw_audit_postflight(
+    gate: _oc_audit.AuditGateHandle,
+    managed_aliases: set[str] | None,
+) -> None:
     """Post-flight TOCTOU re-audit after lock-core write commits.
 
     Skips the second subprocess entirely if file hashes are unchanged since
@@ -1532,7 +1546,9 @@ def _openclaw_audit_postflight(gate: _oc_audit.AuditGateHandle) -> None:
         return
 
     try:
-        _, post_class = _oc_audit.run_and_classify(gate.openclaw_bin)
+        _, post_class = _oc_audit.run_and_classify(
+            gate.openclaw_bin, managed_aliases=managed_aliases
+        )
     except _oc_audit.AuditGateError as exc:
         typer.echo(f"worthless lock: post-flight audit failed: {exc}", err=True)
         raise typer.Exit(code=87) from exc
@@ -1729,7 +1745,7 @@ def _lock_keys(
             # DB/.env write so blocking plaintext findings abort the lock with
             # zero side effects (gate-before-write). Orthogonal to the
             # sidecar-IPC repo above — placement here is load-bearing.
-            _oc_gate = _openclaw_audit_preflight()
+            _oc_gate = _openclaw_audit_preflight(managed_aliases)
 
             # F7 (WOR-648 / WOR-621 AC5): proxy health gate, alongside the
             # audit gate above — BEFORE any DB or .env write. Gated on
@@ -1845,7 +1861,7 @@ def _lock_keys(
                     return _LockResult(total=0, fresh_count=0, openclaw_exit=0)
                 _batch_rewrite(env_path, planned, keys_only, existing_env_keys)
                 if _oc_gate is not None:
-                    _openclaw_audit_postflight(_oc_gate)
+                    _openclaw_audit_postflight(_oc_gate, managed_aliases)
                 # Phase 2.b: OpenClaw magic. Per L1 in
                 # engineering/research/openclaw/WOR-431-phase-2-spec.md, this
                 # NEVER rolls back lock-core success. Per L2 (revised 2026-05-08
