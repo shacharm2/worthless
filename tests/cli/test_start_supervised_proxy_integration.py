@@ -1,4 +1,7 @@
-"""WOR-717 integration tests — supervised spawn contract beyond default-command mocks."""
+"""Integration tests for ``start_supervised_proxy`` and default-command proxy phase.
+
+Linear: WOR-717 (supervised default start).
+"""
 
 from __future__ import annotations
 
