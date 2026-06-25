@@ -2,12 +2,11 @@ name: Set up uv + Python
 description: Install Python at a pinned SHA and bootstrap the uv package manager.
 
 # Atomic SHA bumps: one edit here upgrades every workflow that consumes it.
-# Checkout is NOT included — its options (persist-credentials, fetch-depth)
-# vary per workflow and belong at the caller's step level.
+# Checkout is NOT included because its options vary by workflow.
 
 inputs:
   python-version:
-    description: Python version to install (passed to actions/setup-python).
+    description: Python version to install.
     required: false
     default: "3.13"
 
