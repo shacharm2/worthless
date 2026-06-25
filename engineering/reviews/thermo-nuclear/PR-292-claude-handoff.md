@@ -1,7 +1,7 @@
 # PR #292 — Claude review handoff
 
 **URL:** https://github.com/shacharm2/worthless/pull/292
-**Branch:** `gsd/wor-193-wave3b-adversarial` → `gsd/wor-193-wave3-717-integration`
+**Branch:** `gsd/wor-193-wave3b-adversarial` → `main` (was 717-integration before #288–#290 merged)
 **Stack (merge bottom → top):** #288 → #289 → #290 → **#292**
 **Worktree:** `/Users/shachar/Projects/worthless/worthless-wor193-service`
 
@@ -39,7 +39,7 @@ Wave 3b **foundation** for WOR-193: foreign-unit guards, managed-up/sidecar hard
 ## Review prompts for Claude
 
 ```
-Review PR #292 diff vs base gsd/wor-193-wave3-717-integration.
+Review PR #292 diff vs base main.
 
 1. Security: refuse_foreign_unit coverage, bootstrap Fernet paths, reclaim kill guards, fernet.key stat gate, no key leak on spawn failure.
 2. Correctness: detect_proxy_runtime ordering (service before health), default exit 2 stopped/failed, _managed_sidecar_healthy decrypt vs HELLO fallback.
@@ -49,15 +49,15 @@ Review PR #292 diff vs base gsd/wor-193-wave3-717-integration.
 
 Read engineering/reviews/thermo-nuclear/wor193-stack-security.md first.
 Diff:
-  git fetch origin gsd/wor-193-wave3-717-integration gsd/wor-193-wave3b-adversarial
-  git diff origin/gsd/wor-193-wave3-717-integration...origin/gsd/wor-193-wave3b-adversarial
+  git fetch origin main gsd/wor-193-wave3b-adversarial
+  git diff origin/main...origin/gsd/wor-193-wave3b-adversarial
 ```
 
 ## CI / gates
 
-- **Green on tip `5e80262`** — `gh pr checks 292` (Test ubuntu py3.10/3.13 + User flows macOS/ubuntu)
+- **Re-verify after each push** — `gh pr checks 292` (see `engineering/reviews/PR-292-MERGE-PLAN.md`)
 - Sonar QG: pass (complexity/timeout style — non-blocking)
-- CodeRabbit: 0 unresolved threads on #292 (verify before merge)
+- CodeRabbit: 14/14 threads resolved (2026-06-08)
 - #288–#290: verify CR threads on lower stack PRs
 
 ## Beads (review pass)
