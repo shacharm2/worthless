@@ -15,6 +15,15 @@ import signal
 import subprocess
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import tomllib
+else:
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib
 
 import httpx
 import pytest
@@ -26,6 +35,7 @@ from tests.helpers import fake_anthropic_key, fake_openai_key
 # Use high ports to avoid conflicts with dev proxy
 _TEST_PORT = 19787
 _WORTHLESS = str(Path(__file__).parent.parent / ".venv" / "bin" / "worthless")
+_PROJECT_VERSION = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
 
 
 def _run_worthless(
@@ -294,11 +304,11 @@ class TestDefaultCommandE2E:
         env_content = (project_with_keys / ".env").read_text()
         assert fake_openai_key() in env_content
 
-    def test_version_is_0_2_0(self, e2e_home: Path, tmp_path: Path) -> None:
-        """worthless --version reports 0.2.0."""
+    def test_version_matches_pyproject(self, e2e_home: Path, tmp_path: Path) -> None:
+        """worthless --version reports the packaged project version."""
         project = tmp_path / "vtest"
         project.mkdir()
 
         result = _run_worthless(["--version"], e2e_home, project)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "0.2.0" in result.stdout
+        assert f"worthless {_PROJECT_VERSION}" in result.stdout
