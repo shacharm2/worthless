@@ -16,6 +16,11 @@ import time
 import uuid
 from pathlib import Path
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
+
 import httpx
 import pytest
 
@@ -31,6 +36,7 @@ pytestmark = [
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOCKERFILE = REPO_ROOT / "Dockerfile"
+PROJECT_VERSION = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())["project"]["version"]
 
 # Use env var if set (CI builds image separately), otherwise build with a
 # unique tag per test session to avoid races between parallel runs.
@@ -473,12 +479,12 @@ class TestLifecycle:
 class TestWave6Features:
     """Wave 6 features tested inside Docker — real container, no mocks."""
 
-    def test_version_is_0_2_0(self, container: tuple[str, int]) -> None:
-        """worthless --version reports 0.2.0 inside the container."""
+    def test_version_matches_pyproject(self, container: tuple[str, int]) -> None:
+        """worthless --version reports the project version inside the container."""
         name, _ = container
         result = _docker_exec(name, ["worthless", "--version"])
         assert result.returncode == 0, f"--version failed: {result.stderr}"
-        assert "0.2.0" in result.stdout
+        assert f"worthless {PROJECT_VERSION}" in result.stdout
 
     def test_json_mode_read_only(self, container: tuple[str, int]) -> None:
         """worthless --json returns structured state, never writes.
