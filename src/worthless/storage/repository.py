@@ -40,6 +40,56 @@ def _perm_bits(mode: int | None) -> int | None:
     return None if mode is None else mode & 0o777
 
 
+async def _exec_enrollment_insert(
+    db: aiosqlite.Connection,
+    alias: str,
+    *,
+    var_name: str,
+    env_path: str | None,
+    original_mode: int | None,
+) -> None:
+    """Run the canonical ``enrollments`` INSERT on an already-open *db* (y8ir).
+
+    The single source for the enrollment row written by ``store_enrolled``,
+    ``upsert_locked_shard_and_enroll``, and ``add_enrollment``. ``INSERT OR
+    IGNORE`` keeps the FIRST row for a ``(key_alias, var_name, env_path)`` tuple
+    — load-bearing for ``original_mode`` (see ``store_enrolled``).
+
+    Execute-only: the caller owns ``BEGIN``/``COMMIT``. No ``in_transaction``
+    assert — ``add_enrollment`` runs in autocommit (no explicit transaction), so
+    such an assert would false-fire there.
+    """
+    await db.execute(
+        "INSERT OR IGNORE INTO enrollments "
+        "(key_alias, var_name, env_path, original_mode) "
+        "VALUES (?, ?, ?, ?)",
+        (alias, var_name, env_path, _perm_bits(original_mode)),
+    )
+
+
+async def _exec_config_insert(
+    db: aiosqlite.Connection,
+    alias: str,
+    *,
+    spend_cap: int | None,
+    token_budget_daily: int | None,
+) -> None:
+    """Run the canonical ``enrollment_config`` INSERT on an already-open *db* (y8ir).
+
+    The single source for the config row written by ``store_enrolled`` and
+    ``upsert_locked_shard_and_enroll``. ``INSERT OR IGNORE`` so re-enrollment
+    never overwrites a user-modified spend cap. Execute-only (caller owns the
+    transaction); *spend_cap* must already be the resolved ``int | None`` — the
+    ``_USE_DEFAULT`` sentinel is resolved by the caller.
+    """
+    await db.execute(
+        "INSERT OR IGNORE INTO enrollment_config"
+        " (key_alias, spend_cap, token_budget_daily)"
+        " VALUES (?, ?, ?)",
+        (alias, spend_cap, token_budget_daily),
+    )
+
+
 class ShardRepository:
     """Async repository that encrypts Shard B at rest with Fernet.
 
@@ -541,17 +591,18 @@ class ShardRepository:
             # value; keeping the first capture (or NULL, for pre-715 rows that
             # were never captured) is the only correct behavior. Do NOT "fix"
             # this into a backfill/UPSERT — it would persist 0o600 as "original".
-            await db.execute(
-                "INSERT OR IGNORE INTO enrollments "
-                "(key_alias, var_name, env_path, original_mode) "
-                "VALUES (?, ?, ?, ?)",
-                (alias, var_name, env_path, _perm_bits(original_mode)),
+            await _exec_enrollment_insert(
+                db,
+                alias,
+                var_name=var_name,
+                env_path=env_path,
+                original_mode=original_mode,
             )
-            await db.execute(
-                "INSERT OR IGNORE INTO enrollment_config"
-                " (key_alias, spend_cap, token_budget_daily)"
-                " VALUES (?, ?, ?)",
-                (alias, effective_cap, token_budget_daily),
+            await _exec_config_insert(
+                db,
+                alias,
+                spend_cap=effective_cap,
+                token_budget_daily=token_budget_daily,
             )
             await db.commit()
 
@@ -650,18 +701,19 @@ class ShardRepository:
                     oc_rollback_mac,
                 ),
             )
-            await db.execute(
-                "INSERT OR IGNORE INTO enrollments "
-                "(key_alias, var_name, env_path, original_mode) "
-                "VALUES (?, ?, ?, ?)",
-                (alias, var_name, env_path, _perm_bits(original_mode)),
+            await _exec_enrollment_insert(
+                db,
+                alias,
+                var_name=var_name,
+                env_path=env_path,
+                original_mode=original_mode,
             )
             if write_config:
-                await db.execute(
-                    "INSERT OR IGNORE INTO enrollment_config"
-                    " (key_alias, spend_cap, token_budget_daily)"
-                    " VALUES (?, ?, ?)",
-                    (alias, effective_cap, token_budget_daily),
+                await _exec_config_insert(
+                    db,
+                    alias,
+                    spend_cap=effective_cap,
+                    token_budget_daily=token_budget_daily,
                 )
             await db.commit()
 
@@ -730,11 +782,12 @@ class ShardRepository:
         are silently ignored.
         """
         async with self._connect() as db:
-            await db.execute(
-                "INSERT OR IGNORE INTO enrollments "
-                "(key_alias, var_name, env_path, original_mode) "
-                "VALUES (?, ?, ?, ?)",
-                (alias, var_name, env_path, _perm_bits(original_mode)),
+            await _exec_enrollment_insert(
+                db,
+                alias,
+                var_name=var_name,
+                env_path=env_path,
+                original_mode=original_mode,
             )
             await db.commit()
 
