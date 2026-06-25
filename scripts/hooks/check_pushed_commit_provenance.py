@@ -68,9 +68,12 @@ def pushed_commits(cwd: str | None = None) -> list[str]:
     the hook BLOCKS the push rather than silently passing it unchecked. An
     empty range (zero new commits) is legitimate and returns ``[]``.
     """
+    explicit_base = os.environ.get("WORTHLESS_PROVENANCE_BASE_REF") or ""
     frm = os.environ.get("PRE_COMMIT_FROM_REF") or ""
     to = os.environ.get("PRE_COMMIT_TO_REF") or "HEAD"
-    if frm and set(frm) != {"0"}:  # all-zero from-ref == brand-new branch
+    if explicit_base:
+        rng = f"{explicit_base}..{to}"
+    elif frm and set(frm) != {"0"}:  # all-zero from-ref == brand-new branch
         rng = f"{frm}..{to}"
     else:
         rng = "origin/main..HEAD"

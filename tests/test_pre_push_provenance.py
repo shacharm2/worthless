@@ -98,3 +98,24 @@ def test_fails_closed_when_git_errors(monkeypatch) -> None:
     monkeypatch.setattr(hook.subprocess, "run", _git_fails)
     with pytest.raises(RuntimeError):
         hook.pushed_commits()
+
+
+def test_explicit_base_ref_overrides_main_fallback(monkeypatch) -> None:
+    seen: list[list[str]] = []
+
+    def _git_ok(args, **_kwargs) -> subprocess.CompletedProcess:
+        seen.append(args)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="abc123\n",
+            stderr="",
+        )
+
+    monkeypatch.setenv("WORTHLESS_PROVENANCE_BASE_REF", "origin/website-dev")
+    monkeypatch.delenv("PRE_COMMIT_FROM_REF", raising=False)
+    monkeypatch.delenv("PRE_COMMIT_TO_REF", raising=False)
+    monkeypatch.setattr(hook.subprocess, "run", _git_ok)
+
+    assert hook.pushed_commits() == ["abc123"]
+    assert seen == [["git", "rev-list", "origin/website-dev..HEAD"]]
