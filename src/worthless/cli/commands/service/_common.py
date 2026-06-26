@@ -87,14 +87,23 @@ def run_cmd(
     )
 
 
-def _assert_no_fernet_drift_for_service_install(home: WorthlessHome) -> None:
-    """W3-ADV-17: refuse install when keyring and file disagree (WOR-464)."""
+def _fernet_drift_check_result(home: WorthlessHome):
     from worthless.cli.commands.doctor.checks import fernet_drift
     from worthless.cli.commands.doctor.registry import CheckContext
 
     repo = ShardRepository(str(home.db_path), PLACEHOLDER_FERNET_KEY)
     ctx = CheckContext(home=home, repo=repo, fix=False, dry_run=False)
-    result = fernet_drift.run(ctx)
+    return fernet_drift.run(ctx)
+
+
+def _fernet_drift_detected(home: WorthlessHome) -> bool:
+    """True when keyring and ``fernet.key`` both exist but disagree (WOR-464)."""
+    return _fernet_drift_check_result(home).get("status") == "error"
+
+
+def _assert_no_fernet_drift_for_service_install(home: WorthlessHome) -> None:
+    """W3-ADV-17: refuse install when keyring and file disagree (WOR-464)."""
+    result = _fernet_drift_check_result(home)
     if result.get("status") == "error":
         raise WorthlessError(
             ErrorCode.KEY_NOT_FOUND,

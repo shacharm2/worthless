@@ -100,10 +100,25 @@ class TestSyncFernetForLaunchd:
         with (
             patch("worthless.cli.keystore.keyring_available", return_value=True),
             patch("worthless.cli.keystore.keyring") as mock_kr,
+            patch("worthless.cli.keystore.read_fernet_key") as mock_read,
         ):
             mock_kr.get_password.return_value = canonical.decode()
-            sync_fernet_for_launchd(tmp_path)
-            sync_fernet_for_launchd(tmp_path)
+            sync_fernet_for_launchd(tmp_path, key=canonical)
+            sync_fernet_for_launchd(tmp_path, key=canonical)
+            mock_read.assert_not_called()
+
+        assert (tmp_path / "fernet.key").read_bytes().strip() == canonical
+
+    def test_supplied_key_skips_read_fernet_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """HF2: callers with a cached key must not re-read the keystore."""
+        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
+        canonical = _canonical_key()
+
+        with patch("worthless.cli.keystore.read_fernet_key") as mock_read:
+            sync_fernet_for_launchd(tmp_path, key=canonical)
+            mock_read.assert_not_called()
 
         assert (tmp_path / "fernet.key").read_bytes().strip() == canonical
 
@@ -233,9 +248,50 @@ class TestLockFernetSync:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("WORTHLESS_FERNET_IPC_ONLY", raising=False)
+        key_buf = bytearray(_canonical_key())
+        with (
+            patch("worthless.cli.commands.lock.sync_fernet_for_launchd") as mock_sync,
+            patch.object(
+                WorthlessHome,
+                "fernet_key",
+                property(lambda self: bytearray(key_buf)),
+            ),
+        ):
+            from worthless.cli.commands import lock as lock_mod
+
+            lock_mod._sync_fernet_after_lock(WorthlessHome(base_dir=tmp_path))
+            mock_sync.assert_called_once_with(tmp_path, key=bytes(key_buf))
+
+    def test_lock_skips_sync_under_ipc_only(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("WORTHLESS_FERNET_IPC_ONLY", "1")
         with patch("worthless.cli.commands.lock.sync_fernet_for_launchd") as mock_sync:
             from worthless.cli.commands import lock as lock_mod
 
-            # Minimal hook: call the post-lock sync helper directly
             lock_mod._sync_fernet_after_lock(WorthlessHome(base_dir=tmp_path))
-            mock_sync.assert_called_once_with(tmp_path)
+            mock_sync.assert_not_called()
+
+    def test_lock_skips_sync_when_file_disagrees_with_canonical(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("WORTHLESS_FERNET_IPC_ONLY", raising=False)
+        base = tmp_path / ".worthless"
+        base.mkdir()
+        write_secure_fernet_key(base / "fernet.key", _stale_key())
+        key_buf = bytearray(_canonical_key())
+        with (
+            patch("worthless.cli.commands.lock.sync_fernet_for_launchd") as mock_sync,
+            patch.object(
+                WorthlessHome,
+                "fernet_key",
+                property(lambda self: bytearray(key_buf)),
+            ),
+        ):
+            from worthless.cli.commands import lock as lock_mod
+
+            lock_mod._sync_fernet_after_lock(WorthlessHome(base_dir=base))
+            mock_sync.assert_not_called()
