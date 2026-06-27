@@ -316,10 +316,14 @@ def sync_fernet_for_launchd(
     """
     owned_buf: bytearray | None = None
     saved_managed = os.environ.get("WORTHLESS_SERVICE_MANAGED")
+    saved_env_key = os.environ.get("WORTHLESS_FERNET_KEY")
     try:
         if key is None:
             if saved_managed is not None:
                 os.environ.pop("WORTHLESS_SERVICE_MANAGED", None)
+            # Sync must copy keyring → file, not inherit a poison shell env.
+            if saved_env_key is not None:
+                os.environ.pop("WORTHLESS_FERNET_KEY", None)
             owned_buf = read_fernet_key(home_dir)
             key_bytes = bytes(owned_buf)
         else:
@@ -336,6 +340,8 @@ def sync_fernet_for_launchd(
             zero_buf(owned_buf)
         if saved_managed is not None:
             os.environ["WORTHLESS_SERVICE_MANAGED"] = saved_managed
+        if saved_env_key is not None:
+            os.environ["WORTHLESS_FERNET_KEY"] = saved_env_key
 
 
 def _service_managed() -> bool:

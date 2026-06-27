@@ -295,3 +295,132 @@ class TestLockFernetSync:
 
             lock_mod._sync_fernet_after_lock(WorthlessHome(base_dir=base))
             mock_sync.assert_not_called()
+
+
+@pytest.mark.adversarial
+class TestFernetSyncAdversarial:
+    """WOR-748 adversarial guards (env poison, drift journey, idempotent sync)."""
+
+    def test_adv_env_poison_does_not_win_when_key_supplied(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """ADV-ENV: shell env must not override canonical key passed by lock."""
+        canonical = _canonical_key()
+        poison = b"poison-env-key-value-padded-to-44-bytes!"
+        monkeypatch.setenv("WORTHLESS_FERNET_KEY", poison.decode())
+
+        sync_fernet_for_launchd(tmp_path, key=canonical)
+
+        assert (tmp_path / "fernet.key").read_bytes().strip() == canonical
+
+    def test_adv_env_read_path_ignores_shell_env(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """ADV-ENV-READ: sync without key= must read keyring, not WORTHLESS_FERNET_KEY."""
+        monkeypatch.delenv("WORTHLESS_SERVICE_MANAGED", raising=False)
+        canonical = _canonical_key()
+        monkeypatch.setenv("WORTHLESS_FERNET_KEY", "poison-env-key-value-padded-to-44-bytes!")
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+        ):
+            mock_kr.get_password.return_value = canonical.decode()
+            sync_fernet_for_launchd(tmp_path)
+
+        assert (tmp_path / "fernet.key").read_bytes().strip() == canonical
+
+    def test_adv_drift_journey_lock_skips_install_refuses(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """ADV-DRIFT-JOURNEY: stale file + keyring A → lock skips sync → install blocked."""
+        from worthless.cli.commands.doctor.checks import fernet_drift
+        from worthless.cli.commands import lock as lock_mod
+        from worthless.cli.commands.service._common import preflight_service_install
+
+        base = tmp_path / ".worthless"
+        base.mkdir()
+        (base / ".bootstrapped").write_text("")
+        canonical = _canonical_key()
+        write_secure_fernet_key(base / "fernet.key", _stale_key())
+        home = WorthlessHome(base_dir=base)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("WORTHLESS_FERNET_IPC_ONLY", raising=False)
+        key_buf = bytearray(canonical)
+
+        with patch.object(
+            WorthlessHome,
+            "fernet_key",
+            property(lambda self: bytearray(key_buf)),
+        ):
+            lock_mod._sync_fernet_after_lock(home)
+
+        assert (base / "fernet.key").read_bytes().strip() == _stale_key()
+
+        with (
+            patch.object(fernet_drift, "keyring_available", return_value=True),
+            patch("worthless.cli.commands.doctor.checks.fernet_drift._keyring") as mock_kr,
+        ):
+            mock_kr.get_password.return_value = canonical.decode()
+            with pytest.raises(WorthlessError) as exc_info:
+                preflight_service_install(home)
+
+        assert exc_info.value.code == ErrorCode.KEY_NOT_FOUND
+        assert "drift" in str(exc_info.value).lower()
+
+    def test_adv_idempotent_sync_does_not_rewrite_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """ADV-IDEMPOTENT: matching file must not trigger _write_key_file."""
+        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
+        canonical = _canonical_key()
+        write_secure_fernet_key(tmp_path / "fernet.key", canonical)
+        before_mtime = (tmp_path / "fernet.key").stat().st_mtime
+
+        with patch("worthless.cli.keystore._write_key_file") as mock_write:
+            sync_fernet_for_launchd(tmp_path, key=canonical)
+            mock_write.assert_not_called()
+
+        assert (tmp_path / "fernet.key").stat().st_mtime == before_mtime
+
+
+@pytest.mark.adversarial
+class TestW3Adv14ManagedReadChain:
+    """W3-ADV-14 partial: lock path → sync → preflight → managed read agrees."""
+
+    def test_lock_sync_preflight_managed_read_chain(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from worthless.cli.commands import lock as lock_mod
+        from worthless.cli.commands.service._common import preflight_service_install
+
+        base = tmp_path / ".worthless"
+        base.mkdir()
+        (base / ".bootstrapped").write_text("")
+        home = WorthlessHome(base_dir=base)
+        canonical = _canonical_key()
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.delenv("WORTHLESS_FERNET_KEY", raising=False)
+        monkeypatch.delenv("WORTHLESS_FERNET_IPC_ONLY", raising=False)
+
+        with (
+            patch("worthless.cli.keystore.keyring_available", return_value=True),
+            patch("worthless.cli.keystore.keyring") as mock_kr,
+            patch.object(
+                WorthlessHome,
+                "fernet_key",
+                property(lambda self: bytearray(canonical)),
+            ),
+        ):
+            mock_kr.get_password.return_value = canonical.decode()
+            lock_mod._sync_fernet_after_lock(home)
+            preflight_service_install(home)
+
+            monkeypatch.setenv("WORTHLESS_SERVICE_MANAGED", "1")
+            managed = read_fernet_key(base)
+
+        try:
+            assert (base / "fernet.key").read_bytes().strip() == canonical
+            assert managed == bytearray(canonical)
+        finally:
+            zero_buf(managed)
