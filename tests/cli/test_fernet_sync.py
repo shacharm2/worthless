@@ -252,6 +252,7 @@ class TestLockFernetSync:
         key_buf = bytearray(_canonical_key())
         with (
             patch("worthless.cli.commands.lock.sync_fernet_for_launchd") as mock_sync,
+            patch("worthless.cli.commands.lock.zero_buf"),
             patch.object(
                 WorthlessHome,
                 "fernet_key",
@@ -261,7 +262,9 @@ class TestLockFernetSync:
             from worthless.cli.commands import lock as lock_mod
 
             lock_mod._sync_fernet_after_lock(WorthlessHome(base_dir=tmp_path))
-            mock_sync.assert_called_once_with(tmp_path, key=bytes(key_buf))
+            mock_sync.assert_called_once()
+            assert mock_sync.call_args.args[0] == tmp_path
+            assert bytes(mock_sync.call_args.kwargs["key"]) == _canonical_key()
 
     def test_lock_skips_sync_under_ipc_only(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

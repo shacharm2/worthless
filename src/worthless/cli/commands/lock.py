@@ -1603,19 +1603,19 @@ def _sync_fernet_after_lock(home: WorthlessHome) -> None:
 
     key = home.fernet_key
     try:
-        fernet_path = home.fernet_key_path
+        fernet_path = home.base_dir / "fernet.key"
         if fernet_path.is_file():
             try:
                 on_disk = fernet_path.read_bytes().strip()
             except OSError:
                 on_disk = None
-            if on_disk is not None and on_disk != bytes(key):
+            if on_disk is not None and on_disk != key:
                 logger.debug(
                     "Skipping post-lock fernet sync — file bytes differ from "
                     "canonical key (WOR-464)"
                 )
                 return
-        sync_fernet_for_launchd(home.base_dir, key=bytes(key))
+        sync_fernet_for_launchd(home.base_dir, key=key)
     finally:
         zero_buf(key)
 

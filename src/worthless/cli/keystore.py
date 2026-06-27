@@ -273,7 +273,7 @@ def _read_fernet_file(path: Path, *, validate: bool) -> bytearray:
     return bytearray(path.read_bytes().strip())
 
 
-def _write_key_file(key: bytes, home_dir: Path | None) -> None:
+def _write_key_file(key: bytes | bytearray, home_dir: Path | None) -> None:
     """Write key to file with 0o600 permissions."""
     fernet_path = _fernet_file_path(home_dir)
     fd = os.open(str(fernet_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -325,9 +325,9 @@ def sync_fernet_for_launchd(
             if saved_env_key is not None:
                 os.environ.pop("WORTHLESS_FERNET_KEY", None)
             owned_buf = read_fernet_key(home_dir)
-            key_bytes = bytes(owned_buf)
+            key_bytes = owned_buf
         else:
-            key_bytes = bytes(key)
+            key_bytes = key
 
         fernet_path = _fernet_file_path(home_dir)
         existing = _fernet_file_bytes(fernet_path)
