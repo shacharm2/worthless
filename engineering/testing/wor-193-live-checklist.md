@@ -11,8 +11,8 @@
 | WOR-720 | Lifecycle scripts (healthz only) |
 | WOR-721 | `default-command-supervised-live-macos.sh` |
 | WOR-747 | Unlock before temp dir delete in roundtrip script |
-| WOR-748 | Fernet sync for launchd in roundtrip script |
-| WOR-749 | `service-lock-roundtrip-live-macos.sh` PASS |
+| WOR-748 | Fernet sync for launchd in roundtrip script | **PASS** (pytest + sync in script) |
+| WOR-749 | `service-lock-roundtrip-live-macos.sh` PASS | **PASS** @ `9251514`+ (2026-06-08, macOS) |
 
 ## Before you start
 
@@ -253,10 +253,10 @@ bash engineering/testing/scripts/service-lock-roundtrip-live-macos.sh
 
 | Step | What you're proving | Pass? | Notes |
 |------|---------------------|-------|-------|
-| L-lock-1 | Provider registered + lock splits `.env` | ☐ | |
-| L-lock-2 | Service install + healthz | ☐ | |
-| L-lock-3 | Proxy forwards; upstream auth = real key | ☐ | |
-| L-lock-4 | Service uninstall cleans plist | ☐ | |
+| L-lock-1 | Provider registered + lock splits `.env` | ☑ | 2026-06-08 |
+| L-lock-2 | Service install + healthz | ☑ | 2026-06-08 |
+| L-lock-3 | Proxy forwards; upstream auth = real key | ☑ | 2026-06-08 |
+| L-lock-4 | Service uninstall cleans plist | ☑ | 2026-06-08 |
 
 ---
 

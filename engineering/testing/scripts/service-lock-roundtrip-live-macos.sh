@@ -225,6 +225,43 @@ MOCK_CID="$(docker run -d --rm -p "${MOCK_PORT}:9999" "$MOCK_IMAGE")"
 wait_mock_healthy
 lp_ok "mock-upstream healthy at ${MOCK_URL}"
 
+LOCK_UP_PID=""
+
+start_lock_proxy() {
+  lp_phase "Foreground proxy for lock (OpenClaw WRTLS-109 gate)"
+  lp_step "worthless up in background on :${PORT}"
+  worthless up >"${WORK_DIR}/worthless-up.log" 2>&1 &
+  LOCK_UP_PID=$!
+  local deadline=$((SECONDS + 60))
+  while ((SECONDS < deadline)); do
+    if curl -sf "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
+      lp_ok "proxy healthy for lock gate"
+      return 0
+    fi
+    if ! kill -0 "$LOCK_UP_PID" 2>/dev/null; then
+      lp_fail "worthless up exited before /healthz"
+      tail -20 "${WORK_DIR}/worthless-up.log" 2>/dev/null || true
+      exit 1
+    fi
+    sleep 0.5
+  done
+  lp_fail "proxy did not become healthy for lock gate within 60s"
+  tail -20 "${WORK_DIR}/worthless-up.log" 2>/dev/null || true
+  exit 1
+}
+
+stop_lock_proxy() {
+  lp_step "worthless down — free :${PORT} for service install"
+  worthless down 2>/dev/null || true
+  if [[ -n "${LOCK_UP_PID:-}" ]] && kill -0 "$LOCK_UP_PID" 2>/dev/null; then
+    kill -TERM "$LOCK_UP_PID" 2>/dev/null || true
+    wait "$LOCK_UP_PID" 2>/dev/null || true
+  fi
+  LOCK_UP_PID=""
+}
+
+start_lock_proxy
+
 lp_phase "Lock temp project"
 read -r REAL_KEY ALIAS <<<"$(cd "$REPO_ROOT" && uv run python -c "
 import hashlib
@@ -256,6 +293,8 @@ if [[ -z "$SHARD_A" || "$SHARD_A" == "$REAL_KEY" ]]; then
   exit 1
 fi
 lp_ok "lock complete (shard-A in .env)"
+
+stop_lock_proxy
 
 lp_phase "Fernet sync (post-lock)"
 sync_fernet_for_launchd
