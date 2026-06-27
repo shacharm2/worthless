@@ -245,20 +245,24 @@ async def worthless_lock(env_path: str = ".env") -> str:
     home = get_home()
     path = Path(env_path)
 
-    # _lock_keys is sync and calls asyncio.run() internally,
-    # so run it in a thread to avoid nested event loop errors.
-    def _do_lock() -> int:
+    # _lock_keys is sync and calls asyncio.run() internally, so run it in a
+    # thread to avoid nested event loop errors. dqzj/WOR-646: the orphan-state
+    # reconciliation runs INSIDE the same acquire_lock() critical section, so
+    # state_consistent/orphan_shards describe exactly the state THIS lock left —
+    # not a snapshot another command could have mutated after the lock released
+    # (CodeRabbit: the post-lock read was a TOCTOU window).
+    def _do_lock() -> tuple[int, list[str]]:
         with acquire_lock(home):
-            return _lock_keys(path, home)
+            count = _lock_keys(path, home)
+            orphans = asyncio.run(_list_orphan_shards(home.db_path))
+            return count, orphans
 
     loop = asyncio.get_running_loop()
-    count = await loop.run_in_executor(None, _do_lock)
+    count, orphans = await loop.run_in_executor(None, _do_lock)
 
-    # dqzj/WOR-646: the lock ran off the main thread, so no interrupt-driven
-    # rollback could fire here. Reconcile after the run and surface any mixed
-    # state in the result instead of returning a bare, possibly-misleading
-    # success — so the agent is told to run `doctor` rather than trusting "ok".
-    orphans = await _list_orphan_shards(home.db_path)
+    # The MCP path runs off the main thread, so no interrupt-driven rollback
+    # could fire here; surface any mixed state instead of a bare, possibly-
+    # misleading success — so the agent is told to run `doctor`, not trust "ok".
     result: dict[str, Any] = {
         "protected_count": count,
         "state_consistent": not orphans,
