@@ -12,8 +12,9 @@ from pathlib import Path
 import keyring
 
 from worthless._flags import fernet_ipc_only_enabled
-from worthless.cli.platform import IS_WINDOWS
 from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.platform import IS_WINDOWS
+from worthless.crypto.types import zero_buf
 
 # WOR-456: on macOS, route writes through our own ctypes wrapper that
 # explicitly pins ``kSecAttrSynchronizable=kCFBooleanFalse`` so Fernet keys
@@ -272,7 +273,7 @@ def _read_fernet_file(path: Path, *, validate: bool) -> bytearray:
     return bytearray(path.read_bytes().strip())
 
 
-def _write_key_file(key: bytes, home_dir: Path | None) -> None:
+def _write_key_file(key: bytes | bytearray, home_dir: Path | None) -> None:
     """Write key to file with 0o600 permissions."""
     fernet_path = _fernet_file_path(home_dir)
     fd = os.open(str(fernet_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -281,6 +282,66 @@ def _write_key_file(key: bytes, home_dir: Path | None) -> None:
     finally:
         os.close(fd)
     logger.info("Fernet key stored in file")
+
+
+def _fernet_file_bytes(path: Path) -> bytes | None:
+    """Return on-disk Fernet bytes when readable; ``None`` if absent or unreadable."""
+    try:
+        return path.read_bytes().strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+
+def sync_fernet_for_launchd(
+    home_dir: Path | None = None,
+    *,
+    key: bytes | bytearray | None = None,
+) -> None:
+    """Write the canonical Fernet key to ``fernet.key`` for service-managed startup.
+
+    LaunchAgents and systemd user units read the on-disk file under
+    ``WORTHLESS_SERVICE_MANAGED=1``. Interactive sessions store the canonical
+    key in the OS keyring after enroll/lock; this sync copies keyring → file
+    so headless restarts decrypt with the same bytes (WOR-748).
+
+    When *key* is supplied (e.g. from ``WorthlessHome.fernet_key`` cache after
+    ``lock``), no second keystore read occurs — preserving the HF2 one-read
+    contract.
+
+    Reads via the **interactive** cascade (keyring before file), even when
+    ``WORTHLESS_SERVICE_MANAGED`` is set in the caller's environment, so a
+    stale ``fernet.key`` never wins over the keyring during sync.
+    """
+    owned_buf: bytearray | None = None
+    saved_managed = os.environ.get("WORTHLESS_SERVICE_MANAGED")
+    saved_env_key = os.environ.get("WORTHLESS_FERNET_KEY")
+    try:
+        if key is None:
+            if saved_managed is not None:
+                os.environ.pop("WORTHLESS_SERVICE_MANAGED", None)
+            # Sync must copy keyring → file, not inherit a poison shell env.
+            if saved_env_key is not None:
+                os.environ.pop("WORTHLESS_FERNET_KEY", None)
+            owned_buf = read_fernet_key(home_dir)
+            key_bytes = owned_buf
+        else:
+            key_bytes = key
+
+        fernet_path = _fernet_file_path(home_dir)
+        existing = _fernet_file_bytes(fernet_path)
+        if existing is not None and existing == key_bytes:
+            return
+
+        _write_key_file(key_bytes, home_dir)
+    finally:
+        if owned_buf is not None:
+            zero_buf(owned_buf)
+        if saved_managed is not None:
+            os.environ["WORTHLESS_SERVICE_MANAGED"] = saved_managed
+        if saved_env_key is not None:
+            os.environ["WORTHLESS_FERNET_KEY"] = saved_env_key
 
 
 def _service_managed() -> bool:

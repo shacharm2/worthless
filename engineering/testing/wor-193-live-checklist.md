@@ -1,6 +1,6 @@
 # WOR-193 — Live test checklist (L7)
 
-> Manual proof on a real machine. **Not CI.** Record pass/fail per ticket before claiming “works live.”
+> Manual proof on a real machine **or** CI (Linux Docker roundtrip only). Record pass/fail per ticket before claiming “works live.”
 >
 > **Install from:** `main` (PR #292 merged `876d102`). Use editable install from your checkout: `uv sync && uv pip install -e .`
 >
@@ -11,8 +11,9 @@
 | WOR-720 | Lifecycle scripts (healthz only) |
 | WOR-721 | `default-command-supervised-live-macos.sh` |
 | WOR-747 | Unlock before temp dir delete in roundtrip script |
-| WOR-748 | Fernet sync for launchd in roundtrip script |
-| WOR-749 | `service-lock-roundtrip-live-macos.sh` PASS |
+| WOR-748 | Fernet sync for launchd in roundtrip script | **PASS** (pytest + sync in script) |
+| WOR-749 | `service-lock-roundtrip-live-macos.sh` PASS | **PASS** @ `9251514`+ (2026-06-08, macOS) |
+| WOR-749 (Linux) | `run-service-lock-roundtrip-linux-docker.sh` PASS | **PASS** manual + **CI** (`docker-security` job `service-lock-roundtrip-linux`) |
 
 ## Before you start
 
@@ -50,6 +51,8 @@ This removes the LaunchAgent plist and stops the foreground proxy. It does **not
 | `service-lifecycle-live-linux.sh` | same on systemd (native Linux) |
 | `run-service-lifecycle-linux-docker.sh` | lifecycle pack in Docker when no systemd host |
 | `service-lock-roundtrip-live-macos.sh` | lock → **service install** → proxied request → mock upstream gets **real key** |
+| `service-lock-roundtrip-live-linux.sh` | same on systemd (native Linux or Docker entrypoint) |
+| `run-service-lock-roundtrip-linux-docker.sh` | lock roundtrip in privileged systemd container (uvicorn mock, no Docker-in-Docker) |
 | `default-command-supervised-live-macos.sh` | bare `worthless --yes` supervised + idempotent |
 
 Lifecycle packs do **not** exercise API keys. Use `service-lock-roundtrip-live-macos.sh` for that.
@@ -241,7 +244,7 @@ Runnable script: `engineering/testing/scripts/service-lifecycle-live-linux.sh`
 ## Pack — Service lock roundtrip (keys through service-managed proxy)
 
 **Linear:** [WOR-720](https://linear.app/plumbusai/issue/WOR-720) acceptance gap vs lifecycle-only proof
-**Proves:** `worthless lock` → `worthless service install` → proxied chat request → mock upstream receives reconstructed **real** key (not shard-A).
+**Proves:** `worthless lock` → `worthless service install` → proxied chat request → **`worthless service restart`** → proxied chat again → mock upstream receives reconstructed **real** key (not shard-A) both times.
 **Requires:** Docker (mock-upstream on `:9999`), editable install, ports `8787` + `9999` free, `unset WORTHLESS_HOME` (uses `~/.worthless` + `providers.toml`).
 
 ```bash
@@ -253,10 +256,11 @@ bash engineering/testing/scripts/service-lock-roundtrip-live-macos.sh
 
 | Step | What you're proving | Pass? | Notes |
 |------|---------------------|-------|-------|
-| L-lock-1 | Provider registered + lock splits `.env` | ☐ | |
-| L-lock-2 | Service install + healthz | ☐ | |
-| L-lock-3 | Proxy forwards; upstream auth = real key | ☐ | |
-| L-lock-4 | Service uninstall cleans plist | ☐ | |
+| L-lock-1 | Provider registered + lock splits `.env` | ☑ | 2026-06-08 |
+| L-lock-2 | Service install + healthz | ☑ | 2026-06-08 |
+| L-lock-3 | Proxy forwards; upstream auth = real key | ☑ | 2026-06-08 |
+| L-lock-3b | After `service restart`, proxied POST still 200 + real key | ☑ | 2026-06-08 post-restart phase |
+| L-lock-4 | Service uninstall cleans plist | ☑ | 2026-06-08 |
 
 ---
 

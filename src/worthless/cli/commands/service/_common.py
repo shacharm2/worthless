@@ -13,8 +13,10 @@ from pathlib import Path
 
 from worthless.cli.bootstrap import WorthlessHome
 from worthless.cli.errors import ErrorCode, WorthlessError
+from worthless.cli.keystore import PLACEHOLDER_FERNET_KEY, sync_fernet_for_launchd
 from worthless.cli.process import poll_health
 from worthless.crypto.types import zero_buf
+from worthless.storage.repository import ShardRepository
 
 
 class ServiceState(str, Enum):
@@ -85,8 +87,32 @@ def run_cmd(
     )
 
 
+def _fernet_drift_check_result(home: WorthlessHome):
+    from worthless.cli.commands.doctor.checks import fernet_drift
+    from worthless.cli.commands.doctor.registry import CheckContext
+
+    repo = ShardRepository(str(home.db_path), PLACEHOLDER_FERNET_KEY)
+    ctx = CheckContext(home=home, repo=repo, fix=False, dry_run=False)
+    return fernet_drift.run(ctx)
+
+
+def _assert_no_fernet_drift_for_service_install(home: WorthlessHome) -> None:
+    """W3-ADV-17: refuse install when keyring and file disagree (WOR-464)."""
+    result = _fernet_drift_check_result(home)
+    if result.get("status") == "error":
+        raise WorthlessError(
+            ErrorCode.KEY_NOT_FOUND,
+            f"{result.get('summary', 'Fernet key drift detected')} "
+            "Run `worthless doctor --explain fernet_drift` before "
+            "`worthless service install`.",
+        )
+
+
 def preflight_service_install(home: WorthlessHome) -> None:
     """Refuse install when the proxy cannot start (no Fernet key)."""
+    managed = current_platform_backend_name() in ("launchd", "systemd")
+    if managed:
+        _assert_no_fernet_drift_for_service_install(home)
     try:
         key = home.fernet_key
     except WorthlessError as exc:
@@ -97,7 +123,11 @@ def preflight_service_install(home: WorthlessHome) -> None:
             "Run `worthless doctor`. On macOS, ensure Keychain 'Always Allow' "
             "or use file-backed storage (WORTHLESS_FERNET_KEY_PATH).",
         ) from exc
-    zero_buf(key)
+    try:
+        if managed:
+            sync_fernet_for_launchd(home.base_dir, key=key)
+    finally:
+        zero_buf(key)
 
 
 def verify_proxy_health(port: int, *, timeout: float = 15.0) -> None:

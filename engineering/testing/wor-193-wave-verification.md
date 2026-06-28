@@ -59,18 +59,18 @@
 | W3-ADV-3 | `/healthz` OK, no pidfile → must spawn (6gkb) | `test_service_up_managed.py` | **pytest done**; P2 reclaim in `up.py` backlog |
 | W3-ADV-4 | `/healthz` OK, pidfile matches → idempotent no-op | `test_service_up_managed.py` | partial |
 | W3-ADV-5 | Fernet keyring vs stale file; SERVICE_MANAGED gate | `test_keystore.py` | done |
-| W3-ADV-6 | Fernet drift → install/lock fails loud | `test_service_cli.py` / doctor | backlog |
+| W3-ADV-6 | Fernet drift → install/lock fails loud | `test_fernet_sync.py` + preflight | **done** (install drift gate; lock skips overwrite) |
 | W3-ADV-7 | Stale `.lock-in-progress` / `.up.lock` recovery | `test_bootstrap.py` | backlog |
 | W3-ADV-8 | Orphan enrollment (deleted env_path) → doctor purge | doctor tests | backlog |
 | W3-ADV-9 | Port 8787 foreign listener → refuse/recover | `test_service_up_managed.py` | backlog |
 | W3-ADV-10 | Trap without unlock → next run dirty (**WOR-747**) | new dirty_env journey | backlog |
 | W3-ADV-11 | `WORTHLESS_HOME` mismatch vs plist | `test_service_backends.py` | backlog |
 | W3-ADV-12 | SIGKILL mid supervised up → stale pidfile | stress journey | backlog |
-| W3-ADV-13 | launchd env: file-only fernet path | keystore + service | partial |
-| W3-ADV-14 | lock → service install → 401 class regression | integration | backlog |
+| W3-ADV-13 | launchd env: file-only fernet path | keystore + service | **done** (WOR-748 sync) |
+| W3-ADV-14 | lock → service install → 401 class regression | `test_fernet_sync.py` (partial) + live pack | **partial** (pytest chain); **full** after WOR-749 PASS |
 | W3-ADV-15 | Dummy `/healthz` on port → default **and** service up (STRESS P0) | user_flow / service | backlog |
-| W3-ADV-16 | Same as W3-ADV-10; blocks **WOR-749** | dirty_env | backlog |
-| W3-ADV-17 | Fernet drift preflight before install | live script + pytest | partial |
+| W3-ADV-16 | Same as W3-ADV-10; blocks **WOR-749** | dirty_env + live pack | **done** (WOR-749 PASS 2026-06-08, macOS host) |
+| W3-ADV-17 | Fernet drift preflight before install | `test_fernet_sync.py` + live script | **done** (preflight gate) |
 
 ---
 
@@ -84,7 +84,7 @@ Fixture: `tests/fixtures/dirty_home.py` (shipped #292; dirty_env journeys still 
 | W3-DIRTY-2 | Stale lock files | lock/up recover or clear error | backlog |
 | W3-DIRTY-3 | DB row + missing shard_a (S-05) | honest status + doctor | backlog |
 | W3-DIRTY-4 | Stale `proxy.pid`, no process | up coherent (not bare healthz) | backlog |
-| W3-DIRTY-5 | Keyring shard + wrong `fernet.key` | managed vs interactive split | partial |
+| W3-DIRTY-5 | Keyring shard + wrong `fernet.key` | managed vs interactive split | **done** (`test_fernet_sync.py`) |
 
 Run: `uv run pytest -m dirty_env` (marker registered; journeys mostly backlog).
 
@@ -94,7 +94,7 @@ Run: `uv run pytest -m dirty_env` (marker registered; journeys mostly backlog).
 
 | ID | Technique | Status |
 |----|-----------|--------|
-| W3-CONTRACT-1 | Syrupy: launchd plist + systemd unit required keys | backlog |
+| W3-CONTRACT-1 | Syrupy: launchd plist + systemd unit required keys | `test_service_templates.py` (launchd Fernet scrub) | **partial** |
 | W3-PROP-1 | Hypothesis: `ProxyRuntimeState` → single action | backlog |
 | W3-E2E-1 | Real subprocess supervised `up` | backlog |
 | W3-MUT-1 | mutmut on `keystore.py` after WOR-748 | backlog |

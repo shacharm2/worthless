@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Live pack: lock → service install → proxied request → restart → proxied again.
-# Manual L7 proof (not CI). Uses mock-upstream in Docker on localhost:9999.
+# Live pack: lock → systemd service install → proxied request → restart → proxied again.
+# Manual L7 proof (not CI). Mock upstream via uvicorn on localhost:9999 (no Docker-in-Docker).
 #
 # Cleanup on exit: service uninstall, worthless down, unlock+remove temp project dir.
 # Does NOT purge Keychain or ~/.worthless — intentional (see wor-193-live-checklist.md).
@@ -12,10 +12,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 unset WORTHLESS_FERNET_IPC_ONLY WORTHLESS_KEYRING_BACKEND
 # shellcheck source=engineering/testing/scripts/_live-pack-lib.sh
 source "${SCRIPT_DIR}/_live-pack-lib.sh"
-# shellcheck source=/dev/null
-bash "${SCRIPT_DIR}/dev-teardown-macos.sh"
+LP_SERVICE_BACKEND="systemd"
 LP_PHASE_NUM=0
-lp_banner "service-lock-roundtrip-live-macos (L7)"
+lp_banner "service-lock-roundtrip-live-linux (L7)"
 lp_step "repo: ${REPO_ROOT}"
 lp_step "worthless: $(command -v worthless 2>/dev/null || echo 'not on PATH yet')"
 export PATH="${REPO_ROOT}/.venv/bin:${PATH}"
@@ -24,14 +23,13 @@ PORT="${WORTHLESS_PORT:-8787}"
 MOCK_PORT="${MOCK_UPSTREAM_PORT:-9999}"
 MOCK_URL="http://127.0.0.1:${MOCK_PORT}"
 MOCK_BASE="${MOCK_URL}/v1"
-MOCK_IMAGE="${MOCK_UPSTREAM_IMAGE:-worthless-mock-upstream:local}"
-PLIST="$HOME/Library/LaunchAgents/dev.worthless.proxy.plist"
+UNIT="${HOME}/.config/systemd/user/worthless-proxy.service"
+MOCK_PID=""
+MOCK_LOG=""
 
 WORK_DIR="$(mktemp -d /tmp/worthless-live-project-XXXXXX)"
 ENV_FILE=""
 export WORTHLESS_ALLOW_INSECURE=true
-
-MOCK_CID=""
 
 cleanup() {
   lp_phase "Cleanup (trap EXIT)"
@@ -43,8 +41,9 @@ cleanup() {
       lp_warn "unlock failed for ${ENV_FILE}; run worthless doctor --fix before next run"
     fi
   fi
-  if [[ -n "$MOCK_CID" ]]; then
-    docker rm -f "$MOCK_CID" >/dev/null 2>&1 || true
+  if [[ -n "${MOCK_PID:-}" ]] && kill -0 "$MOCK_PID" 2>/dev/null; then
+    kill -TERM "$MOCK_PID" 2>/dev/null || true
+    wait "$MOCK_PID" 2>/dev/null || true
   fi
   rm -rf "$WORK_DIR" 2>/dev/null || true
 }
@@ -60,12 +59,12 @@ if [[ -n "${WORTHLESS_HOME:-}" ]]; then
   fi
 fi
 
-if [[ -f "$PLIST" ]]; then
-  if ! grep -q "$(cd "${HOME}/.worthless" && pwd)" "$PLIST" && ! grep -q "${HOME}/.worthless" "$PLIST"; then
-    echo "Foreign plist (different WORTHLESS_HOME). Manual cleanup required:"
-    echo "  grep WORTHLESS_HOME $PLIST"
-    echo "  launchctl bootout gui/$(id -u) $PLIST 2>/dev/null || true"
-    echo "  rm -f $PLIST"
+if [[ -f "$UNIT" ]]; then
+  if ! grep -q "$(cd "${HOME}/.worthless" && pwd)" "$UNIT" && ! grep -q "${HOME}/.worthless" "$UNIT"; then
+    echo "Foreign unit (different WORTHLESS_HOME). Manual cleanup required:"
+    echo "  grep WORTHLESS_HOME $UNIT"
+    echo "  systemctl --user disable --now worthless-proxy.service 2>/dev/null || true"
+    echo "  rm -f $UNIT"
     exit 1
   fi
   worthless service uninstall --yes 2>/dev/null || true
@@ -126,7 +125,7 @@ ensure_proxy_port_free
 
 # Stale lock files block doctor/lock if a prior run crashed mid-flight.
 if [[ -f "${HOME}/.worthless/.lock-in-progress" ]]; then
-  lock_age=$(( $(date +%s) - $(stat -f %m "${HOME}/.worthless/.lock-in-progress" 2>/dev/null || echo 0) ))
+  lock_age=$(( $(date +%s) - $(stat -c %Y "${HOME}/.worthless/.lock-in-progress" 2>/dev/null || echo 0) ))
   if (( lock_age > 300 )); then
     rm -f "${HOME}/.worthless/.lock-in-progress"
   fi
@@ -184,8 +183,8 @@ if result['status'] == 'error':
   lp_ok "no fernet drift"
 }
 
-sync_fernet_for_launchd() {
-  lp_step "sync canonical Fernet → ~/.worthless/fernet.key (for launchd)"
+sync_fernet_for_service() {
+  lp_step "sync canonical Fernet → ~/.worthless/fernet.key (for ${LP_SERVICE_BACKEND})"
   (cd "$REPO_ROOT" && uv run python -c "
 from worthless.cli.bootstrap import ensure_home
 from worthless.cli.keystore import sync_fernet_for_launchd
@@ -194,7 +193,7 @@ home = ensure_home()
 sync_fernet_for_launchd(home.base_dir)
 ")
   if [[ ! -f "${HOME}/.worthless/fernet.key" ]]; then
-    lp_fail "fernet.key missing after sync — launchd will hit WRTLS-102"
+    lp_fail "fernet.key missing after sync — ${LP_SERVICE_BACKEND} will hit WRTLS-102"
     exit 1
   fi
   lp_ok "fernet.key present"
@@ -202,7 +201,7 @@ sync_fernet_for_launchd(home.base_dir)
 }
 
 lp_phase "Fernet sync (pre-lock)"
-sync_fernet_for_launchd
+sync_fernet_for_service
 
 wait_mock_healthy() {
   local deadline=$((SECONDS + 30))
@@ -216,13 +215,19 @@ wait_mock_healthy() {
   return 1
 }
 
-lp_phase "Mock upstream (Docker :${MOCK_PORT})"
-lp_step "docker build ${MOCK_IMAGE}"
-docker build -t "$MOCK_IMAGE" "$REPO_ROOT/tests/openclaw/mock-upstream" >/dev/null
-
-lp_step "docker run -p ${MOCK_PORT}:9999"
-MOCK_CID="$(docker run -d --rm -p "${MOCK_PORT}:9999" "$MOCK_IMAGE")"
-wait_mock_healthy
+lp_phase "Mock upstream (uvicorn :${MOCK_PORT})"
+MOCK_LOG="${WORK_DIR}/mock-upstream.log"
+lp_step "uvicorn app:app on 127.0.0.1:${MOCK_PORT}"
+(
+  cd "$REPO_ROOT/tests/openclaw/mock-upstream"
+  uv run uvicorn app:app --host 127.0.0.1 --port "$MOCK_PORT"
+) >"$MOCK_LOG" 2>&1 &
+MOCK_PID=$!
+wait_mock_healthy || {
+  lp_fail "mock-upstream failed to start"
+  tail -30 "$MOCK_LOG" 2>/dev/null || true
+  exit 1
+}
 lp_ok "mock-upstream healthy at ${MOCK_URL}"
 
 LOCK_UP_PID=""
@@ -297,7 +302,7 @@ lp_ok "lock complete (shard-A in .env)"
 stop_lock_proxy
 
 lp_phase "Fernet sync (post-lock)"
-sync_fernet_for_launchd
+sync_fernet_for_service
 
 lp_phase "Verify lock ciphertext (local Fernet)"
 lp_step "decrypt shard_b_enc with fernet.key on disk"
@@ -331,7 +336,7 @@ asyncio.run(main())
 fi
 lp_ok "local fernet decrypt ok"
 
-lp_phase "Launchd service install"
+lp_phase "Systemd service install"
 ensure_proxy_port_free
 
 lp_step "worthless service install --yes"
@@ -340,7 +345,7 @@ if ! worthless service install --yes; then
   lp_log_tail "~/.worthless/proxy.log" "${HOME}/.worthless/proxy.log" 30
   exit 1
 fi
-lp_ok "plist installed, launchd job started"
+lp_ok "systemd unit installed, service active"
 
 wait_proxy_healthy() {
   local deadline=$((SECONDS + 60))
@@ -355,7 +360,8 @@ wait_proxy_healthy() {
   return 1
 }
 
-test -f "$PLIST"
+test -f "$UNIT"
+systemctl --user is-active worthless-proxy.service
 wait_proxy_healthy
 lp_ok "GET /healthz on 127.0.0.1:${PORT}"
 
@@ -417,9 +423,9 @@ wait_sidecar_decrypt_preflight() {
     lp_diag \
       "WORTHLESS_FERNET_IPC_ONLY=${WORTHLESS_FERNET_IPC_ONLY:-unset}" \
       "which worthless: $(command -v worthless 2>/dev/null || echo missing)"
-    if [[ -f "$PLIST" ]]; then
-      lp_step "launchd ProgramArguments:"
-      grep -A2 'ProgramArguments' "$PLIST" || true
+    if [[ -f "$UNIT" ]]; then
+      lp_step "systemd unit Environment:"
+      grep -E 'WORTHLESS_(HOME|SERVICE_MANAGED|FERNET)' "$UNIT" || true
     fi
     if command -v pgrep >/dev/null 2>&1; then
       lp_step "running worthless processes:"
@@ -472,7 +478,7 @@ run_proxied_roundtrip() {
   lp_step "clear mock-upstream capture buffer (${label})"
   curl_expect_2xx DELETE "${MOCK_URL}/captured-headers"
 
-  lp_step "POST /${ALIAS}/v1/chat/completions via launchd proxy :${PORT} (${label})"
+  lp_step "POST /${ALIAS}/v1/chat/completions via ${LP_SERVICE_BACKEND} proxy :${PORT} (${label})"
   local resp_file
   resp_file="$(mktemp)"
   local http_status=""
@@ -499,7 +505,7 @@ run_proxied_roundtrip() {
     cat "$resp_file" 2>/dev/null || true
     if [[ "$http_status" == "401" ]]; then
       lp_diag \
-        "401 under launchd → Fernet mismatch or sidecar not up (${label})" \
+        "401 under ${LP_SERVICE_BACKEND} → Fernet mismatch or sidecar not up (${label})" \
         "re-run after: worthless doctor; script syncs keyring→fernet.key"
     fi
     dump_proxy_log
@@ -533,8 +539,8 @@ print(auth)
 
 run_proxied_roundtrip "initial install" || exit 1
 
-lp_phase "Launchd restart → proxied request (WOR-749 post-restart)"
-lp_step "worthless service restart (fresh launchd job — reads fernet.key from disk)"
+lp_phase "Systemd restart → proxied request (WOR-749 post-restart)"
+lp_step "worthless service restart (fresh systemd job — reads fernet.key from disk)"
 worthless service restart
 wait_proxy_healthy
 lp_ok "GET /healthz after service restart"
@@ -543,6 +549,6 @@ run_proxied_roundtrip "after service restart" || exit 1
 
 lp_step "worthless service uninstall --yes (cleanup before trap)"
 worthless service uninstall --yes
-test ! -f "$PLIST"
+test ! -f "$UNIT"
 
-lp_footer_pass "service lock roundtrip live pack: PASS"
+lp_footer_pass "service lock roundtrip live pack (Linux): PASS"

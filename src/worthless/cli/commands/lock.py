@@ -41,7 +41,12 @@ from worthless.cli.errors import (
     sanitize_exception,
 )
 from worthless.cli.key_patterns import CANONICAL_KEY_VAR_RE, detect_prefix
-from worthless.cli.keystore import keyring_available
+from worthless._flags import fernet_ipc_only_enabled
+from worthless.cli.keystore import (
+    _fernet_file_bytes,
+    keyring_available,
+    sync_fernet_for_launchd,
+)
 from worthless.cli.providers import lookup_by_name, lookup_by_url
 from worthless.crypto.reconstruction import (
     _verify_commitment,  # noqa: PLC2701 — intentional internal use for re-lock guard
@@ -1585,6 +1590,34 @@ def _openclaw_audit_postflight(gate: _oc_audit.AuditGateHandle) -> None:
         raise typer.Exit(code=87)
 
 
+def _sync_fernet_after_lock(home: WorthlessHome) -> None:
+    """Copy canonical Fernet key to fernet.key after lock (WOR-748).
+
+    Skipped under Docker IPC-only (sidecar owns ``fernet.key``; proxy cannot
+    overwrite) and when on-disk ``fernet.key`` disagrees with the canonical
+    key already loaded for this lock (WOR-464 — never auto-pick a side).
+
+    Uses the ``home.fernet_key`` cache so lock does not fire a second
+    keyring read (HF2 contract).
+    """
+    if sys.platform not in ("darwin", "linux"):
+        return
+    if fernet_ipc_only_enabled():
+        return
+
+    key = home.fernet_key
+    try:
+        on_disk = _fernet_file_bytes(home.fernet_key_path)
+        if on_disk is not None and on_disk != key:
+            logger.debug(
+                "Skipping post-lock fernet sync — file bytes differ from canonical key (WOR-464)"
+            )
+            return
+        sync_fernet_for_launchd(home.base_dir, key=key)
+    finally:
+        zero_buf(key)
+
+
 def _lock_keys(
     env_path: Path,
     home: WorthlessHome,
@@ -1964,6 +1997,7 @@ def _lock_keys(
         )
         raise typer.Exit(code=result.openclaw_exit)
 
+    _sync_fernet_after_lock(home)
     return result.fresh_count + relock_count
 
 
