@@ -91,13 +91,21 @@ ensure_proxy_port_free() {
   fi
   rm -f "${HOME}/.worthless/proxy.pid" 2>/dev/null || true
   rm -rf "${HOME}/.worthless/run" 2>/dev/null || true
-  local attempt
+  local attempt pids
   for attempt in 1 2 3 4 5 6; do
+    pids="$(lsof -ti "tcp:${PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+    if [[ -n "$pids" ]]; then
+      lp_port_foreign_listeners_block "$PORT" || exit 1
+      kill_port_listeners "$PORT" || exit 1
+      sleep 0.5
+      continue
+    fi
     if ! curl -sf "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
+      lp_port_foreign_listeners_block "$PORT" || exit 1
       lp_ok "port ${PORT} free"
       return 0
     fi
-    kill_port_listeners "$PORT"
+    kill_port_listeners "$PORT" || exit 1
     sleep 0.5
   done
   if curl -sf "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1; then
