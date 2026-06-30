@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -36,7 +37,7 @@ from pathlib import Path
 import pytest
 
 OPENCLAW_IMAGE = "ghcr.io/openclaw/openclaw:2026.5.3-1"
-MOCK_DOCKERFILE_DIR = "tests/openclaw/mock-upstream"
+MOCK_DOCKERFILE_DIR = str(Path(__file__).resolve().parent / "mock-upstream")
 _MOCK_PORT = 9999
 _UI_PLACEHOLDER = "Message Assistant (Enter to send)"
 
@@ -142,6 +143,20 @@ def _clear(mock: str) -> None:
     _exec(mock, ["python", "-c", code], timeout=30)
 
 
+def _wait_for_hits(mock: str, *, deadline_s: float = 45.0) -> int:
+    """Poll the mock's recorded-hit count until it reaches >=1 or the deadline.
+
+    The upstream request is the load-bearing proof, but the agent turn's timing
+    varies with host load — a single fixed window is flaky. Returns the final
+    count (>=1 on success, else the last reading)."""
+    end = time.monotonic() + deadline_s
+    n = _hits(mock)
+    while n < 1 and time.monotonic() < end:
+        time.sleep(2)
+        n = _hits(mock)
+    return n
+
+
 @pytest.fixture(scope="module")
 def gui_stack():
     """OpenClaw Control UI (published on an ephemeral host port) + a mock upstream
@@ -186,22 +201,63 @@ def gui_stack():
         )
         set_prov = _oc(oc, "config", "set", "models.providers.openai", prov, "--strict-json")
         assert set_prov.returncode == 0, set_prov.stderr
-        _oc(oc, "config", "set", "models.providers.openai.apiKey", f"sk-proj-{uuid.uuid4().hex}")
-        _oc(oc, "config", "set", "agents.defaults.model.primary", "openai/gpt-4o")
+        set_key = _oc(
+            oc, "config", "set", "models.providers.openai.apiKey", f"sk-proj-{uuid.uuid4().hex}"
+        )
+        assert set_key.returncode == 0, set_key.stderr
+        set_model = _oc(oc, "config", "set", "agents.defaults.model.primary", "openai/gpt-4o")
+        assert set_model.returncode == 0, set_model.stderr
         _run(["docker", "restart", oc], check=True)
         _wait_oc(oc)
 
         # Read the token from openclaw.json directly — ``config get`` REDACTS
         # secrets (returns "__OPENCLAW_REDACTED__"), which the Control UI rejects
         # as unauthorized. Matches launch_stack.sh / GUI_WALKTHROUGH.md.
-        cfg_raw = _exec(oc, ["cat", "/home/node/.openclaw/openclaw.json"]).stdout
-        token = json.loads(cfg_raw)["gateway"]["auth"]["token"]
+        cfg = _exec(oc, ["cat", "/home/node/.openclaw/openclaw.json"])
+        assert cfg.returncode == 0, f"could not read openclaw.json: {cfg.stderr}"
+        token = json.loads(cfg.stdout)["gateway"]["auth"]["token"]
         base = "http://localhost:18789"
         _wait_http(base + "/")
         yield {"oc": oc, "mock": mock, "url": f"{base}/#token={token}"}
     finally:
         _run(["docker", "rm", "-f", oc, mock], timeout=60)
         _run(["docker", "network", "rm", net], timeout=60)
+        # Remove the mock image we built — otherwise every run leaves a dangling
+        # wor-gui-mock-* image behind.
+        _run(["docker", "rmi", "-f", mock_img], timeout=60)
+
+
+def _approve_device_from_page(oc: str, page) -> bool:  # noqa: ANN001 — Page is opaque here
+    """The gateway shows a "device pairing required (requestId: X)" connect
+    screen; read that id off the page and approve it in the container so the
+    next connection from this browser device reaches the chat. Returns True if
+    an approval was attempted."""
+    try:
+        body = page.inner_text("body")
+    except Exception:  # noqa: BLE001
+        return False
+    m = re.search(r"requestId[:\s]+([0-9a-fA-F][0-9a-fA-F-]{7,})", body)
+    if not m:
+        return False
+    _oc(oc, "devices", "approve", m.group(1))
+    return True
+
+
+def _dump_failure(page, console_msgs: list[str]) -> None:  # noqa: ANN001 — Page is opaque here
+    """Capture what the browser actually rendered when the composer never appeared."""
+    art = _artifact_dir()
+    try:
+        page.screenshot(path=str(art / "99-composer-not-ready.png"), full_page=True)
+    except Exception as e:  # noqa: BLE001
+        print("diagnostic screenshot failed:", e)
+    try:
+        body = page.inner_text("body")[:800].replace("\n", " | ")
+    except Exception as e:  # noqa: BLE001
+        body = f"(body unreadable: {e})"
+    print("\n=== COMPOSER-NOT-READY DIAGNOSTICS ===")
+    print("URL:", page.url)
+    print("BODY[:800]:", body)
+    print("CONSOLE[-25:]:", " || ".join(console_msgs[-25:]) or "(none)")
 
 
 def test_control_ui_chat_routes_to_configured_baseurl(gui_stack) -> None:
@@ -220,25 +276,41 @@ def test_control_ui_chat_routes_to_configured_baseurl(gui_stack) -> None:
         browser = p.chromium.launch(headless=True)
         try:
             page = browser.new_page(viewport={"width": 1280, "height": 900})
+            console_msgs: list[str] = []
+            page.on("console", lambda m: console_msgs.append(f"{m.type}: {m.text}"[:200]))
+            page.on("pageerror", lambda e: console_msgs.append(f"pageerror: {e}"[:200]))
             # Cold-start resilience: a freshly-booted gateway serves the SPA
             # shell before the chat runtime is ready, so the composer can be
             # absent on the first paint. Reload until it appears (bounded) —
             # robust on the first attempt, no reliance on pytest reruns.
             box = None
-            for _ in range(4):
+            oc = gui_stack["oc"]
+            # The gateway requires per-device PAIRING: the token reaches only the
+            # "device pairing required (requestId: …)" connect screen. Each reload,
+            # if the chat composer isn't up, read the requestId off that screen and
+            # approve it in the container; once the device is paired the SPA
+            # connects and the composer appears. (`networkidle` never settles —
+            # the SPA holds a websocket open — so use `domcontentloaded`.)
+            composer_deadline = time.monotonic() + 180
+            while box is None and time.monotonic() < composer_deadline:
                 page.goto(gui_stack["url"], timeout=45000)
                 try:
-                    page.wait_for_load_state("networkidle", timeout=15000)
-                except Exception:  # noqa: BLE001 — SPA holds a socket open
+                    page.wait_for_load_state("domcontentloaded", timeout=10000)
+                except Exception:  # noqa: BLE001 — best-effort
                     pass
                 candidate = page.get_by_placeholder(_UI_PLACEHOLDER)
                 try:
-                    candidate.wait_for(state="visible", timeout=20000)
+                    candidate.wait_for(state="visible", timeout=15000)
                     box = candidate
-                    break
-                except Exception:  # noqa: BLE001 — not ready yet; reload
+                except Exception:  # noqa: BLE001 — likely the pairing screen
+                    _approve_device_from_page(oc, page)
                     page.wait_for_timeout(3000)
-            assert box is not None, "Control UI chat composer never became ready"
+            if box is None:
+                _dump_failure(page, console_msgs)
+                pytest.fail(
+                    "Control UI chat composer never became ready within 180s "
+                    "(see 99-composer-not-ready.png + diagnostics above)"
+                )
             artifacts = _artifact_dir()
             page.screenshot(path=str(artifacts / "01-chat-ready.png"), full_page=True)
             box.click()
@@ -246,12 +318,13 @@ def test_control_ui_chat_routes_to_configured_baseurl(gui_stack) -> None:
             page.screenshot(path=str(artifacts / "02-message-typed.png"), full_page=True)
             box.press("Enter")
             # The message lands in the transcript, then the agent turn fires the
-            # upstream call. Give it room; the mock-hit is the load-bearing proof.
+            # upstream call. Poll the mock hit (the load-bearing proof) on a
+            # bounded deadline instead of one fixed window — slow hosts need more.
             try:
                 page.get_by_text(msg, exact=False).first.wait_for(timeout=15000)
             except Exception:  # noqa: BLE001 — transcript rendering is not the assertion
                 pass
-            page.wait_for_timeout(8000)
+            hits = _wait_for_hits(mock, deadline_s=45)
             page.screenshot(path=str(artifacts / "03-after-send.png"), full_page=True)
             print(f"\nPLAYWRIGHT SNAPSHOTS → {artifacts}")
             for name in ("01-chat-ready.png", "02-message-typed.png", "03-after-send.png"):
@@ -261,7 +334,6 @@ def test_control_ui_chat_routes_to_configured_baseurl(gui_stack) -> None:
 
     # Robust signal: the GUI chat's agent turn reached the configured baseUrl.
     # (We assert on the upstream hit, never on flaky SPA transcript text.)
-    hits = _hits(mock)
     assert hits >= 1, (
         f"a real Control-UI chat must route to the configured provider baseUrl; "
         f"mock recorded {hits} upstream requests. If OpenClaw {OPENCLAW_IMAGE} "
