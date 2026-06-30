@@ -1293,3 +1293,176 @@ class TestNonProviderPlaintextScope:
         assert len(classification.blocking) == 0
         assert classification.advisory_count == 1
         assert len(classification.unknown_codes) == 0
+
+
+# --------------------------------------------------------------------------- #
+# scan output paths run through sanitise_for_message (Trojan-Source / bidi)    #
+# Attacker-influenceable file paths AND scanned source content (hostile        #
+# dependency, malicious clone) must not smuggle control / format / separator   #
+# chars into the terminal -- the class PR #365 hardened the lock block against.#
+# Codepoints are written as explicit \u escapes so no invisible character ever #
+# lives in this test's source.                                                 #
+# --------------------------------------------------------------------------- #
+
+_RLO = "\u202e"  # RIGHT-TO-LEFT OVERRIDE (bidi)
+_LINE_SEP = "\u2028"  # LINE SEPARATOR
+_PARA_SEP = "\u2029"  # PARAGRAPH SEPARATOR
+# A path an attacker could create. Renders as "src/evil.env" once scrubbed.
+_HOSTILE_PATH = f"src/{_RLO}evil{_LINE_SEP}.env"
+_INJECTED = (_RLO, _LINE_SEP, _PARA_SEP)
+
+
+class TestScanOutputPathsSanitised:
+    def _assert_clean(self, out: str) -> None:
+        for ch in _INJECTED:
+            assert ch not in out
+        # Benign bytes survive -- only the control/format chars are removed.
+        assert "src/evil.env" in out
+
+    def _scan_finding(self, file: str, **over: object):
+        from worthless.cli.scanner import ScanFinding
+
+        kw = {
+            "file": file,
+            "line": 1,
+            "var_name": "K",
+            "provider": "openai",
+            "is_protected": False,
+            "value_preview": "sk-a",
+        }
+        kw.update(over)
+        return ScanFinding(**kw)  # type: ignore[arg-type]
+
+    def _code_finding(self, file: str, **over: object):
+        from worthless.cli.code_scanner import CodeFinding
+
+        kw = {
+            "file": file,
+            "line": 1,
+            "column": 1,
+            "matched_url": "https://api.openai.com",
+            "provider_name": "openai",
+            "suggested_env_var": "OPENAI_API_KEY",
+            "line_text": 'url = "https://api.openai.com"',
+        }
+        kw.update(over)
+        return CodeFinding(**kw)  # type: ignore[arg-type]
+
+    def test_scan_human_key_finding_path_sanitised(self) -> None:
+        """``_format_human`` strips bidi/separator chars from f.file."""
+        from worthless.cli.commands.scan import _format_human
+
+        self._assert_clean(_format_human([self._scan_finding(_HOSTILE_PATH)]))
+
+    def test_scan_code_finding_path_sanitised(self) -> None:
+        """Per-finding branch (collapse_tests=False, scan.py ~341)."""
+        from worthless.cli.commands.scan import _format_code_findings_human
+
+        self._assert_clean(_format_code_findings_human([self._code_finding(_HOSTILE_PATH)]))
+
+    def test_scan_code_finding_collapsed_path_sanitised(self) -> None:
+        """Grouped/compact branch (collapse_tests=True, scan.py ~335)."""
+        from worthless.cli.commands.scan import _format_code_findings_human
+
+        out = _format_code_findings_human([self._code_finding(_HOSTILE_PATH)], collapse_tests=True)
+        self._assert_clean(out)
+
+    def test_scan_code_finding_url_and_snippet_sanitised(self) -> None:
+        """matched_url and line_text are attacker content too (scan.py ~345/351)."""
+        from worthless.cli.commands.scan import _format_code_findings_human
+
+        finding = self._code_finding(
+            "src/clean.py",
+            matched_url=f"https://api.openai.com/{_RLO}x",
+            line_text=f"url = {_LINE_SEP}{_RLO}evil",
+        )
+        out = _format_code_findings_human([finding])
+        for ch in _INJECTED:
+            assert ch not in out
+
+    def test_scan_ai_prompt_block_path_sanitised(self) -> None:
+        """Copy-to-AI-agent prompt scrubs the path (scan.py ~465)."""
+        from worthless.cli.commands.scan import _format_ai_prompt_block
+
+        out = _format_ai_prompt_block([self._code_finding(_HOSTILE_PATH)])
+        for ch in _INJECTED:
+            assert ch not in out
+
+    def test_scan_skipped_human_path_sanitised(self) -> None:
+        """Skipped-files stderr block scrubs the path (scan.py ~501).
+
+        The skipped path is the *most* hostile input -- an oversized/unreadable
+        file we refused to scan, named by an attacker.
+        """
+        from worthless.cli.commands.scan import _format_skipped_human
+        from worthless.cli.scanner import SkippedFile
+
+        out = _format_skipped_human([SkippedFile(file=_HOSTILE_PATH, reason="timeout")])
+        for ch in _INJECTED:
+            assert ch not in out
+
+    def test_json_findings_preserve_raw_path(self) -> None:
+        """Display-only guarantee: machine output keeps the RAW path verbatim.
+
+        If sanitisation ever leaked into JSON (or was applied at the model
+        layer) this fails -- guarding against a 'fix' that silently corrupts
+        the path consumers re-open. This is the anti-false-positive contract.
+        """
+        from worthless.cli.commands.scan import (
+            _code_findings_to_json,
+            _format_json_findings,
+        )
+
+        key_json = json.loads(_format_json_findings([self._scan_finding(_HOSTILE_PATH)]))
+        assert key_json["findings"][0]["file"] == _HOSTILE_PATH  # raw, untouched
+
+        code_json = _code_findings_to_json([self._code_finding(_HOSTILE_PATH)])
+        assert code_json[0]["file"] == _HOSTILE_PATH  # raw, untouched
+
+    def test_formatters_leave_clean_path_intact(self) -> None:
+        """A benign path passes through every formatter byte-for-byte."""
+        from worthless.cli.commands.scan import (
+            _format_code_findings_human,
+            _format_human,
+        )
+
+        clean = "/home/user/project/.env"
+        assert clean in _format_human([self._scan_finding(clean, line=3)])
+        assert clean in _format_code_findings_human([self._code_finding(clean)])
+        assert clean in _format_code_findings_human(
+            [self._code_finding(clean)], collapse_tests=True
+        )
+
+    @pytest.mark.parametrize(
+        "ch",
+        [
+            "\x00",  # C0 control
+            "\x1b",  # ESC (defeats ANSI/OSC)
+            "\x9b",  # C1 CSI
+            "\u200b",  # zero-width space
+            "\u202e",  # RLO (bidi override)
+            "\u2066",  # LRI (bidi isolate)
+            "\ufeff",  # BOM
+            "\u2028",  # line separator
+            "\u2029",  # paragraph separator
+            "\u061c",  # ALM (Arabic Letter Mark) -- bidi control
+            "\u2060",  # WORD JOINER -- zero-width
+        ],
+    )
+    def test_formatters_strip_each_char_class(self, ch: str) -> None:
+        """Every stripped class is removed by both human formatters."""
+        from worthless.cli.commands.scan import (
+            _format_code_findings_human,
+            _format_human,
+        )
+
+        path = f"src/a{ch}b.env"
+        sf = self._scan_finding(path)
+        assert ch not in _format_human([sf])
+        assert ch not in _format_code_findings_human([self._code_finding(path)])
+
+    def test_sanitise_preserves_rtl_letters(self) -> None:
+        """FALSE-POSITIVE GUARD: legitimate Hebrew/Arabic filename letters
+        (category Lo) are NOT stripped -- only control/format/separator chars."""
+        rtl_name = "סוד.env"  # Hebrew letters, a valid filename
+        assert sanitise_for_message(rtl_name) == rtl_name

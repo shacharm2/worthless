@@ -363,10 +363,12 @@ def _format_code_findings_human(
             lines.append(
                 f"[code] {safe_file}:{f.line}:{f.column}  {f.provider_name} ({f.suggested_env_var})"
             )
-            lines.append(f"       {f.matched_url}")
+            lines.append(f"       {sanitise_for_message(f.matched_url)}")
             # Show the offending source line (trimmed so it doesn't blow up the
-            # terminal). The user's eyes go straight to the arrow + line.
-            snippet = f.line_text.strip()
+            # terminal). The user's eyes go straight to the arrow + line. The
+            # line comes from the scanned (possibly hostile) file, so it gets
+            # the same control-char scrub as the path.
+            snippet = sanitise_for_message(f.line_text.strip())
             if len(snippet) > 200:
                 snippet = snippet[:197] + "..."
             lines.append(f"       → {snippet}")
@@ -519,7 +521,7 @@ def _format_skipped_human(skipped: list[SkippedFile]) -> str:
         f"Skipped (scan incomplete — exit code {SCAN_INCOMPLETE_EXIT_CODE}):",
     ]
     for s in skipped:
-        lines.append(f"  {s.file}  [{s.reason}]")
+        lines.append(f"  {sanitise_for_message(s.file)}  [{s.reason}]")
     lines.append("A pre-commit hook will block on this — re-run after addressing the cause.")
     return "\n".join(lines) + "\n"
 
