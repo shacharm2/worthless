@@ -249,16 +249,25 @@ def test_website_security_txt_is_rfc9116_public_surface() -> None:
 
 def test_website_homepage_launch_affordances_survive_promotion() -> None:
     index = (WEBSITE / "index.html").read_text(encoding="utf-8")
+    primary_nav = re.search(
+        r'<nav class="nav" aria-label="Primary">(?P<nav>.*?)</nav>',
+        index,
+        re.DOTALL,
+    )
+    assert primary_nav, "homepage must expose a primary navigation block"
+    primary_nav_html = primary_nav.group("nav")
 
     assert "curl -sSL https://worthless.sh | sh" in index
-    assert 'href="memes.html"' in index
-    assert 'href="https://ko-fi.com/shacharme"' in index
-    assert 'href="#early-access"' in index
+    assert 'href="https://docs.wless.io/"' in primary_nav_html
+    assert 'href="blog/index.html"' in primary_nav_html
+    assert 'href="red/index.html"' in primary_nav_html
+    assert 'href="memes.html"' in primary_nav_html
+    assert 'href="#early-access"' in primary_nav_html
+    assert 'href="https://ko-fi.com/shacharme"' in primary_nav_html
     assert '<span class="scroll-hint__text">Follow the leak</span>' in index
     assert "Hosted Worthless" in index
     assert "A separate managed product we're exploring for later" in index
     assert "not the open-source tool on this page" in index
-    assert 'href="red/index.html"' in index
 
 
 def test_website_homepage_beta_label_matches_pyproject_version() -> None:
