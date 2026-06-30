@@ -57,7 +57,7 @@ Step 4 — Mode 2: broken or missing `worthless`
 
 What it does NOT do
 -------------------
-  No sudo. No writes. No telemetry. It only removes ~/.worthless,
+  No sudo. No telemetry. It only removes ~/.worthless,
   Worthless's own keychain entry, and the worthless tool. It NEVER
   reconstructs keys in shell, and never claims a restore it couldn't do.
 

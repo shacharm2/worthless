@@ -83,6 +83,7 @@ def test_tier2_lists_affected_env_files(tmp_path: Path) -> None:
 
     result = run_uninstall(bin_dir, worthless_home=home)
 
+    assert result.returncode == 0, result.stderr
     combined = result.stdout + result.stderr
     assert "/proj/a/.env" in combined
     assert "/proj/b/.env" in combined

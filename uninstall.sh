@@ -144,7 +144,9 @@ sha256_hex() {
 # Replicate the CLI's keyring account: fernet-key-<sha256(realpath(home))[:12]>.
 # `printf '%s'` (no newline) matches Python's str(path).encode() exactly.
 keyring_account() {
-    if [ -d "$WORTHLESS_HOME_DIR" ]; then
+    if command -v realpath >/dev/null 2>&1; then
+        resolved="$(realpath -m "$WORTHLESS_HOME_DIR" 2>/dev/null)" || resolved="$WORTHLESS_HOME_DIR"
+    elif [ -d "$WORTHLESS_HOME_DIR" ]; then
         resolved="$(cd "$WORTHLESS_HOME_DIR" 2>/dev/null && pwd -P)" || resolved="$WORTHLESS_HOME_DIR"
     else
         resolved="$WORTHLESS_HOME_DIR"
