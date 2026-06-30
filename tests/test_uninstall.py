@@ -129,6 +129,63 @@ def test_uninstall_aborts_wipe_when_a_restore_fails(
     assert n_shards >= 1, "shard-B deleted despite the abort"
 
 
+def test_uninstall_removes_the_service_unit(home_dir: WorthlessHome, tmp_path, monkeypatch) -> None:
+    """WOR-795: uninstall best-effort tears down the launchd/systemd service unit
+    (so a KeepAlive unit can't respawn `worthless up` and recreate ~/.worthless),
+    and the home is still wiped afterwards.
+    """
+    import worthless.cli.commands.uninstall as uninstall_mod
+    from tests.helpers import fake_key
+
+    env = tmp_path / ".env"
+    env.write_text(f"OPENAI_API_KEY={fake_key('sk-')}\n")
+    runner.invoke(app, ["lock", "--env", str(env)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+
+    calls: list = []
+
+    class _FakeBackend:
+        def uninstall(self, home) -> None:  # noqa: ANN001
+            calls.append(home)
+
+    monkeypatch.setattr(uninstall_mod, "IS_WINDOWS", False)
+    monkeypatch.setattr(uninstall_mod, "_service_backend", lambda: _FakeBackend())
+
+    result = runner.invoke(
+        app, ["uninstall", "--yes"], env={"WORTHLESS_HOME": str(home_dir.base_dir)}
+    )
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1, "uninstall must tear down the service unit exactly once"
+    assert not home_dir.base_dir.exists(), "home must still be wiped after service teardown"
+
+
+def test_uninstall_service_teardown_failure_does_not_block(
+    home_dir: WorthlessHome, tmp_path, monkeypatch
+) -> None:
+    """WOR-795: a service-teardown that raises (no unit installed, permission, …)
+    is best-effort — it must NOT block the uninstall, same class as stopping the
+    daemon. This also covers the no-service no-op path.
+    """
+    import worthless.cli.commands.uninstall as uninstall_mod
+    from tests.helpers import fake_key
+
+    env = tmp_path / ".env"
+    env.write_text(f"OPENAI_API_KEY={fake_key('sk-')}\n")
+    runner.invoke(app, ["lock", "--env", str(env)], env={"WORTHLESS_HOME": str(home_dir.base_dir)})
+
+    class _BoomBackend:
+        def uninstall(self, home) -> None:  # noqa: ANN001
+            raise RuntimeError("no unit / cannot remove")
+
+    monkeypatch.setattr(uninstall_mod, "IS_WINDOWS", False)
+    monkeypatch.setattr(uninstall_mod, "_service_backend", lambda: _BoomBackend())
+
+    result = runner.invoke(
+        app, ["uninstall", "--yes"], env={"WORTHLESS_HOME": str(home_dir.base_dir)}
+    )
+    assert result.exit_code == 0, "a service-teardown error must not block uninstall"
+    assert not home_dir.base_dir.exists(), "home must still be wiped despite a teardown error"
+
+
 def test_uninstall_enroll_only_key_warns_but_does_not_block(
     home_dir: WorthlessHome, tmp_path
 ) -> None:
