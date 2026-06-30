@@ -36,7 +36,7 @@ def _commit(sha: str, *, verified: bool, email: str) -> dict:
     }
 
 
-CANON = "4841128+shacharm2@users.noreply.github.com"
+CANON = "4841128+oblangatas@users.noreply.github.com"
 
 
 def test_clean_pr_has_no_violations() -> None:

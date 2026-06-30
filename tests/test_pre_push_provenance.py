@@ -54,7 +54,7 @@ def _init_repo(path: Path, email: str) -> str:
 
 
 def test_allowlist_accepts_canonical_and_bots() -> None:
-    assert hook.is_allowed_author("4841128+shacharm2@users.noreply.github.com")
+    assert hook.is_allowed_author("4841128+oblangatas@users.noreply.github.com")
     assert hook.is_allowed_author("noreply@anthropic.com")
     assert hook.is_allowed_author("noreply@github.com")
 
@@ -65,7 +65,7 @@ def test_allowlist_rejects_stranger() -> None:
 
 
 def test_unsigned_commit_is_flagged(tmp_path) -> None:
-    sha = _init_repo(tmp_path, "4841128+shacharm2@users.noreply.github.com")
+    sha = _init_repo(tmp_path, "4841128+oblangatas@users.noreply.github.com")
     problems = hook.check_commit(sha, cwd=str(tmp_path))
     assert any("not validly signed" in p for p in problems)
 
